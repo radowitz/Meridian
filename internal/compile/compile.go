@@ -159,6 +159,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		return nil, err
 	}
 	exits := planExits(t, tunnels)
+	groups := planGroups(t, exits)
 	b := &Bundle{
 		Files:  map[string]string{},
 		Order:  applyOrder(t),
@@ -194,17 +195,20 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		}
 		add(prefix+"etc/sysctl.d/99-meridian.conf", renderSysctl(t, n))
 		add(prefix+"etc/meridian/forwarding.conf", renderForwarding(t, n))
-		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, exits))
-		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, exits))
+		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, exits, groups))
+		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, exits, groups))
 		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels))
-		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, mss4, mss6, decisions, clamps))
+		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, groups, mss4, mss6, decisions, clamps))
 		if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
-			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels, exits))
+			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels, exits, groups))
 			add(prefix+"etc/systemd/system/meridian-failover.service", renderFailoverUnit())
 		}
 		if n.Role == model.RoleGateway {
-			add(prefix+"usr/local/sbin/meridian-verify.sh", renderVerifyScript(t))
-			add(prefix+"etc/nftables.d/meridian-guard.nft", renderGuardNFT(t, tunnels, exits))
+			if rp := planRemote(t); rp != nil {
+				add(prefix+"etc/wireguard/"+rp.Iface+".conf", renderRemoteWG(rp))
+			}
+			add(prefix+"usr/local/sbin/meridian-verify.sh", renderVerifyScript(t, tunnels, exits, groups))
+			add(prefix+"etc/nftables.d/meridian-guard.nft", renderGuardNFT(t, tunnels, exits, groups))
 		}
 		if n.Role == model.RoleExit {
 			add(prefix+"usr/local/sbin/meridian-unlock-probe.sh", renderUnlockProbe(t, n))
@@ -231,8 +235,8 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		}
 		switch n.Role {
 		case model.RoleGateway:
-			add(prefix+"etc/smartdns/smartdns.conf", renderGatewayDNS(t, exits, decisions))
-			add(prefix+"usr/local/sbin/meridian-update-chnroute.sh", renderChnrouteScript())
+			add(prefix+"etc/smartdns/smartdns.conf", renderGatewayDNS(t, exits, groups, decisions))
+			add(prefix+"usr/local/sbin/meridian-update-chnroute.sh", renderChnrouteScript(t))
 			add(prefix+"usr/local/sbin/meridian-update-geosite.sh", renderGeositeScript(t))
 		case model.RoleExit:
 			add(prefix+"etc/smartdns/smartdns.conf", renderExitDNS(n, tunnels))

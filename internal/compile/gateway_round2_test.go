@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/validate"
 )
 
@@ -300,168 +301,126 @@ func TestPeerKeyProblems(t *testing.T) {
 	}
 }
 
-// listScriptRun runs a generated list update script with stub curl/nft.
-// CURL_MODE: fail | empty | html | ok. The stub records every call.
-func listScriptRun(t *testing.T, script string, env ...string) (dir string, out string, code int, calls string) {
-	t.Helper()
+// The list scripts no longer download anything themselves: they hand the
+// request to the host agent's fixed list action, where internal/lists
+// keeps the guarantees the old shell had (bounded downloads, nothing
+// replaced or flushed on a failed/empty/HTML download, one nft transaction
+// for chnroute; see internal/lists/lists_test.go and
+// internal/hostexec/hostexec_test.go).
+func TestListScriptsUseHostAgentAction(t *testing.T) {
+	topo := defaults.Example()
+	topo.Rules = append(topo.Rules, model.Rule{ID: "r-ads", Name: "ads", Enabled: true, MatchType: model.MatchGeosite, Geosite: "category-ads-all", TargetGroup: topo.Settings.DefaultGroup})
+	topo.Settings.ListSource = "domestic"
+	b, err := Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	geo := b.File("nodes/gw/usr/local/sbin/meridian-update-geosite.sh")
+	chn := b.File("nodes/gw/usr/local/sbin/meridian-update-chnroute.sh")
+	for name, s := range map[string]string{"geosite": geo, "chnroute": chn} {
+		if !strings.Contains(s, "exec /usr/local/bin/meridian lists-update --lists "+name+" --policy \"$policy\"") {
+			t.Fatalf("%s script does not use the host agent action:\n%s", name, s)
+		}
+		if !strings.Contains(s, "policy=${MERIDIAN_LIST_SOURCE:-domestic}") {
+			t.Fatalf("%s script lacks the compiled policy:\n%s", name, s)
+		}
+		var code []string
+		for _, l := range strings.Split(s, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(l), "#") {
+				code = append(code, l)
+			}
+		}
+		for _, banned := range []string{"curl", "wget", "nft ", "http", "mv ", "awk"} {
+			if strings.Contains(strings.Join(code, "\n"), banned) {
+				t.Fatalf("%s script still does %q itself:\n%s", name, banned, s)
+			}
+		}
+	}
+	// Real v2fly names are requested (the old script fetched the
+	// sanitized file stem, "category_ads_all", which does not exist);
+	// SmartDNS reads the sanitized file.
+	if !regexp.MustCompile(`--geosite '([a-z0-9,-]*,)?apple,([a-z0-9,-]*,)?category-ads-all,([a-z0-9,-]*,)?cn(,[a-z0-9,-]*)?'`).MatchString(geo) {
+		t.Fatalf("geosite names:\n%s", geo)
+	}
+	if !strings.Contains(b.File("nodes/gw/etc/smartdns/smartdns.conf"), "/var/lib/meridian/geosite/category_ads_all.txt") {
+		t.Fatal("SmartDNS does not read the sanitized file")
+	}
+	if !strings.Contains(b.File("nodes/gw/usr/local/sbin/meridian-up.sh"), "[ -f /var/lib/meridian/geosite/category_ads_all.txt ]") {
+		t.Fatal("up script does not seed the sanitized file")
+	}
+}
+
+// The gateway loader appends the saved chnroute batch, so a reload does not
+// empty chnroute; a saved file with foreign lines, or one nft -c rejects
+// together with the ruleset, is ignored and the compiled ruleset alone is
+// checked and loaded. Exits stay unchanged (no extra nft step).
+func TestUpScriptReaddsSavedChnroute(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not installed")
 	}
-	dir = t.TempDir()
-	bin := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
+	if strings.Contains(nftLoadCommands(false), "chnroute") {
+		t.Fatal("non-gateway nodes must not read the chnroute copy")
 	}
-	log := filepath.Join(dir, "calls.log")
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/bash\necho \""+name+" $*\" >> \"$CALL_LOG\"\n"+body), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	good := "flush set inet meridian chnroute\nadd element inet meridian chnroute { 1.0.1.0/24, 1.0.2.0/23 }\n" +
+		"flush set inet meridian chnroute6\nadd element inet meridian chnroute6 { 2400:3200::/32 }\n"
+	cases := []struct {
+		name, saved, env, wantFile, wantMsg string
+	}{
+		{name: "no saved copy", wantFile: "meridian.nft"},
+		{name: "saved copy re-added", saved: good, wantFile: ".boot.nft"},
+		{name: "foreign line ignored", saved: good + "add rule inet meridian forward accept\n", wantFile: "meridian.nft", wantMsg: "meridian-chnroute-saved-ignored"},
+		{name: "combination rejected", saved: good, env: "NFT_FAIL_BOOT=1", wantFile: "meridian.nft", wantMsg: "meridian-chnroute-saved-ignored"},
 	}
-	write("curl", `out=""; url=""
-while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -*) [ "$1" = "--connect-timeout" ] || [ "$1" = "--max-time" ] || [ "$1" = "--retry" ] || [ "$1" = "--retry-delay" ] && shift; shift ;; *) url="$1"; shift ;; esac; done
-case "$CURL_MODE" in
-  fail) exit 28 ;;
-  empty) : > "$out" ;;
-  html) echo "<html>blocked</html>" > "$out" ;;
-  *)
-    case "$url" in
-      */china.txt) printf '1.0.1.0/24\n1.0.2.0/23\n' > "$out" ;;
-      */china6.txt) printf '2400:3200::/32\n' > "$out" ;;
-      *) printf 'domain:example.cn\nfull:www.example.cn\nkeyword:x\n' > "$out" ;;
-    esac ;;
-esac
-exit 0
-`)
-	write("nft", `[ "$1" = -f ] && cp "$2" "$CALL_LOG.batch"
-exit 0
-`)
-	script = strings.ReplaceAll(script, "/var/lib/meridian", filepath.Join(dir, "var"))
-	cmd := exec.Command(bash, "-c", script)
-	cmd.Env = append([]string{"PATH=" + bin + ":/usr/bin:/bin", "CALL_LOG=" + log, "MERIDIAN_FETCH_RETRIES=0"}, env...)
-	raw, err := cmd.CombinedOutput()
-	code = 0
-	if ee, ok := err.(*exec.ExitError); ok {
-		code = ee.ExitCode()
-	} else if err != nil {
-		t.Fatal(err)
-	}
-	c, _ := os.ReadFile(log)
-	return dir, string(raw), code, string(c)
-}
-
-// G9: a failed, empty or non-list download never flushes a set or replaces
-// a saved list; downloads are bounded; the base URL can be overridden.
-func TestChnrouteUpdateNeverEmptiesSets(t *testing.T) {
-	script := exampleBundle(t).File("nodes/gw/usr/local/sbin/meridian-update-chnroute.sh")
-	for _, need := range []string{"--connect-timeout", "--max-time", "--retry", "MERIDIAN_CHNROUTE_BASE_URL"} {
-		if !strings.Contains(script, need) {
-			t.Fatalf("chnroute script lacks %s", need)
-		}
-	}
-	for _, mode := range []string{"fail", "empty", "html"} {
-		t.Run(mode, func(t *testing.T) {
-			dir, out, code, calls := listScriptRun(t, script, "CURL_MODE="+mode)
-			if code != 1 || !strings.Contains(out, "chnroute-not-updated") {
-				t.Fatalf("exit %d, want 1 with a clear message:\n%s", code, out)
-			}
-			if strings.Contains(calls, "nft ") {
-				t.Fatalf("nft called after a %s download:\n%s", mode, calls)
-			}
-			if _, err := os.Stat(filepath.Join(dir, "var", "china.txt")); err == nil {
-				t.Fatal("saved list written from a bad download")
-			}
-		})
-	}
-	t.Run("existing list kept on failure", func(t *testing.T) {
-		// Pre-populate, then fail: the saved file must survive.
-		dir := t.TempDir()
-		varDir := filepath.Join(dir, "var")
-		if err := os.MkdirAll(varDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(varDir, "china.txt"), []byte("9.9.9.0/24\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		s := strings.ReplaceAll(script, "/var/lib/meridian", varDir)
-		_, _, code, _ := listScriptRun(t, s, "CURL_MODE=fail")
-		if code != 1 {
-			t.Fatalf("exit %d", code)
-		}
-		if b, _ := os.ReadFile(filepath.Join(varDir, "china.txt")); string(b) != "9.9.9.0/24\n" {
-			t.Fatalf("populated list replaced: %q", b)
-		}
-	})
-	t.Run("ok", func(t *testing.T) {
-		dir, out, code, calls := listScriptRun(t, script, "CURL_MODE=ok", "MERIDIAN_CHNROUTE_BASE_URL=http://mirror.lan/lists/")
-		if code != 0 || !strings.Contains(out, "chnroute-updated") {
-			t.Fatalf("exit %d:\n%s", code, out)
-		}
-		if !strings.Contains(calls, "http://mirror.lan/lists/china.txt") || strings.Contains(calls, "githubusercontent") {
-			t.Fatalf("base URL override not used:\n%s", calls)
-		}
-		batch, _ := os.ReadFile(filepath.Join(dir, "calls.log.batch"))
-		if strings.Count(string(calls), "nft -f") != 1 {
-			t.Fatalf("flush and add must be one nft transaction:\n%s", calls)
-		}
-		for _, want := range []string{"flush set inet meridian chnroute\n", "add element inet meridian chnroute { 1.0.1.0/24 }", "flush set inet meridian chnroute6\n", "add element inet meridian chnroute6 { 2400:3200::/32 }"} {
-			if !strings.Contains(string(batch), want) {
-				t.Fatalf("batch lacks %q:\n%s", want, batch)
-			}
-		}
-	})
-	t.Run("bad base refused", func(t *testing.T) {
-		_, _, code, calls := listScriptRun(t, script, "CURL_MODE=ok", "MERIDIAN_CHNROUTE_BASE_URL=file:///etc")
-		if code == 0 || strings.Contains(calls, "curl ") {
-			t.Fatalf("non-http base accepted (exit %d):\n%s", code, calls)
-		}
-	})
-}
-
-func TestGeositeUpdateKeepsListsOnFailure(t *testing.T) {
-	script := exampleBundle(t).File("nodes/gw/usr/local/sbin/meridian-update-geosite.sh")
-	for _, need := range []string{"--connect-timeout", "--max-time", "MERIDIAN_GEOSITE_BASE_URL"} {
-		if !strings.Contains(script, need) {
-			t.Fatalf("geosite script lacks %s", need)
-		}
-	}
-	for _, mode := range []string{"fail", "empty"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			geo := filepath.Join(dir, "var", "geosite")
-			if err := os.MkdirAll(geo, 0o755); err != nil {
+			bin := filepath.Join(dir, "bin")
+			for _, d := range []string{bin, filepath.Join(dir, "var", "lists")} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			base := filepath.Join(dir, "meridian.nft")
+			if err := os.WriteFile(base, []byte("table inet meridian {}\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(geo, "cn.txt"), []byte("old.cn\n"), 0o644); err != nil {
+			if tc.saved != "" {
+				if err := os.WriteFile(filepath.Join(dir, "var", "lists", "chnroute.nft"), []byte(tc.saved), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stub := "#!/bin/sh\necho \"nft $*\" >> \"$CALL_LOG\"\n" +
+				"case \"$*\" in *.boot.nft*) [ -z \"$NFT_FAIL_BOOT\" ] || exit 1 ;; esac\nexit 0\n"
+			if err := os.WriteFile(filepath.Join(bin, "nft"), []byte(stub), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			s := strings.ReplaceAll(script, "/var/lib/meridian", filepath.Join(dir, "var"))
-			_, out, code, _ := listScriptRun(t, s, "CURL_MODE="+mode)
-			if code != 1 || !strings.Contains(out, "geosite-not-updated") {
-				t.Fatalf("exit %d, want 1:\n%s", code, out)
+			loader := strings.NewReplacer("/etc/nftables.d/meridian.nft", base, "/var/lib/meridian", filepath.Join(dir, "var")).Replace(nftLoadCommands(true))
+			log := filepath.Join(dir, "calls.log")
+			cmd := exec.Command(bash, "-c", "set -euo pipefail\n"+loader+"echo \"loaded=$MERIDIAN_NFT\"\n")
+			cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "CALL_LOG=" + log, tc.env}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("loader failed: %v\n%s", err, out)
 			}
-			if b, _ := os.ReadFile(filepath.Join(geo, "cn.txt")); string(b) != "old.cn\n" {
-				t.Fatalf("populated cn.txt replaced: %q", b)
+			calls, _ := os.ReadFile(log)
+			if !strings.Contains(string(out), "loaded=") || !strings.HasSuffix(strings.TrimSpace(string(out)), tc.wantFile) {
+				t.Fatalf("loaded the wrong file (want %s):\n%s\n%s", tc.wantFile, out, calls)
 			}
-			if st, err := os.Stat(filepath.Join(geo, "apple.txt")); err != nil || st.Size() != 0 {
-				t.Fatal("missing list must still be created empty so SmartDNS starts")
+			if !strings.Contains(string(calls), "nft -f "+filepath.Dir(base)) || strings.Count(string(calls), "nft -f ") != 1 {
+				t.Fatalf("want exactly one nft -f:\n%s", calls)
+			}
+			if tc.wantMsg != "" && !strings.Contains(string(out), tc.wantMsg) {
+				t.Fatalf("missing %q:\n%s", tc.wantMsg, out)
+			}
+			if tc.wantFile == ".boot.nft" {
+				b, _ := os.ReadFile(filepath.Join(dir, "var", "lists", ".boot.nft"))
+				if !strings.HasPrefix(string(b), "table inet meridian {}\n") || !strings.HasSuffix(string(b), good) {
+					t.Fatalf("combined ruleset:\n%s", b)
+				}
 			}
 		})
 	}
-	t.Run("ok", func(t *testing.T) {
-		dir, out, code, calls := listScriptRun(t, script, "CURL_MODE=ok", "MERIDIAN_GEOSITE_BASE_URL=https://mirror.lan/data")
-		if code != 0 || !strings.Contains(out, "geosite-updated") {
-			t.Fatalf("exit %d:\n%s", code, out)
-		}
-		if !strings.Contains(calls, "https://mirror.lan/data/cn") {
-			t.Fatalf("base URL override not used:\n%s", calls)
-		}
-		b, _ := os.ReadFile(filepath.Join(dir, "var", "geosite", "cn.txt"))
-		if string(b) != "example.cn\nwww.example.cn\n" {
-			t.Fatalf("cn.txt = %q", b)
-		}
-	})
 }
 
 // G5 / QA-2 / G10: static checks on install.sh (it needs root, apt and

@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/radowitz/meridian/internal/model"
-	"github.com/radowitz/meridian/internal/validate"
+	"github.com/radowitz/meridian/internal/pool"
 )
 
 // ExitPlan is one foreign next hop. Mark and transit address are how the
@@ -69,23 +69,192 @@ func exitByID(exits []ExitPlan, id string) (ExitPlan, bool) {
 	return ExitPlan{}, false
 }
 
-func defaultExit(t model.Topology, exits []ExitPlan) (ExitPlan, bool) {
-	n, ok := validate.SelectExit(t, "hk")
-	if !ok {
-		return ExitPlan{}, false
+// switchable: the hub can point a group table at this exit with a plain
+// device route (direct WireGuard from the hub). Exits reached only through
+// a dual-stack relay or the Mesh sidecar can be selected statically (their
+// own mark) but are not dynamic candidates.
+func switchable(e ExitPlan) bool {
+	return !e.Mesh && e.HubIface != "" && e.HubIface != "mmesh" && e.PeerV4 != "" && e.ViaRelay == ""
+}
+
+func switchableMap(exits []ExitPlan) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range exits {
+		out[e.Node.ID] = switchable(e)
 	}
-	return exitByID(exits, n.ID)
+	return out
+}
+
+// GroupPlan is one region group as compiled: its own mark, transit address
+// and hub table (indexes continue after the exits, groups sorted by ID), the
+// static choice and the members the hub may switch the table to.
+type GroupPlan struct {
+	Group     model.RegionGroup
+	Selection pool.Selection
+	Index     int
+	Mark      uint32
+	Table     int
+	TransitV4 string
+	TransitV6 string
+	// Target is the static choice (manual chosen, or first of the
+	// effective order); HasTarget is false when no member is eligible.
+	Target    ExitPlan
+	HasTarget bool
+	// Dynamic: the target is switchable, so rules and default traffic use
+	// the group mark and the hub's group table follows health. Otherwise
+	// rules use the target's own mark and nothing switches.
+	Dynamic bool
+	// Try is the switch order on the hub: the target, then the other
+	// switchable members of the effective order.
+	Try []ExitPlan
+	// Mesh: a standby hub→member Mesh edge is the last hop.
+	Mesh bool
+	// Hold: manual group with on_failure=hold (never moves).
+	Hold bool
+}
+
+// Policy is the state-machine view of the plan, shared by the panel model
+// (pool.StepGroup) and the hub script (group_step).
+func (g GroupPlan) Policy() pool.Policy {
+	p := pool.Policy{Mesh: g.Mesh, Manual: g.Group.Mode == model.GroupManual, Hold: g.Hold || !g.Dynamic, TargetReason: g.Selection.Reason}
+	if g.HasTarget && !g.Dynamic {
+		p.Try = []string{g.Target.Node.ID}
+		return p
+	}
+	for _, e := range g.Try {
+		p.Try = append(p.Try, e.Node.ID)
+	}
+	return p
+}
+
+func (g GroupPlan) tableName() string {
+	return "meridian_grp_" + strings.ReplaceAll(g.Group.ID, "-", "_")
+}
+
+func planGroups(t model.Topology, exits []ExitPlan) []GroupPlan {
+	groups := append([]model.RegionGroup(nil), t.Groups...)
+	sort.Slice(groups, func(i, j int) bool { return groups[i].ID < groups[j].ID })
+	sw := switchableMap(exits)
+	out := make([]GroupPlan, 0, len(groups))
+	for j, g := range groups {
+		idx := len(exits) + j
+		gp := GroupPlan{
+			Group:     g,
+			Index:     idx,
+			Mark:      exitMark(idx),
+			Table:     201 + idx,
+			TransitV4: fmt.Sprintf("10.66.200.%d", 10+idx),
+			TransitV6: fmt.Sprintf("fd66:0:0:ff::%x", 10+idx),
+			Hold:      g.EffectiveOnFailure() == model.OnFailureHold,
+		}
+		gp.Selection = pool.Select(t, g, sw)
+		if gp.Selection.Target != "" {
+			gp.Target, gp.HasTarget = exitByID(exits, gp.Selection.Target)
+		}
+		if gp.HasTarget && sw[gp.Target.Node.ID] {
+			gp.Dynamic = true
+			for _, id := range gp.Selection.Try {
+				if e, ok := exitByID(exits, id); ok && sw[id] {
+					gp.Try = append(gp.Try, e)
+				}
+			}
+			gp.Mesh = !gp.Hold && groupHasMesh(t, gp.Selection.Order)
+		}
+		out = append(out, gp)
+	}
+	return out
+}
+
+// PlanGroups compiles the group plans of t (no validation): what the panel
+// uses to run the same state machine as the hub.
+func PlanGroups(t model.Topology) ([]GroupPlan, error) {
+	tunnels, err := buildTunnels(t)
+	if err != nil {
+		return nil, err
+	}
+	return planGroups(t, planExits(t, tunnels)), nil
+}
+
+func groupByID(groups []GroupPlan, id string) (GroupPlan, bool) {
+	for _, g := range groups {
+		if g.Group.ID == id {
+			return g, true
+		}
+	}
+	return GroupPlan{}, false
+}
+
+// groupHasMesh: an enabled standby cf_mesh link joins the hub to an
+// eligible member of the group.
+func groupHasMesh(t model.Topology, members []string) bool {
+	in := map[string]bool{}
+	for _, id := range members {
+		in[id] = true
+	}
+	hub := ""
+	for _, n := range t.Nodes {
+		if n.Role == model.RoleHub {
+			hub = n.ID
+			break
+		}
+	}
+	for _, l := range t.Links {
+		if l.Transport != model.TransportCFMesh || !l.Enabled || !l.Standby {
+			continue
+		}
+		if l.From == hub && in[l.To] || l.To == hub && in[l.From] {
+			return true
+		}
+	}
+	return false
+}
+
+// target is where a rule's (or the default traffic's) packets go: the exit
+// whose resolver and egress family apply, and the mark the classifier sets.
+type target struct {
+	Exit ExitPlan
+	Mark uint32
+	// V6 is false when some member the mark can reach has no egress_v6
+	// (AAAA is filtered for the rule).
+	V6 bool
+}
+
+// groupTarget is the static target of a group: the group mark when the hub
+// can switch it, otherwise the target member's own mark.
+func groupTarget(gp GroupPlan) (target, bool) {
+	if !gp.HasTarget {
+		return target{}, false
+	}
+	if !gp.Dynamic {
+		return target{Exit: gp.Target, Mark: gp.Target.Mark, V6: gp.Target.Node.EgressV6}, true
+	}
+	v6 := true
+	for _, e := range gp.Try {
+		if !e.Node.EgressV6 {
+			v6 = false
+		}
+	}
+	return target{Exit: gp.Target, Mark: gp.Mark, V6: v6}, true
+}
+
+func defaultExit(t model.Topology, groups []GroupPlan) (target, bool) {
+	gp, ok := groupByID(groups, t.Settings.DefaultGroup)
+	if !ok {
+		return target{}, false
+	}
+	return groupTarget(gp)
 }
 
 type rulePlan struct {
 	Rule       model.Rule
 	Exit       ExitPlan
+	Mark       uint32
 	Set4       string
 	Set6       string
 	FilterAAAA bool
 }
 
-func planRules(t model.Topology, exits []ExitPlan, decisions map[string]string) []rulePlan {
+func planRules(t model.Topology, exits []ExitPlan, groups []GroupPlan, decisions map[string]string) []rulePlan {
 	rules := append([]model.Rule(nil), t.Rules...)
 	sort.SliceStable(rules, func(i, j int) bool {
 		if rules[i].Manual != rules[j].Manual {
@@ -102,16 +271,17 @@ func planRules(t model.Topology, exits []ExitPlan, decisions map[string]string) 
 		if !r.Enabled {
 			continue
 		}
-		target, ok := ruleExit(t, r, exits, decisions)
+		tg, ok := ruleExit(r, exits, groups, decisions)
 		if !ok {
 			continue
 		}
 		rp := rulePlan{
 			Rule:       r,
-			Exit:       target,
+			Exit:       tg.Exit,
+			Mark:       tg.Mark,
 			Set4:       fmt.Sprintf("r%d", n),
 			Set6:       fmt.Sprintf("r%d6", n),
-			FilterAAAA: !target.Node.EgressV6,
+			FilterAAAA: !tg.V6,
 		}
 		n++
 		out = append(out, rp)
@@ -119,28 +289,37 @@ func planRules(t model.Topology, exits []ExitPlan, decisions map[string]string) 
 	return out
 }
 
-func ruleExit(t model.Topology, r model.Rule, exits []ExitPlan, decisions map[string]string) (ExitPlan, bool) {
-	// A pinned rule, or a rule aimed at one exit, ignores the unlock map.
-	if r.Mode == model.ModePin || r.TargetExit != "" {
-		if r.TargetExit != "" {
-			return exitByID(exits, r.TargetExit)
-		}
-		n, ok := validate.SelectExit(t, r.TargetPool)
-		if !ok {
-			return ExitPlan{}, false
-		}
-		return exitByID(exits, n.ID)
+// ruleExit: a rule aimed at one exit uses that exit's own mark and ignores
+// health and the unlock map. A group rule uses the group's target; in an
+// automatic group the unlock map may move it to another eligible member,
+// which then carries it on that member's own mark. Manual groups ignore the
+// unlock map.
+func ruleExit(r model.Rule, exits []ExitPlan, groups []GroupPlan, decisions map[string]string) (target, bool) {
+	if r.TargetExit != "" {
+		e, ok := exitByID(exits, r.TargetExit)
+		return target{Exit: e, Mark: e.Mark, V6: e.Node.EgressV6}, ok
 	}
-	if id := decisions[r.ID]; id != "" {
-		if e, ok := exitByID(exits, id); ok && e.Node.Pool == r.TargetPool {
-			return e, true
-		}
-	}
-	n, ok := validate.SelectExit(t, r.TargetPool)
+	gp, ok := groupByID(groups, r.TargetGroup)
 	if !ok {
-		return ExitPlan{}, false
+		return target{}, false
 	}
-	return exitByID(exits, n.ID)
+	if gp.Group.Mode == model.GroupAuto {
+		if id := decisions[r.ID]; id != "" && id != gp.Selection.Target && containsID(gp.Selection.Order, id) {
+			if e, ok := exitByID(exits, id); ok {
+				return target{Exit: e, Mark: e.Mark, V6: e.Node.EgressV6}, true
+			}
+		}
+	}
+	return groupTarget(gp)
+}
+
+func containsID(ids []string, id string) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 // locateExit decides which interface on the hub carries this exit.

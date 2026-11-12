@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/pool"
 )
@@ -25,6 +26,10 @@ type Issue struct {
 	LinkID   string `json:"link_id,omitempty"`
 	RuleID   string `json:"rule_id,omitempty"`
 	ExitID   string `json:"exit_id,omitempty"`
+	GroupID  string `json:"group_id,omitempty"`
+	DeviceID string `json:"device_id,omitempty"`
+	// Field names the offending group field (members, chosen, mode…).
+	Field string `json:"field,omitempty"`
 }
 
 type PathReport struct {
@@ -110,11 +115,32 @@ func Run(t model.Topology) Result {
 	out.Issues = append(out.Issues, checkSubnets(t)...)
 	out.Issues = append(out.Issues, checkRules(t, nodes)...)
 	out.Issues = append(out.Issues, checkSafe(t)...)
-	if _, ok := SelectExit(t, "hk"); !ok {
+	out.Issues = append(out.Issues, CheckGroups(t)...)
+	out.Issues = append(out.Issues, CheckRemoteAccess(t)...)
+	if t.Settings.DefaultGroup == "" {
 		out.Issues = append(out.Issues, Issue{
-			Code: "no_default_exit", Severity: SeverityError,
-			Message: "默认境外池 hk 里没有可选出口。需要一个非家宽、最好是 IX 绑定的香港出口。",
+			Code: "no_default_exit", Severity: SeverityError, Field: "default_group",
+			Message: "没有设置默认境外组（settings.default_group）。需要一个非家宽、最好是 IX 绑定的香港出口组。",
 		})
+	} else if g, ok := t.GroupByID(t.Settings.DefaultGroup); !ok {
+		out.Issues = append(out.Issues, Issue{
+			Code: "no_default_exit", Severity: SeverityError, GroupID: t.Settings.DefaultGroup, Field: "default_group",
+			Message: fmt.Sprintf("默认境外组 %s 不存在。", t.Settings.DefaultGroup),
+		})
+	} else if _, ok := GroupTarget(t, g.ID); !ok {
+		out.Issues = append(out.Issues, Issue{
+			Code: "no_default_exit", Severity: SeverityError, GroupID: g.ID, Field: "default_group",
+			Message: fmt.Sprintf("默认境外组 %s 里没有可选出口。", g.Name),
+		})
+	} else if !g.ExcludeResidential && !g.RequireResidential {
+		for _, m := range pool.Select(t, g, nil).Members {
+			if m.Eligible && m.Residential {
+				out.Issues = append(out.Issues, Issue{
+					Code: "residential_in_default_pool", Severity: SeverityWarning, GroupID: g.ID, NodeID: m.ID,
+					Message: fmt.Sprintf("%s 是家宽，不应进默认境外组 %s。给组打开 exclude_residential，或把家宽放进单独的组。", m.Name, g.Name),
+				})
+			}
+		}
 	}
 	sort.SliceStable(out.Issues, func(i, j int) bool {
 		if out.Issues[i].Severity != out.Issues[j].Severity {
@@ -247,6 +273,7 @@ func checkSettings(t model.Topology) []Issue {
 	if iss := checkImageRef(t.Settings.RegioncheckImage, "regioncheck_image"); iss != nil {
 		out = append(out, *iss)
 	}
+	out = append(out, checkListSource(t)...)
 	for _, n := range t.Nodes {
 		if n.DualstackRelay && (!n.PathV4 || !n.PathV6) {
 			out = append(out, Issue{
@@ -730,28 +757,37 @@ func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {
 				Message: fmt.Sprintf("规则「%s」的 %s 匹配在这一期不会写入数据面。它不会按归属地分流，流量会落到后面的策略。", r.Name, r.MatchType),
 			})
 		}
-		exit, poolMembers, errIss := resolveRuleTarget(t, r)
+		exit, group, errIss := resolveRuleTarget(t, r)
 		if errIss != nil {
 			out = append(out, *errIss)
 			continue
 		}
-		if residentialRequired(r) {
+		if model.ResidentialRequired(r) {
 			if r.TargetExit != "" && (exit == nil || !exit.Residential) {
 				out = append(out, Issue{
 					Code: "residential_required", Severity: SeverityError, RuleID: r.ID,
 					Message: fmt.Sprintf("规则「%s」必须落到 residential 香港家宽，不能使用机房出口。", r.Name),
 				})
 			}
-			if r.TargetExit == "" {
-				for _, m := range poolMembers {
-					if !m.Residential {
-						out = append(out, Issue{
-							Code: "residential_required", Severity: SeverityError, RuleID: r.ID,
-							Message: fmt.Sprintf("规则「%s」的池 %s 含有非家宽成员 %s。Netflix / Disney+ 一类只能走香港家宽。", r.Name, r.TargetPool, m.Name),
-						})
-						break
-					}
-				}
+			if group != nil && !group.RequireResidential {
+				out = append(out, Issue{
+					Code: "residential_required", Severity: SeverityError, RuleID: r.ID, GroupID: group.ID, Field: "require_residential",
+					Message: fmt.Sprintf("规则「%s」要求家宽，但组 %s 没有 require_residential，组可能选中或切到机房出口。Netflix / Disney+ 一类只能走香港家宽。", r.Name, group.Name),
+				})
+			}
+		}
+		if r.RequireV6 {
+			if r.TargetExit != "" && (exit == nil || !exit.EgressV6) {
+				out = append(out, Issue{
+					Code: "constraint_conflict", Severity: SeverityError, RuleID: r.ID,
+					Message: fmt.Sprintf("规则「%s」要求 IPv6，但钉死的出口没有 egress_v6。", r.Name),
+				})
+			}
+			if group != nil && !group.RequireV6 {
+				out = append(out, Issue{
+					Code: "constraint_conflict", Severity: SeverityError, RuleID: r.ID, GroupID: group.ID, Field: "require_v6",
+					Message: fmt.Sprintf("规则「%s」要求 IPv6，但组 %s 没有 require_v6。约束放在组上，规则只做断言。", r.Name, group.Name),
+				})
 			}
 		}
 		if exit != nil && !exit.EgressV6 {
@@ -785,33 +821,24 @@ func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {
 				Message: fmt.Sprintf("规则「%s」的出口 %s 只有 Mesh、没有隧道内解析器。这个域名会返回 SOA，不会改去问另一个国家的 DNS。", r.Name, exit.Name),
 			})
 		}
-		if exit != nil && exit.Residential && r.TargetPool == "hk" {
-			out = append(out, Issue{
-				Code: "residential_in_default_pool", Severity: SeverityWarning, RuleID: r.ID,
-				Message: "家宽不进默认境外池。",
-			})
-		}
 	}
-	for _, n := range nodes {
-		if n.Residential && n.Pool == "hk" {
-			out = append(out, Issue{
-				Code: "residential_in_default_pool", Severity: SeverityWarning, NodeID: n.ID,
-				Message: fmt.Sprintf("%s 标了家宽，不应放进默认境外池 hk。请使用 hk-residential。", n.Name),
-			})
-		}
-	}
+	_ = nodes
 	return out
 }
 
-func residentialRequired(r model.Rule) bool {
-	if r.RequireResidential {
-		return true
+func resolveRuleTarget(t model.Topology, r model.Rule) (*model.Node, *model.RegionGroup, *Issue) {
+	if r.TargetPool != "" {
+		return nil, nil, &Issue{Code: "legacy_pool_target", Severity: SeverityError, RuleID: r.ID, Field: "target_pool",
+			Message: fmt.Sprintf("规则「%s」仍指向旧的出口池 %s。保存或重新载入拓扑会把它迁移到地区组。", r.Name, r.TargetPool)}
 	}
-	blob := strings.ToLower(r.Name + " " + r.MatchValue + " " + r.Geosite)
-	return strings.Contains(blob, "netflix") || strings.Contains(blob, "disney")
-}
-
-func resolveRuleTarget(t model.Topology, r model.Rule) (*model.Node, []model.Node, *Issue) {
+	if r.Mode != "" {
+		return nil, nil, &Issue{Code: "rule_mode_removed", Severity: SeverityError, RuleID: r.ID, Field: "mode",
+			Message: fmt.Sprintf("规则「%s」带了 mode。手动/自动只在地区组上设置，规则只引用组或钉死一个出口。", r.Name)}
+	}
+	if r.TargetExit != "" && r.TargetGroup != "" {
+		return nil, nil, &Issue{Code: "rule_target_conflict", Severity: SeverityError, RuleID: r.ID, Field: "target_group",
+			Message: fmt.Sprintf("规则「%s」同时指向组和出口，只能二选一。", r.Name)}
+	}
 	if r.TargetExit != "" {
 		n, ok := t.NodeByID(r.TargetExit)
 		if !ok || n.Role != model.RoleExit {
@@ -819,27 +846,126 @@ func resolveRuleTarget(t model.Topology, r model.Rule) (*model.Node, []model.Nod
 		}
 		return &n, nil, nil
 	}
-	if r.TargetPool == "" {
-		return nil, nil, &Issue{Code: "exit_not_found", Severity: SeverityError, RuleID: r.ID, Message: "规则没有出口或池。"}
+	if r.TargetGroup == "" {
+		return nil, nil, &Issue{Code: "exit_not_found", Severity: SeverityError, RuleID: r.ID, Message: "规则没有出口或地区组。"}
 	}
-	var members []model.Node
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleExit && n.Pool == r.TargetPool {
-			members = append(members, n)
-		}
+	g, ok := t.GroupByID(r.TargetGroup)
+	if !ok {
+		return nil, nil, &Issue{Code: "group_not_found", Severity: SeverityError, RuleID: r.ID, GroupID: r.TargetGroup, Message: fmt.Sprintf("规则「%s」指向的地区组 %s 不存在。", r.Name, r.TargetGroup)}
 	}
-	if len(members) == 0 {
-		return nil, nil, &Issue{Code: "exit_not_found", Severity: SeverityError, RuleID: r.ID, Message: fmt.Sprintf("池 %s 里没有出口。", r.TargetPool)}
+	chosen, ok := GroupTarget(t, g.ID)
+	if !ok {
+		return nil, nil, &Issue{Code: "exit_not_found", Severity: SeverityError, RuleID: r.ID, GroupID: g.ID, Message: fmt.Sprintf("地区组 %s 里没有可选出口。", g.Name)}
 	}
-	chosen, _ := SelectExit(t, r.TargetPool)
-	return &chosen, members, nil
+	return &chosen, &g, nil
 }
 
-// SelectExit picks the pool member installed until health says otherwise:
-// IX-bound first, then PoolPriority, then the lowest ID. Residential exits
-// are not members of the default hk pool.
-func SelectExit(t model.Topology, poolName string) (model.Node, bool) {
-	return pool.Preferred(pool.Members(t, poolName))
+// GroupTarget is the member a group installs until health says otherwise:
+// the chosen member (manual) or the first of the effective order (IX-bound
+// first, then the operator's order), after hard constraints.
+func GroupTarget(t model.Topology, groupID string) (model.Node, bool) {
+	g, ok := t.GroupByID(groupID)
+	if !ok {
+		return model.Node{}, false
+	}
+	sel := pool.Select(t, g, nil)
+	if sel.Target == "" {
+		return model.Node{}, false
+	}
+	return t.NodeByID(sel.Target)
+}
+
+// CheckGroups validates the region groups themselves.
+func CheckGroups(t model.Topology) []Issue {
+	var out []Issue
+	// Every exit and every group owns one fwmark, transit address
+	// (10.66.200.10+i) and hub table (201+i): 240 in all.
+	if n := len(exitsOf(t)) + len(t.Groups); n > maxMarks {
+		out = append(out, Issue{Code: "too_many_marks", Severity: SeverityError, Field: "region_groups",
+			Message: fmt.Sprintf("出口和地区组一共 %d 个，超过 %d 个可分配的标记、中转地址和路由表。", n, maxMarks)})
+	}
+	ids := map[string]bool{}
+	for _, g := range t.Groups {
+		bad := func(code, field, msg string) {
+			out = append(out, Issue{Code: code, Severity: SeverityError, GroupID: g.ID, Field: field, Message: msg})
+		}
+		if g.ID == "" || ids[g.ID] {
+			bad("duplicate_id", "id", "地区组 ID 为空或重复。")
+		}
+		ids[g.ID] = true
+		if g.ID != "" && !idRe.MatchString(g.ID) {
+			bad("bad_id", "id", "地区组 ID 只能是小写字母、数字和短横线。")
+		}
+		switch g.Mode {
+		case model.GroupAuto:
+			if g.Chosen != "" {
+				bad("chosen_in_auto", "chosen", fmt.Sprintf("地区组 %s 是自动模式，不能同时指定成员。", g.Name))
+			}
+			if g.OnFailure != "" {
+				bad("on_failure_in_auto", "on_failure", fmt.Sprintf("地区组 %s 是自动模式，on_failure 只用于手动模式。", g.Name))
+			}
+		case model.GroupManual:
+			switch g.OnFailure {
+			case "", model.OnFailureHold, model.OnFailureFallback:
+			default:
+				bad("invalid_field", "on_failure", "on_failure 只能是 hold 或 fallback。")
+			}
+		default:
+			bad("invalid_field", "mode", "mode 只能是 auto 或 manual。")
+		}
+		if g.RequireResidential && g.ExcludeResidential {
+			bad("constraint_conflict", "exclude_residential", fmt.Sprintf("地区组 %s 不能同时要求和排除家宽。", g.Name))
+		}
+		sel := pool.Select(t, g, nil)
+		for _, m := range sel.Members {
+			for _, why := range m.Reasons {
+				switch why.Code {
+				case pool.WhyMissing, pool.WhyDuplicate:
+					out = append(out, Issue{Code: "group_member_invalid", Severity: SeverityError, GroupID: g.ID, NodeID: m.ID, Field: "members",
+						Message: fmt.Sprintf("地区组 %s 的成员 %s：%s", g.Name, m.ID, why.Message)})
+				case pool.WhyResiRequired, pool.WhyResiExcluded, pool.WhyV6Required:
+					out = append(out, Issue{Code: "group_member_excluded", Severity: SeverityWarning, GroupID: g.ID, NodeID: m.ID, Field: "members",
+						Message: fmt.Sprintf("地区组 %s 的成员 %s 被约束排除：%s", g.Name, m.Name, why.Message)})
+				}
+			}
+			if m.Eligible && g.Region != "" && m.Region != "" && unlockRegion(m.Region) != unlockRegion(g.Region) {
+				out = append(out, Issue{Code: "member_region_mismatch", Severity: SeverityWarning, GroupID: g.ID, NodeID: m.ID, Field: "members",
+					Message: fmt.Sprintf("地区组 %s（%s）的成员 %s 在 %s。", g.Name, g.Region, m.Name, m.Region)})
+			}
+		}
+		if g.Mode == model.GroupManual && sel.Reason != pool.ReasonChosen {
+			if g.Chosen == "" {
+				bad("chosen_not_eligible", "chosen", fmt.Sprintf("地区组 %s 是手动模式，需要指定一个成员。", g.Name))
+			} else {
+				bad("chosen_not_eligible", "chosen", fmt.Sprintf("地区组 %s 指定的 %s 不是组里可用的成员（不存在或被约束排除）。", g.Name, g.Chosen))
+			}
+		}
+		if len(sel.Order) == 0 {
+			out = append(out, Issue{Code: "group_empty", Severity: SeverityWarning, GroupID: g.ID, Field: "members",
+				Message: fmt.Sprintf("地区组 %s 里没有可用的出口；引用它的规则不会生效。", g.Name)})
+		}
+	}
+	return out
+}
+
+const maxMarks = 240
+
+// unlockRegion folds region spellings (HK, Hong Kong) for comparison.
+func unlockRegion(s string) string {
+	s = strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(s), " ", ""), "-", ""))
+	switch s {
+	case "hongkong":
+		return "hk"
+	case "taiwan":
+		return "tw"
+	case "japan":
+		return "jp"
+	case "singapore":
+		return "sg"
+	case "unitedstates", "usa":
+		return "us"
+	}
+	return s
 }
 
 func findAnyPath(t model.Topology, from, to string) ([]string, []model.Link, bool) {
@@ -1238,4 +1364,35 @@ func safeDNS(s string) bool {
 		return false
 	}
 	return true
+}
+
+// checkListSource: the list source policy is one of three values, and two
+// geosite names must not publish to the same file (lists.FileName).
+func checkListSource(t model.Topology) []Issue {
+	var out []Issue
+	if s := t.Settings.ListSource; s != "" {
+		if _, ok := lists.ParsePolicy(s); !ok {
+			out = append(out, Issue{
+				Code: "bad_list_source", Severity: SeverityError, Field: "list_source",
+				Message: "名单源只能是 domestic（国内镜像）、overseas（海外）或 automatic（全自动）。",
+			})
+		}
+	}
+	files := map[string]string{}
+	for _, r := range t.Rules {
+		if r.Geosite == "" {
+			continue
+		}
+		name := strings.ToLower(r.Geosite)
+		f := lists.FileName(name)
+		if prev, ok := files[f]; ok && prev != name {
+			out = append(out, Issue{
+				Code: "geosite_name_collision", Severity: SeverityError, RuleID: r.ID,
+				Message: fmt.Sprintf("geosite「%s」和「%s」会写到同一个名单文件 %s.txt。", prev, name, f),
+			})
+			continue
+		}
+		files[f] = name
+	}
+	return out
 }

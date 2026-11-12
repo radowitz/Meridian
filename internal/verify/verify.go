@@ -19,6 +19,9 @@ package verify
 import (
 	"fmt"
 	"net/netip"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/radowitz/meridian/internal/model"
@@ -62,13 +65,22 @@ func CheckBundle(t model.Topology, files map[string]string) []Item {
 	auto = append(auto, meshItems(files)...)
 	auto = append(auto, nat64Item(files))
 	auto = append(auto, pureV6Item(t, files))
-	items := make([]Item, 0, len(auto)+16)
+	gwp := gatewayPrefix(t)
+	auto = append(auto, groupMarksItem(files, gwp))
+	auto = append(auto, bootGuardItem(files, gwp))
+	auto = append(auto, chnrouteReaddItem(files, gwp))
+	auto = append(auto, keyPlaceholderItem(files))
+	auto = append(auto, remoteAccessItem(t, files, gwp))
+	items := make([]Item, 0, len(auto)+24)
 	for _, it := range auto {
 		it.Scope = ScopeAutomated
 		items = append(items, it)
 	}
 	items = append(items, integrationItems()...)
 	items = append(items, humanItems()...)
+	if t.RemoteAccess.Active() {
+		items = append(items, remoteHumanItems(t)...)
+	}
 	items = append(items,
 		Item{
 			ID: "webrtc_host_gua", Status: KnownLimitation, Scope: ScopeLimitation,
@@ -80,8 +92,202 @@ func CheckBundle(t model.Topology, files map[string]string) []Item {
 			Title:  "DoH 清单不是绝对防护",
 			Detail: "只拒绝已知公共解析器的 443，并让已知 DoH 域名返回 SOA。非常见的 DoH 地址仍可能绕过。",
 		},
+		Item{
+			ID: "secrets_at_rest", Status: KnownLimitation, Scope: ScopeLimitation,
+			Title:  "凭据库只靠文件权限保护",
+			Detail: "SSH 密码和私钥、口令、Cloudflare 令牌、WireGuard 私钥和预共享密钥存放在 meridian-secrets 卷里（目录 0700、文件 0600），没有静态加密。能以 root 读取宿主或 Docker 卷的人能读到它们。",
+		},
 	)
+	if t.RemoteAccess.Active() {
+		items = append(items, Item{
+			ID: "remote_home_mode", Status: KnownLimitation, Scope: ScopeLimitation,
+			Title:  "远程接入「仅回家」模式不保护设备的上网流量",
+			Detail: "仅回家模式下客户端只把家里的网段和网关 DNS 交给隧道，其余上网流量走手机自己的网络，不经过 Meridian 的分流、出口和防泄露规则。",
+		})
+	}
 	return items
+}
+
+// gatewayPrefix is the bundle directory of the gateway node.
+func gatewayPrefix(t model.Topology) string {
+	for _, n := range t.Nodes {
+		if n.Role == model.RoleGateway {
+			return "nodes/" + n.ID + "/"
+		}
+	}
+	return "nodes/gw/"
+}
+
+var (
+	reGroupHeader = regexp.MustCompile(`(?m)^# group (\S+) mark (0x[0-9a-f]+)`)
+	reMarkSet     = regexp.MustCompile(`meta mark set (0x[0-9a-f]+)`)
+	reGuardRange  = regexp.MustCompile(`meta mark (0x[0-9a-f]+)-(0x[0-9a-f]+) oifname`)
+)
+
+// groupMarksItem: every mark the classifier sets and every region-group
+// mark has a v4 and v6 lookup-102 rule with an unreachable behind it in
+// the gateway's routes script, and lies inside the guard's exit range.
+func groupMarksItem(files map[string]string, gwp string) Item {
+	const id, title = "group_marks_routed", "出口与地区组标记都有策略路由和兜底"
+	routes := files[gwp+"usr/local/sbin/meridian-routes.sh"]
+	nft := files[gwp+"etc/nftables.d/meridian.nft"]
+	marks := map[string]string{}
+	for _, m := range reGroupHeader.FindAllStringSubmatch(nft, -1) {
+		marks[m[2]] = "地区组 " + m[1]
+	}
+	for _, m := range reMarkSet.FindAllStringSubmatch(nft, -1) {
+		if m[1] != "0x64" && marks[m[1]] == "" {
+			marks[m[1]] = "标记 " + m[1]
+		}
+	}
+	if len(marks) == 0 {
+		return Item{ID: id, Status: Skip, Title: title, Detail: "这份拓扑没有出口或地区组标记。"}
+	}
+	var lo, hi uint64
+	if r := reGuardRange.FindStringSubmatch(nft); r != nil {
+		lo, _ = strconv.ParseUint(r[1], 0, 32)
+		hi, _ = strconv.ParseUint(r[2], 0, 32)
+	}
+	var bad []string
+	for m, label := range marks {
+		v, _ := strconv.ParseUint(m, 0, 32)
+		ok := v >= lo && v <= hi
+		for _, fam := range []string{"ip", "ip -6"} {
+			ok = ok && strings.Contains(routes, fam+" rule add fwmark "+m+" lookup 102 priority") &&
+				strings.Contains(routes, fam+" rule add fwmark "+m+" unreachable priority")
+		}
+		if !ok {
+			bad = append(bad, label)
+		}
+	}
+	sort.Strings(bad)
+	if len(bad) > 0 {
+		return Item{ID: id, Status: Fail, Title: title, Detail: "这些标记缺少 v4/v6 的 102 表规则、其后的 unreachable，或不在兜底表允许的范围内：" + strings.Join(bad, "、")}
+	}
+	return Item{ID: id, Status: Pass, Title: title, Detail: fmt.Sprintf("生成的路由脚本给 %d 个出口和地区组标记都写了 v4/v6 的 102 表规则和其后的 unreachable，兜底表的范围覆盖它们。网关上是否真的加载由 meridian-verify.sh 的 policy_marks / guard_mark_range 检查。", len(marks))}
+}
+
+// guardBlock is the text of table inet meridian_guard in an nft file.
+func guardBlock(s string) string {
+	i := strings.Index(s, "table inet meridian_guard {")
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(s[i:], "\n}\n")
+	if j < 0 {
+		return ""
+	}
+	return s[i : i+j+3]
+}
+
+func bootGuardItem(files map[string]string, gwp string) Item {
+	const id, title = "boot_guard_matches", "开机兜底表与主规则里的兜底表一致"
+	boot := guardBlock(files[gwp+"etc/nftables.d/meridian-guard.nft"])
+	main := guardBlock(files[gwp+"etc/nftables.d/meridian.nft"])
+	if boot == "" || boot != main {
+		return Item{ID: id, Status: Fail, Title: title, Detail: "meridian-guard.nft 缺失，或与 meridian.nft 里的 inet meridian_guard 不同：开机时加载的兜底表会和运行时不一样。"}
+	}
+	return Item{ID: id, Status: Pass, Title: title, Detail: "生成的 meridian-guard.nft 与 meridian.nft 里的兜底表逐字相同。已安装的两份文件由 meridian-verify.sh 的 guard_boot_file 比较。"}
+}
+
+func chnrouteReaddItem(files map[string]string, gwp string) Item {
+	const id, title = "chnroute_readd", "重载时重新加入已保存的国内地址"
+	up := files[gwp+"usr/local/sbin/meridian-up.sh"]
+	if strings.Contains(up, "MERIDIAN_CHNROUTE_SAVED=/var/lib/meridian/lists/chnroute.nft") {
+		return Item{ID: id, Status: Pass, Title: title, Detail: "生成的启动脚本在 nft -c / nft -f 之前把上次名单更新保存的 chnroute 批次接到规则后面。集合是否非空由 meridian-verify.sh 的 chnroute_loaded 在网关上检查；从没更新过名单时它会失败。"}
+	}
+	return Item{ID: id, Status: Fail, Title: title, Detail: "启动脚本没有重新加入已保存的 chnroute：每次重载后国内地址集合都会是空的，直到下一次名单更新。"}
+}
+
+var reKeyLine = regexp.MustCompile(`(?m)^(PrivateKey|PresharedKey) = (.*)$`)
+
+// keyPlaceholderItem: no WireGuard config in the bundle carries key
+// material; only the install boundary fills the placeholders.
+func keyPlaceholderItem(files map[string]string) Item {
+	const id, title = "bundle_keys_placeholder", "编译产物里没有密钥"
+	n := 0
+	for path, body := range files {
+		if !strings.Contains(path, "/etc/wireguard/") {
+			continue
+		}
+		for _, m := range reKeyLine.FindAllStringSubmatch(body, -1) {
+			n++
+			if m[2] != "__MERIDIAN_PRIVATE_KEY__" && !model.SecretPlaceholderRe.MatchString(m[2]) {
+				return Item{ID: id, Status: Fail, Title: title, Detail: path + " 的 " + m[1] + " 不是占位符。"}
+			}
+		}
+	}
+	return Item{ID: id, Status: Pass, Title: title, Detail: fmt.Sprintf("%d 个 WireGuard 私钥和预共享密钥行都是占位符，只有安装到本机时才替换。", n)}
+}
+
+// remoteAccessItem checks the generated remote-access entrance, or its
+// absence when the feature is off.
+func remoteAccessItem(t model.Topology, files map[string]string, gwp string) Item {
+	const id, title = "remote_access_config", "远程接入入口的生成配置"
+	gw := file(files, gwp)
+	ifc := model.RemoteAccessIface
+	if !t.RemoteAccess.Active() {
+		if strings.Contains(gw, `"`+ifc+`"`) || strings.Contains(gw, "'"+ifc+"'") || files[gwp+"etc/wireguard/"+ifc+".conf"] != "" {
+			return Item{ID: id, Status: Fail, Title: title, Detail: "远程接入没有启用，生成的网关配置里却有 " + ifc + "。"}
+		}
+		return Item{ID: id, Status: Skip, Title: title, Detail: "没有启用远程接入；生成的网关配置里没有 " + ifc + "。网关上由 meridian-verify.sh 的 remote_absent 确认没有残留接口。"}
+	}
+	// The running ruleset, routes and mra.conf; the early-boot copy of the
+	// guard is compared separately (boot_guard_matches).
+	gw = files[gwp+"etc/nftables.d/meridian.nft"] + files[gwp+"usr/local/sbin/meridian-routes.sh"] + files[gwp+"etc/wireguard/"+ifc+".conf"]
+	ra := t.RemoteAccess
+	lan := t.Settings.LANInterface
+	if lan == "" {
+		lan = "eth0"
+	}
+	need := map[string]string{
+		"兜底表把 " + ifc + " 和局域网口一样处理": fmt.Sprintf(`iifname { "%s", "%s" } counter drop`, lan, ifc),
+		"DNS 劫持":                      fmt.Sprintf(`iifname "%s" meta nfproto ipv4 udp dport { 53, 853 } redirect to :53`, ifc),
+		"监听端口只在局域网口放行":                fmt.Sprintf(`iifname "%s" udp dport %d accept`, lan, ra.ListenPort),
+		"其他接口丢弃监听端口":                  fmt.Sprintf("udp dport %d drop", ra.ListenPort),
+		"iif " + ifc + " unreachable": fmt.Sprintf("ip rule add iif '%s' unreachable", ifc),
+		"设备地址池路由到 " + ifc:             fmt.Sprintf("ip route replace %s dev '%s'", ra.V4Prefix(), ifc),
+		"设备地址池的 NAT":                  fmt.Sprintf("ip saddr %s masquerade", ra.V4Prefix()),
+		"网关私钥是占位符":                    "PrivateKey = " + model.SecretPlaceholderPrefix,
+	}
+	var missing []string
+	for label, needle := range need {
+		if !strings.Contains(gw, needle) {
+			missing = append(missing, label)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		return Item{ID: id, Status: Fail, Title: title, Detail: "生成配置缺少：" + strings.Join(missing, "、")}
+	}
+	return Item{ID: id, Status: Pass, Title: title, Detail: "生成配置里 " + ifc + " 与局域网口同用兜底表、DNS 劫持和分流；监听端口只在局域网口放行；设备地址池有路由、unreachable 和 NAT；网关私钥是占位符。是否已加载、对端是否只有已启用的设备由 meridian-verify.sh 检查；手机实测见人工签收项。"}
+}
+
+// remoteHumanItems: remote access needs a real phone and the router.
+func remoteHumanItems(t model.Topology) []Item {
+	port := t.RemoteAccess.ListenPort
+	return []Item{
+		{
+			ID: "remote_phone_full", Status: PendingSignoff, Scope: ScopeHuman,
+			Title:  "手机蜂窝网络拨入（全部流量模式）",
+			Detail: fmt.Sprintf("待人工签收。关掉 Wi-Fi，用蜂窝网络导入「全部流量」配置并连接：握手成功（UDP %d），ipleak / dnsleaktest 显示出口地区且没有运营商 DNS，面板地址和其他远程设备都不通。截图存档。", port),
+		},
+		{
+			ID: "remote_phone_home", Status: PendingSignoff, Scope: ScopeHuman,
+			Title:  "手机蜂窝网络拨入（仅回家模式）",
+			Detail: "待人工签收。家里的局域网主机和网关 DNS 可达；其余上网流量仍走运营商，这一点要在签收记录里写明（见已知限制）。",
+		},
+		{
+			ID: "remote_router_forward", Status: PendingSignoff, Scope: ScopeHuman,
+			Title:  "路由器 UDP 端口转发",
+			Detail: fmt.Sprintf("待人工签收。面板从不修改路由器。只读查看路由器上 UDP %d → 网关的转发规则并存档；公网 IP 或 DDNS 是否指向家里也由人确认。", port),
+		},
+		{
+			ID: "remote_ipv6", Status: PendingSignoff, Scope: ScopeHuman,
+			Title:  "远程接入的 IPv6",
+			Detail: "待人工签收。隧道内 IPv6（设备地址池）可用；端点有 AAAA 记录时，从支持 IPv6 的网络拨入也要试一次。网关上看不到这两件事。",
+		},
+	}
 }
 
 // integrationItems are run on Linux outside the panel. The panel has no way
@@ -91,7 +297,7 @@ func integrationItems() []Item {
 		{
 			ID: "gateway_verify_script", Status: Unknown, Scope: ScopeIntegration,
 			Title:  "网关上运行 meridian-verify.sh",
-			Detail: "未执行（面板不代跑）。在网关上 sudo /usr/local/sbin/meridian-verify.sh：缺 nft 或缺 inet meridian / inet meridian_guard 任何一张表都会失败；最后一行 meridian-verify-local-ok 只代表本机检查通过，不是防泄露结论。把证据目录存档。",
+			Detail: "未执行（面板不代跑）。在网关上 sudo /usr/local/sbin/meridian-verify.sh：缺 nft 或缺 inet meridian / inet meridian_guard 任何一张表都会失败；它还按已加载的状态核对每个出口和地区组标记的策略路由、兜底表范围与入口、开机兜底文件、国内名单是否为空、53 端口，以及远程接入的 mra（未启用时确认不存在）。最后一行 meridian-verify-local-ok 只代表本机检查通过，不是防泄露结论。把证据目录存档。",
 		},
 		{
 			ID: "netns_reload_no_leak", Status: Unknown, Scope: ScopeIntegration,
@@ -113,6 +319,11 @@ func integrationItems() []Item {
 			Title:  "宿主执行、开机兜底与运行态回滚",
 			Detail: "未执行。sudo bash deploy/verify-host-exec.sh，重启后再加 --boot 跑一次。",
 		},
+		{
+			ID: "lists_update_runtime", Status: Unknown, Scope: ScopeIntegration,
+			Title:  "名单更新与重载后国内地址仍在",
+			Detail: "未执行。在网关上从面板「名单」更新一次（或 meridian-update-chnroute.sh / meridian-update-geosite.sh），再重新安装或重启 meridian.service，然后运行 meridian-verify.sh：chnroute_loaded 与 geosite_cn 应为 PASS，INFO 行列出实际的来源和版本。",
+		},
 	}
 }
 
@@ -120,6 +331,16 @@ func integrationItems() []Item {
 // them and never marks them passed.
 func humanItems() []Item {
 	return []Item{
+		{
+			ID: "real_exit_switch", Status: PendingSignoff, Scope: ScopeHuman,
+			Title:  "真实出口与地区组切换",
+			Detail: "待人工签收。在真实隧道握手的前提下，从测试机确认每个地区组当前出口的公网地址；让组内当前出口失效（或手动切换），确认流量换到下一个成员、切换期间没有经家宽出去的包。面板和 netns 测试都没有真实出口。",
+		},
+		{
+			ID: "unlock_platform_verdicts", Status: PendingSignoff, Scope: ScopeHuman,
+			Title:  "流媒体 / AI 平台的真实解锁结果",
+			Detail: "待人工签收。面板的探测结论分级见 docs/unlock-methods.md；每个平台需要人在真实出口上按那里的方法核对一次并存档。本仓库从未对真实平台发过请求。",
+		},
 		{
 			ID: "dnsleak_client", Status: PendingSignoff, Scope: ScopeHuman,
 			Title:  "测试机 dnsleaktest / ipleak",

@@ -19,6 +19,13 @@ services:
       # the named volume. Only the SmartDNS domain sets are host directories,
       # so the resolver container can read them without seeing the database.
       - meridian-data:/var/lib/meridian
+      # Servers, SSH credentials (passwords, private keys) and Cloudflare
+      # accounts with their tokens: a volume of their own, never part of
+      # the data directory's snapshots, journals or anything copied out of
+      # meridian-data. The panel keeps the directory 0700 and every file
+      # 0600 and refuses a file that is more open. No encryption at rest:
+      # whoever can read this volume (root on the gateway) can use them.
+      - meridian-secrets:/var/lib/meridian-secrets
       - /var/lib/meridian/geosite:/var/lib/meridian/geosite
       - /var/lib/meridian/keywords:/var/lib/meridian/keywords
       - /etc/wireguard:/etc/wireguard
@@ -36,6 +43,7 @@ services:
     environment:
       MERIDIAN_BIND: 192.168.100.88:8787
       MERIDIAN_DATA: /var/lib/meridian
+      MERIDIAN_SECRETS_DIR: /var/lib/meridian-secrets
       MERIDIAN_WEB_DIR: /usr/share/meridian/web
       MERIDIAN_HOST_SOCKET: /run/meridian-host/agent.sock
       MERIDIAN_HOST_TOKEN_FILE: /run/secrets/meridian-host.token
@@ -71,3 +79,4 @@ services:
 
 volumes:
   meridian-data:
+  meridian-secrets:

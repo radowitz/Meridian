@@ -10,7 +10,7 @@ import (
 	"github.com/radowitz/meridian/internal/pool"
 )
 
-func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan) string {
+func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("# Policy routes for one Meridian node. Safe to re-run.\n")
@@ -23,11 +23,11 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 
 	switch n.Role {
 	case model.RoleGateway:
-		renderGatewayRoutes(&sb, t, tunnels, exits)
+		renderGatewayRoutes(&sb, t, tunnels, exits, groups)
 	case model.RoleRelay:
 		renderRelayRoutes(&sb, t, tunnels)
 	case model.RoleHub:
-		renderHubRoutes(&sb, t, tunnels, exits)
+		renderHubRoutes(&sb, t, tunnels, exits, groups)
 	case model.RoleExit:
 		renderExitRoutes(&sb, t, n, tunnels)
 		if n.DualstackRelay {
@@ -39,7 +39,7 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 	return sb.String()
 }
 
-func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, exits []ExitPlan) {
+func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) {
 	lan := gatewayLAN(t)
 	ros := t.Settings.ROSIPv4
 	lla := t.Settings.ROSv6LLA
@@ -96,15 +96,19 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	sb.WriteString("ip -6 route replace blackhole fd66::/48 metric 32767\n")
 
 	// Selectors only. This does not delete another program's rules, but it
-	// does drop marks for exits that were removed from the topology.
-	sb.WriteString("for n in $(seq 0 63); do\n")
+	// does drop marks for exits and region groups that were removed from
+	// the topology. The bound is the guard's (guardLastExitMark).
+	fmt.Fprintf(sb, "for n in $(seq 0 %d); do\n", guardLastExitMark(exits, groups...)-markExitBase)
 	sb.WriteString("  m=$(printf '0x%x' $((0x101 + n)))\n")
 	sb.WriteString("  del_rule ip rule del fwmark \"$m\" lookup 102\n")
 	sb.WriteString("  del_rule ip rule del fwmark \"$m\" unreachable\n")
 	sb.WriteString("  del_rule ip -6 rule del fwmark \"$m\" lookup 102\n")
 	sb.WriteString("  del_rule ip -6 rule del fwmark \"$m\" unreachable\n")
 	sb.WriteString("done\n")
-	for _, e := range exits {
+	// Exit marks and region-group marks alike go to table 102 (the IX west
+	// path) and are SNATed to their own transit address; the hub picks the
+	// exit or group table by that source.
+	for _, e := range markPlans(exits, groups) {
 		fmt.Fprintf(sb, "ip addr replace %s/32 dev lo\n", e.TransitV4)
 		fmt.Fprintf(sb, "ip -6 addr replace %s/128 dev lo\n", e.TransitV6)
 		fmt.Fprintf(sb, "ip rule add fwmark %#x lookup 102 priority %d\n", e.Mark, prioExitBase+e.Index)
@@ -127,6 +131,9 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	// is not matched by this rule.
 	fmt.Fprintf(sb, "del_rule ip rule del iif %s unreachable\n", lanQ)
 	fmt.Fprintf(sb, "ip rule add iif %s unreachable priority %d\n", lanQ, prioLANDrop)
+	if rp := planRemote(t); rp != nil {
+		remoteRouteCommands(sb, rp)
+	}
 	fmt.Fprintf(sb, "# failover companions: udp=%s wss=%s direct_wss=%s\n", ifaceOrDash(udp), ifaceOrDash(wss), ifaceOrDash(direct))
 }
 
@@ -199,7 +206,7 @@ func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) 
 		ifaceOrDash(westUDP), ifaceOrDash(westWSS), ifaceOrDash(eastIX), ifaceOrDash(eastWSS))
 }
 
-func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, exits []ExitPlan) {
+func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) {
 	westTun := hubWestTunnel(tunnels, t.Settings.IXReplacementMode)
 	west := westTun.Iface()
 	kind := "ix"
@@ -272,6 +279,7 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 		fmt.Fprintf(sb, "del_rule ip -6 rule del from %s/128 lookup %d\n", e.TransitV6, e.Table)
 		fmt.Fprintf(sb, "ip -6 rule add from %s/128 lookup %d priority %d\n", e.TransitV6, e.Table, prioHubExitFrom+e.Index)
 	}
+	renderHubGroupRoutes(sb, t, west, groups)
 }
 
 func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel) {
@@ -299,12 +307,12 @@ func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunne
 	}
 }
 
-func renderFailover(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan) string {
+func renderFailover(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
 	switch n.Role {
 	case model.RoleGateway:
 		return renderGatewayFailover(t, tunnels)
 	case model.RoleHub:
-		return renderHubFailover(t, tunnels, exits)
+		return renderHubFailover(t, tunnels, exits, groups)
 	default:
 		return renderRelayFailover(t, tunnels)
 	}
@@ -585,7 +593,7 @@ func renderDualstackForward(sb *strings.Builder, t model.Topology, n model.Node,
 	_ = t
 }
 
-func renderHubFailover(t model.Topology, tunnels []Tunnel, exits []ExitPlan) string {
+func renderHubFailover(t model.Topology, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
 	var ix, aliWSS, home Tunnel
 	for _, tun := range tunnels {
 		if tun.East.Role != model.RoleHub {
@@ -613,89 +621,101 @@ func renderHubFailover(t model.Topology, tunnels []Tunnel, exits []ExitPlan) str
 	fmt.Fprintf(&sb, "IX_PEER=%q\nALI_PEER=%q\nHOME_PEER=%q\n", ix.WestV4, aliWSS.WestV4, home.WestV4)
 	fmt.Fprintf(&sb, "LAN=%q\nTRANSIT4=%q\nTRANSIT6=%q\nLAN6=%q\n", lanNet(t), transitV4Net(), transitV6Net(), t.Settings.LANIPv6Prefix)
 	fmt.Fprintf(&sb, "FAILS_NEED=%d\nRECOVERS_NEED=%d\nCOOLDOWN=%d\n", pool.FailsNeed, pool.RecoversNeed, int(pool.Cooldown/time.Second))
-	sb.WriteString(renderPoolChecks(t, exits))
+	sb.WriteString(renderGroupChecks(groups))
 	sb.WriteString(failoverLoopHub)
 	return sb.String()
 }
 
-// renderPoolChecks writes the hub-side pool next-hop switch. It only changes
-// the preferred member's table. Mesh is used after every WireGuard member
-// of that pool is down, and the helper refuses tables 100, 102 and 150.
-func renderPoolChecks(t model.Topology, exits []ExitPlan) string {
-	byPool := map[string][]ExitPlan{}
-	var names []string
-	seen := map[string]bool{}
-	for _, e := range exits {
-		poolName := e.Node.Pool
-		if poolName == "" || e.Mesh {
-			continue
-		}
-		if e.HubIface == "" || e.HubIface == "mmesh" || e.PeerV4 == "" {
-			continue
-		}
-		if e.ViaRelay != "" {
-			continue
-		}
-		byPool[poolName] = append(byPool[poolName], e)
-		if !seen[poolName] {
-			seen[poolName] = true
-			names = append(names, poolName)
-		}
-	}
-	sortStrings(names)
+// groupHopPrelude is shared, byte for byte, by the hub's static routes
+// script and its failover script: the Mesh veth next-hops, the list of
+// group tables, and group_hop, the only function that points a group
+// table at a member. Static install and dynamic switching therefore agree
+// on the route and on the Mesh next-hop.
+func groupHopPrelude(groups []GroupPlan) string {
 	var sb strings.Builder
 	ma := mesh.DefaultAddressing()
-	// The dynamic switch uses the same explicit veth next-hops as the
-	// static routes (mesh.Addressing).
 	fmt.Fprintf(&sb, "MESH_DEV=%s\nMESH_NH4=%s\nMESH_NH6=%s\n", mesh.HostIface, ma.NextHopV4(), ma.NextHopV6())
-	sb.WriteString(poolStepShell)
-	sb.WriteString("check_pools() {\n")
-	for _, name := range names {
-		members := pool.Members(t, name)
-		if len(members) == 0 {
-			continue
-		}
-		pref, _ := pool.Preferred(members)
-		prefPlan, ok := exitByID(exits, pref.ID)
-		if !ok || prefPlan.Mesh || prefPlan.HubIface == "" || prefPlan.HubIface == "mmesh" {
-			continue
-		}
-		mesh := poolHasMesh(t, name)
-		fmt.Fprintf(&sb, "  pool_step %s %d %s %d", shQuote(name), prefPlan.Table, shQuote(pref.ID), boolNum(mesh))
-		for _, m := range members {
-			ep, ok := exitByID(exits, m.ID)
-			if !ok || ep.Mesh || ep.HubIface == "" || ep.HubIface == "mmesh" || ep.PeerV4 == "" || ep.ViaRelay != "" {
-				continue
-			}
-			fmt.Fprintf(&sb, " %s %s %s", shQuote(m.ID), shQuote(ep.HubIface), shQuote(ep.PeerV4))
-		}
-		sb.WriteString("\n")
+	var tables []string
+	for _, g := range groups {
+		tables = append(tables, fmt.Sprintf("%d", g.Table))
 	}
-	sb.WriteString("}\n")
+	fmt.Fprintf(&sb, "GROUP_TABLES=%q\n", strings.Join(tables, " "))
+	sb.WriteString(groupHopShell)
 	return sb.String()
 }
 
-func poolHasMesh(t model.Topology, poolName string) bool {
-	members := map[string]bool{}
-	for _, n := range pool.Members(t, poolName) {
-		members[n.ID] = true
+// hopDev is the group_hop argument for a member: its hub interface.
+func hopDev(e ExitPlan) string { return e.HubIface }
+
+// renderHubGroupRoutes installs every region group's table on the hub. A
+// dynamic group's default goes to its compiled target through group_hop;
+// the hub's runtime state for the group is cleared, so the failover script
+// starts from the same member. A group the hub cannot switch keeps only
+// the blackhole: its rules use the target's own mark, and a stray packet
+// with the group's transit source is dropped, not routed out of the hub.
+func renderHubGroupRoutes(sb *strings.Builder, t model.Topology, west string, groups []GroupPlan) {
+	if len(groups) == 0 {
+		return
 	}
-	hub := ""
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleHub {
-			hub = n.ID
-			break
+	sb.WriteString("# region groups: one table per group; only group_hop points it at a member\n")
+	sb.WriteString(groupHopPrelude(groups))
+	for _, g := range groups {
+		fmt.Fprintf(sb, "# group %s mark %#x transit %s table %d\n", g.Group.ID, g.Mark, g.TransitV4, g.Table)
+		fmt.Fprintf(sb, "rm -rf -- %s\n", shQuote("/run/meridian/group/"+g.Group.ID))
+		fmt.Fprintf(sb, "ip route replace blackhole default metric 32767 table %d\n", g.Table)
+		fmt.Fprintf(sb, "ip -6 route replace blackhole default metric 32767 table %d\n", g.Table)
+		if g.Dynamic {
+			fmt.Fprintf(sb, "group_hop %d %s\n", g.Table, shQuote(hopDev(g.Target)))
+		} else {
+			fmt.Fprintf(sb, "# group %s target %s is not switchable from the hub: blackhole only\n", g.Group.ID, g.Target.Node.ID)
 		}
+		fmt.Fprintf(sb, "ip route replace %s dev %s table %d\n", lanNet(t), west, g.Table)
+		fmt.Fprintf(sb, "ip route replace %s dev %s table %d\n", transitV4Net(), west, g.Table)
+		if t.Settings.LANIPv6Prefix != "" {
+			fmt.Fprintf(sb, "ip -6 route replace %s dev %s table %d\n", t.Settings.LANIPv6Prefix, west, g.Table)
+		}
+		fmt.Fprintf(sb, "ip -6 route replace %s dev %s table %d\n", transitV6Net(), west, g.Table)
+		fmt.Fprintf(sb, "del_rule ip rule del from %s/32 lookup %d\n", g.TransitV4, g.Table)
+		fmt.Fprintf(sb, "ip rule add from %s/32 lookup %d priority %d\n", g.TransitV4, g.Table, prioHubExitFrom+g.Index)
+		fmt.Fprintf(sb, "del_rule ip -6 rule del from %s/128 lookup %d\n", g.TransitV6, g.Table)
+		fmt.Fprintf(sb, "ip -6 rule add from %s/128 lookup %d priority %d\n", g.TransitV6, g.Table, prioHubExitFrom+g.Index)
 	}
-	for _, l := range t.Links {
-		if l.Transport != model.TransportCFMesh || !l.Enabled || !l.Standby {
+}
+
+// renderGroupChecks writes the hub-side group switch: group_hop (shared
+// with the routes script), the state machine group_step, reset_groups (run
+// once when the service starts: clears state and re-installs every
+// compiled target) and check_groups (one step per dynamic group). Each
+// group only ever changes its own table, among its own switchable members,
+// then Mesh when the group has a standby Mesh edge.
+func renderGroupChecks(groups []GroupPlan) string {
+	var sb strings.Builder
+	sb.WriteString(groupHopPrelude(groups))
+	sb.WriteString(groupStepShell)
+	sb.WriteString("reset_groups() {\n")
+	for _, g := range groups {
+		if !g.Dynamic {
 			continue
 		}
-		if l.From == hub && members[l.To] || l.To == hub && members[l.From] {
-			return true
-		}
+		fmt.Fprintf(&sb, "  rm -rf -- %s\n", shQuote("/run/meridian/group/"+g.Group.ID))
+		fmt.Fprintf(&sb, "  group_hop %d %s || true\n", g.Table, shQuote(hopDev(g.Target)))
 	}
-	return false
+	sb.WriteString("  :\n}\n")
+	sb.WriteString("check_groups() {\n")
+	for _, g := range groups {
+		if !g.Dynamic {
+			continue
+		}
+		p := g.Policy()
+		fmt.Fprintf(&sb, "  group_step %s %d %s %d %d %d %s", shQuote(g.Group.ID), g.Table, shQuote(g.Target.Node.ID),
+			boolNum(p.Mesh), boolNum(p.Hold), boolNum(p.Manual), shQuote(p.TargetReason))
+		for _, e := range g.Try {
+			fmt.Fprintf(&sb, " %s %s %s", shQuote(e.Node.ID), shQuote(e.HubIface), shQuote(e.PeerV4))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("  :\n}\n")
+	return sb.String()
 }
 
 func boolNum(v bool) int {
@@ -705,35 +725,93 @@ func boolNum(v bool) int {
 	return 0
 }
 
-const poolStepShell = `
-# Pool next-hop hysteresis. Thresholds match internal/pool (FailsNeed,
-# RecoversNeed, Cooldown). A single failure does not move the route.
-# Mesh is refused on the IX west tables (100, 102, 150, main).
-pool_step() {
-  local pool="$1" table="$2" pref="$3" mesh="$4"
-  shift 4
-  local dir="/run/meridian/pool/${pool}"
-  mkdir -p "$dir" /run/meridian/pool-iface
-  local id iface peer fails goods state
-  local up_pref=0 alt_iface="" alt_id="" pref_iface=""
+// groupHopShell points one group table at a member interface or at the
+// Mesh veth. It refuses every table that is not a compiled group table
+// (100, 102, 150, main and the per-exit tables included).
+const groupHopShell = `
+group_hop() {
+  local table="$1" dev="$2"
+  case "$table" in
+    ""|main|100|102|150)
+      echo "group hop refused on table $table" >&2
+      return 1
+      ;;
+  esac
+  case " $GROUP_TABLES " in
+    *" $table "*) ;;
+    *)
+      echo "group hop refused on table $table: not a region-group table" >&2
+      return 1
+      ;;
+  esac
+  [ -n "$dev" ] || return 1
+  if [ "$dev" = "$MESH_DEV" ]; then
+    if ! ip link show "$MESH_DEV" >/dev/null 2>&1 || [ ! -f /run/meridian/mesh-sealed ]; then
+      ip route replace blackhole default table "$table"
+      ip -6 route replace blackhole default table "$table"
+      echo "mmesh is not sealed; table $table stays blackholed" >&2
+      return 0
+    fi
+    # Ethernet veth: route via the sidecar's addresses, never "dev mmesh"
+    # alone (that would ARP/ND for every public destination).
+    ip route replace default via "$MESH_NH4" dev "$MESH_DEV" table "$table"
+    ip -6 route replace default via "$MESH_NH6" dev "$MESH_DEV" table "$table"
+  else
+    ip route replace default dev "$dev" table "$table"
+    ip -6 route replace default dev "$dev" table "$table"
+  fi
+  ip route replace blackhole default metric 32767 table "$table"
+  ip -6 route replace blackhole default metric 32767 table "$table"
+}
+`
+
+// groupStepShell mirrors pool.StepGroup (internal/pool): FailsNeed /
+// RecoversNeed hysteresis per member, a success streak (okst, cleared by
+// any failure) and the last sample (lastok). Leaving a member that is
+// marked down is immediate; returning to the target needs it up, its
+// latest sample a success, COOLDOWN seconds of unbroken success and
+// COOLDOWN seconds since the last switch. hold=1 never moves.
+const groupStepShell = `
+group_can_return() {
+  local dir="$1" target="$2" now="$3" last="$4" st lo ok
+  st=$(cat "$dir/$target.state" 2>/dev/null || echo up)
+  lo=$(cat "$dir/$target.lastok" 2>/dev/null || echo 0)
+  ok=$(cat "$dir/$target.okst" 2>/dev/null || true)
+  case "$ok" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$st" = "up" ] && [ "$lo" = "1" ] || return 1
+  [ $((now-ok)) -ge "$COOLDOWN" ] || return 1
+  [ "$last" -eq 0 ] || [ $((now-last)) -ge "$COOLDOWN" ]
+}
+group_step() {
+  local gid="$1" table="$2" target="$3" mesh="$4" hold="$5" manual="$6" treason="$7"
+  shift 7
+  local dir="/run/meridian/group/${gid}"
+  mkdir -p "$dir" /run/meridian/group-iface
+  local now id iface peer fails goods state okst lastok ids="" t_up=0 alt_id=""
+  now=$(date +%s)
   while [ $# -ge 3 ]; do
     id="$1"; iface="$2"; peer="$3"; shift 3
-    echo "$iface" > "/run/meridian/pool-iface/${id}"
-    fails=0; goods=0; state=up
-    [ -f "$dir/$id.fails" ] && fails=$(cat "$dir/$id.fails")
-    [ -f "$dir/$id.goods" ] && goods=$(cat "$dir/$id.goods")
-    [ -f "$dir/$id.state" ] && state=$(cat "$dir/$id.state")
-    [ -n "$state" ] || state=up
+    ids="$ids $id"
+    echo "$iface" > "/run/meridian/group-iface/${id}"
+    fails=$(cat "$dir/$id.fails" 2>/dev/null || echo 0)
+    goods=$(cat "$dir/$id.goods" 2>/dev/null || echo 0)
+    state=$(cat "$dir/$id.state" 2>/dev/null || echo up)
+    okst=$(cat "$dir/$id.okst" 2>/dev/null || true)
+    case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
+    case "$goods" in ''|*[!0-9]*) goods=0 ;; esac
+    [ "$state" = "down" ] || state=up
     if alive "$iface" "$peer"; then
+      lastok=1
+      [ -n "$okst" ] || okst="$now"
       fails=0
       if [ "$state" = "down" ]; then
         goods=$((goods+1))
         if [ "$goods" -ge "$RECOVERS_NEED" ]; then state=up; goods=0; fi
       else
-        goods=0; state=up
+        goods=0
       fi
     else
-      goods=0
+      lastok=0; okst=""; goods=0
       if [ "$state" = "up" ]; then
         fails=$((fails+1))
         if [ "$fails" -ge "$FAILS_NEED" ]; then state=down; fails=0; fi
@@ -742,86 +820,61 @@ pool_step() {
     echo "$fails" > "$dir/$id.fails"
     echo "$goods" > "$dir/$id.goods"
     echo "$state" > "$dir/$id.state"
-    if [ "$id" = "$pref" ]; then pref_iface="$iface"; fi
-    if [ "$id" = "$pref" ] && [ "$state" = "up" ]; then up_pref=1; fi
-    if [ "$id" != "$pref" ] && [ "$state" = "up" ] && [ -z "$alt_iface" ]; then
-      alt_iface="$iface"; alt_id="$id"
-    fi
+    echo "$okst" > "$dir/$id.okst"
+    echo "$lastok" > "$dir/$id.lastok"
+    if [ "$id" = "$target" ] && [ "$state" = "up" ]; then t_up=1; fi
+    if [ "$id" != "$target" ] && [ "$state" = "up" ] && [ -z "$alt_id" ]; then alt_id="$id"; fi
   done
-  local active="" want last=0 now
-  [ -f "$dir/active" ] && active=$(cat "$dir/active")
-  [ -n "$active" ] || active="$pref"
+  local active want last ast dev reason
+  active=$(cat "$dir/active" 2>/dev/null || true)
+  [ -n "$active" ] || active="$target"
+  if [ "$active" != "mmesh" ]; then
+    case " $ids " in *" $active "*) ;; *) active="$target" ;; esac
+  fi
+  last=$(cat "$dir/switched" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
   want="$active"
-  if [ "$active" = "$pref" ]; then
-    if [ "$up_pref" -eq 0 ]; then
-      if [ -n "$alt_id" ]; then want="$alt_id"
-      elif [ "$mesh" = "1" ]; then want="mmesh"; fi
+  if [ "$hold" = "1" ]; then
+    want="$target"
+  elif [ "$active" = "$target" ]; then
+    if [ "$t_up" -eq 0 ]; then
+      if [ -n "$alt_id" ]; then want="$alt_id"; elif [ "$mesh" = "1" ]; then want="mmesh"; fi
     fi
-  elif [ "$up_pref" -eq 1 ]; then
-    want="$pref"
+  elif group_can_return "$dir" "$target" "$now" "$last"; then
+    want="$target"
   elif [ "$active" = "mmesh" ]; then
     if [ -n "$alt_id" ]; then want="$alt_id"; fi
   else
-    local ast
     ast=$(cat "$dir/$active.state" 2>/dev/null || echo down)
     if [ "$ast" != "up" ]; then
-      if [ -n "$alt_id" ]; then want="$alt_id"
-      elif [ "$mesh" = "1" ]; then want="mmesh"; fi
+      if [ -n "$alt_id" ]; then want="$alt_id"; elif [ "$mesh" = "1" ]; then want="mmesh"; fi
     fi
   fi
-  now=$(date +%s)
-  last=0
-  if [ -f "$dir/switched" ]; then
-    last=$(cat "$dir/switched" 2>/dev/null || echo 0)
-  fi
-  case "$last" in
-    ''|*[!0-9]*) last=0 ;;
-  esac
   if [ "$want" != "$active" ]; then
-    # 120s only delays the return to a preferred member that is up again.
-    # A member already marked down must be left immediately, or this table
-    # keeps handing packets to a dead tunnel.
-    if [ "$want" = "$pref" ] && [ "$up_pref" -eq 1 ] && [ "$last" -ne 0 ] && [ $((now-last)) -lt "$COOLDOWN" ]; then
-      return 0
+    if [ "$want" = "mmesh" ]; then dev="$MESH_DEV"; else dev=$(cat "/run/meridian/group-iface/$want" 2>/dev/null || true); fi
+    if group_hop "$table" "$dev"; then
+      active="$want"
+      echo "$active" > "$dir/active"
+      echo "$now" > "$dir/switched"
     fi
-    apply_pool_hop "$table" "$want" || return 0
-    echo "$want" > "$dir/active"
-    echo "$now" > "$dir/switched"
   fi
-}
-apply_pool_hop() {
-  local table="$1" want="$2" dev
-  case "$table" in
-    ""|main|100|102|150)
-      echo "mesh/pool refused on table $table" >&2
-      return 1
-      ;;
-  esac
-  if [ "$want" = "mmesh" ]; then
-    dev="$MESH_DEV"
-    if ! ip link show mmesh >/dev/null 2>&1 || [ ! -f /run/meridian/mesh-sealed ]; then
-      ip route replace blackhole default table "$table"
-      ip -6 route replace blackhole default table "$table"
-      echo "mmesh is not sealed; pool $pool stays blackholed" >&2
-      return 0
+  if [ "$active" = "$target" ]; then
+    reason="$treason"
+    if [ "$t_up" -eq 0 ]; then
+      if [ "$hold" = "1" ]; then reason=held; fi
+      echo 1 > "$dir/alert"
+    else
+      echo 0 > "$dir/alert"
     fi
+  elif [ "$active" = "mmesh" ]; then
+    reason=mesh; echo 1 > "$dir/alert"
+  elif [ "$manual" = "1" ]; then
+    reason=fallback; echo 1 > "$dir/alert"
   else
-    dev=$(cat "/run/meridian/pool-iface/$want" 2>/dev/null || true)
+    reason=failover; echo 0 > "$dir/alert"
   fi
-  [ -n "$dev" ] || return 0
-  if [ "$dev" = "$MESH_DEV" ]; then
-    # Ethernet veth: route via the sidecar's addresses, never "dev mmesh"
-    # alone (that would ARP/ND for every public destination).
-    ip route replace default via "$MESH_NH4" dev "$MESH_DEV" table "$table"
-    ip route replace blackhole default metric 32767 table "$table"
-    ip -6 route replace default via "$MESH_NH6" dev "$MESH_DEV" table "$table"
-    ip -6 route replace blackhole default metric 32767 table "$table"
-    return 0
-  fi
-  ip route replace default dev "$dev" table "$table"
-  ip route replace blackhole default metric 32767 table "$table"
-  ip -6 route replace default dev "$dev" table "$table"
-  ip -6 route replace blackhole default metric 32767 table "$table"
+  [ -f "$dir/active" ] || echo "$active" > "$dir/active"
+  echo "$reason" > "$dir/reason"
 }
 `
 
@@ -859,6 +912,8 @@ choose() {
   if alive "$ALI_WSS" "$ALI_PEER"; then echo "$ALI_WSS"; return; fi
   echo "$HOME_WSS"
 }
+# --- main loop ---
+reset_groups
 cur=""
 bad=0
 while true; do
@@ -876,7 +931,7 @@ while true; do
   else
     bad=0
   fi
-  check_pools || true
+  check_groups || true
   sleep 5
 done
 `

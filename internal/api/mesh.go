@@ -5,29 +5,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
-	"github.com/radowitz/meridian/internal/provision"
-	"golang.org/x/crypto/ssh"
+	"github.com/radowitz/meridian/internal/sshexec"
 )
 
-// Mesh deployment from the panel. The Cloudflare API token is written once
-// (PUT /api/mesh/credentials) and never returned; the SSH key is supplied
-// per request and never stored. See internal/mesh for the stages.
+// Mesh deployment from the panel. The Cloudflare account is a stored,
+// reusable account (credential store) referred to by ID; SSH goes through
+// each plan node's managed server with its stored credential (internal/
+// sshexec), only to servers whose host key the operator confirmed. No
+// request carries key material, an SSH target or a token. See
+// internal/mesh for the stages.
 
 const meshDataplaneNote = "Mesh 数据面：未验证。路由发布成功不等于 Mesh 可用；需要在隔离的 Linux 主机上运行 deploy/verify-mesh-veth.sh 并存档，再按 docs/verification.md 做真实转发与人工签收。"
 
 func (s *Server) meshDir() string { return filepath.Join(s.DataDir, "mesh") }
-
-func (s *Server) meshCreds() mesh.CredStore { return mesh.CredStore{Dir: s.meshDir()} }
 
 func meshFaultInjection() bool { return os.Getenv("MERIDIAN_MESH_FAULT_INJECTION") == "1" }
 
@@ -36,7 +34,87 @@ func (s *Server) meshPlan(t model.Topology) (mesh.Plan, error) {
 	if err != nil {
 		return mesh.Plan{}, err
 	}
-	return mesh.BuildPlan(t, b.Files), nil
+	p := mesh.BuildPlan(t, b.Files)
+	// A node is reached only through its managed server: address, port,
+	// user, credential and the confirmed host key all come from there. A
+	// node without a server has no SSH target at all.
+	cs, _ := s.credStore()
+	for i := range p.Nodes {
+		nt := &p.Nodes[i]
+		nt.SSHHost, nt.SSHPort, nt.SSHUser, nt.HostKey, nt.ServerID, nt.CredentialID = "", 0, "", "", "", ""
+		n, ok := t.NodeByID(nt.ID)
+		if !ok || n.ServerID == "" || cs == nil {
+			continue
+		}
+		sv, err := cs.Server(n.ServerID)
+		if err != nil {
+			continue
+		}
+		nt.ServerID, nt.CredentialID = sv.ID, sv.CredentialID
+		nt.SSHHost, nt.SSHPort, nt.SSHUser = sv.Address, sv.Port, sv.User
+		if sv.HostKey.State == model.HostKeyTrusted {
+			nt.HostKey = sv.HostKey.Fingerprint
+		}
+	}
+	return p, nil
+}
+
+// meshNodeReadiness is one plan node's server readiness.
+type meshNodeReadiness struct {
+	NodeID     string     `json:"node_id"`
+	Name       string     `json:"name"`
+	Role       model.Role `json:"role"`
+	ServerID   string     `json:"server_id"`
+	ServerName string     `json:"server_name"`
+	// Ready: on a server with a trusted host key and a credential.
+	Ready bool `json:"ready"`
+	// Missing: server, credential, host_key.
+	Missing []string `json:"missing"`
+	// HostKey is the trusted fingerprint the deployment will pin.
+	HostKey    string `json:"host_key,omitempty"`
+	AuthMethod string `json:"auth_method,omitempty"`
+}
+
+func (s *Server) meshReadiness(t model.Topology, p mesh.Plan) []meshNodeReadiness {
+	cs, _ := s.credStore()
+	out := []meshNodeReadiness{}
+	for _, nt := range p.Nodes {
+		r := meshNodeReadiness{NodeID: nt.ID, Name: nt.Name, Role: nt.Role, Missing: []string{}}
+		n, _ := t.NodeByID(nt.ID)
+		var sv model.Server
+		var err error = errors.New("no server")
+		if n.ServerID != "" && cs != nil {
+			sv, err = cs.Server(n.ServerID)
+		}
+		if err != nil {
+			r.Missing = append(r.Missing, "server")
+			out = append(out, r)
+			continue
+		}
+		r.ServerID, r.ServerName, r.AuthMethod = sv.ID, sv.Name, sv.Auth
+		if sv.CredentialID == "" {
+			r.Missing = append(r.Missing, "credential")
+		} else if _, err := cs.SSHCredential(sv.CredentialID); err != nil {
+			r.Missing = append(r.Missing, "credential")
+		}
+		if sv.HostKey.State != model.HostKeyTrusted {
+			r.Missing = append(r.Missing, "host_key")
+		} else {
+			r.HostKey = sv.HostKey.Fingerprint
+		}
+		r.Ready = len(r.Missing) == 0
+		out = append(out, r)
+	}
+	return out
+}
+
+// meshAccountSummary names the account a deployment uses.
+type meshAccountSummary struct {
+	ID              string                       `json:"id"`
+	Name            string                       `json:"name"`
+	AccountID       string                       `json:"account_id"`
+	Source          string                       `json:"source"` // request | selected
+	PermissionCheck *credentials.PermissionCheck `json:"permission_check"`
 }
 
 // deployer reads the Cloudflare credentials itself, under the deployment
@@ -48,7 +126,12 @@ func (s *Server) deployer(rem mesh.Remote, red *mesh.Redactor) *mesh.Deployer {
 	if s.MeshCF != nil {
 		connect = s.MeshCF
 	}
-	return &mesh.Deployer{Dir: s.meshDir(), Creds: &creds, Connect: connect, Remote: rem, Redact: red}
+	d := &mesh.Deployer{Dir: s.meshDir(), Creds: creds, Connect: connect, Remote: rem, Redact: red}
+	if cs, err := s.credStore(); err == nil {
+		d.ResolvePin = s.resolvePin(cs)
+		d.CheckHosts = s.checkHosts(cs)
+	}
+	return d
 }
 
 func (s *Server) getMesh(w http.ResponseWriter, r *http.Request) {
@@ -68,8 +151,17 @@ func (s *Server) getMesh(w http.ResponseWriter, r *http.Request) {
 	} else if !errors.Is(err, mesh.ErrNoCredentials) {
 		resp["credentials_error"] = err.Error()
 	}
+	resp["mesh_account"] = nil
+	if cs, err := s.credStore(); err == nil {
+		if id := cs.MeshAccount(); id != "" {
+			if a, err := cs.Account(id); err == nil {
+				resp["mesh_account"] = meshAccountSummary{ID: a.ID, Name: a.Name, AccountID: a.AccountID, Source: "selected", PermissionCheck: a.PermissionCheck}
+			}
+		}
+	}
 	if p, err := s.meshPlan(t); err == nil {
 		resp["plan"] = p
+		resp["plan_servers"] = s.meshReadiness(t, p)
 	} else {
 		resp["plan_error"] = err.Error()
 	}
@@ -121,96 +213,54 @@ func (s *Server) deleteMeshCredentials(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"credentials": nil})
 }
 
-type meshSSHTarget struct {
-	SSHHost string `json:"ssh_host"`
-	SSHPort int    `json:"ssh_port"`
-	SSHUser string `json:"ssh_user"`
-}
-
-type meshRunBody struct {
-	PrivateKeyPEM string                   `json:"private_key_pem"`
-	TrustNewHost  bool                     `json:"trust_new_host"`
-	Nodes         map[string]meshSSHTarget `json:"nodes"`
+type meshDeployBody struct {
+	// Account is the credential-store id of the Cloudflare account to
+	// deploy with; empty means the account selected for Mesh. A different
+	// account becomes the selected one (allowed only while no deployment
+	// is bound; the deploy is refused otherwise anyway).
+	Account string `json:"account"`
 	// FailAfter injects a failure after the named stage. Only accepted
 	// when MERIDIAN_MESH_FAULT_INJECTION=1 (compensation drill).
 	FailAfter string `json:"fail_after,omitempty"`
 }
 
-// sshRemote runs the deployer's fixed scripts over SSH. It connects to
-// exactly the target the deployer passes (the plan node during a deploy,
-// the target pinned in the journal during a withdrawal) and never looks a
-// node up in the topology. A pinned host key must match; an unpinned host
-// (first contact of a deploy) is accepted only with trust_new_host, and the
-// key it presented is returned so the deployer pins it.
-type sshRemote struct {
-	key   string
-	trust bool
-}
+// meshRemoved are request fields of the pre-server API (400 field_removed).
+var meshRemoved = []string{"private_key_pem", "trust_new_host", "nodes", "ssh_host", "ssh_port", "ssh_user"}
+
+// sshRemote runs the deployer's fixed scripts through the managed server
+// of each target, with the credential and host key the target names (the
+// plan node's during a deploy, the journal's pin during a withdrawal). The
+// connector refuses an untrusted server, a host presenting another key and
+// a server whose endpoint no longer matches the pin, before authenticating.
+type sshRemote struct{ conn *sshexec.Connector }
 
 func (r *sshRemote) Exec(ctx context.Context, n mesh.NodeTarget, act mesh.Action, script string) (string, string, error) {
-	if n.SSHHost == "" {
-		return "", "", fmt.Errorf("节点 %s 没有 SSH 目标", n.ID)
+	if n.ServerID == "" {
+		return "", "", fmt.Errorf("节点 %s 没有关联的服务器，拒绝连接", n.ID)
 	}
-	user := n.SSHUser
-	if user == "" {
-		user = "root"
-	}
-	var seen string
-	check := meshHostKeyCheck(n, r.trust, &seen)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	out, err := provision.RunScript(ctx, provision.SSHRequest{Host: n.SSHHost, Port: n.SSHPort, User: user, PrivateKeyPEM: r.key, KnownHosts: check}, script)
-	return out, seen, err
+	res, err := r.conn.RunScript(ctx, sshexec.Target{ServerID: n.ServerID, CredentialID: n.CredentialID,
+		Address: n.SSHHost, Port: n.SSHPort, User: n.SSHUser, Fingerprint: n.HostKey}, script)
+	return res.Output, res.Fingerprint, err
 }
 
-// meshHostKeyCheck accepts exactly the pinned key of n, or, when nothing is
-// pinned yet, any key only if trust is set; the accepted fingerprint is
-// stored in *seen.
-func meshHostKeyCheck(n mesh.NodeTarget, trust bool, seen *string) ssh.HostKeyCallback {
-	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
-		fp := ssh.FingerprintSHA256(key)
-		switch {
-		case n.HostKey != "" && fp != n.HostKey:
-			return fmt.Errorf("%s 的 SSH 主机指纹是 %s，不是部署时固定的 %s；拒绝连接", n.SSHHost, fp, n.HostKey)
-		case n.HostKey == "" && !trust:
-			return fmt.Errorf("没有 %s 的主机指纹记录（%s）。确认指纹后勾选「信任首次见到的主机指纹」", n.SSHHost, fp)
-		}
-		*seen = fp
-		return nil
-	}
-}
-
-// meshDeps builds the remote and the redactor for one request (the
-// Cloudflare client is built by the deployer under its lock). Tests
-// replace MeshRemote.
-func (s *Server) meshDeps(body meshRunBody) (mesh.Remote, *mesh.Redactor, error) {
-	red := &mesh.Redactor{}
-	red.Add(body.PrivateKeyPEM)
+// meshRemote is the SSH executor (tests replace it with MeshRemote).
+func (s *Server) meshRemote() (mesh.Remote, error) {
 	if s.MeshRemote != nil {
-		return s.MeshRemote(), red, nil
+		return s.MeshRemote(), nil
 	}
-	if body.PrivateKeyPEM == "" {
-		return nil, nil, errors.New("需要 SSH 私钥（只在本次请求中使用，不保存）")
-	}
-	return &sshRemote{key: body.PrivateKeyPEM, trust: body.TrustNewHost}, red, nil
-}
-
-func decodeMeshRun(w http.ResponseWriter, r *http.Request) (meshRunBody, error) {
-	var body meshRunBody
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
+	cs, err := s.credStore()
 	if err != nil {
-		return body, err
+		return nil, err
 	}
-	if len(strings.TrimSpace(string(raw))) == 0 {
-		return body, nil
-	}
-	return body, json.Unmarshal(raw, &body)
+	return &sshRemote{conn: s.connector(cs)}, nil
 }
 
 func (s *Server) postMeshDeploy(w http.ResponseWriter, r *http.Request) {
-	body, err := decodeMeshRun(w, r)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, errors.New("请求格式错误"))
+	var body meshDeployBody
+	if err := decodeStrict(w, r, &body, []string{"account", "fail_after"}, meshRemoved, true); err != nil {
+		writeResErr(w, err)
 		return
 	}
 	if body.FailAfter != "" {
@@ -227,6 +277,30 @@ func (s *Server) postMeshDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	cs, err := s.credStore()
+	if err != nil {
+		writeResErr(w, err)
+		return
+	}
+	acct := meshAccountSummary{ID: body.Account, Source: "request"}
+	if acct.ID == "" {
+		acct.ID, acct.Source = cs.MeshAccount(), "selected"
+		if acct.ID == "" {
+			writeResErr(w, &credentials.Error{Code: codeNoMeshAccount, Field: "account",
+				Msg: "没有选择 Mesh 使用的 Cloudflare 账户；在请求里给出 account（账户 ID），或先在 Cloudflare 页选择"})
+			return
+		}
+	}
+	a, err := cs.Account(acct.ID)
+	if err != nil {
+		var ce *credentials.Error
+		if errors.As(err, &ce) {
+			ce.Field = "account"
+		}
+		writeResErr(w, err)
+		return
+	}
+	acct.Name, acct.AccountID, acct.PermissionCheck = a.Name, a.AccountID, a.PermissionCheck
 	t, err := s.topology()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -237,82 +311,100 @@ func (s *Server) postMeshDeploy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	rem, red, err := s.meshDeps(body)
-	if err != nil {
-		writeErr(w, http.StatusConflict, err)
-		return
-	}
-	// Request-level SSH overrides apply to the plan nodes; the deployer
-	// pins the resulting targets in the journal.
-	for id := range body.Nodes {
-		if _, ok := plan.Node(id); !ok {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("SSH 覆盖里的节点 %s 不在 Mesh 计划里", id))
+	// A plan that is invalid fails in its own stage (nothing is created);
+	// a valid one must have every host on an operable server first.
+	if plan.OK() {
+		var notReady []meshNodeReadiness
+		for _, rd := range s.meshReadiness(t, plan) {
+			if !rd.Ready {
+				notReady = append(notReady, rd)
+			}
+		}
+		if len(notReady) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":     "Mesh 计划里有节点的服务器还没就绪（需要关联服务器、选择 SSH 凭据并确认主机指纹）；没有执行任何阶段",
+				"code":      codeServersNotReady,
+				"not_ready": notReady,
+				"account":   acct,
+			})
 			return
 		}
 	}
-	for i := range plan.Nodes {
-		if o, ok := body.Nodes[plan.Nodes[i].ID]; ok {
-			if o.SSHHost != "" {
-				plan.Nodes[i].SSHHost = o.SSHHost
-			}
-			if o.SSHPort != 0 {
-				plan.Nodes[i].SSHPort = o.SSHPort
-			}
-			if o.SSHUser != "" {
-				plan.Nodes[i].SSHUser = o.SSHUser
-			}
-		}
+	rem, err := s.meshRemote()
+	if err != nil {
+		writeResErr(w, err)
+		return
 	}
+	red := &mesh.Redactor{}
 	d := s.deployer(rem, red)
 	d.FailAfter = body.FailAfter
+	if acct.Source == "request" {
+		id := acct.ID
+		d.Select = func() error { return cs.SetMeshAccount(id) }
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 	j, err := d.Deploy(ctx, plan)
-	writeMeshResult(w, j, err, red)
+	writeMeshResult(w, j, err, red, &acct)
 }
 
 func (s *Server) postMeshWithdraw(w http.ResponseWriter, r *http.Request) {
-	body, err := decodeMeshRun(w, r)
+	// A withdrawal acts on the hosts pinned in the journal (server,
+	// credential, endpoint and host key) and the Cloudflare account the run
+	// is bound to: the request carries nothing.
+	var body struct{}
+	if err := decodeStrict(w, r, &body, nil, append(append([]string{}, meshRemoved...), "fail_after", "account"), true); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	rem, err := s.meshRemote()
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, errors.New("请求格式错误"))
+		writeResErr(w, err)
 		return
 	}
-	// A withdrawal acts on the hosts pinned in the journal (address, port,
-	// user and host key seen at deploy time), never on the current
-	// topology, and only the SSH credential is taken from the request.
-	if len(body.Nodes) > 0 || body.TrustNewHost || body.FailAfter != "" {
-		writeErr(w, http.StatusBadRequest, errors.New("撤回只使用部署时固定的主机与主机指纹，只接受 SSH 私钥；不接受 SSH 目标覆盖、trust_new_host 或 fail_after"))
-		return
-	}
-	rem, red, err := s.meshDeps(body)
-	if err != nil {
-		writeErr(w, http.StatusConflict, err)
-		return
-	}
+	red := &mesh.Redactor{}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 	j, err := s.deployer(rem, red).Withdraw(ctx)
-	writeMeshResult(w, j, err, red)
+	writeMeshResult(w, j, err, red, nil)
 }
 
-func writeMeshResult(w http.ResponseWriter, j *mesh.Journal, err error, red *mesh.Redactor) {
+func writeMeshResult(w http.ResponseWriter, j *mesh.Journal, err error, red *mesh.Redactor, acct *meshAccountSummary) {
 	resp := map[string]any{"journal": j, "dataplane": mesh.DataplaneUnverified, "dataplane_note": meshDataplaneNote}
+	if acct != nil {
+		resp["account"] = acct
+	}
 	if err == nil {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	resp["error"] = red.Redact(err.Error())
 	var se *mesh.StageError
+	conflict := map[error]string{
+		mesh.ErrBusy: "busy", mesh.ErrNothingToWithdraw: "nothing_to_withdraw", mesh.ErrAccountMismatch: "account_mismatch",
+		mesh.ErrNoCredentials: codeNoMeshAccount, mesh.ErrHostsBlocked: "hosts_blocked", mesh.ErrJournalTooNew: "journal_too_new",
+	}
+	for e, code := range conflict {
+		if errors.Is(err, e) {
+			resp["code"] = code
+			writeJSON(w, http.StatusConflict, resp)
+			return
+		}
+	}
 	switch {
-	case errors.Is(err, mesh.ErrBusy), errors.Is(err, mesh.ErrNothingToWithdraw),
-		errors.Is(err, mesh.ErrAccountMismatch), errors.Is(err, mesh.ErrNoCredentials):
-		writeJSON(w, http.StatusConflict, resp)
 	case errors.As(err, &se):
+		resp["code"] = "stage_failed"
 		resp["stage"] = se.Stage
 		resp["compensated"] = se.Compensated
 		resp["compensation_errors"] = se.CompErrors
 		writeJSON(w, http.StatusBadGateway, resp)
 	default:
+		var ce *credentials.Error
+		if errors.As(err, &ce) {
+			resp["code"] = ce.Code
+			writeJSON(w, codeStatus(ce.Code), resp)
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, resp)
 	}
 }

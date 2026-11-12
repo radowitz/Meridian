@@ -10,7 +10,11 @@
 //
 //   - Targets are a fixed table (Catalog). A caller names a service from the
 //     table; it never supplies a URL, host, port, header or command. Redirects
-//     are followed only to hosts listed for that service, over https.
+//     are followed only to hosts listed for that service, over https (at
+//     most 4; NoRedirect steps classify the redirect itself). The only value
+//     carried between steps of one check comes from the platform's own
+//     previous answer and must match extractRe before it is query-escaped
+//     into a fixed URL. Bodies are read up to MaxBody.
 //   - Every connection is pinned: names are resolved through the exit's own
 //     tunnel resolver for the requested family only, the kernel route for the
 //     resolved address (under the exit's mark and source) must leave through a
@@ -40,8 +44,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -49,58 +51,7 @@ import (
 	"github.com/radowitz/meridian/internal/unlock"
 )
 
-// Category is what one probe established. Only CatUnlocked, CatNotUnlocked
-// and (for reachability-only adapters) CatNetworkOK are platform results;
-// CatFailed and CatUnknown are not verdicts about the platform.
-type Category string
-
-const (
-	// CatNetworkOK: egress confirmed and the platform answered over the
-	// requested family through the intended exit. For reachability adapters
-	// this is the whole result; it is not an account or region check.
-	CatNetworkOK Category = "network_ok"
-	// CatUnlocked: the platform's response explicitly shows the service is
-	// available, in Region, which matches the exit.
-	CatUnlocked Category = "unlocked"
-	// CatNotUnlocked: the platform's response explicitly shows the service is
-	// not available here (block page, unavailable-in-region, wrong catalog).
-	CatNotUnlocked Category = "not_unlocked"
-	// CatFailed: no verdict. Timeout, DNS or transport error, wrong egress,
-	// wrong family, cancellation.
-	CatFailed Category = "failed"
-	// CatUnknown: the platform answered but the response is not one the
-	// adapter recognises. Never treated as a failure of the platform.
-	CatUnknown Category = "unknown"
-)
-
-// Verdict is an adapter's reading of one response.
-type Verdict struct {
-	Category Category
-	Region   string
-	Evidence string
-}
-
-// Response is what an adapter sees: status, final URL (after the allowed
-// redirects) and at most MaxBody bytes of the body.
-type Response struct {
-	Status int
-	URL    *url.URL
-	Body   []byte
-}
-
-// Adapter is one table entry. Classify must be a pure function.
-type Adapter struct {
-	Service string
-	Name    string
-	// Reachability adapters only prove the platform answered through the
-	// exit (the old curl probe's meaning). They never claim "unlocked".
-	Reachability bool
-	URL          string
-	Hosts        []string
-	// Basis says, for the panel and the docs, what the verdict is based on.
-	Basis    string
-	Classify func(r Response, exitRegion string) Verdict
-}
+// The catalog, the result model and the classifiers live in adapters.go.
 
 // MaxBody bounds how much of a response is read for classification.
 const MaxBody = 256 << 10
@@ -114,159 +65,6 @@ var traceHosts = []string{"www.cloudflare.com"}
 // userAgent is a fixed, generic desktop browser string. Several platforms
 // answer non-browser clients with a different page.
 const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-
-// Catalog is the fixed set of panel-probeable services, keyed by the rule
-// ids the project already uses. Services without an adapter (Taiwan and
-// Japan platforms, MyTV SUPER) keep using the exit-side regioncheck report.
-var Catalog = []Adapter{
-	{
-		Service: "auto-netflix", Name: "Netflix",
-		URL:      "https://www.netflix.com/title/81280792",
-		Hosts:    []string{"www.netflix.com", "netflix.com"},
-		Basis:    "Netflix 自制剧标题页：403 = 拒绝该 IP，404 = 标题不可用（只有自制剧或未开通），200 时从页面 requestCountry/countryCode 或 URL 的 /xx(-yy)/ 前缀取目录地区，必须与出口地区一致",
-		Classify: classifyNetflix,
-	},
-	{
-		Service: "auto-disney", Name: "Disney+",
-		URL:      "https://www.disneyplus.com/",
-		Hosts:    []string{"www.disneyplus.com", "disneyplus.com"},
-		Basis:    "Disney+ 首页：跳到含 unavailable 的路径或 403 = 不可用；200 时从页面 countryCode/region 或 URL 的 /语言-地区 前缀取地区，必须与出口地区一致",
-		Classify: classifyDisney,
-	},
-	{
-		Service: "auto-openai", Name: "OpenAI / ChatGPT",
-		URL:      "https://api.openai.com/compliance/cookie_requirements",
-		Hosts:    []string{"api.openai.com"},
-		Basis:    "响应里出现 unsupported_country = 平台明确不支持该地区；没有这个标记只算网络可达，不是账号可用判断",
-		Classify: classifyOpenAI,
-	},
-	{
-		Service: "auto-anthropic", Name: "Claude / Anthropic",
-		URL:      "https://claude.ai/",
-		Hosts:    []string{"claude.ai", "www.claude.ai"},
-		Basis:    "跳到 app-unavailable-in-region = 平台明确不支持该地区；Cloudflare 质询页 = 未知；其他应答只算网络可达",
-		Classify: classifyAnthropic,
-	},
-	reach("auto-gemini", "Gemini", "https://gemini.google.com/", "gemini.google.com"),
-	reach("auto-copilot", "Microsoft Copilot", "https://copilot.microsoft.com/", "copilot.microsoft.com"),
-	reach("auto-perplexity", "Perplexity", "https://www.perplexity.ai/", "www.perplexity.ai", "perplexity.ai"),
-	reach("auto-grok", "Grok", "https://grok.x.ai/", "grok.x.ai", "grok.com"),
-}
-
-func reach(id, name, u string, hosts ...string) Adapter {
-	return Adapter{
-		Service: id, Name: name, Reachability: true, URL: u, Hosts: hosts,
-		Basis:    "只做到达性：经指定出口和地址族收到任何 HTTP 应答即网络可达（与出口脚本的 curl 探测同义），不是账号或地区判断",
-		Classify: classifyReach,
-	}
-}
-
-// Lookup returns the adapter for a rule id.
-func Lookup(service string) (Adapter, bool) {
-	for _, a := range Catalog {
-		if a.Service == service {
-			return a, true
-		}
-	}
-	return Adapter{}, false
-}
-
-var (
-	reNetflixCountry = regexp.MustCompile(`"(?:requestCountry"\s*:\s*\{\s*"id|countryCode)"\s*:\s*"([A-Za-z]{2})"`)
-	reDisneyCountry  = regexp.MustCompile(`"(?:countryCode|region)"\s*:\s*"([A-Za-z]{2})"`)
-	rePathRegion     = regexp.MustCompile(`^/([a-z]{2})(?:-([a-z]{2}))?(?:/|$)`)
-	reLangRegion     = regexp.MustCompile(`^/([a-z]{2})-([a-z]{2})(?:/|$)`)
-)
-
-func classifyNetflix(r Response, exitRegion string) Verdict {
-	switch r.Status {
-	case http.StatusForbidden:
-		return Verdict{Category: CatNotUnlocked, Evidence: "HTTP 403：Netflix 拒绝该出口地址"}
-	case http.StatusNotFound:
-		return Verdict{Category: CatNotUnlocked, Evidence: "HTTP 404：自制剧标题不可用（仅自制剧或未开通）"}
-	case http.StatusOK:
-		if m := reNetflixCountry.FindSubmatch(r.Body); m != nil {
-			return regionVerdict(string(m[1]), exitRegion, "HTTP 200，页面地区标记 "+strings.ToUpper(string(m[1])))
-		}
-		if r.URL != nil {
-			if m := rePathRegion.FindStringSubmatch(r.URL.Path); m != nil {
-				return regionVerdict(m[1], exitRegion, "HTTP 200，URL 地区前缀 /"+m[1])
-			}
-		}
-		return Verdict{Category: CatUnknown, Evidence: "HTTP 200，但页面和 URL 里都没有地区标记"}
-	default:
-		return Verdict{Category: CatUnknown, Evidence: fmt.Sprintf("HTTP %d：不是可识别的 Netflix 应答", r.Status)}
-	}
-}
-
-func classifyDisney(r Response, exitRegion string) Verdict {
-	if r.URL != nil && strings.Contains(strings.ToLower(r.URL.Path), "unavailable") {
-		return Verdict{Category: CatNotUnlocked, Evidence: "跳到 " + r.URL.Path + "：Disney+ 在该地区不可用"}
-	}
-	switch r.Status {
-	case http.StatusForbidden:
-		return Verdict{Category: CatNotUnlocked, Evidence: "HTTP 403：Disney+ 拒绝该出口地址"}
-	case http.StatusOK:
-		if m := reDisneyCountry.FindSubmatch(r.Body); m != nil {
-			return regionVerdict(string(m[1]), exitRegion, "HTTP 200，页面地区标记 "+strings.ToUpper(string(m[1])))
-		}
-		if r.URL != nil {
-			if m := reLangRegion.FindStringSubmatch(r.URL.Path); m != nil {
-				return regionVerdict(m[2], exitRegion, "HTTP 200，URL 语言-地区前缀 /"+m[1]+"-"+m[2])
-			}
-		}
-		return Verdict{Category: CatUnknown, Evidence: "HTTP 200，但页面和 URL 里都没有地区标记"}
-	default:
-		return Verdict{Category: CatUnknown, Evidence: fmt.Sprintf("HTTP %d：不是可识别的 Disney+ 应答", r.Status)}
-	}
-}
-
-func classifyOpenAI(r Response, _ string) Verdict {
-	if strings.Contains(strings.ToLower(string(r.Body)), "unsupported_country") {
-		return Verdict{Category: CatNotUnlocked, Evidence: fmt.Sprintf("HTTP %d，响应含 unsupported_country", r.Status)}
-	}
-	if r.Status >= 500 {
-		return Verdict{Category: CatUnknown, Evidence: fmt.Sprintf("HTTP %d：服务端错误", r.Status)}
-	}
-	return Verdict{Category: CatNetworkOK, Evidence: fmt.Sprintf("HTTP %d，没有 unsupported_country 标记（只说明可达，不是账号判断）", r.Status)}
-}
-
-func classifyAnthropic(r Response, _ string) Verdict {
-	if r.URL != nil && strings.Contains(strings.ToLower(r.URL.Path), "unavailable-in-region") {
-		return Verdict{Category: CatNotUnlocked, Evidence: "跳到 " + r.URL.Path}
-	}
-	if r.Status == http.StatusForbidden && looksLikeChallenge(r.Body) {
-		return Verdict{Category: CatUnknown, Evidence: "HTTP 403，Cloudflare 质询页：无法判断"}
-	}
-	if r.Status >= 500 {
-		return Verdict{Category: CatUnknown, Evidence: fmt.Sprintf("HTTP %d：服务端错误", r.Status)}
-	}
-	return Verdict{Category: CatNetworkOK, Evidence: fmt.Sprintf("HTTP %d，没有 unavailable-in-region 跳转（只说明可达）", r.Status)}
-}
-
-func classifyReach(r Response, _ string) Verdict {
-	if r.Status <= 0 {
-		return Verdict{Category: CatFailed, Evidence: "没有 HTTP 应答"}
-	}
-	return Verdict{Category: CatNetworkOK, Evidence: fmt.Sprintf("HTTP %d（只说明可达）", r.Status)}
-}
-
-func looksLikeChallenge(body []byte) bool {
-	l := strings.ToLower(string(body))
-	return strings.Contains(l, "just a moment") || strings.Contains(l, "cf-chl") || strings.Contains(l, "challenge-platform")
-}
-
-// regionVerdict turns an explicit platform region into a verdict for an exit
-// in exitRegion: a different catalog is not an unlock for this exit (same
-// rule as unlock.ParseRegionCheckFor).
-func regionVerdict(reported, exitRegion, evidence string) Verdict {
-	reported = strings.ToLower(reported)
-	if exitRegion == "" || unlock.NormRegion(reported) == unlock.NormRegion(exitRegion) {
-		return Verdict{Category: CatUnlocked, Region: reported, Evidence: evidence}
-	}
-	return Verdict{Category: CatNotUnlocked, Region: reported,
-		Evidence: evidence + fmt.Sprintf("；与出口地区 %s 不一致", strings.ToUpper(exitRegion))}
-}
 
 // ---- egress ---------------------------------------------------------------
 
@@ -378,10 +176,30 @@ type Result struct {
 	StartedAt  time.Time     `json:"started_at"`
 	FinishedAt time.Time     `json:"finished_at"`
 	Category   Category      `json:"category"`
-	Region     string        `json:"region,omitempty"`
-	Status     int           `json:"status,omitempty"`
-	Evidence   string        `json:"evidence,omitempty"`
-	Error      string        `json:"error,omitempty"`
+	// Grade is GradeOf(Category); Signal the marker code; Capability the
+	// adapter's declaration. Parts are the per-platform checks when an
+	// adapter has more than one (only the primary one is ingested).
+	Grade      Grade      `json:"grade,omitempty"`
+	Signal     string     `json:"signal,omitempty"`
+	Capability Capability `json:"capability,omitempty"`
+	Region     string     `json:"region,omitempty"`
+	Status     int        `json:"status,omitempty"`
+	Evidence   string     `json:"evidence,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	Parts      []Part     `json:"parts,omitempty"`
+}
+
+// Part is one platform check of a service.
+type Part struct {
+	Platform string   `json:"platform"`
+	Primary  bool     `json:"primary,omitempty"`
+	Category Category `json:"category"`
+	Grade    Grade    `json:"grade"`
+	Signal   string   `json:"signal,omitempty"`
+	Region   string   `json:"region,omitempty"`
+	Status   int      `json:"status,omitempty"`
+	Evidence string   `json:"evidence,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 // Report is one Spec's outcome.
@@ -441,8 +259,8 @@ func (p *Prober) Run(ctx context.Context, spec Spec) Report {
 		return fail("地址族必须是 ipv4 或 ipv6")
 	}
 	for _, s := range spec.Services {
-		if _, ok := Lookup(s); !ok {
-			return fail("服务 " + s + " 没有探测适配器")
+		if !Probeable(s) {
+			return fail("服务 " + s + " 没有可执行的探测适配器")
 		}
 	}
 	rep.Egress = p.egress(ctx, spec, timeout)
@@ -461,10 +279,18 @@ func (p *Prober) Run(ctx context.Context, spec Spec) Report {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
 				t := p.now()
-				results[i] = Result{Service: s, Family: spec.Family, StartedAt: t, FinishedAt: t, Category: CatFailed, Error: cancelText(ctx)}
+				results[i] = Result{Service: s, Family: spec.Family, StartedAt: t, FinishedAt: t, Category: CatFailed, Grade: GradeError, Error: cancelText(ctx)}
 				return
 			}
 			defer func() { <-sem }()
+			if !SupportsFamily(s, spec.Family) {
+				t := p.now()
+				a, _ := Lookup(s)
+				results[i] = Result{Service: s, Family: spec.Family, StartedAt: t, FinishedAt: t, Category: CatUnknown,
+					Grade: GradeUnknown, Signal: SigFamily, Capability: a.Capability,
+					Evidence: "该服务的公开检测方法只支持 IPv4，没有发出 IPv6 请求"}
+				return
+			}
 			results[i] = p.one(ctx, spec, s, timeout)
 		}(i, s)
 	}
@@ -490,6 +316,11 @@ func (p *Prober) Run(ctx context.Context, spec Spec) Report {
 				rep.Results[i].Category = CatFailed
 				rep.Results[i].Region = ""
 			}
+			rep.Results[i].Grade, rep.Results[i].Signal = GradeError, SigEgressChanged
+			for k := range rep.Results[i].Parts {
+				pt := &rep.Results[i].Parts[k]
+				pt.Category, pt.Grade, pt.Region, pt.Signal, pt.Error = CatFailed, GradeError, "", SigEgressChanged, msg
+			}
 		}
 	}
 	rep.FinishedAt = p.now()
@@ -502,7 +333,7 @@ func FailedReport(spec Spec, msg string, now time.Time) Report {
 	now = now.UTC()
 	rep := Report{ExitID: spec.ExitID, Family: spec.Family, StartedAt: now, FinishedAt: now, Error: msg}
 	for _, s := range spec.Services {
-		rep.Results = append(rep.Results, Result{Service: s, Family: spec.Family, StartedAt: now, FinishedAt: now, Category: CatFailed, Error: msg})
+		rep.Results = append(rep.Results, Result{Service: s, Family: spec.Family, StartedAt: now, FinishedAt: now, Category: CatFailed, Grade: GradeError, Error: msg})
 	}
 	return rep
 }
@@ -518,7 +349,7 @@ func (p *Prober) egress(ctx context.Context, spec Spec, timeout time.Duration) E
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var iface string
-	resp, err := p.fetch(ctx, spec.Family, TraceURL, traceHosts, &iface)
+	resp, err := p.fetch(ctx, spec.Family, Step{URL: TraceURL}, TraceURL, traceHosts, &iface)
 	if err != nil {
 		return Egress{Interface: iface, Error: errText(ctx, err)}
 	}
@@ -535,23 +366,70 @@ func (p *Prober) egress(ctx context.Context, spec Spec, timeout time.Duration) E
 
 func (p *Prober) one(ctx context.Context, spec Spec, service string, timeout time.Duration) Result {
 	a, _ := Lookup(service)
-	res := Result{Service: service, Family: spec.Family, StartedAt: p.now()}
+	res := Result{Service: service, Family: spec.Family, StartedAt: p.now(), Capability: a.Capability}
+	// One budget for the whole service: every check and step of it.
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	resp, err := p.fetch(ctx, spec.Family, a.URL, a.Hosts, nil)
-	res.FinishedAt = p.now()
-	if err != nil {
-		res.Category = CatFailed
-		res.Error = errText(ctx, err)
-		return res
+	parts := make([]Part, 0, len(a.Checks))
+	for _, c := range a.Checks {
+		parts = append(parts, p.check(ctx, spec, a, c))
 	}
-	v := a.Classify(resp, spec.Region)
-	res.Category, res.Region, res.Status = v.Category, v.Region, resp.Status
-	res.Evidence = v.Evidence
-	if resp.URL != nil {
-		res.Evidence += "（" + resp.URL.Host + resp.URL.Path + "）"
+	res.FinishedAt = p.now()
+	prim := parts[a.primary()]
+	res.Category, res.Region, res.Status = prim.Category, prim.Region, prim.Status
+	res.Evidence, res.Error, res.Signal = prim.Evidence, prim.Error, prim.Signal
+	res.Grade = GradeOf(res.Category)
+	if len(parts) > 1 {
+		res.Parts = parts
 	}
 	return res
+}
+
+// check runs one platform check: its fixed steps in order, then the
+// classifier on the last response.
+func (p *Prober) check(ctx context.Context, spec Spec, a Adapter, c Check) Part {
+	part := Part{Platform: c.Platform, Primary: c.Primary}
+	finish := func(v Verdict, r Response) Part {
+		v = a.enforce(v)
+		part.Category, part.Region, part.Signal, part.Status = v.Category, v.Region, v.Signal, r.Status
+		part.Evidence = v.Evidence
+		if r.URL != nil {
+			part.Evidence += "（" + r.URL.Host + r.URL.Path + "）"
+		}
+		part.Grade = GradeOf(part.Category)
+		return part
+	}
+	value := ""
+	var prev []Response
+	for i, st := range c.Steps {
+		target := st.URL
+		if strings.Contains(target, ValuePlaceholder) {
+			target = strings.Replace(target, ValuePlaceholder, url.QueryEscape(value), 1)
+		}
+		r, err := p.fetch(ctx, spec.Family, st, target, c.Hosts, nil)
+		if err != nil {
+			part.Category, part.Grade, part.Error = CatFailed, GradeError, errText(ctx, err)
+			return part
+		}
+		if i == len(c.Steps)-1 {
+			r.Prev = prev
+			return finish(c.Classify(r, spec.Region), r)
+		}
+		prev = append(prev, r)
+		if st.Extract == nil {
+			continue
+		}
+		v, stop := st.Extract(r)
+		if stop != nil {
+			return finish(*stop, r)
+		}
+		if !extractRe.MatchString(v) {
+			return finish(Verdict{Category: CatUnknown, Signal: SigUnexpected,
+				Evidence: fmt.Sprintf("前置请求 HTTP %d 返回的值格式不符合预期，未继续", r.Status)}, r)
+		}
+		value = v
+	}
+	return finish(Verdict{Category: CatUnknown, Signal: SigUnexpected, Evidence: "适配器没有请求步骤"}, Response{})
 }
 
 func errText(ctx context.Context, err error) string {
@@ -576,7 +454,7 @@ func errText(ctx context.Context, err error) string {
 // fetch GETs rawURL through the pinned network. Redirects are followed only
 // to https hosts in hosts (at most 4); a redirect elsewhere stops and the
 // redirect response itself is classified.
-func (p *Prober) fetch(ctx context.Context, fam unlock.Family, rawURL string, hosts []string, iface *string) (Response, error) {
+func (p *Prober) fetch(ctx context.Context, fam unlock.Family, st Step, rawURL string, hosts []string, iface *string) (Response, error) {
 	allowed := map[string]bool{}
 	for _, h := range hosts {
 		allowed[h] = true
@@ -637,19 +515,28 @@ func (p *Prober) fetch(ctx context.Context, fam unlock.Family, rawURL string, ho
 	client := &http.Client{
 		Transport: tr,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 4 || req.URL.Scheme != "https" || !allowed[req.URL.Hostname()] {
+			if st.NoRedirect || len(via) >= 4 || req.URL.Scheme != "https" || !allowed[req.URL.Hostname()] {
 				return http.ErrUseLastResponse
 			}
 			return nil
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	method := http.MethodGet
+	var reqBody io.Reader
+	if st.Body != "" {
+		method, reqBody = http.MethodPost, strings.NewReader(st.Body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, reqBody)
 	if err != nil {
 		return Response{}, err
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/html,application/json;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.8")
+	// Fixed catalog headers only (names checked by catalogHeaderOK).
+	for _, h := range st.Headers {
+		req.Header.Set(h[0], h[1])
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return Response{}, err
@@ -668,14 +555,4 @@ func (p *Prober) fetch(ctx context.Context, fam unlock.Family, rawURL string, ho
 	}
 	final.RawQuery, final.Fragment, final.User = "", "", nil
 	return Response{Status: resp.StatusCode, URL: &final, Body: body}, nil
-}
-
-// Services returns the catalog's rule ids, sorted.
-func Services() []string {
-	out := make([]string, 0, len(Catalog))
-	for _, a := range Catalog {
-		out = append(out, a.Service)
-	}
-	sort.Strings(out)
-	return out
 }

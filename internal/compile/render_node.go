@@ -96,17 +96,17 @@ func gatewayLAN(t model.Topology) string {
 	return "eth0"
 }
 
-func renderGuardNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan) string {
+func renderGuardNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
 	lan := gatewayLAN(t)
 	var sb strings.Builder
 	sb.WriteString("#!/usr/sbin/nft -f\n")
 	sb.WriteString("# Meridian early-boot LAN guard. Loaded by meridian-guard.service before\n")
 	sb.WriteString("# forwarding can be enabled. Replaces only table inet meridian_guard.\n")
-	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits))
+	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits, groups...), planRemote(t))
 	return sb.String()
 }
 
-func renderRTTables(t model.Topology, n model.Node, exits []ExitPlan) string {
+func renderRTTables(t model.Topology, n model.Node, exits []ExitPlan, groups []GroupPlan) string {
 	var sb strings.Builder
 	sb.WriteString("100\tmeridian_domestic\n")
 	sb.WriteString("102\tmeridian_foreign\n")
@@ -114,6 +114,9 @@ func renderRTTables(t model.Topology, n model.Node, exits []ExitPlan) string {
 	if n.Role == model.RoleHub {
 		for _, e := range exits {
 			fmt.Fprintf(&sb, "%d\tmeridian_%s\n", e.Table, strings.ReplaceAll(e.Node.ID, "-", "_"))
+		}
+		for _, g := range groups {
+			fmt.Fprintf(&sb, "%d\t%s\n", g.Table, g.tableName())
 		}
 	}
 	_ = t
@@ -257,7 +260,18 @@ fi
 	}
 	// Only the interfaces this manifest owns, never a glob: a config left
 	// behind by another (failed or rolled-back) apply is not brought up.
-	if ifaces := tunnelIfaces(tunnels); len(ifaces) > 0 {
+	// mra goes first so it holds its listen port before any tunnel without
+	// a ListenPort is given a random one. wg syncconf replaces the running
+	// peer set with the file's: a disabled or deleted device is gone here.
+	ifaces := tunnelIfaces(tunnels)
+	var rp *remotePlan
+	if n.Role == model.RoleGateway {
+		rp = planRemote(t)
+	}
+	if rp != nil {
+		ifaces = append([]string{rp.Iface}, ifaces...)
+	}
+	if len(ifaces) > 0 {
 		fmt.Fprintf(&sb, "for iface in %s; do\n", strings.Join(ifaces, " "))
 		sb.WriteString("  conf=\"/etc/wireguard/$iface.conf\"\n")
 		sb.WriteString("  if [ ! -f \"$conf\" ]; then\n")
@@ -270,6 +284,9 @@ fi
 		sb.WriteString("    wg-quick up \"$conf\"\n")
 		sb.WriteString("  fi\n")
 		sb.WriteString("done\n")
+	}
+	if rp != nil {
+		sb.WriteString(remoteUpCommands(rp))
 	}
 	// Seal the Mesh sidecar before policy routes, so a mesh exit table can
 	// point at mmesh on the first boot. A mesh failure must not skip routes:
@@ -308,6 +325,11 @@ fi
 	}
 	if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
 		sb.WriteString("enable_unit meridian-failover.service\n")
+		// enable --now does not restart a running service. The failover
+		// script carries the compiled group policy (targets, switch order)
+		// and resets the group tables to the compiled targets when it
+		// starts, so it must restart with the routes it belongs to.
+		sb.WriteString("systemctl restart meridian-failover.service\n")
 	}
 	if n.Role == model.RoleExit {
 		sb.WriteString("enable_unit meridian-unlock.timer\n")
@@ -449,9 +471,19 @@ done < "$MERIDIAN_FWD"
 // ruleset that did not load. On the gateway a missing file or a missing
 // guard table after the load is also a failure: forwarding must not be
 // turned on without the LAN guard.
+//
+// On the gateway the last chnroute batch the list update loaded
+// (lists.SavedBatchPath) is appended to the ruleset before the check, so a
+// reload does not leave chnroute empty until the next update. The saved
+// file may only hold "flush set" / "add element" lines for the two
+// chnroute sets; a file with anything else, or a combination nft -c
+// rejects, is ignored and the compiled ruleset alone is checked and loaded.
 func nftLoadCommands(gateway bool) string {
 	var sb strings.Builder
 	sb.WriteString("MERIDIAN_NFT=/etc/nftables.d/meridian.nft\n")
+	if gateway {
+		sb.WriteString(chnrouteReaddCommands)
+	}
 	sb.WriteString("if [ -f \"$MERIDIAN_NFT\" ]; then\n")
 	sb.WriteString("  if ! nft -c -f \"$MERIDIAN_NFT\"; then\n")
 	sb.WriteString("    echo \"meridian-nft-check-failed: running ruleset left unchanged; routes and forwarding not touched\" >&2\n")
@@ -572,3 +604,22 @@ RestartSec=2
 WantedBy=multi-user.target
 `, desc, exec)
 }
+
+// chnrouteReaddCommands builds the ruleset with the saved chnroute
+// elements (see nftLoadCommands). It only changes which file
+// MERIDIAN_NFT names; the check and the load stay the single nft -c / nft -f
+// pair below it.
+const chnrouteReaddCommands = `MERIDIAN_NFT_BASE="$MERIDIAN_NFT"
+MERIDIAN_CHNROUTE_SAVED=/var/lib/meridian/lists/chnroute.nft
+if [ -f "$MERIDIAN_NFT_BASE" ] && [ -s "$MERIDIAN_CHNROUTE_SAVED" ]; then
+  if grep -qvE '^(flush set inet meridian chnroute6?|add element inet meridian chnroute6? \{ [0-9A-Fa-f.:/]+(, [0-9A-Fa-f.:/]+)* \})$' "$MERIDIAN_CHNROUTE_SAVED"; then
+    echo "meridian-chnroute-saved-ignored: $MERIDIAN_CHNROUTE_SAVED has unexpected lines; chnroute stays empty until the next list update" >&2
+  elif cat "$MERIDIAN_NFT_BASE" "$MERIDIAN_CHNROUTE_SAVED" > /var/lib/meridian/lists/.boot.nft; then
+    MERIDIAN_NFT=/var/lib/meridian/lists/.boot.nft
+    if ! nft -c -f "$MERIDIAN_NFT"; then
+      echo "meridian-chnroute-saved-ignored: the saved chnroute elements do not load with this ruleset; loading the compiled ruleset alone" >&2
+      MERIDIAN_NFT="$MERIDIAN_NFT_BASE"
+    fi
+  fi
+fi
+`

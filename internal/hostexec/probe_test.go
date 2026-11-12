@@ -48,7 +48,7 @@ func TestValidateProbeIsClosed(t *testing.T) {
 		"no egress identity":   func(r *ProbeRequest) { r.Region, r.ExpectAddr = "", "" },
 		"region shaped":        func(r *ProbeRequest) { r.Region = "hk;rm" },
 		"url as service":       func(r *ProbeRequest) { r.Services = []string{"https://evil.example/"} },
-		"service w/o adapter":  func(r *ProbeRequest) { r.Services = []string{"auto-bahamut"} },
+		"service w/o adapter":  func(r *ProbeRequest) { r.Services = []string{"auto-nope"} },
 		"duplicate service":    func(r *ProbeRequest) { r.Services = []string{"auto-netflix", "auto-netflix"} },
 		"no services":          func(r *ProbeRequest) { r.Services = nil },
 		"exit id with slash":   func(r *ProbeRequest) { r.ExitID = "../etc" },

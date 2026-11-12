@@ -1,5 +1,5 @@
 [Unit]
-Description=Meridian host executor (fixed actions for the panel: activate, health, rollback; read-only unlock probe)
+Description=Meridian host executor (fixed actions for the panel: activate, health, rollback, list update; read-only unlock probe)
 Documentation=file:///usr/share/doc/meridian/architecture.md
 After=local-fs.target
 # The panel container bind-mounts /run/meridian-host; create it first.
@@ -30,11 +30,20 @@ StateDirectoryMode=0700
 # catalog targets, sockets carrying an exit's fwmark (SO_MARK needs
 # CAP_NET_ADMIN) from its transit address on lo, DNS through the exit's
 # tunnel resolver. The probe never sends anything that fails the route check.
+# The list update (/v1/lists) also uses AF_INET/AF_INET6: HTTPS downloads
+# from the fixed sources in internal/lists (domestic jsDelivr mirror,
+# overseas GitHub raw), then it writes only the list directories below and
+# loads chnroute with one "nft -f" of a batch it generated itself. A LAN
+# copy may replace the domestic source with
+#   Environment=MERIDIAN_GEOSITE_BASE_URL=http://...   (drop-in only)
+#   Environment=MERIDIAN_CHNROUTE_BASE_URL=http://...
 User=root
 CapabilityBoundingSet=CAP_NET_ADMIN
 AmbientCapabilities=
 NoNewPrivileges=yes
 ProtectSystem=strict
+# Everything else stays read-only under ProtectSystem=strict.
+ReadWritePaths=-/var/lib/meridian/geosite -/var/lib/meridian/keywords -/var/lib/meridian/lists
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

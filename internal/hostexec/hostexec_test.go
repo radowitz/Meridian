@@ -677,6 +677,8 @@ func TestDeployWiring(t *testing.T) {
 		"CapabilityBoundingSet=CAP_NET_ADMIN\n",
 		"NoNewPrivileges=yes\n",
 		"ProtectSystem=strict\n",
+		// The list action writes exactly these (DefaultListsDir).
+		"ReadWritePaths=-" + DefaultListsDir + "/geosite -" + DefaultListsDir + "/keywords -" + DefaultListsDir + "/lists\n",
 		"RuntimeDirectoryPreserve=yes\n",
 		// The unlock probe needs IP sockets; still no raw/packet sockets.
 		"RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6\n",
@@ -714,4 +716,26 @@ func stripComments(s string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+func TestRemoteAccessInterfaceIsNarrow(t *testing.T) {
+	for _, ok := range []string{"mra", "m00", "m00w", "m123", "mmesh"} {
+		if !ValidInterface(ok) {
+			t.Errorf("%s must be a managed interface", ok)
+		}
+	}
+	for _, bad := range []string{"mra0", "mraa", "xmra", "mr", "mra ", "eth0", "wg0", "m0", "lo"} {
+		if ValidInterface(bad) {
+			t.Errorf("%q must not be a managed interface", bad)
+		}
+	}
+	if ProbeEgressInterface("mra") {
+		t.Fatal("the remote-access ingress must never count as a probe egress")
+	}
+	if !ProbeEgressInterface("m00") {
+		t.Fatal("tunnels stay probe egresses")
+	}
+	if err := Validate(Request{Action: ActionRollback, RequestID: "r1", Resources: Resources{Interfaces: []string{"mra"}}}); err != nil {
+		t.Fatalf("removing mra must be a valid request: %v", err)
+	}
 }

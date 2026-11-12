@@ -14,7 +14,7 @@ flowchart LR
   ix -->|"直连 WG"| hub["香港枢纽<br/>无 IPv6"]
   gw -.->|"IX 替换 WSS 待命"| hub
   ali -.->|"IX 替换 WSS 待命"| hub
-  hub --> hkix["香港出口池<br/>优先 IX 绑定"]
+  hub --> hkix["香港地区组<br/>优先 IX 绑定"]
   hub --> resi["香港家宽<br/>Netflix / Disney+"]
   hub --> jp["日本"]
   hub --> sg["新加坡"]
@@ -28,21 +28,26 @@ flowchart LR
   tw --> inet
 ```
 
-实线是主路。虚线是预先配好、默认不进路由表的 IX 替换隧道。Mesh 只允许作为「枢纽 → 出口」的备路，跑在枢纽和出口上的独立网络命名空间里，不能绕过 IX，也不装在这台家宽网关上。
+实线是主路。虚线是预先配好、默认不进路由表的 IX 替换隧道。Mesh 只允许作为「枢纽 → 出口」的备路，跑在枢纽和出口上的独立网络命名空间里，不能绕过 IX，也不装在这台家宽网关上。出门在外的手机和笔记本可以经网关上的 WireGuard 远程接入回家，按局域网同样的规则分流。
 
 ## 这一期有什么
 
-- 每出口一张路由表和 fwmark。国内走 chnroute / chnroute6，默认境外是香港池里 IX 绑定的出口。
+- 每出口一张路由表和 fwmark。国内走 chnroute / chnroute6，默认境外走默认地区组（示例是香港，自动组优先 IX 绑定的出口）。
+- 地区组：出口按地区分组，组可以自动（按用户排的顺序切换，IX 优先，带滞回）或手动（指定成员，失效时保持或回落）；每个组有自己的标记、中转地址和枢纽路由表。旧的出口池在升级时迁移成组。
+- 名单源：国内镜像、海外（GitHub raw）或全自动；geosite 的 `include:` 递归展开；更新经宿主上的 `meridian-host` 执行，失败保留旧版，重载时重新加入上次的 chnroute；宿主记录每个名单的来源、时间和条数。
+- 服务器、密钥与 Cloudflare：远端机器是面板里的「服务器」（密码或私钥登录、主机指纹先发现再确认、连接测试），装机和 Mesh 部署只按 ID 引用；Cloudflare 账户带只读权限检查。秘密放在单独的 `meridian-secrets` 卷，只靠文件权限保护，没有静态加密。
+- 远程接入：网关上的 `mra` 接口作为第二个受管入口，和局域网同一套分类、DNS 和兜底表；设备之间不互通，面板不对设备开放；设备配置只显示一次。路由器端口转发由你自己做。
+- 解锁探测：面板经 `meridian-host` 从所选出口探测 14 个流媒体 / AI 适配器，结果按证据分级，真实平台结论待人工核对（[unlock-methods.md](docs/unlock-methods.md)）。
 - 家宽到阿里云同时生成 UDP WireGuard 和 WG-over-WSS，按握手和探测切换，带回滞。MTU 按 PPPoE 1492 规划：UDP 1412，WSS 1360，低于 1280 拒绝。
 - IX 替换用的两条 WSS（阿里云 → 枢纽、家宽 → 枢纽）随配置一起生成并探测，替换模式关掉时不是默认下一跳。
 - 隧道内使用 `fd66::/48`。这条 ULA 不会指向 ROS。有 IPv6 的出口做 NAT66，没有的出口过滤 AAAA，仍走同一出口的 v4。
 - 台湾和香港家宽按「由对端拨向枢纽」生成配置：枢纽不写公网 Endpoint，PersistentKeepalive 必须打开。
 - DNS 劫持 53/853，并按已知清单拦截 DoH。清单不能覆盖所有 DoH，文档里写明了这个边界。
-- 面板可以加节点、拉线选择传输、校验必经 IX、编译配置、看差分、下发和回滚，并带手动规则和 geosite 默认表。
-- SSH 装机脚本用 `wg syncconf` 更新，避免拆掉 NAT 映射。演练模式不连接远端。
-- 二期：同一池里可以有多台香港出口和多条家宽。健康检查在枢纽上做，连续失败才换下一跳，并带回滞。Mesh 以 sidecar 跑在枢纽和出口上。
+- 面板（概览、拓扑、出口与地区组、分流规则、名单、服务器、密钥、Cloudflare、远程接入、部署、解锁、防泄露）可以加节点、拉线选择传输、校验必经 IX、编译配置、看差分、安装到本机和回滚，并带手动规则和 geosite 默认表；顶栏显示宿主执行通道和安装状态。
+- SSH 装机经面板里的服务器执行（脚本走标准输入），用 `wg syncconf` 更新，避免拆掉 NAT 映射。演练模式不连接远端。
+- 二期：同一组里可以有多台香港出口和多条家宽。健康检查在枢纽上做，连续失败才换下一跳，并带回滞。Mesh 以 sidecar 跑在枢纽和出口上。
 - 三期：纯 IPv6 出口经双栈中继或 Mesh 到达；NAT64 只生成占位文件；面板有防泄露清单，并写明 WebRTC host 候选的 GUA 限制。
-- 验收分三级：`go test` 的自动化回归、在 Linux 上实际运行并存档的集成证据（netns 测试、`meridian-verify.sh` 等），以及测试机 / ROS / 断隧道 / 抓包的人工签收。单元测试和面板的「配置包含」都不证明没有泄漏，见[验收清单](docs/verification.md)。
+- 验收分三级：`go test` / 面板测试的自动化回归、在 Linux 上实际运行并存档的集成证据（netns 测试、`meridian-verify.sh` 等），以及测试机 / ROS / 断隧道 / 抓包 / 真实出口切换 / Cloudflare / 路由器转发 / 手机拨入 / 平台解锁的人工签收。单元测试和面板的「配置包含」都不证明没有泄漏，见[验收清单](docs/verification.md)。仓库里存档的 2026-11-12 Debian 13 执行记录早于地区组、名单源、远程接入、新的解锁适配器和面板重建，不覆盖它们。
 
 ## 路线图
 
@@ -51,6 +56,7 @@ flowchart LR
 | 一期 | 必经 IX 的 WG、UDP/WSS、预置替换隧道、香港池、ULA、默认规则和手动规则、台湾拨出、家宽属性 |
 | 二期（本仓库） | 多港机与多家宽池化、按成员做健康检查和滞回、Mesh sidecar、每 6 小时解锁测试、同网段 rp_filter / 重定向验收 |
 | 三期（本仓库） | 纯 IPv6 与「v6 入 v4 出」走双栈中继或 Mesh；NAT64 只预留、不进路由表；防泄露清单，含 WebRTC host 候选的 GUA 限制 |
+| 面板改版（本仓库，未在真实网关上验收） | 服务器 / 密钥 / Cloudflare 账户与秘密存储、旧安装接管、地区组替换出口池、可选名单源、远程 WireGuard 接入、14 个解锁适配器与证据分级、面板重建与 `GET /api/status` |
 
 纯 IPv6 出口在枢纽没有 IPv6、又没有把绕行真正接上时，面板会拒绝保存。家宽网关不运行 Mesh。NAT64 即使在面板里标成启用，也不会改写现有 IPv4 路由。
 
@@ -77,17 +83,23 @@ sudo docker compose -f deploy/docker-compose.yml exec meridian cat /var/lib/meri
 - [测试设备](docs/test-device.md)
 - [验收清单](docs/verification.md)
 - [数据面说明](docs/architecture.md)
+- [远程接入](docs/remote-access.md)
+- [解锁探测方法与证据分级](docs/unlock-methods.md)
 
 本地开发和测试：
 
 ```bash
-go test ./...
-cd web && npm ci && npm run build
+go test ./...                     # 代码级回归；netns 测试在这里跳过（需要 Linux root 和 MERIDIAN_NETNS_TEST=1）
+npm --prefix web ci
+npm --prefix web run build        # 类型检查 + 打包
+npm --prefix web test             # 面板用例（vitest，假 API）
 MERIDIAN_BIND=127.0.0.1:8787 MERIDIAN_DATA=/tmp/meridian MERIDIAN_WEB_DIR=web/dist go run ./cmd/meridian
 ```
+
+这些只提供代码级证据，见[验收清单](docs/verification.md)「每个命令能证明什么」。
 
 ## English
 
 Meridian is a LAN policy-routing gateway. Test clients use `192.168.100.88` as their IPv4 gateway and DNS. China prefixes go straight out via RouterOS `192.168.100.1`. Everything else must cross Aliyun Shanghai, the Shenzhen–Hong Kong IX, and the Hong Kong hub before it reaches an exit. The existing mihomo host and RouterOS stay untouched.
 
-The compiler covers the IX path, pool failover, a Mesh sidecar that cannot bypass the IX, six-hour unlock hysteresis, and pure-IPv6 reachability through a dual-stack relay or Mesh. Streaming/AI unlock tests can be started from the panel (解锁 → 面板探测) and run on the same chain as the six-hour schedule: meridian-host sends them through the chosen exit's fwmark and transit address over a forced IPv4 or IPv6, confirms the actual egress before and after, and only fixed catalog targets are probed; real-platform verdicts and the on-gateway egress still need human sign-off (docs/verification.md). NAT64 is reserved and is not installed into the routing table. Documentation addresses only; do not commit real endpoints or keys. Read the panel token from inside the container (`docker compose -f deploy/docker-compose.yml exec meridian cat /var/lib/meridian/panel.token`); it lives in a named volume, not on the host path. Unit tests and the panel checklist only check generated configuration; they do not prove the absence of leaks. Release needs the gateway `meridian-verify.sh` output, isolated Linux integration logs and human sign-off on a real client, ROS, a tunnel cut and packet captures (docs/verification.md).
+The compiler covers the IX path, region groups (manual or automatic exit selection per region, migrated from the old pools), selectable list sources, remote WireGuard access for the user's own devices (a second managed ingress with the LAN's rules), managed servers / SSH credentials / Cloudflare accounts (secrets in a separate volume protected by file permissions only, no encryption at rest), a Mesh sidecar that cannot bypass the IX, six-hour unlock hysteresis, and pure-IPv6 reachability through a dual-stack relay or Mesh. Streaming/AI unlock tests can be started from the panel (解锁 → 面板探测) and run on the same chain as the six-hour schedule: meridian-host sends them through the chosen exit's fwmark and transit address over a forced IPv4 or IPv6, confirms the actual egress before and after, and only fixed catalog targets are probed; real-platform verdicts and the on-gateway egress still need human sign-off (docs/verification.md). NAT64 is reserved and is not installed into the routing table. Documentation addresses only; do not commit real endpoints or keys. Read the panel token from inside the container (`docker compose -f deploy/docker-compose.yml exec meridian cat /var/lib/meridian/panel.token`); it lives in a named volume, not on the host path. Unit tests and the panel checklist only check generated configuration; they do not prove the absence of leaks. Release needs the gateway `meridian-verify.sh` output, isolated Linux integration logs and human sign-off on a real client, ROS, a tunnel cut and packet captures, plus real exit switching, Cloudflare Mesh, the router forward and a phone on cellular (docs/verification.md, docs/remote-access.md). The archived 2026-11-12 Debian 13 record predates region groups, list sources, remote access, the unlock adapters and the panel rebuild.

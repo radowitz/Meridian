@@ -15,6 +15,9 @@ import (
 type Credentials struct {
 	AccountID string `json:"account_id"`
 	APIToken  string `json:"api_token"`
+	// Ref is the credential-store account object the credentials came
+	// from ("" for the old file). Never serialised.
+	Ref string `json:"-"`
 }
 
 // CredentialView is what the panel may show.
@@ -28,7 +31,28 @@ func (c Credentials) View() CredentialView {
 	return CredentialView{AccountID: c.AccountID, TokenSet: c.APIToken != ""}
 }
 
-// CredStore persists Credentials.
+// CredentialSource is where a Deployer reads (and the old Mesh card
+// writes) the Cloudflare credentials it binds to. CredStore is the original
+// file; the panel passes an adapter over internal/credentials, where the
+// file is migrated to (the account selected for Mesh).
+type CredentialSource interface {
+	Load() (Credentials, error)
+	Save(Credentials) error
+	Delete() error
+}
+
+// WithDeploymentLock runs fn while no deployment, withdrawal or credential
+// change of a Deployer can run, so a caller can check the journal's account
+// binding and change stored accounts atomically with respect to them.
+func WithDeploymentLock(fn func() error) error {
+	deployMu.Lock()
+	defer deployMu.Unlock()
+	return fn()
+}
+
+// CredStore persists Credentials in <Dir>/cloudflare.json. Since the
+// credential store exists it is only read to migrate the file (and by
+// tests).
 type CredStore struct{ Dir string }
 
 func (s CredStore) path() string { return filepath.Join(s.Dir, "cloudflare.json") }

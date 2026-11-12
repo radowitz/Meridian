@@ -121,8 +121,8 @@ func ValidateProbe(req ProbeRequest) error {
 	}
 	seen := map[string]bool{}
 	for _, s := range req.Services {
-		if _, ok := probe.Lookup(s); !ok {
-			return fmt.Errorf("服务 %q 没有探测适配器", s)
+		if !probe.Probeable(s) {
+			return fmt.Errorf("服务 %q 没有可执行的探测适配器", s)
 		}
 		if seen[s] {
 			return fmt.Errorf("服务 %q 重复", s)
@@ -222,8 +222,8 @@ func (a *Agent) Probe(ctx context.Context, req ProbeRequest) (probe.Report, int)
 		pn = a.ProbeNetwork(req, hn)
 	}
 	p := &probe.Prober{
-		Net: pn, AllowIface: ValidInterface, RootCAs: a.ProbeRootCAs,
-		TargetTimeout: a.ProbeTargetTimeout, Concurrency: 3,
+		Net: pn, AllowIface: ProbeEgressInterface, RootCAs: a.ProbeRootCAs,
+		TargetTimeout: a.ProbeTargetTimeout, Concurrency: 4,
 	}
 	return p.Run(pctx, spec), http.StatusOK
 }
@@ -361,3 +361,14 @@ func (c *Client) Probe(ctx context.Context, req ProbeRequest) (probe.Report, err
 // ProbeNetworkFunc lets tests replace the pinned network (which needs Linux,
 // root and the gateway's routes). base is the real host network.
 type ProbeNetworkFunc func(req ProbeRequest, base probe.Network) probe.Network
+
+// ProbeEgressInterface is where a probe connection may leave: a Meridian
+// tunnel or the Mesh veth. The remote-access interface is a managed
+// ingress, never an egress for an exit's traffic.
+func ProbeEgressInterface(name string) bool {
+	return ValidInterface(name) && name != RemoteAccessIface
+}
+
+// RemoteAccessIface mirrors model.RemoteAccessIface (hostexec does not
+// import the model).
+const RemoteAccessIface = "mra"

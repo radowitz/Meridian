@@ -29,21 +29,24 @@ func (s *Server) unlockDecisions(t model.Topology) map[string]string {
 	return unlock.Decisions(s.loadUnlock(), servicesOf(t))
 }
 
+// servicesOf lists every enabled rule aimed at a region group: the group's
+// effective order is the service's member list (the unlock map never
+// leaves it), and rules of a manual group are pinned (recorded only).
 func servicesOf(t model.Topology) []unlock.Service {
 	var out []unlock.Service
 	for _, r := range t.Rules {
-		if !r.Enabled || r.TargetPool == "" {
+		if !r.Enabled || r.TargetGroup == "" {
 			continue
 		}
-		members := pool.Names(pool.Members(t, r.TargetPool))
-		pref := ""
-		if len(members) > 0 {
-			pref = members[0]
+		g, ok := t.GroupByID(r.TargetGroup)
+		if !ok {
+			continue
 		}
+		sel := pool.Select(t, g, nil)
 		out = append(out, unlock.Service{
-			RuleID: r.ID, Name: r.Name, Pool: r.TargetPool,
-			Preferred: pref, Members: members,
-			Pin: r.Mode == model.ModePin,
+			RuleID: r.ID, Name: r.Name, Pool: g.ID,
+			Preferred: sel.Target, Members: append([]string{}, sel.Order...),
+			Pin: g.Mode == model.GroupManual,
 		})
 	}
 	return out
@@ -107,121 +110,37 @@ func (s *Server) savePools(doc poolDoc) error {
 	return s.Store.Put(poolKey, string(buf))
 }
 
+// getPools is the legacy pool listing, now one entry per region group.
 func (s *Server) getPools(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	t, err := s.topology()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	doc := s.loadPools()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"pools": pool.Pools(t, meshPools(t), doc.Pools),
+		"pools": pool.Pools(t, meshGroups(t), s.groupRuntime()),
 	})
 }
 
-func meshPools(t model.Topology) map[string]bool {
+// meshGroups: groups whose hub table may fall back to the Mesh sidecar.
+func meshGroups(t model.Topology) map[string]bool {
 	out := map[string]bool{}
-	hub := ""
-	memberPool := map[string]string{}
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleHub {
-			hub = n.ID
-		}
-		if n.Role == model.RoleExit {
-			memberPool[n.ID] = n.Pool
-		}
-	}
-	for _, l := range t.Links {
-		if l.Transport != model.TransportCFMesh || !l.Enabled {
-			continue
-		}
-		var exit string
-		switch {
-		case l.From == hub:
-			exit = l.To
-		case l.To == hub:
-			exit = l.From
-		default:
-			continue
-		}
-		if p := memberPool[exit]; p != "" {
-			out[p] = true
-		}
+	plans := plansOf(t)
+	for _, g := range t.Groups {
+		out[g.ID] = plans.plan(t, g).Mesh
 	}
 	return out
 }
 
-type healthBody struct {
-	Observations []struct {
-		ID string `json:"id"`
-		Up bool   `json:"up"`
-	} `json:"observations"`
-}
-
+// postPoolHealth is the legacy health endpoint; it feeds the region-group
+// state machine (POST /api/region-groups/health) and answers in the old shape.
 func (s *Server) postPoolHealth(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	body, err := readLimited(r, 1<<20)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	t, flipped, ok := s.readHealth(w, r)
+	if !ok {
 		return
-	}
-	var in healthBody
-	if err := json.Unmarshal(body, &in); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	t, err := s.topology()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	doc := s.loadPools()
-	now := time.Now().UTC()
-	byPool := map[string]map[string]bool{}
-	known := map[string]model.Node{}
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleExit {
-			known[n.ID] = n
-		}
-	}
-	var flipped []string
-	for _, ob := range in.Observations {
-		n, ok := known[ob.ID]
-		if !ok || n.Pool == "" {
-			continue
-		}
-		if byPool[n.Pool] == nil {
-			byPool[n.Pool] = map[string]bool{}
-		}
-		byPool[n.Pool][ob.ID] = ob.Up
-		prev, seen := doc.Pools[n.Pool].Members[ob.ID]
-		if seen && prev.Up != ob.Up {
-			flipped = append(flipped, ob.ID)
-		}
-	}
-	mesh := meshPools(t)
-	for name, sample := range byPool {
-		members := pool.Names(pool.Members(t, name))
-		doc.Pools[name] = pool.Step(doc.Pools[name], members, sample, mesh[name], now)
-	}
-	if err := s.savePools(doc); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	if len(flipped) > 0 {
-		snap := s.loadUnlock()
-		snap.History = append(snap.History, unlock.HistoryEntry{
-			At: now, Kind: unlock.KindHealth, Service: "pool",
-			ExitID: strings.Join(flipped, ","),
-			Note:   "出口健康变化，等待解锁补测。链路状态不直接改自动规则。",
-		})
-		_ = s.saveUnlock(snap)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"pools":   pool.Pools(t, mesh, doc.Pools),
+		"pools":   pool.Pools(t, meshGroups(t), s.groupRuntime()),
 		"flipped": flipped,
 	})
 }
@@ -342,10 +261,15 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 	for k, v := range unlock.ParseRegionCheckFor(in.Raw6, exit.Region) {
 		put(k, unlock.FamilyIPv6, v)
 	}
+	// The exit's curl lines are reachability only (an HTTP status, any
+	// status): they are recorded through Ingest with a note and never step
+	// the state machine, so a mere "it answered" can neither restore nor
+	// demote an exit (and a timeout, code 000, is not a platform verdict).
+	reach := map[string]map[unlock.Family]bool{}
 	for k, v := range unlock.ParseAICodes(in.AI) {
-		put(k, family, v)
+		reach[k] = map[unlock.Family]bool{family: v}
 	}
-	if len(results) == 0 {
+	if len(results) == 0 && len(reach) == 0 {
 		writeErr(w, http.StatusBadRequest, errors.New("没有识别出的服务结果。未知格式不会被当成失败。"))
 		return
 	}
@@ -371,6 +295,20 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 		ob := unlock.Observation{Service: id, ExitID: exit.ID, Kind: kind, ObservedAt: observed, Results: results[id]}
 		outcomes = append(outcomes, unlock.Ingest(&snap, ob, svc.Members, note, now)...)
 	}
+	rids := make([]string, 0, len(reach))
+	for id := range reach {
+		rids = append(rids, id)
+	}
+	sort.Strings(rids)
+	for _, id := range rids {
+		svc, found := svcByID[id]
+		if !found {
+			continue
+		}
+		seedState(&snap, svc)
+		ob := unlock.Observation{Service: id, ExitID: exit.ID, Kind: kind, ObservedAt: observed, Results: reach[id]}
+		outcomes = append(outcomes, unlock.Ingest(&snap, ob, svc.Members, reachOnlyNote, now)...)
+	}
 	// An exit-side report does not move NextRun: that is the panel's own
 	// probe schedule (unlock_probe.go).
 	if err := s.saveUnlock(snap); err != nil {
@@ -384,6 +322,10 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 		"outcomes":      outcomes,
 	})
 }
+
+// reachOnlyNote marks an exit-side curl status line: reachability, not an
+// unlock verdict. Recorded only.
+const reachOnlyNote = "仅到达性（出口 curl 的 HTTP 状态码），不是解锁判断：只记录，不计入切换或恢复。"
 
 func canonicalService(name string) (string, bool) {
 	if id, ok := unlock.AIRuleID(name); ok {

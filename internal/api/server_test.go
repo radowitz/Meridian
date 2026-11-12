@@ -206,6 +206,10 @@ func TestPoolsUnlockAndLeakcheck(t *testing.T) {
 		`"id":"dnsleak_client","status":"pending_signoff","scope":"human"`,
 		`"id":"ros_ula_blackhole","status":"pending_signoff","scope":"human"`,
 		`"id":"netns_reload_no_leak","status":"unknown","scope":"integration"`,
+		`"id":"lists_update_runtime","status":"unknown","scope":"integration"`,
+		`"id":"real_exit_switch","status":"pending_signoff","scope":"human"`,
+		`"id":"unlock_platform_verdicts","status":"pending_signoff","scope":"human"`,
+		`"id":"group_marks_routed","status":"pass","scope":"automated"`,
 	} {
 		if !strings.Contains(rr.Body.String(), want) {
 			t.Fatalf("leakcheck must not report unexecuted evidence as passed; missing %s", want)
@@ -243,7 +247,7 @@ func TestPhase23RequiresToken(t *testing.T) {
 func TestUnlockReportClock(t *testing.T) {
 	s := newTest(t)
 	do(s, http.MethodGet, "/api/topology", nil)
-	fail := `{"exit_id":"us","kind":"scheduled","ai":"openai 000"}`
+	fail := `{"exit_id":"us","kind":"scheduled","services":{"openai":false}}`
 	for i := 0; i < 2; i++ {
 		rr := do(s, http.MethodPost, "/api/unlock/report", []byte(fail))
 		if rr.Code != 200 {
@@ -252,11 +256,11 @@ func TestUnlockReportClock(t *testing.T) {
 	}
 	past := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
 	older := time.Now().UTC().Add(-90 * time.Minute).Format(time.RFC3339)
-	rr := do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us-2","kind":"scheduled","at":"`+past+`","ai":"openai 200"}`))
+	rr := do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us-2","kind":"scheduled","at":"`+past+`","services":{"openai":true}}`))
 	if rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
-	rr = do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us","kind":"scheduled","at":"`+older+`","ai":"openai 200"}`))
+	rr = do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us","kind":"scheduled","at":"`+older+`","services":{"openai":true}}`))
 	if rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
@@ -541,39 +545,34 @@ func TestApplyInstallRefusesPublicOnlyGateway(t *testing.T) {
 	}
 }
 
+// Provisioning runs only through the node's managed server: a node
+// without one (or with an untrusted one) is refused before any key is
+// generated, and a preview never needs a server.
 func TestProvisionKeyPaths(t *testing.T) {
 	s := newTest(t)
 	do(s, http.MethodGet, "/api/topology", nil)
-	// generate_keys=false with no stored key fails before SSH is attempted
-	// (the PEM is junk; reaching SSH would report a parse error instead).
-	rr := do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","ssh_host":"192.0.2.1","private_key_pem":"junk","generate_keys":false}`))
-	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "私钥") {
+	rr := do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","generate_keys":false}`))
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"code":"no_server"`) {
 		t.Fatal(rr.Code, rr.Body.String())
 	}
-	// generate_keys=true without SSH stores a pair and returns a redacted,
-	// non-runnable preview.
 	rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","generate_keys":true}`))
-	if rr.Code != 200 {
+	if rr.Code != http.StatusConflict {
 		t.Fatal(rr.Code, rr.Body.String())
 	}
-	tw := storedNode(t, s, "tw")
-	if tw.PrivateKey == "" || !strings.Contains(rr.Body.String(), tw.PublicKey) {
-		t.Fatal("generate_keys did not store and report the pair")
+	if tw := storedNode(t, s, "tw"); tw.PrivateKey != "" {
+		t.Fatal("a refused provision generated a key")
 	}
-	if strings.Contains(rr.Body.String(), tw.PrivateKey) {
-		t.Fatal("provision preview leaked the key")
-	}
-	if !strings.Contains(rr.Body.String(), "__MERIDIAN_PRIVATE_KEY__") || !strings.Contains(rr.Body.String(), "refusing to overwrite") {
-		t.Fatal("preview must keep the placeholder and refuse to run")
-	}
-	// Reuse path: with a stored key, generate_keys=false gets past key
-	// resolution and fails only at SSH parsing (no network is touched).
-	rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","ssh_host":"192.0.2.1","private_key_pem":"junk","generate_keys":false}`))
-	if rr.Code != http.StatusBadGateway || strings.Contains(rr.Body.String(), tw.PrivateKey) {
+	// A preview needs no server and carries the placeholder.
+	rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","dry_run":true}`))
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "__MERIDIAN_PRIVATE_KEY__") || !strings.Contains(rr.Body.String(), "refusing to overwrite") {
 		t.Fatal(rr.Code, rr.Body.String())
 	}
-	if again := storedNode(t, s, "tw"); again.PrivateKey != tw.PrivateKey {
-		t.Fatal("reuse replaced the stored key")
+	// The old request fields are refused, not ignored.
+	for _, f := range []string{`"ssh_host":"192.0.2.1"`, `"ssh_port":22`, `"ssh_user":"root"`, `"private_key_pem":"junk"`, `"trust_new_host":true`} {
+		rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","dry_run":true,`+f+`}`))
+		if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"code":"field_removed"`) {
+			t.Fatal(f, rr.Code, rr.Body.String())
+		}
 	}
 }
 
@@ -670,7 +669,7 @@ func TestUnlockReportOrderingAndFailureBlocksReturn(t *testing.T) {
 	s := newTest(t)
 	do(s, http.MethodGet, "/api/topology", nil)
 	post := func(exit, at, ai string) string {
-		body := `{"exit_id":"` + exit + `","kind":"scheduled","ai":"` + ai + `"`
+		body := `{"exit_id":"` + exit + `","kind":"scheduled","services":{"openai":` + fmt.Sprint(ai == "openai 200") + `}`
 		if at != "" {
 			body += `,"at":"` + at + `"`
 		}
@@ -728,7 +727,7 @@ func TestUnlockReportConcurrentNewestWins(t *testing.T) {
 				code = "000" // the newest observation is a failure
 			}
 			at := now.Add(time.Duration(i-20) * time.Minute).Format(time.RFC3339)
-			rr := do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us","kind":"manual","family":"ipv4","at":"`+at+`","ai":"openai `+code+`"}`))
+			rr := do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us","kind":"manual","family":"ipv4","at":"`+at+`","services":{"openai":`+fmt.Sprint(code == "200")+`}}`))
 			if rr.Code != 200 {
 				t.Errorf("%d %s", rr.Code, rr.Body.String())
 			}
@@ -822,15 +821,19 @@ func (m *memCF) DeleteRoute(_ context.Context, id string) error {
 	return nil
 }
 
-// okRemote answers like healthy hosts; each presents host key
-// "SHA256:api-<id>" and it records the target of every call.
+// okRemote answers like healthy hosts; each presents host key fpFor(<id>)
+// (or keys[<id>]) and it records the target of every call.
 type okRemote struct {
 	calls   []string
 	targets []mesh.NodeTarget
+	keys    map[string]string
 }
 
 func (r *okRemote) Exec(_ context.Context, n mesh.NodeTarget, act mesh.Action, _ string) (string, string, error) {
-	key := "SHA256:api-" + n.ID
+	key := fpFor(n.ID)
+	if r.keys[n.ID] != "" {
+		key = r.keys[n.ID]
+	}
 	if n.HostKey != "" && n.HostKey != key {
 		return "", "", errors.New("host key mismatch")
 	}
@@ -847,215 +850,6 @@ func (r *okRemote) Exec(_ context.Context, n mesh.NodeTarget, act mesh.Action, _
 		return "MESH_REFRESH_OK\n", key, nil
 	default:
 		return "MESH_RESTORE_OK\n", key, nil
-	}
-}
-
-func TestMeshPanelDeployCredentialsAndCompensation(t *testing.T) {
-	s := newTest(t)
-	cf := &memCF{nodes: map[string]mesh.CFNode{}, routes: map[string]mesh.CFRoute{}, nodeToken: "eyJnode" + strings.Repeat("a", 30)}
-	rem := &okRemote{}
-	s.MeshCF = func(mesh.Credentials) (mesh.Cloudflare, error) { return cf, nil }
-	s.MeshRemote = func() mesh.Remote { return rem }
-	do(s, http.MethodGet, "/api/topology", nil)
-
-	// No credentials yet: deploy is refused before any stage runs.
-	rr := do(s, http.MethodPost, "/api/mesh/deploy", []byte(`{}`))
-	if rr.Code != http.StatusConflict {
-		t.Fatalf("deploy without credentials: %d %s", rr.Code, rr.Body.String())
-	}
-	apiTok := "cfapitoken_" + strings.Repeat("Z", 30)
-	acct := strings.Repeat("ab", 16)
-	rr = do(s, http.MethodPut, "/api/mesh/credentials", []byte(`{"account_id":"`+acct+`","api_token":"`+apiTok+`"}`))
-	if rr.Code != 200 || strings.Contains(rr.Body.String(), apiTok) || !strings.Contains(rr.Body.String(), `"token_set":true`) {
-		t.Fatalf("credentials: %d %s", rr.Code, rr.Body.String())
-	}
-	fi, err := os.Stat(filepath.Join(s.DataDir, "mesh", "cloudflare.json"))
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("credential file: %v %v", err, fi)
-	}
-	rr = do(s, http.MethodGet, "/api/mesh", nil)
-	if strings.Contains(rr.Body.String(), apiTok) || !strings.Contains(rr.Body.String(), `"dataplane":"unverified"`) {
-		t.Fatal(rr.Body.String())
-	}
-	// The example has no mesh_routes: the plan stage fails, nothing is created.
-	rr = do(s, http.MethodPost, "/api/mesh/deploy", []byte(`{}`))
-	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"stage":"plan"`) || len(cf.nodes) != 0 || len(rem.calls) != 0 {
-		t.Fatalf("plan failure: %d %s %v", rr.Code, rr.Body.String(), rem.calls)
-	}
-	// Fault injection is refused unless explicitly enabled.
-	rr = do(s, http.MethodPost, "/api/mesh/deploy", []byte(`{"fail_after":"routes"}`))
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("fail_after accepted: %d", rr.Code)
-	}
-
-	topo, _, _ := s.Store.Load()
-	for i := range topo.Links {
-		if topo.Links[i].Transport == model.TransportCFMesh {
-			topo.Links[i].MeshRoutes = []string{fmt.Sprintf("198.51.%d.0/24", 100+i)}
-		}
-	}
-	for i := range topo.Nodes {
-		if topo.Nodes[i].SSHHost == "" {
-			topo.Nodes[i].SSHHost = topo.Nodes[i].ID + ".example.invalid"
-		}
-	}
-	if err := s.Store.Save(topo); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("MERIDIAN_MESH_FAULT_INJECTION", "1")
-	rr = do(s, http.MethodPost, "/api/mesh/deploy", []byte(`{"fail_after":"routes"}`))
-	if rr.Code != http.StatusBadGateway || !strings.Contains(rr.Body.String(), `"compensated":true`) || len(cf.nodes) != 0 || len(cf.routes) != 0 {
-		t.Fatalf("injected failure: %d %s", rr.Code, rr.Body.String())
-	}
-	rr = do(s, http.MethodPost, "/api/mesh/deploy", []byte(`{}`))
-	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"state":"published"`) || !strings.Contains(rr.Body.String(), `"dataplane":"unverified"`) {
-		t.Fatalf("deploy: %d %s", rr.Code, rr.Body.String())
-	}
-	if strings.Contains(rr.Body.String(), cf.nodeToken) || strings.Contains(rr.Body.String(), apiTok) {
-		t.Fatal("secret in response")
-	}
-	journal, _ := os.ReadFile(filepath.Join(s.DataDir, "mesh", "deploy.json"))
-	if strings.Contains(string(journal), cf.nodeToken) || strings.Contains(string(journal), apiTok) {
-		t.Fatal("secret in journal")
-	}
-	// Credentials cannot be deleted while a deployment is published.
-	if rr = do(s, http.MethodDelete, "/api/mesh/credentials", nil); rr.Code != http.StatusConflict {
-		t.Fatalf("delete creds while published: %d", rr.Code)
-	}
-	rr = do(s, http.MethodPost, "/api/mesh/withdraw", []byte(`{}`))
-	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"state":"withdrawn"`) || len(cf.routes) != 0 || len(cf.nodes) != 0 {
-		t.Fatalf("withdraw: %d %s", rr.Code, rr.Body.String())
-	}
-	if rr = do(s, http.MethodDelete, "/api/mesh/credentials", nil); rr.Code != 200 {
-		t.Fatalf("delete creds: %d", rr.Code)
-	}
-}
-
-// A withdrawal goes to the hosts and the Cloudflare account the deployment
-// used, as pinned in its journal: not to the node's current SSH address,
-// not lost when the node is deleted from the topology, and request-level
-// overrides used at deploy time are kept. The account cannot be switched
-// while published; the token of the same account can be rotated.
-func TestMeshWithdrawUsesDeployTimeTargetsAndAccount(t *testing.T) {
-	s := newTest(t)
-	cf := &memCF{nodes: map[string]mesh.CFNode{}, routes: map[string]mesh.CFRoute{}, nodeToken: "eyJnode" + strings.Repeat("b", 30)}
-	rem := &okRemote{}
-	var used []mesh.Credentials
-	s.MeshCF = func(c mesh.Credentials) (mesh.Cloudflare, error) {
-		used = append(used, c)
-		return cf, nil
-	}
-	s.MeshRemote = func() mesh.Remote { return rem }
-	do(s, http.MethodGet, "/api/topology", nil)
-	acct := strings.Repeat("cd", 16)
-	tok1 := "cfapitoken_" + strings.Repeat("A", 30)
-	if rr := do(s, http.MethodPut, "/api/mesh/credentials", []byte(`{"account_id":"`+acct+`","api_token":"`+tok1+`"}`)); rr.Code != 200 {
-		t.Fatal(rr.Body.String())
-	}
-	topo, _, _ := s.Store.Load()
-	for i := range topo.Links {
-		if topo.Links[i].Transport == model.TransportCFMesh {
-			topo.Links[i].MeshRoutes = []string{fmt.Sprintf("198.51.%d.0/24", 100+i)}
-		}
-	}
-	for i := range topo.Nodes {
-		topo.Nodes[i].SSHHost = topo.Nodes[i].ID + ".example.invalid"
-	}
-	if err := s.Store.Save(topo); err != nil {
-		t.Fatal(err)
-	}
-	// Unknown override targets are refused.
-	if rr := do(s, http.MethodPost, "/api/mesh/deploy", []byte(`{"nodes":{"nope":{"ssh_host":"x"}}}`)); rr.Code != http.StatusBadRequest {
-		t.Fatalf("unknown override: %d", rr.Code)
-	}
-	rr := do(s, http.MethodPost, "/api/mesh/deploy", []byte(`{"nodes":{"hk-hub":{"ssh_host":"203.0.113.9","ssh_port":2200,"ssh_user":"ops"}}}`))
-	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"state":"published"`) {
-		t.Fatalf("deploy: %d %s", rr.Code, rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), `"account_id":"`+acct+`"`) || !strings.Contains(rr.Body.String(), `"host_key":"SHA256:api-hk-hub"`) {
-		t.Fatalf("journal does not pin account and host key: %s", rr.Body.String())
-	}
-	deployed := map[string]bool{}
-	for _, c := range rem.calls {
-		if strings.HasPrefix(c, "install/") {
-			deployed[strings.TrimPrefix(c, "install/")] = true
-		}
-	}
-
-	// Another account is refused while published; the stored file is kept.
-	other := strings.Repeat("ef", 16)
-	rr = do(s, http.MethodPut, "/api/mesh/credentials", []byte(`{"account_id":"`+other+`","api_token":"cfapitoken_`+strings.Repeat("B", 30)+`"}`))
-	if rr.Code != http.StatusConflict {
-		t.Fatalf("account switch while published: %d %s", rr.Code, rr.Body.String())
-	}
-	if c, _ := s.meshCreds().Load(); c.AccountID != acct || c.APIToken != tok1 {
-		t.Fatal("refused switch changed the credentials")
-	}
-	// Same-account token rotation is allowed.
-	tok2 := "cfapitoken_" + strings.Repeat("C", 30)
-	if rr = do(s, http.MethodPut, "/api/mesh/credentials", []byte(`{"account_id":"`+acct+`","api_token":"`+tok2+`"}`)); rr.Code != 200 {
-		t.Fatalf("rotation: %d %s", rr.Code, rr.Body.String())
-	}
-
-	// After deploying: the hub's SSH address changes and "us" is deleted.
-	topo, _, _ = s.Store.Load()
-	var nodes []model.Node
-	for _, n := range topo.Nodes {
-		if n.ID == "hk-hub" {
-			n.SSHHost, n.SSHPort, n.SSHUser = "moved.example.invalid", 22, "root"
-		}
-		if n.ID != "us" {
-			nodes = append(nodes, n)
-		}
-	}
-	topo.Nodes = nodes
-	var links []model.Link
-	for _, l := range topo.Links {
-		if l.From != "us" && l.To != "us" {
-			links = append(links, l)
-		}
-	}
-	topo.Links = links
-	if err := s.Store.Save(topo); err != nil {
-		t.Fatal(err)
-	}
-
-	// A withdrawal takes only the SSH credential from the request.
-	if rr = do(s, http.MethodPost, "/api/mesh/withdraw", []byte(`{"nodes":{"hk-hub":{"ssh_host":"moved.example.invalid"}}}`)); rr.Code != http.StatusBadRequest {
-		t.Fatalf("withdraw with override: %d", rr.Code)
-	}
-	before := len(rem.calls)
-	rr = do(s, http.MethodPost, "/api/mesh/withdraw", []byte(`{}`))
-	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"state":"withdrawn"`) || len(cf.routes) != 0 || len(cf.nodes) != 0 {
-		t.Fatalf("withdraw: %d %s", rr.Code, rr.Body.String())
-	}
-	restored := map[string]mesh.NodeTarget{}
-	for i := before; i < len(rem.calls); i++ {
-		if strings.HasPrefix(rem.calls[i], "restore/") {
-			restored[rem.targets[i].ID] = rem.targets[i]
-		}
-	}
-	if len(restored) != len(deployed) {
-		t.Fatalf("restored %v, deployed %v", restored, deployed)
-	}
-	if h := restored["hk-hub"]; h.SSHHost != "203.0.113.9" || h.SSHPort != 2200 || h.SSHUser != "ops" || h.HostKey != "SHA256:api-hk-hub" {
-		t.Fatalf("hub restored at %+v", h)
-	}
-	if !deployed["us"] {
-		t.Fatal("fixture: us did not get a sidecar")
-	}
-	if h := restored["us"]; h.SSHHost != "us.example.invalid" || h.SSHPort != 22 || h.SSHUser != "root" || h.HostKey != "SHA256:api-us" {
-		t.Fatalf("deleted node restored at %+v", h)
-	}
-	if last := used[len(used)-1]; last.AccountID != acct || last.APIToken != tok2 {
-		t.Fatal("withdrawal did not use the rotated token of the deployment account")
-	}
-	if strings.Contains(rr.Body.String(), tok2) {
-		t.Fatal("token in response")
-	}
-	// Fully withdrawn: switching the account is allowed again.
-	if rr = do(s, http.MethodPut, "/api/mesh/credentials", []byte(`{"account_id":"`+other+`","api_token":"cfapitoken_`+strings.Repeat("B", 30)+`"}`)); rr.Code != 200 {
-		t.Fatalf("switch after withdrawal: %d", rr.Code)
 	}
 }
 
@@ -1106,7 +900,11 @@ func (f *fakeProber) Probe(ctx context.Context, req hostexec.ProbeRequest) (prob
 		rep.Egress = probe.Egress{Error: "fake: egress CN"}
 	}
 	for _, svc := range req.Services {
-		cat := probe.CatNetworkOK
+		// Default: what a healthy adapter of that capability reports.
+		cat := probe.CatUnlocked
+		if a, _ := probe.Lookup(svc); a.Capability == probe.CapReachability {
+			cat = probe.CatNetworkOK
+		}
 		if f.answer != nil {
 			cat = f.answer(req, svc)
 		}
@@ -1263,7 +1061,10 @@ func TestPanelProbeSchedulerSharesChainAndStores(t *testing.T) {
 		if svc == "auto-openai" && req.ExitID == "us" {
 			return probe.CatNotUnlocked
 		}
-		return probe.CatNetworkOK
+		if a, _ := probe.Lookup(svc); a.Capability == probe.CapReachability {
+			return probe.CatNetworkOK
+		}
+		return probe.CatUnlocked
 	}}
 	s := probeServer(t, f)
 	for round := 1; round <= 2; round++ {
@@ -1303,7 +1104,7 @@ func TestPanelProbeSchedulerSharesChainAndStores(t *testing.T) {
 			seen[s] = true
 		}
 	}
-	if !seen["auto-netflix"] || !seen["auto-grok"] || seen["auto-bahamut"] || seen["auto-mytvsuper"] {
+	if !seen["auto-netflix"] || !seen["auto-grok"] || !seen["auto-bahamut"] || !seen["auto-mytvsuper"] || !seen["auto-abema"] {
 		t.Fatalf("scheduled selection: %v", seen)
 	}
 	// Without a host agent, the scheduler records the miss and moves on.
@@ -1321,7 +1122,7 @@ func TestPanelProbeNoVerdictIsInconclusive(t *testing.T) {
 		answer: func(req hostexec.ProbeRequest, svc string) probe.Category {
 			switch {
 			case req.ExitID == "us" && req.Family == "ipv4":
-				return probe.CatNetworkOK
+				return probe.CatUnlocked
 			case req.ExitID == "us":
 				return probe.CatFailed
 			default:
@@ -1429,7 +1230,8 @@ func TestPanelProbeRefusesArbitraryInput(t *testing.T) {
 		`{"url":"https://evil.example/"}`,
 		`{"command":"curl https://evil.example"}`,
 		`{"services":["https://evil.example/"]}`,
-		`{"services":["auto-bahamut"]}`,
+		`{"services":["auto-nope"]}`,
+		`{"groups":["no-such-group"]}`,
 		`{"services":["auto-openai"],"exits":["gw"]}`,
 		`{"services":["auto-openai"],"families":["any"]}`,
 		`{"services":["auto-openai"],"exits":["203.0.113.9"]}`,
@@ -1488,12 +1290,23 @@ func TestPanelProbeConcurrentWithReports(t *testing.T) {
 		t.Fatalf("lost exit reports: %d", reports)
 	}
 	for _, it := range job.Items {
-		if it.Ingest != "accepted" {
+		if it.State == itemSkipped && it.Ingest == "not_ingested:family_not_supported" {
+			continue // IPv4-only adapter on IPv6: not sent
+		}
+		want := "accepted"
+		if it.Capability == probe.CapReachability {
+			want = "accepted:inconclusive"
+		}
+		if it.Ingest != want {
 			t.Fatalf("lost probe result: %+v", it)
 		}
 		ok := false
 		for _, h := range hist {
-			ok = ok || (h.Service == it.Service && h.ExitID == it.ExitID && h.Kind == unlock.KindManual)
+			kind := unlock.KindManual
+			if want == "accepted:inconclusive" {
+				kind = unlock.KindInconclusive
+			}
+			ok = ok || (h.Service == it.Service && h.ExitID == it.ExitID && h.Kind == kind)
 		}
 		if !ok {
 			t.Fatalf("accepted item missing from history: %+v", it)

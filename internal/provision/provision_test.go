@@ -207,3 +207,16 @@ func TestProvisionDoesNotExecuteFileBody(t *testing.T) {
 		t.Fatalf("bash -n: %v\n%s", err, out)
 	}
 }
+
+// SSH provisioning never carries credential-store secrets: a config with a
+// remote-access placeholder is refused instead of being shipped.
+func TestInjectPrivateRefusesSecretPlaceholders(t *testing.T) {
+	kp, err := GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"/etc/wireguard/mra.conf": "[Interface]\nPrivateKey = __MERIDIAN_SECRET_ra-key-x__\n"}
+	if _, err := InjectPrivate(files, kp.Private); err == nil {
+		t.Fatal("a secret placeholder must not reach a provisioned host")
+	}
+}

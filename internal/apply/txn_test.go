@@ -3,8 +3,10 @@ package apply
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/radowitz/meridian/internal/defaults"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/remoteaccess"
 )
 
 // simHost is a hostexec.Runner standing in for a Debian host. "systemctl
@@ -31,12 +34,20 @@ type simHost struct {
 	enabled map[string]bool
 	cmds    []string
 	fail    map[string]bool
+	// peers is the running WireGuard peer set per interface (public keys),
+	// as "wg syncconf" / "wg-quick up" leave it: exactly the file's.
+	peers map[string][]string
+	// psks are the pre-shared keys the running interfaces were given.
+	psks map[string][]string
+	// failOnce fails the first matching command only.
+	failOnce map[string]bool
 }
 
 var upIfaces = regexp.MustCompile(`(?m)^for iface in ([^;]*); do$`)
 
 func newSimHost(root string) *simHost {
-	return &simHost{root: root, links: map[string]bool{}, nft: map[string]bool{}, units: map[string]bool{}, enabled: map[string]bool{}, fail: map[string]bool{}}
+	return &simHost{root: root, links: map[string]bool{}, nft: map[string]bool{}, units: map[string]bool{}, enabled: map[string]bool{}, fail: map[string]bool{},
+		peers: map[string][]string{}, psks: map[string][]string{}, failOnce: map[string]bool{}}
 }
 
 func (h *simHost) Run(ctx context.Context, prog string, args ...string) (string, error) {
@@ -44,6 +55,12 @@ func (h *simHost) Run(ctx context.Context, prog string, args ...string) (string,
 	defer h.mu.Unlock()
 	line := prog + " " + strings.Join(args, " ")
 	h.cmds = append(h.cmds, line)
+	for p := range h.failOnce {
+		if strings.HasPrefix(line, p) {
+			delete(h.failOnce, p)
+			return "sim failure", errors.New("exit status 1")
+		}
+	}
 	for p := range h.fail {
 		if strings.HasPrefix(line, p) {
 			return "sim failure", errors.New("exit status 1")
@@ -69,10 +86,28 @@ func (h *simHost) Run(ctx context.Context, prog string, args ...string) (string,
 		}
 		if m := upIfaces.FindStringSubmatch(string(up)); m != nil {
 			for _, i := range strings.Fields(m[1]) {
-				if _, err := os.Stat(filepath.Join(h.root, "etc", "wireguard", i+".conf")); err != nil {
+				conf, err := os.ReadFile(filepath.Join(h.root, "etc", "wireguard", i+".conf"))
+				if err != nil {
 					return "meridian-wg-missing", errors.New("exit status 1")
 				}
+				// wg syncconf (or wg-quick up): the running peer set becomes
+				// the file's; a placeholder key is rejected by wg.
+				peers, psks := []string{}, []string{}
+				for _, line := range strings.Split(string(conf), "\n") {
+					k, v, _ := strings.Cut(line, "=")
+					k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+					if strings.Contains(v, "__MERIDIAN_") {
+						return "Key is not the correct length or format", errors.New("exit status 1")
+					}
+					switch k {
+					case "PublicKey":
+						peers = append(peers, v)
+					case "PresharedKey":
+						psks = append(psks, v)
+					}
+				}
 				h.links[i] = true
+				h.peers[i], h.psks[i] = peers, psks
 			}
 		}
 		nft, _ := os.ReadFile(filepath.Join(h.root, "etc", "nftables.d", "meridian.nft"))
@@ -109,6 +144,8 @@ func (h *simHost) Run(ctx context.Context, prog string, args ...string) (string,
 		}
 	case prog == "ip" && len(args) > 2 && args[0] == "link" && args[1] == "del":
 		delete(h.links, args[3])
+		delete(h.peers, args[3])
+		delete(h.psks, args[3])
 	case prog == "ip" && len(args) > 1 && args[1] == "rule":
 		return "", errors.New("no such rule")
 	case prog == "nft" && args[0] == "list":
@@ -734,5 +771,405 @@ func TestLegacySnapshotsUpgrade(t *testing.T) {
 	s := ap.snapshots()
 	if s.Applied != 1 || s.Previous != 2 {
 		t.Fatalf("%+v", s)
+	}
+}
+
+// legacyHost puts on the rig's host what a version without manifests left
+// behind for topo: the gateway files written straight into the host (the
+// WireGuard private key filled in by hand, no forwarding.conf, boot-time
+// forwarding lines at 0 as install.sh's upgrade leaves them), the old
+// snapshot without a manifest, and the data plane running. It returns the
+// host files as written.
+func legacyHost(t *testing.T, r *rig, topo model.Topology, key string) map[string]string {
+	t.Helper()
+	b := compileTopo(t, topo)
+	files := nodeFiles(b.Files, "gw")
+	delete(files, "etc/meridian/forwarding.conf")
+	out := map[string]string{}
+	for rel, body := range files {
+		body, err := InjectPrivateKey(rel, body, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := filepath.Join(r.host, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mode := os.FileMode(0o644)
+		if strings.HasPrefix(rel, "usr/local/sbin/") {
+			mode = 0o755
+		}
+		if err := os.WriteFile(p, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+		out[rel] = body
+	}
+	if !strings.Contains(out["etc/sysctl.d/99-meridian.conf"], "net.ipv4.ip_forward=0\n") {
+		t.Fatal("setup: expected boot-time forwarding lines")
+	}
+	old := Applier{DataDir: r.data, LocalID: "gw"}
+	if _, err := old.Apply(b, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(r.data, "applied", "manifest.json")); err != nil {
+		t.Fatal(err)
+	}
+	// The old data plane is running (started by its meridian.service).
+	ctx := context.Background()
+	if _, err := r.sim.Run(ctx, "systemctl", "restart", "meridian.service"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := DeriveManifest("gw", files, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range m.Units {
+		_, _ = r.sim.Run(ctx, "systemctl", "enable", u)
+		if _, err := r.sim.Run(ctx, "systemctl", "restart", u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.sim.cmds = nil
+	return out
+}
+
+func hostTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	_ = filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && !fi.IsDir() {
+			b, _ := os.ReadFile(p)
+			rel, _ := filepath.Rel(root, p)
+			out[rel] = fmt.Sprintf("%o:%s", fi.Mode().Perm(), b)
+		}
+		return nil
+	})
+	return out
+}
+
+// QA qa-3: a host running a version without manifests. The first install
+// of this version fails during activation (after the new up script already
+// ran); compensation puts the old files back byte for byte (key injected
+// at the boundary, never stored), removes what only the new version
+// brought, and re-activates the old data plane, which is healthy again.
+// The next install then succeeds from the adopted manifest.
+func TestLegacyInstallFailedFirstActivationRestoresOldVersion(t *testing.T) {
+	r := newRig(t)
+	legacy := legacyHost(t, r, withoutHubWSS(), r.key)
+	canonOld, _ := os.ReadFile(filepath.Join(r.data, "applied", "canonical.txt"))
+	if strings.Join(r.sim.liveLinks(), ",") != "m02,m02w" {
+		t.Fatalf("setup: %v", r.sim.liveLinks())
+	}
+	ap := r.applier()
+	ap.Forwarding = func() (bool, error) { return true, nil }
+	// The new-only tunnel's unit fails to start: meridian.service has
+	// already been restarted with the new up script (m03 is up by then).
+	r.sim.fail["systemctl restart wstunnel-client-gw-hub-wss.service"] = true
+	_, err := ap.Apply(compileTopo(t, defaults.Example()), false)
+	var te *TxnError
+	if !errors.As(err, &te) || !te.Compensated {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(strings.Join(te.Report.Warnings, "\n"), "已接管旧版安装") {
+		t.Fatalf("report does not say the legacy install was adopted: %v", te.Report.Warnings)
+	}
+	if len(r.rt.requests("fwd-activate")) != 1 {
+		t.Fatal("setup: the new version was not activated")
+	}
+	// Files: exactly the old ones, the new-only ones gone.
+	for rel, body := range legacy {
+		want := body
+		if rel == "etc/sysctl.d/99-meridian.conf" {
+			want = strings.ReplaceAll(strings.ReplaceAll(body, "net.ipv4.ip_forward=0\n", "net.ipv4.ip_forward=1\n"),
+				"net.ipv6.conf.all.forwarding=0\n", "net.ipv6.conf.all.forwarding=1\n")
+		}
+		if got := readHost(t, r.host, rel); got != want {
+			t.Fatalf("%s not restored", rel)
+		}
+	}
+	for _, rel := range []string{"etc/wireguard/m03.conf", "etc/meridian/forwarding.conf", "etc/systemd/system/wstunnel-client-gw-hub-wss.service"} {
+		if exists(filepath.Join(r.host, filepath.FromSlash(rel))) {
+			t.Fatalf("new-only %s left on the host", rel)
+		}
+	}
+	// Runtime: the old data plane is up again, the new tunnel is gone.
+	if strings.Join(r.sim.liveLinks(), ",") != "m02,m02w" || !r.sim.units["meridian.service"] || !r.sim.units["meridian-failover.service"] {
+		t.Fatalf("old data plane not running: links %v units %v", r.sim.liveLinks(), r.sim.units)
+	}
+	comp := r.rt.requests("comp-activate")
+	if len(comp) != 1 || strings.Join(comp[0].Resources.Interfaces, ",") != "m02,m02w" {
+		t.Fatalf("compensation activated %+v", comp)
+	}
+	inst, _ := r.applier().Installed()
+	if inst.Origin != "legacy" || inst.Empty() {
+		t.Fatalf("installed %+v", inst)
+	}
+	if p, _ := r.applier().Pending(); p != nil {
+		t.Fatalf("journal left: %+v", p)
+	}
+	if canon, _ := os.ReadFile(filepath.Join(r.data, "applied", "canonical.txt")); string(canon) != string(canonOld) {
+		t.Fatal("snapshot not restored")
+	}
+	assertNoSecret(t, r.data, r.key)
+
+	// After the fault is fixed the upgrade goes through.
+	delete(r.sim.fail, "systemctl restart wstunnel-client-gw-hub-wss.service")
+	res, err := ap.Apply(compileTopo(t, defaults.Example()), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Host.FromVersion != inst.Version || !r.sim.links["m03"] {
+		t.Fatalf("%+v", res.Host)
+	}
+	if inst, _ := r.applier().Installed(); inst.Origin != "" || inst.Version != res.Host.ToVersion {
+		t.Fatalf("installed %+v", inst)
+	}
+	assertNoSecret(t, r.data, r.key)
+}
+
+// When a legacy install cannot be adopted reliably the install is refused
+// before anything changes: host files, runtime, snapshots, data directory.
+func TestLegacyInstallRefusedTouchesNothing(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, r *rig)
+		next  model.Topology
+		want  string
+	}{
+		{"foreign private key", func(t *testing.T, r *rig) { legacyHost(t, r, withoutHubWSS(), testKey(t)) }, defaults.Example(), "私钥"},
+		{"placeholder key", func(t *testing.T, r *rig) {
+			legacyHost(t, r, withoutHubWSS(), r.key)
+			p := filepath.Join(r.host, "etc", "wireguard", "m02.conf")
+			b, _ := os.ReadFile(p)
+			_ = os.WriteFile(p, []byte(strings.ReplaceAll(string(b), r.key, compile.PrivateKeyPlaceholder)), 0o644)
+		}, defaults.Example(), "私钥"},
+		{"not running", func(t *testing.T, r *rig) {
+			legacyHost(t, r, withoutHubWSS(), r.key)
+			delete(r.sim.units, "meridian.service")
+		}, defaults.Example(), "不健康"},
+		{"old-only resources", func(t *testing.T, r *rig) { legacyHost(t, r, defaults.Example(), r.key) }, withoutHubWSS(), "m03"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t)
+			c.setup(t, r)
+			hostBefore := hostTree(t, r.host)
+			dataBefore := hostTree(t, r.data)
+			links := strings.Join(r.sim.liveLinks(), ",")
+			_, err := r.applier().Apply(compileTopo(t, c.next), false)
+			if !errors.Is(err, ErrLegacyInstall) || !strings.Contains(err.Error(), c.want) || strings.Contains(err.Error(), r.key) {
+				t.Fatalf("got %v", err)
+			}
+			if !reflect.DeepEqual(hostTree(t, r.host), hostBefore) {
+				t.Fatal("host files changed")
+			}
+			// Only bookkeeping may appear: the transaction lock and the
+			// version that begin() gives a pre-manifest snapshot.
+			dataAfter := hostTree(t, r.data)
+			for _, tree := range []map[string]string{dataBefore, dataAfter} {
+				delete(tree, filepath.Join("host", "txn.lock"))
+				delete(tree, filepath.Join("applied", "manifest.json"))
+			}
+			if !reflect.DeepEqual(dataAfter, dataBefore) {
+				t.Fatalf("data directory changed: %d -> %d files", len(dataBefore), len(dataAfter))
+			}
+			if strings.Join(r.sim.liveLinks(), ",") != links {
+				t.Fatal("runtime changed")
+			}
+			for _, q := range r.rt.reqs {
+				if q.Action != hostexec.ActionHealth {
+					t.Fatalf("host action %s sent", q.Action)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------- remote access
+
+type raFixture struct {
+	topo    model.Topology
+	secrets map[string]string
+	privs   []string // device private keys (never handed to the applier)
+}
+
+func raKeys(t *testing.T) remoteaccess.Keypair {
+	t.Helper()
+	kp, err := remoteaccess.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kp
+}
+
+// raTopology is the example topology with remote access on and devices
+// "dev-aaaa" (with a PSK) and "dev-bbbb". Every key is generated here.
+func raTopology(t *testing.T) raFixture {
+	t.Helper()
+	f := raFixture{topo: defaults.Example(), secrets: map[string]string{}}
+	gw := raKeys(t)
+	f.secrets["ra-key-test"] = gw.Private
+	psk, err := remoteaccess.GeneratePSK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.secrets["ra-psk-aaaa"] = psk
+	ra := &model.RemoteAccess{Enabled: true, Endpoint: "home.example.net", ListenPort: 51900, PublicKey: gw.Public, KeyID: "ra-key-test"}
+	for i, id := range []string{"dev-aaaa", "dev-bbbb"} {
+		kp := raKeys(t)
+		f.privs = append(f.privs, kp.Private)
+		d := model.RemoteDevice{ID: id, Name: id, Mode: model.RemoteModeFull, Enabled: true, PublicKey: kp.Public,
+			IPv4: fmt.Sprintf("10.67.0.%d", i+2), IPv6: fmt.Sprintf("fd67::%d", i+2)}
+		if i == 0 {
+			d.PSKID = "ra-psk-aaaa"
+		}
+		ra.Devices = append(ra.Devices, d)
+	}
+	f.topo.RemoteAccess = ra
+	return f
+}
+
+func (r *rig) raApplier(secrets map[string]string) Applier {
+	a := r.applier()
+	a.Secrets = secrets
+	return a
+}
+
+func (r *rig) peers(iface string) string {
+	r.sim.mu.Lock()
+	defer r.sim.mu.Unlock()
+	return strings.Join(r.sim.peers[iface], ",")
+}
+
+// noSecretsUnder fails if any file below dir contains one of the values.
+func noSecretsUnder(t *testing.T, dir string, values ...string) {
+	t.Helper()
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		b, _ := os.ReadFile(p)
+		for _, v := range values {
+			if v != "" && strings.Contains(string(b), v) {
+				t.Errorf("secret found in %s", p)
+			}
+		}
+		return nil
+	})
+}
+
+// Adding, disabling and deleting devices change the running peers through
+// the transaction; a failed apply compensates back to the previous peer
+// set; disabling the feature removes the interface.
+func TestRemotePeersFollowTransaction(t *testing.T) {
+	r := newRig(t)
+	f := raTopology(t)
+	ra := f.topo.RemoteAccess
+	a, b := ra.Devices[0].PublicKey, ra.Devices[1].PublicKey
+	if _, err := r.raApplier(f.secrets).Apply(compileTopo(t, f.topo), false); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.peers("mra"); got != a+","+b {
+		t.Fatalf("peers after add: %q", got)
+	}
+	if got := strings.Join(r.sim.psks["mra"], ","); got != f.secrets["ra-psk-aaaa"] {
+		t.Fatal("the PSK was not injected at the install boundary")
+	}
+	conf := filepath.Join(r.host, "etc", "wireguard", "mra.conf")
+	if fi, err := os.Stat(conf); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mra.conf mode: %v %v", fi, err)
+	}
+	if body := readHost(t, r.host, "etc/wireguard/mra.conf"); !strings.Contains(body, f.secrets["ra-key-test"]) || strings.Contains(body, "__MERIDIAN_") {
+		t.Fatal("host config must carry the injected key and no placeholder")
+	}
+	// Snapshots, the installed copy and the journal keep placeholders only.
+	noSecretsUnder(t, r.data, append([]string{f.secrets["ra-key-test"], f.secrets["ra-psk-aaaa"], r.key}, f.privs...)...)
+	noSecretsUnder(t, r.host, f.privs...)
+
+	// Disable B: its peer is gone from the running interface.
+	f.topo.RemoteAccess.Devices[1].Enabled = false
+	if _, err := r.raApplier(f.secrets).Apply(compileTopo(t, f.topo), false); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.peers("mra"); got != a {
+		t.Fatalf("disabled device still a peer: %q", got)
+	}
+
+	// Delete A, but the activation fails after meridian-up.sh ran: the
+	// compensation restores the previous peer set (A, with its PSK).
+	f.topo.RemoteAccess.Devices = f.topo.RemoteAccess.Devices[1:]
+	r.sim.failOnce["systemctl restart meridian-failover.service"] = true
+	_, err := r.raApplier(f.secrets).Apply(compileTopo(t, f.topo), false)
+	var te *TxnError
+	if !errors.As(err, &te) || !te.Compensated {
+		t.Fatalf("got %v", err)
+	}
+	for _, v := range f.secrets {
+		if strings.Contains(err.Error(), v) {
+			t.Fatal("secret in the error")
+		}
+	}
+	if got := r.peers("mra"); got != a {
+		t.Fatalf("compensation did not restore the previous peers: %q", got)
+	}
+	if got := strings.Join(r.sim.psks["mra"], ","); got != f.secrets["ra-psk-aaaa"] {
+		t.Fatal("compensation did not restore the PSK")
+	}
+	if _, err := r.raApplier(f.secrets).Apply(compileTopo(t, f.topo), false); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.peers("mra"); got != "" {
+		t.Fatalf("deleted device still a peer: %q", got)
+	}
+
+	// Feature off: mra is removed through the manifest.
+	f.topo.RemoteAccess.Enabled = false
+	if _, err := r.raApplier(f.secrets).Apply(compileTopo(t, f.topo), false); err != nil {
+		t.Fatal(err)
+	}
+	if exists(conf) {
+		t.Fatal("mra.conf survived disabling remote access")
+	}
+	for _, l := range r.sim.liveLinks() {
+		if l == "mra" {
+			t.Fatal("mra still exists after disabling remote access")
+		}
+	}
+}
+
+// A config naming a secret that is not supplied fails before any host file
+// is written, without echoing any value.
+func TestRemoteMissingSecretFailsBeforeWriting(t *testing.T) {
+	r := newRig(t)
+	f := raTopology(t)
+	delete(f.secrets, "ra-psk-aaaa")
+	_, err := r.raApplier(f.secrets).Apply(compileTopo(t, f.topo), false)
+	if !errors.Is(err, ErrMissingSecret) || !strings.Contains(err.Error(), "ra-psk-aaaa") {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), f.secrets["ra-key-test"]) {
+		t.Fatal("secret in the error")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(r.host, "etc")); len(entries) != 0 {
+		t.Fatal("host files written before the secret check")
+	}
+	if _, err := InjectSecrets("etc/meridian/x.conf", "a "+model.SecretPlaceholder("ra-key-test"), f.secrets); err == nil {
+		t.Fatal("a placeholder outside etc/wireguard must be refused")
+	}
+}
+
+// ReferencedSecrets keeps the ids a stored configuration still names.
+func TestRemoteReferencedSecrets(t *testing.T) {
+	r := newRig(t)
+	f := raTopology(t)
+	if _, err := r.raApplier(f.secrets).Apply(compileTopo(t, f.topo), false); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := r.applier().ReferencedSecrets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !refs["ra-key-test"] || !refs["ra-psk-aaaa"] || len(refs) != 2 {
+		t.Fatalf("refs %v", refs)
 	}
 }

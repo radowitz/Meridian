@@ -294,7 +294,7 @@ func TestGuardExitRange(t *testing.T) {
 		t.Fatalf("guard must widen to cover every exit mark, got %#x", got)
 	}
 	var sb strings.Builder
-	writeGuardTable(&sb, "lan0", nil, 0x140)
+	writeGuardTable(&sb, "lan0", nil, 0x140, nil)
 	if strings.Contains(sb.String(), "0x101-") {
 		t.Fatalf("no tunnel interfaces, no exit return path:\n%s", sb.String())
 	}

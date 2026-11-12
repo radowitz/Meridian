@@ -21,11 +21,13 @@ import (
 
 	"github.com/radowitz/meridian/internal/apply"
 	"github.com/radowitz/meridian/internal/compile"
+	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/defaults"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/provision"
+	"github.com/radowitz/meridian/internal/sshexec"
 	"github.com/radowitz/meridian/internal/store"
 	"github.com/radowitz/meridian/internal/validate"
 )
@@ -50,12 +52,27 @@ type Server struct {
 	// executor of the Mesh deployment (tests only; nil means the real ones).
 	MeshCF     func(mesh.Credentials) (mesh.Cloudflare, error)
 	MeshRemote func() mesh.Remote
+	// SSHDial replaces the TCP dialer of SSH connections to managed
+	// servers (tests only; nil means net.Dialer).
+	SSHDial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// CloudflareAPIBase replaces the Cloudflare API base URL of the token
+	// permission check (tests only).
+	CloudflareAPIBase string
+	// RemoteStatus reads the remote-access interface's peer status through
+	// the host agent (hostexec.Client in main). Nil: runtime unavailable.
+	RemoteStatus RemoteStatusRuntime
 	// Prober is the host agent's read-only unlock probe (the same
 	// hostexec.Client as Host in main). Nil: the panel cannot probe and the
 	// scheduler records that, without inventing results.
 	Prober ProbeRuntime
 	// ProbeJobTimeout bounds one probe job; zero means 15 minutes.
 	ProbeJobTimeout time.Duration
+	// Lists is the host agent's list update action (the same
+	// hostexec.Client in main). Nil: "update now" answers 503.
+	Lists ListsRuntime
+	// listsMu guards listsJob, the one list update that may run at a time.
+	listsMu  sync.Mutex
+	listsJob *listsJob
 	// mu covers read-modify-write of the unlock, pool and probe-job documents.
 	mu sync.Mutex
 	// jobMu guards job, the one probe job that may run at a time.
@@ -63,6 +80,18 @@ type Server struct {
 	job   *jobHandle
 	// keyMu serialises key resolution so two installs cannot generate two keys.
 	keyMu sync.Mutex
+	// SecretsDir holds the credential store (servers, SSH credentials,
+	// Cloudflare accounts and their secrets). Empty means <DataDir>/secrets.
+	// It is never part of a snapshot, the topology or an export.
+	SecretsDir string
+	credMu     sync.Mutex
+	creds      *credentials.Store
+	// resMu keeps node → server and server → credential references
+	// consistent across topology saves and deletions.
+	resMu sync.Mutex
+	// raMu serialises remote-access changes with the WireGuard secret
+	// garbage collection (a new PSK is stored before the topology names it).
+	raMu sync.Mutex
 }
 
 // localNodeID is the node whose files an install writes on this host.
@@ -80,6 +109,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/apply", s.postApply)
 	mux.HandleFunc("POST /api/rollback", s.postRollback)
 	mux.HandleFunc("GET /api/host", s.getHost)
+	mux.HandleFunc("GET /api/status", s.getStatus)
 	mux.HandleFunc("POST /api/host/recover", s.postHostRecover)
 	mux.HandleFunc("POST /api/provision", s.postProvision)
 	mux.HandleFunc("GET /api/pools", s.getPools)
@@ -88,6 +118,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/unlock/report", s.postUnlockReport)
 	mux.HandleFunc("POST /api/unlock/run", s.postUnlockRun)
 	mux.HandleFunc("GET /api/unlock/jobs", s.getUnlockJobs)
+	mux.HandleFunc("GET /api/unlock/jobs/{id}", s.getUnlockJob)
+	mux.HandleFunc("GET /api/unlock/catalog", s.getUnlockCatalog)
+	mux.HandleFunc("GET /api/unlock/results", s.getUnlockResults)
 	mux.HandleFunc("POST /api/unlock/jobs/{id}/cancel", s.postUnlockJobCancel)
 	mux.HandleFunc("GET /api/leakcheck", s.getLeakcheck)
 	mux.HandleFunc("GET /api/mesh", s.getMesh)
@@ -95,6 +128,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/mesh/credentials", s.deleteMeshCredentials)
 	mux.HandleFunc("POST /api/mesh/deploy", s.postMeshDeploy)
 	mux.HandleFunc("POST /api/mesh/withdraw", s.postMeshWithdraw)
+	s.registerResources(mux)
+	s.registerRegionGroups(mux)
+	s.registerLists(mux)
+	s.registerRemoteAccess(mux)
+	s.registerSSHOps(mux)
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
 	}
@@ -169,15 +207,18 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 		},
 		"roles":       []string{"gateway", "relay", "ix", "hub", "exit"},
 		"match_types": []string{"domain", "suffix", "keyword", "geosite", "cidr", "geoip", "asn"},
-		"modes":       []string{"pin", "auto"},
+		"modes":       []string{string(model.GroupAuto), string(model.GroupManual)},
+		"on_failure":  []string{string(model.OnFailureHold), string(model.OnFailureFallback)},
 		"phase":       3,
 		"features": []string{
 			"pools",
+			"region-groups",
 			"mesh-sidecar",
 			"unlock-hysteresis",
 			"pure-v6",
 			"nat64-reserved",
 			"leak-checklist",
+			"remote-access",
 		},
 	})
 }
@@ -211,6 +252,16 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// remote_access is owned by /api/remote-access: a whole-document save
+	// (the topology editor) keeps the stored block, whatever it sent.
+	s.raMu.Lock()
+	defer s.raMu.Unlock()
+	if cur, err := s.topology(); err == nil {
+		t.RemoteAccess = cur.RemoteAccess.Clone()
+	} else {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	res := validate.Run(t)
 	draft := r.URL.Query().Get("draft") == "1" || t.Settings.Draft
 	if res.HasErrors() && !draft {
@@ -221,11 +272,49 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Server references can only be checked with the credential store; a
+	// topology without any can still be saved while the store is broken.
+	cs, cerr := s.credStore()
+	if cerr != nil {
+		for _, n := range t.Nodes {
+			if n.ServerID != "" {
+				writeResErr(w, cerr)
+				return
+			}
+		}
+	}
+	s.resMu.Lock()
+	if cs != nil {
+		if err := checkNodeServers(cs, t); err != nil {
+			s.resMu.Unlock()
+			writeResErr(w, err)
+			return
+		}
+	}
 	if err := s.Store.Save(t); err != nil {
+		s.resMu.Unlock()
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Old ssh_* fields typed into a node become a server right away.
+	merr := cerr
+	if cs != nil {
+		merr = s.migrateNodesLocked(cs)
+	}
+	s.resMu.Unlock()
 	stored, _ := s.topology()
+	// Group orders or choices may have changed with the document.
+	s.afterGroupChange(stored, "")
+	if merr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"topology":        store.Redact(stored),
+			"issues":          res.Issues,
+			"paths":           res.Paths,
+			"draft":           draft,
+			"migration_error": merr.Error(),
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"topology": store.Redact(stored),
 		"issues":   res.Issues,
@@ -345,13 +434,17 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 	}
 	ap := s.applier(body.Install)
 	ap.PrivateKey = key
+	if install {
+		ap.Secrets = s.wgSecrets()
+	}
 	res, err := ap.Apply(b, body.DryRun)
 	if err != nil {
-		writeTxnErr(w, err, key, http.StatusInternalServerError)
+		writeTxnErr(w, err, key, http.StatusInternalServerError, ap.Secrets)
 		return
 	}
 	if !body.DryRun {
 		s.clearUnlockPending()
+		s.GCRemoteSecrets()
 	}
 	writeJSON(w, http.StatusOK, res)
 }
@@ -408,12 +501,14 @@ func (s *Server) postRollback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ap.PrivateKey = key
+		ap.Secrets = s.wgSecrets()
 	}
 	rep, err := ap.RollbackReport()
 	if err != nil {
-		writeTxnErr(w, err, ap.PrivateKey, http.StatusConflict)
+		writeTxnErr(w, err, ap.PrivateKey, http.StatusConflict, ap.Secrets)
 		return
 	}
+	s.GCRemoteSecrets()
 	mode := "snapshot"
 	if body.Install {
 		mode = "runtime"
@@ -423,13 +518,16 @@ func (s *Server) postRollback(w http.ResponseWriter, r *http.Request) {
 
 // writeTxnErr maps install/rollback failures. A failed host transaction
 // carries its report (steps, diff, whether it was compensated).
-func writeTxnErr(w http.ResponseWriter, err error, key string, fallback int) {
+func writeTxnErr(w http.ResponseWriter, err error, key string, fallback int, secrets ...map[string]string) {
 	msg := apply.RedactSecret(err.Error(), key)
+	for _, m := range secrets {
+		msg = apply.RedactSecrets(msg, "", m)
+	}
 	var te *apply.TxnError
 	switch {
 	case errors.Is(err, apply.ErrNoHostExec):
 		writeErr(w, http.StatusServiceUnavailable, errors.New(msg))
-	case errors.Is(err, apply.ErrPending), errors.Is(err, apply.ErrRuntimeRollbackRequired):
+	case errors.Is(err, apply.ErrPending), errors.Is(err, apply.ErrRuntimeRollbackRequired), errors.Is(err, apply.ErrLegacyInstall):
 		writeErr(w, http.StatusConflict, errors.New(msg))
 	case errors.As(err, &te):
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
@@ -477,7 +575,7 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 		installed = map[string]any{
 			"version": inst.Version, "created_at": inst.CreatedAt, "files": len(inst.Files),
 			"interfaces": inst.Interfaces, "units": inst.Units, "nft_tables": inst.NFTTables,
-			"route_tables": inst.RouteTables, "dns": inst.DNS,
+			"route_tables": inst.RouteTables, "dns": inst.DNS, "origin": inst.Origin,
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"installed": installed, "pending": pending, "agent": agent})
@@ -505,9 +603,10 @@ func (s *Server) RecoverHost() (*apply.HostReport, error) {
 	if _, key, err := s.resolveKey(localNodeID, provision.KeyReuse); err == nil {
 		ap.PrivateKey = key
 	}
+	ap.Secrets = s.wgSecrets()
 	rep, err := ap.Recover()
 	if err != nil {
-		return rep, errors.New(apply.RedactSecret(err.Error(), ap.PrivateKey))
+		return rep, errors.New(apply.RedactSecrets(err.Error(), ap.PrivateKey, ap.Secrets))
 	}
 	return rep, nil
 }
@@ -540,20 +639,20 @@ func (s *Server) resolveKey(nodeID string, policy provision.KeyPolicy) (model.To
 }
 
 type provisionBody struct {
-	NodeID        string `json:"node_id"`
-	SSHHost       string `json:"ssh_host"`
-	SSHPort       int    `json:"ssh_port"`
-	SSHUser       string `json:"ssh_user"`
-	PrivateKeyPEM string `json:"private_key_pem"`
-	DryRun        bool   `json:"dry_run"`
-	TrustNewHost  bool   `json:"trust_new_host"`
-	GenerateKeys  bool   `json:"generate_keys"`
+	NodeID       string `json:"node_id"`
+	DryRun       bool   `json:"dry_run"`
+	GenerateKeys bool   `json:"generate_keys"`
 }
+
+// provisionRemoved are request fields of the pre-server API. They are
+// refused (400 field_removed), never silently ignored: the target and the
+// SSH credential now come from the node's managed server.
+var provisionRemoved = []string{"ssh_host", "ssh_port", "ssh_user", "private_key_pem", "trust_new_host"}
 
 func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	var body provisionBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	if err := decodeStrict(w, r, &body, []string{"node_id", "dry_run", "generate_keys"}, provisionRemoved, false); err != nil {
+		writeResErr(w, err)
 		return
 	}
 	t, err := s.topology()
@@ -563,17 +662,30 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	}
 	node, ok := t.NodeByID(body.NodeID)
 	if !ok {
-		writeErr(w, http.StatusNotFound, errors.New("节点不存在"))
+		writeResErr(w, &credentials.Error{Code: credentials.CodeNotFound, Field: "node_id", Msg: "节点不存在"})
 		return
 	}
 	if !node.Managed {
-		writeErr(w, http.StatusBadRequest, errors.New("该节点不需要装机（例如 IX 专线）"))
+		writeResErr(w, &credentials.Error{Code: codeBadRequest, Field: "node_id", Msg: "该节点不需要装机（例如 IX 专线）"})
 		return
 	}
-	run := !body.DryRun && body.PrivateKeyPEM != ""
+	run := !body.DryRun
+	var cs *credentials.Store
+	if run {
+		// Everything about the target is checked before a key is generated
+		// or rotated and before anything is compiled for the host.
+		if cs, err = s.credStore(); err != nil {
+			writeResErr(w, err)
+			return
+		}
+		if err := checkServerOperable(cs, node); err != nil {
+			writeResErr(w, err)
+			return
+		}
+	}
 	var key, pub string
 	switch {
-	case body.GenerateKeys && !body.DryRun:
+	case body.GenerateKeys && run:
 		// Rotate: store the new pair before compiling so peer configs carry
 		// the matching public key.
 		t, key, err = s.resolveKey(node.ID, provision.KeyRotate)
@@ -604,6 +716,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"dry_run":    true,
 			"node_id":    node.ID,
+			"server_id":  node.ServerID,
 			"public_key": pub,
 			"script":     provision.Redact(provision.Script(node.Name, files), key),
 		})
@@ -615,33 +728,36 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	script := provision.Script(node.Name, injected)
-	host := body.SSHHost
-	if host == "" {
-		host = node.SSHHost
-	}
-	user := body.SSHUser
-	if user == "" {
-		user = node.SSHUser
-	}
-	if user == "" {
-		user = "root"
-	}
-	out, err := provision.Run(provision.SSHRequest{
-		Host: host, Port: body.SSHPort, User: user,
-		PrivateKeyPEM: body.PrivateKeyPEM, TrustNewHost: body.TrustNewHost,
-	}, script)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
+	defer cancel()
+	res, err := s.connector(cs).RunScript(ctx, sshexec.Target{ServerID: node.ServerID}, script)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error":  provision.Redact(err.Error(), key),
-			"output": provision.Redact(out, key),
+		code := sshexec.CodeOf(err)
+		status := http.StatusBadGateway
+		switch code {
+		case sshexec.CodeUntrusted, sshexec.CodeMismatch, sshexec.CodeNoCredential, sshexec.CodeTargetChanged, sshexec.CodePinMismatch:
+			status = http.StatusConflict
+		case sshexec.CodeNotFound:
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]any{
+			"error":       provision.Redact(err.Error(), key),
+			"code":        code,
+			"node_id":     node.ID,
+			"server_id":   node.ServerID,
+			"auth_method": res.AuthMethod,
+			"output":      provision.Redact(res.Output, key),
 		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"dry_run":    false,
-		"node_id":    node.ID,
-		"public_key": pub,
-		"output":     provision.Redact(out, key),
+		"dry_run":     false,
+		"node_id":     node.ID,
+		"server_id":   node.ServerID,
+		"auth_method": res.AuthMethod,
+		"host_key":    res.Fingerprint,
+		"public_key":  pub,
+		"output":      provision.Redact(res.Output, key),
 	})
 }
 
@@ -664,6 +780,9 @@ func (s *Server) bodyOrStored(r *http.Request) (model.Topology, error) {
 	if len(t.Nodes) == 0 {
 		return s.topology()
 	}
+	// Legacy pool fields in a submitted document become region groups,
+	// exactly as the store would read them.
+	model.MigrateRegionGroups(&t)
 	return t, nil
 }
 
@@ -672,6 +791,7 @@ func decodeTopo(r *http.Request) (model.Topology, error) {
 	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
 		return model.Topology{}, err
 	}
+	model.MigrateRegionGroups(&t)
 	return t, nil
 }
 

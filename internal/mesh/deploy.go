@@ -115,18 +115,27 @@ type OwnedRoute struct {
 // key; the topology is never consulted again. Not a secret, but the
 // operator's infrastructure: it lives only in the 0600 journal and in the
 // panel's journal view.
+//
+// Schema 3 adds the managed server and the SSH credential the run used.
+// A withdrawal connects through that server with that credential (its
+// current generation, so a credential rotated in place keeps working); the
+// credential store refuses to delete or re-point either while the run is
+// not fully withdrawn.
 type HostPin struct {
-	NodeID  string     `json:"node_id"`
-	Name    string     `json:"name,omitempty"`
-	Role    model.Role `json:"role"`
-	SSHHost string     `json:"ssh_host"`
-	SSHPort int        `json:"ssh_port"`
-	SSHUser string     `json:"ssh_user"`
-	HostKey string     `json:"host_key,omitempty"` // ssh.FingerprintSHA256 of the host key
+	NodeID       string     `json:"node_id"`
+	Name         string     `json:"name,omitempty"`
+	Role         model.Role `json:"role"`
+	ServerID     string     `json:"server_id,omitempty"`
+	CredentialID string     `json:"credential_id,omitempty"`
+	SSHHost      string     `json:"ssh_host"`
+	SSHPort      int        `json:"ssh_port"`
+	SSHUser      string     `json:"ssh_user"`
+	HostKey      string     `json:"host_key,omitempty"` // ssh.FingerprintSHA256 of the host key
 }
 
 func (h HostPin) target() NodeTarget {
-	return NodeTarget{ID: h.NodeID, Name: h.Name, Role: h.Role, SSHHost: h.SSHHost, SSHPort: h.SSHPort, SSHUser: h.SSHUser, HostKey: h.HostKey}
+	return NodeTarget{ID: h.NodeID, Name: h.Name, Role: h.Role, ServerID: h.ServerID, CredentialID: h.CredentialID,
+		SSHHost: h.SSHHost, SSHPort: h.SSHPort, SSHUser: h.SSHUser, HostKey: h.HostKey}
 }
 
 func (h HostPin) addr() string { return fmt.Sprintf("%s@%s:%d", h.SSHUser, h.SSHHost, h.SSHPort) }
@@ -134,7 +143,8 @@ func (h HostPin) addr() string { return fmt.Sprintf("%s@%s:%d", h.SSHUser, h.SSH
 // pinFor snapshots a plan node's effective SSH target (port 22 and user
 // root are the SSH defaults the remote applies when they are unset).
 func pinFor(n NodeTarget) HostPin {
-	h := HostPin{NodeID: n.ID, Name: n.Name, Role: n.Role, SSHHost: n.SSHHost, SSHPort: n.SSHPort, SSHUser: n.SSHUser}
+	h := HostPin{NodeID: n.ID, Name: n.Name, Role: n.Role, ServerID: n.ServerID, CredentialID: n.CredentialID,
+		SSHHost: n.SSHHost, SSHPort: n.SSHPort, SSHUser: n.SSHUser, HostKey: n.HostKey}
 	if h.SSHPort == 0 {
 		h.SSHPort = 22
 	}
@@ -165,6 +175,9 @@ type Journal struct {
 	// and the stored credentials cannot be switched to another account
 	// until the run is fully withdrawn.
 	AccountID string `json:"account_id"`
+	// AccountRef is the credential-store account (its object id) the run
+	// was started with; informational, the binding is AccountID.
+	AccountRef string `json:"account_ref,omitempty"`
 	// Hosts are the SSH targets the run pinned (one per plan node).
 	Hosts      []HostPin     `json:"hosts"`
 	Started    string        `json:"started"`
@@ -210,8 +223,16 @@ var ErrAccountLocked = errors.New("还有已发布或未撤回完的 Mesh 部署
 var ErrCredentialsInUse = errors.New("还有已发布或未撤回完的 Mesh 部署，撤回需要这份凭据；先撤回再删除")
 
 // JournalSchema is the current journal format. Schema 2 added the pinned
-// SSH targets and the Cloudflare account binding.
-const JournalSchema = 2
+// SSH targets and the Cloudflare account binding; schema 3 the managed
+// server and SSH credential of each pinned host (see UpgradeJournal).
+const JournalSchema = 3
+
+// ErrHostsBlocked: a pinned host cannot be reached through its server and
+// credential; the withdrawal did nothing.
+var ErrHostsBlocked = errors.New("撤回被阻断：部署记录里的主机无法通过原服务器和 SSH 凭据连接，本次没有撤回任何东西")
+
+// ErrJournalTooNew: the journal was written by a newer program.
+var ErrJournalTooNew = errors.New("Mesh 部署记录的版本比本程序新，拒绝处理")
 
 // Deployer runs and compensates deployments.
 type Deployer struct {
@@ -220,11 +241,23 @@ type Deployer struct {
 	// Withdraw, and Connect builds the Cloudflare client from it; CF and
 	// AccountID are then overwritten. Without Creds, CF and AccountID are
 	// used as given (the account CF talks to).
-	Creds     *CredStore
+	Creds     CredentialSource
 	Connect   func(Credentials) (Cloudflare, error)
 	CF        Cloudflare
 	AccountID string
 	Remote    Remote
+	// Select, when set, is called by Deploy under the deployment lock after
+	// the busy check and before the credentials are loaded (the panel
+	// selects the requested account for Mesh there).
+	Select func() error
+	// ResolvePin fills ServerID / CredentialID of a pin recorded before
+	// schema 3 (UpgradeJournal). It returns false when it cannot tell.
+	ResolvePin func(h HostPin) (serverID, credentialID string, ok bool)
+	// CheckHosts is called by Withdraw under the lock, before anything is
+	// compensated; an error stops the withdrawal (wrapped in
+	// ErrHostsBlocked) and nothing is changed.
+	CheckHosts func(j *Journal) error
+	accountRef string
 	// Redact is applied to every string stored or returned.
 	Redact *Redactor
 	// Now is the clock (tests).
@@ -264,7 +297,7 @@ func (d *Deployer) bindCloudflare() error {
 	if err != nil {
 		return err
 	}
-	d.CF, d.AccountID = cf, c.AccountID
+	d.CF, d.AccountID, d.accountRef = cf, c.AccountID, c.Ref
 	return nil
 }
 
@@ -347,7 +380,78 @@ func (d *Deployer) Load() (*Journal, error) {
 	if err := json.Unmarshal(b, &j); err != nil {
 		return nil, errors.New("Mesh 部署记录损坏")
 	}
+	if j.Schema > JournalSchema {
+		return nil, fmt.Errorf("%w（版本 %d）", ErrJournalTooNew, j.Schema)
+	}
 	return &j, nil
+}
+
+// upgrade brings a schema-2 journal to schema 3 in memory: every pin
+// without a server gets the server and credential ResolvePin names, and
+// the copy of the pin in each owned remote follows. A pin ResolvePin
+// cannot place keeps an empty server id (the withdrawal of that host is
+// then blocked, see CheckHosts). Pins already carrying a server are never
+// changed. Schema-1 journals (no pins) are left alone. It reports whether
+// anything changed.
+func (d *Deployer) upgrade(j *Journal) bool {
+	if j == nil || j.Schema < 2 {
+		return false
+	}
+	changed := false
+	if j.Schema < JournalSchema {
+		j.Schema = JournalSchema
+		changed = true
+	}
+	if d.ResolvePin == nil {
+		return changed
+	}
+	for i := range j.Hosts {
+		h := &j.Hosts[i]
+		if h.ServerID != "" && h.CredentialID != "" {
+			continue
+		}
+		sid, cid, ok := d.ResolvePin(*h)
+		if !ok || sid == "" || (h.ServerID != "" && sid != h.ServerID) {
+			continue
+		}
+		if h.ServerID == "" {
+			h.ServerID = sid
+			changed = true
+		}
+		if h.CredentialID == "" && cid != "" {
+			h.CredentialID = cid
+			changed = true
+		}
+		for k := range j.Remotes {
+			rm := &j.Remotes[k]
+			if rm.NodeID == h.NodeID && rm.Host.SSHHost == h.SSHHost && rm.Host.SSHPort == h.SSHPort && rm.Host.SSHUser == h.SSHUser && rm.Host.HostKey == h.HostKey {
+				rm.Host.ServerID, rm.Host.CredentialID = h.ServerID, h.CredentialID
+			}
+		}
+	}
+	return changed
+}
+
+// UpgradeJournal upgrades and saves the current journal under the
+// deployment lock (the panel calls it at startup). Idempotent.
+func (d *Deployer) UpgradeJournal() (*Journal, error) {
+	deployMu.Lock()
+	defer deployMu.Unlock()
+	j, err := d.Load()
+	if err != nil || j == nil {
+		return j, err
+	}
+	if d.upgrade(j) {
+		if err := d.saveKeepTime(j); err != nil {
+			return j, err
+		}
+	}
+	return j, nil
+}
+
+func (d *Deployer) saveKeepTime(j *Journal) error {
+	b, _ := json.MarshalIndent(j, "", "  ")
+	return writeAtomic(d.path(), []byte(d.red(string(b))), 0o600)
 }
 
 func (d *Deployer) save(j *Journal) error {
@@ -403,6 +507,11 @@ func (d *Deployer) Deploy(ctx context.Context, plan Plan) (*Journal, error) {
 	if prev.Busy() {
 		return prev, ErrBusy
 	}
+	if d.Select != nil {
+		if err := d.Select(); err != nil {
+			return nil, err
+		}
+	}
 	if err := d.bindCloudflare(); err != nil {
 		return nil, err
 	}
@@ -416,7 +525,7 @@ func (d *Deployer) Deploy(ctx context.Context, plan Plan) (*Journal, error) {
 		b, _ := json.MarshalIndent(prev, "", "  ")
 		_ = writeAtomic(filepath.Join(d.Dir, "deploy.previous.json"), b, 0o600)
 	}
-	j := &Journal{Schema: JournalSchema, RunID: newRunID(), State: StateRunning, AccountID: d.AccountID, Started: d.now(), FailAfter: d.FailAfter, Dataplane: DataplaneUnverified}
+	j := &Journal{Schema: JournalSchema, RunID: newRunID(), State: StateRunning, AccountID: d.AccountID, AccountRef: d.accountRef, Started: d.now(), FailAfter: d.FailAfter, Dataplane: DataplaneUnverified}
 	for _, s := range Stages {
 		j.Stages = append(j.Stages, StageRecord{Name: s, Status: "pending"})
 	}
@@ -498,6 +607,11 @@ func (d *Deployer) Withdraw(ctx context.Context) (*Journal, error) {
 	if j == nil || !j.Busy() {
 		return j, ErrNothingToWithdraw
 	}
+	if d.upgrade(j) {
+		if err := d.saveKeepTime(j); err != nil {
+			return j, err
+		}
+	}
 	// Compensation acts only in the account the run deployed to. The
 	// credentials are read here, under the same lock that SaveCredentials
 	// takes, so they cannot change between this check and the calls.
@@ -509,6 +623,11 @@ func (d *Deployer) Withdraw(ctx context.Context) (*Journal, error) {
 	}
 	if d.AccountID != j.AccountID {
 		return j, fmt.Errorf("%w：凭据账户 %s，部署账户 %s；请先保存原账户的凭据", ErrAccountMismatch, d.AccountID, j.AccountID)
+	}
+	if d.CheckHosts != nil {
+		if err := d.CheckHosts(j); err != nil {
+			return j, fmt.Errorf("%w：%s", ErrHostsBlocked, d.red(err.Error()))
+		}
 	}
 	published := j.State == StatePublished
 	if j.State == StateRunning && j.Error == "" {

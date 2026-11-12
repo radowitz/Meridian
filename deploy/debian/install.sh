@@ -95,6 +95,10 @@ chmod 0700 /etc/wireguard
 # SmartDNS domain sets are shared host directories between the controller and
 # the resolver container (see deploy/docker-compose.yml).
 install -d /var/lib/meridian/geosite /var/lib/meridian/keywords
+# Host-only list state (saved China lists, the chnroute copy meridian-up.sh
+# re-adds on reload, status.json). Written by meridian-host's list action;
+# not mounted into any container.
+install -d -m 0755 /var/lib/meridian/lists
 
 # SLAAC client on the LAN NIC. forwarding=1 ignores accept_ra unless it is 2.
 # Prefer the interface that already has 192.168.100.88; Debian 13 rarely names it eth0.
@@ -422,6 +426,16 @@ if [[ "${mode}" == prepare ]]; then
   echo "    sudo ${compose[*]} -f deploy/docker-compose.yml exec meridian cat /var/lib/meridian/panel.token"
   echo "  浏览器打开 http://192.168.100.88:8787"
 fi
+# Servers, SSH credentials and Cloudflare accounts live in the panel's own
+# named volume meridian-secrets (deploy/docker-compose.yml), created by
+# Docker on "up"; nothing on the host is written for them and the data
+# plane is not touched. An upgraded panel moves the old Mesh credential
+# file and the topology's SSH targets into it on its first start.
+echo "服务器、SSH 凭据和 Cloudflare 账户保存在面板的命名卷 meridian-secrets 里（目录 0700、文件 0600，不进快照）。"
+if [[ "${mode}" == upgrade ]]; then
+  echo "  面板重建后第一次启动会把旧的 Mesh 凭据和拓扑里的 SSH 地址迁移进去（可重复执行，不影响数据面）。"
+fi
+echo "  （Compose 给卷名加项目前缀，可用 docker volume ls 查看；备份它时按私钥对待。）"
 echo "不要把真实端点或私钥提交进仓库。"
 if [[ "${need_reboot}" == 1 ]]; then
   echo >&2

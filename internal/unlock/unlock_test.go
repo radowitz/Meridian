@@ -215,3 +215,61 @@ func TestStalePreferredSuccessDoesNotReturn(t *testing.T) {
 		t.Fatalf("a fresh success after an unbroken streak should return: %+v", s)
 	}
 }
+
+// Reordering a group (new preferred) must not make a just-failed exit the
+// active one, and a state computed for the old preferred moves nothing.
+func TestReconcileAfterGroupReorder(t *testing.T) {
+	// Demoted from us to us-2; us-2 then failed its latest probe, us-3 is good.
+	s := State{Pool: "us", Preferred: "us", Active: "us-2", Demoted: true,
+		Known: map[string]bool{"us": false, "us-2": false, "us-3": true, "gone": true}}
+	svc := Service{RuleID: "auto-openai", Pool: "us", Preferred: "us-2", Members: []string{"us-2", "us", "us-3"}}
+	if d := Decisions(Snapshot{Services: map[string]State{"auto-openai": s}}, []Service{svc}); len(d) != 0 {
+		t.Fatalf("stale state produced a decision: %v", d)
+	}
+	r := Reconcile(s, svc)
+	if r.Preferred != "us-2" || r.Active != "us-3" || !r.Demoted || !r.PreferredOKAt.IsZero() {
+		t.Fatalf("reorder onto a failed member: %+v", r)
+	}
+	if _, kept := r.Known["gone"]; kept {
+		t.Fatal("results of a member that left the group were kept")
+	}
+	if r.CanReturn(at(0).Add(24 * time.Hour)) {
+		t.Fatal("return allowed without a fresh success streak")
+	}
+	if d := Decisions(Snapshot{Services: map[string]State{"auto-openai": r}}, []Service{svc}); d["auto-openai"] != "us-3" {
+		t.Fatalf("decisions = %v", d)
+	}
+	// Return still needs the full rule: success, fresh, 30 minutes.
+	r = Advance(r, Event{ExitID: "us-2", OK: true, Kind: KindScheduled, At: at(0)}, svc.Members)
+	if r.Active != "us-3" {
+		t.Fatal("returned on the first success")
+	}
+	r = Advance(r, Event{ExitID: "us-2", OK: true, Kind: KindScheduled, At: at(0).Add(ReturnCooldown)}, svc.Members)
+	if r.Active != "us-2" || r.Demoted {
+		t.Fatalf("no return after the cooldown: %+v", r)
+	}
+}
+
+func TestReconcileNoopAndFreshStart(t *testing.T) {
+	svc := Service{RuleID: "x", Pool: "us", Preferred: "us", Members: members()}
+	s := State{Pool: "old-pool-name", Preferred: "us", Active: "us-2", Demoted: true, SchedFails: 2}
+	r := Reconcile(s, svc)
+	if r.Active != "us-2" || !r.Demoted || r.SchedFails != 2 || r.Pool != "us" {
+		t.Fatalf("matching preferred must keep the state: %+v", r)
+	}
+	r = Reconcile(State{}, svc)
+	if r.Preferred != "us" || r.Active != "us" || r.Demoted {
+		t.Fatalf("fresh: %+v", r)
+	}
+	// New preferred whose latest result is a failure and no known-good
+	// alternative: unavailable, not silently "healthy".
+	r = Reconcile(State{Preferred: "us-2", Active: "us-2", Known: map[string]bool{"us": false}}, svc)
+	if r.Active != "us" || !r.Unavailable || r.Demoted {
+		t.Fatalf("no alternative: %+v", r)
+	}
+	// Active member removed from the group.
+	r = Reconcile(State{Preferred: "us", Active: "gone", Demoted: true}, svc)
+	if r.Active != "us" || r.Demoted {
+		t.Fatalf("active left the group: %+v", r)
+	}
+}

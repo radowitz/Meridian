@@ -252,12 +252,16 @@ type RoutePlan struct {
 
 // NodeTarget is one host that gets a sidecar.
 type NodeTarget struct {
-	ID      string     `json:"id"`
-	Name    string     `json:"name"`
-	Role    model.Role `json:"role"`
-	SSHHost string     `json:"ssh_host,omitempty"`
-	SSHPort int        `json:"ssh_port,omitempty"`
-	SSHUser string     `json:"ssh_user,omitempty"`
+	ID   string     `json:"id"`
+	Name string     `json:"name"`
+	Role model.Role `json:"role"`
+	// ServerID and CredentialID name the managed server and SSH credential
+	// the panel connects through (filled in by the panel, not BuildPlan).
+	ServerID     string `json:"server_id,omitempty"`
+	CredentialID string `json:"credential_id,omitempty"`
+	SSHHost      string `json:"ssh_host,omitempty"`
+	SSHPort      int    `json:"ssh_port,omitempty"`
+	SSHUser      string `json:"ssh_user,omitempty"`
 	// HostKey, when set, is the SSH host key fingerprint the host must
 	// present (pinned by the deployer on first contact of a run).
 	HostKey string `json:"host_key,omitempty"`

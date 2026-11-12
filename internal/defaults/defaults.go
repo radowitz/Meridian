@@ -14,20 +14,20 @@ func DefaultRules() []model.Rule {
 		{
 			ID: "auto-openai", Name: "OpenAI / ChatGPT", Manual: false, Priority: 100,
 			Enabled: true, MatchType: model.MatchGeosite, MatchValue: "openai",
-			Geosite: "openai", TargetPool: "us", Mode: model.ModeAuto,
+			Geosite: "openai", TargetGroup: "us",
 			Domains: []string{"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com"},
 			Notes:   "池内其他 US；全部不可用则告警，不改到其他国家",
 		},
 		{
 			ID: "auto-anthropic", Name: "Claude / Anthropic", Manual: false, Priority: 110,
 			Enabled: true, MatchType: model.MatchGeosite, MatchValue: "anthropic",
-			Geosite: "anthropic", TargetPool: "us", Mode: model.ModeAuto,
+			Geosite: "anthropic", TargetGroup: "us",
 			Domains: []string{"claude.ai", "anthropic.com"},
 		},
 		{
 			ID: "auto-gemini", Name: "Gemini", Manual: false, Priority: 120,
 			Enabled: true, MatchType: model.MatchDomain, MatchValue: "gemini.google.com",
-			TargetPool: "us", Mode: model.ModeAuto,
+			TargetGroup: "us",
 			Domains: []string{
 				"gemini.google.com",
 				"aistudio.google.com",
@@ -38,27 +38,27 @@ func DefaultRules() []model.Rule {
 		{
 			ID: "auto-copilot", Name: "Microsoft Copilot", Manual: false, Priority: 130,
 			Enabled: true, MatchType: model.MatchDomain, MatchValue: "copilot.microsoft.com",
-			TargetPool: "us", Mode: model.ModeAuto,
-			Domains: []string{"copilot.microsoft.com"},
-			Notes:   "收窄到 Copilot，避免误伤整个 Microsoft 365",
+			TargetGroup: "us",
+			Domains:     []string{"copilot.microsoft.com"},
+			Notes:       "收窄到 Copilot，避免误伤整个 Microsoft 365",
 		},
 		{
 			ID: "auto-perplexity", Name: "Perplexity", Manual: false, Priority: 140,
 			Enabled: true, MatchType: model.MatchGeosite, MatchValue: "perplexity",
-			Geosite: "perplexity", TargetPool: "us", Mode: model.ModeAuto,
+			Geosite: "perplexity", TargetGroup: "us",
 			Domains: []string{"perplexity.ai"},
 		},
 		{
 			ID: "auto-grok", Name: "Grok", Manual: false, Priority: 150,
 			Enabled: true, MatchType: model.MatchDomain, MatchValue: "grok.x.ai",
-			TargetPool: "us", Mode: model.ModeAuto,
-			Domains: []string{"grok.x.ai", "x.ai"},
-			Notes:   "默认不把整个 X/Twitter 钉死到 US",
+			TargetGroup: "us",
+			Domains:     []string{"grok.x.ai", "x.ai"},
+			Notes:       "默认不把整个 X/Twitter 钉死到 US",
 		},
 		{
 			ID: "auto-netflix", Name: "Netflix", Manual: false, Priority: 200,
 			Enabled: true, MatchType: model.MatchGeosite, MatchValue: "netflix",
-			Geosite: "netflix", TargetPool: "hk-residential", Mode: model.ModeAuto,
+			Geosite: "netflix", TargetGroup: "hk-residential",
 			RequireResidential: true,
 			Domains:            []string{"netflix.com", "netflix.net", "nflxvideo.net", "nflximg.net"},
 			Notes:              "必须是 residential；失败只告警，不暗中换国家",
@@ -66,46 +66,46 @@ func DefaultRules() []model.Rule {
 		{
 			ID: "auto-disney", Name: "Disney+", Manual: false, Priority: 210,
 			Enabled: true, MatchType: model.MatchGeosite, MatchValue: "disney",
-			Geosite: "disney", TargetPool: "hk-residential", Mode: model.ModeAuto,
+			Geosite: "disney", TargetGroup: "hk-residential",
 			RequireResidential: true,
 			Domains:            []string{"disneyplus.com", "disney-plus.net", "dssott.com"},
 		},
 		{
 			ID: "auto-mytvsuper", Name: "MyTV SUPER / Viu", Manual: false, Priority: 220,
 			Enabled: true, MatchType: model.MatchGeosite, MatchValue: "mytvsuper",
-			Geosite: "mytvsuper", TargetPool: "hk", Mode: model.ModeAuto,
+			Geosite: "mytvsuper", TargetGroup: "hk",
 			Domains: []string{"mytvsuper.com"},
 			Notes:   "优先 hk-ix；若解锁要求家宽，再改走 residential",
 		},
 		{
 			ID: "auto-bahamut", Name: "巴哈姆特", Manual: false, Priority: 300,
 			Enabled: true, MatchType: model.MatchGeosite, MatchValue: "bahamut",
-			Geosite: "bahamut", TargetPool: "tw", Mode: model.ModeAuto,
+			Geosite: "bahamut", TargetGroup: "tw",
 			Domains: []string{"ani.gamer.com.tw", "gamer.com.tw"},
 			Notes:   "失败则标记不可用，不改走日本",
 		},
 		{
 			ID: "auto-kktv", Name: "KKTV", Manual: false, Priority: 310,
 			Enabled: true, MatchType: model.MatchSuffix, MatchValue: "kktv.me",
-			TargetPool: "tw", Mode: model.ModeAuto,
-			Domains: []string{"kktv.me"},
+			TargetGroup: "tw",
+			Domains:     []string{"kktv.me"},
 		},
 		{
 			ID: "auto-linetv", Name: "LINE TV", Manual: false, Priority: 320,
 			Enabled: true, MatchType: model.MatchSuffix, MatchValue: "linetv.tw",
-			TargetPool: "tw", Mode: model.ModeAuto,
-			Domains: []string{"linetv.tw"},
+			TargetGroup: "tw",
+			Domains:     []string{"linetv.tw"},
 		},
 		{
 			ID: "auto-hami", Name: "Hami Video", Manual: false, Priority: 330,
 			Enabled: true, MatchType: model.MatchSuffix, MatchValue: "hamivideo.hinet.net",
-			TargetPool: "tw", Mode: model.ModeAuto,
-			Domains: []string{"hamivideo.hinet.net"},
+			TargetGroup: "tw",
+			Domains:     []string{"hamivideo.hinet.net"},
 		},
 		{
 			ID: "auto-abema", Name: "Abema / Niconico / TVer", Manual: false, Priority: 400,
 			Enabled: true, MatchType: model.MatchGeosite, MatchValue: "abema",
-			Geosite: "abema", TargetPool: "jp", Mode: model.ModeAuto,
+			Geosite: "abema", TargetGroup: "jp",
 			Domains: []string{"abema.tv"},
 		},
 	}
@@ -119,9 +119,9 @@ func Example() model.Topology {
 		ID: "manual-example", Name: "示例：钉死 api.example.com 到美国",
 		Manual: true, Priority: 10, Enabled: true,
 		MatchType: model.MatchDomain, MatchValue: "api.example.com",
-		TargetPool: "us", Mode: model.ModePin,
-		Domains: []string{"api.example.com"},
-		Notes:   "手动规则优先于自动表。example.com 是文档域名。",
+		TargetGroup: "us-pin",
+		Domains:     []string{"api.example.com"},
+		Notes:       "手动规则优先于自动表。example.com 是文档域名。",
 	})
 
 	return model.Topology{
@@ -139,6 +139,8 @@ func Example() model.Topology {
 			// 0 means the 6-hour default. NAT64 stays reserved and off so
 			// the compiler does not install a translator route.
 			NAT64: model.NAT64{Reserved: true, Enabled: false},
+			// Foreign traffic no rule matched: the Hong Kong datacentre group.
+			DefaultGroup: "hk",
 		},
 		Nodes: []model.Node{
 			{
@@ -182,7 +184,7 @@ func Example() model.Topology {
 				Managed: true, X: 900, Y: 40,
 				WANInterface: "eth0", EndpointV4: "203.0.113.30", ListenPort: 51820,
 				PathV4: true, PathV6: true, EgressV4: true, EgressV6: true,
-				IXBound: true, Pool: "hk",
+				IXBound: true,
 				SSHHost: "hk-ix.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
@@ -190,7 +192,6 @@ func Example() model.Topology {
 				Managed: true, X: 1100, Y: 40,
 				WANInterface: "eth0", EndpointV4: "203.0.113.31", ListenPort: 51820,
 				PathV4: true, PathV6: true, EgressV4: true, EgressV6: true,
-				Pool: "hk", PoolPriority: 10,
 				SSHHost: "hk-2.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
@@ -198,7 +199,7 @@ func Example() model.Topology {
 				Managed: true, X: 900, Y: 160,
 				WANInterface: "eth0",
 				PathV4:       true, PathV6: true, EgressV4: true, EgressV6: true,
-				NatDialOut: true, Residential: true, Pool: "hk-residential",
+				NatDialOut: true, Residential: true,
 				SSHHost: "hk-resi.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
@@ -206,7 +207,7 @@ func Example() model.Topology {
 				Managed: true, X: 1100, Y: 160,
 				WANInterface: "eth0",
 				PathV4:       true, PathV6: true, EgressV4: true, EgressV6: true,
-				NatDialOut: true, Residential: true, Pool: "hk-residential", PoolPriority: 10,
+				NatDialOut: true, Residential: true,
 				SSHHost: "hk-resi-2.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
@@ -214,7 +215,6 @@ func Example() model.Topology {
 				Managed: true, X: 900, Y: 280,
 				WANInterface: "eth0", EndpointV4: "203.0.113.40", ListenPort: 51820,
 				PathV4: true, PathV6: true, EgressV4: true, EgressV6: true,
-				Pool:    "jp",
 				SSHHost: "jp.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
@@ -222,7 +222,6 @@ func Example() model.Topology {
 				Managed: true, X: 900, Y: 380,
 				WANInterface: "eth0", EndpointV4: "198.51.100.10", ListenPort: 51820,
 				PathV4: true, PathV6: false, EgressV4: true, EgressV6: false,
-				Pool:    "sg",
 				SSHHost: "sg.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
@@ -230,7 +229,6 @@ func Example() model.Topology {
 				Managed: true, X: 900, Y: 480,
 				WANInterface: "eth0", EndpointV4: "198.51.100.20", ListenPort: 51820,
 				PathV4: true, PathV6: true, EgressV4: true, EgressV6: true,
-				Pool:    "us",
 				SSHHost: "us.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
@@ -238,7 +236,6 @@ func Example() model.Topology {
 				Managed: true, X: 1100, Y: 480,
 				WANInterface: "eth0", EndpointV4: "198.51.100.21", ListenPort: 51820,
 				PathV4: true, PathV6: true, EgressV4: true, EgressV6: true,
-				Pool: "us", PoolPriority: 10,
 				SSHHost: "us-2.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
@@ -247,32 +244,32 @@ func Example() model.Topology {
 				WANInterface: "eth0", EndpointV4: "203.0.113.60", EndpointV6: "2001:db8::60",
 				ListenPort: 51820,
 				PathV4:     true, PathV6: true, EgressV4: true, EgressV6: true,
-				DualstackRelay: true, Pool: "relay",
-				SSHHost: "ds-relay.example.invalid", SSHPort: 22, SSHUser: "root",
+				DualstackRelay: true,
+				SSHHost:        "ds-relay.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
 				ID: "v6-exit", Name: "纯 IPv6 出口", Role: model.RoleExit, Region: "us",
 				Managed: true, X: 1100, Y: 680,
 				WANInterface: "eth0", EndpointV6: "2001:db8::70", ListenPort: 51870,
 				PathV4: false, PathV6: true, EgressV4: false, EgressV6: true,
-				V6Workaround: model.WorkaroundDualstackRelay, Pool: "v6",
-				SSHHost: "v6-exit.example.invalid", SSHPort: 22, SSHUser: "root",
+				V6Workaround: model.WorkaroundDualstackRelay,
+				SSHHost:      "v6-exit.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
 				ID: "v6-v4out", Name: "v6 入 v4 出", Role: model.RoleExit, Region: "us",
 				Managed: true, X: 1100, Y: 780,
 				WANInterface: "eth0",
 				PathV4:       false, PathV6: true, EgressV4: true, EgressV6: false,
-				V6Workaround: model.WorkaroundMesh, Pool: "v6-nat",
-				SSHHost: "v6-v4out.example.invalid", SSHPort: 22, SSHUser: "root",
+				V6Workaround: model.WorkaroundMesh,
+				SSHHost:      "v6-v4out.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 			{
 				ID: "tw", Name: "台湾出口", Role: model.RoleExit, Region: "tw",
 				Managed: true, X: 900, Y: 580,
 				WANInterface: "eth0",
 				PathV4:       true, PathV6: false, EgressV4: true, EgressV6: false,
-				NatDialOut: true, Pool: "tw",
-				SSHHost: "tw.example.invalid", SSHPort: 22, SSHUser: "root",
+				NatDialOut: true,
+				SSHHost:    "tw.example.invalid", SSHPort: 22, SSHUser: "root",
 			},
 		},
 		Links: []model.Link{
@@ -406,6 +403,38 @@ func Example() model.Topology {
 				MTU: 1280,
 			},
 		},
-		Rules: rules,
+		Rules:  rules,
+		Groups: ExampleGroups(),
+	}
+}
+
+// ExampleGroups are the region groups of the example. They are what
+// model.MigrateRegionGroups makes of the phase-2 pools (hk, hk-residential,
+// us with an automatic and a pinned variant, …), with readable names.
+// Hong Kong has two groups: datacentre and residential.
+func ExampleGroups() []model.RegionGroup {
+	return []model.RegionGroup{
+		{
+			ID: "hk", Name: "香港（机房）", Region: "hk", Mode: model.GroupAuto,
+			Members: []string{"hk-ix", "hk-2"}, ExcludeResidential: true,
+			Notes: "默认境外组。IX 绑定的 hk-ix 优先；家宽不进这个组。", MigratedFrom: "pool:hk#auto",
+		},
+		{
+			ID: "hk-residential", Name: "香港（家宽）", Region: "hk", Mode: model.GroupAuto,
+			Members: []string{"hk-resi", "hk-resi-2"}, RequireResidential: true,
+			MigratedFrom: "pool:hk-residential#auto-resi",
+		},
+		{ID: "jp", Name: "日本", Region: "jp", Mode: model.GroupAuto, Members: []string{"jp"}, MigratedFrom: "pool:jp#auto"},
+		{ID: "relay", Name: "双栈中继", Region: "hk", Mode: model.GroupAuto, Members: []string{"ds-relay"}, MigratedFrom: "pool:relay#auto"},
+		{ID: "sg", Name: "新加坡", Region: "sg", Mode: model.GroupAuto, Members: []string{"sg"}, MigratedFrom: "pool:sg#auto"},
+		{ID: "tw", Name: "台湾", Region: "tw", Mode: model.GroupAuto, Members: []string{"tw"}, MigratedFrom: "pool:tw#auto"},
+		{ID: "us", Name: "美国", Region: "us", Mode: model.GroupAuto, Members: []string{"us", "us-2"}, MigratedFrom: "pool:us#auto"},
+		{
+			ID: "us-pin", Name: "美国（指定）", Region: "us", Mode: model.GroupManual,
+			Members: []string{"us", "us-2"}, Chosen: "us", OnFailure: model.OnFailureFallback,
+			Notes: "旧的钉死规则：指定 us，链路故障时临时回落到 us-2。", MigratedFrom: "pool:us#pin",
+		},
+		{ID: "v6", Name: "美国（纯 IPv6）", Region: "us", Mode: model.GroupAuto, Members: []string{"v6-exit"}, MigratedFrom: "pool:v6#auto"},
+		{ID: "v6-nat", Name: "美国（v6 入 v4 出）", Region: "us", Mode: model.GroupAuto, Members: []string{"v6-v4out"}, MigratedFrom: "pool:v6-nat#auto"},
 	}
 }

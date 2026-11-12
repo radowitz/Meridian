@@ -1,404 +1,392 @@
-import type { Issue, PathReport, Topology } from "./types";
+// Typed client for every panel API. One request function, one error type.
+//
+// Secrets: request bodies may carry passwords, private keys, passphrases or
+// API tokens; nothing here stores, caches or logs a request body, and no
+// response carries a secret except the one-time remote-access device
+// configuration (createRemoteDevice / regenerateRemoteDevice), which callers
+// must keep in component state only.
+//
+// Panel access token: kept in a module variable and mirrored to
+// sessionStorage (tab-scoped, cleared when the tab closes) so that a page
+// refresh does not force re-entry. Never localStorage, never a URL.
+
+import type {
+  ApiErrorBody,
+  ApplyResult,
+  CloudflareAccountInput,
+  CloudflareAccountPatch,
+  CloudflareAccountView,
+  CloudflareAccountsView,
+  CloudflareRequirements,
+  DiffResult,
+  HostKeyDiscovery,
+  HostReport,
+  HostStatus,
+  Issue,
+  LeakItem,
+  ListKind,
+  ListsHostStatus,
+  ListsJob,
+  ListsPolicy,
+  ListsView,
+  MeshRunBody,
+  MeshRunResult,
+  MeshStatus,
+  Meta,
+  PanelStatus,
+  PathReport,
+  PermissionCheck,
+  ProbeCatalogView,
+  ProbeJob,
+  ProbeJobsView,
+  ProbeResultRow,
+  ProbeSelection,
+  ProvisionResult,
+  Ref,
+  RegionGroupInput,
+  RegionGroupPatch,
+  RegionGroupView,
+  RegionGroupsView,
+  RemoteAccessView,
+  RemoteDeviceConfigResult,
+  RemoteDeviceInput,
+  RemoteDevicePatch,
+  RemoteDeviceView,
+  RemoteRuntimeView,
+  RemoteSettingsPatch,
+  RollbackMode,
+  SSHCredentialCreate,
+  SSHCredentialPatch,
+  SSHCredentialView,
+  SSHSecretInput,
+  ServerInput,
+  ServerPatch,
+  ServerView,
+  ConnectionTest,
+  Topology,
+  TopologySaveResult,
+  UnlockView,
+} from "./types";
+
+// Re-exported for the components that still import them from here.
+export type {
+  HostReport,
+  HostStatus,
+  LeakItem,
+  MeshJournal,
+  MeshPlan,
+  MeshRunBody,
+  MeshRunResult,
+  MeshStatus,
+  ProbeCatalogEntry,
+  ProbeCategory,
+  ProbeJob,
+  ProbeJobItem,
+  ProbeJobsView,
+  ProbePart,
+  ProbeSelection,
+  RollbackMode,
+  UnlockView,
+} from "./types";
+
+// ---------------------------------------------------------------- token ---
 
 const TOKEN_KEY = "meridian.token";
+let memToken: string | null = null;
+
+export function getToken(): string {
+  if (memToken === null) {
+    try {
+      memToken = sessionStorage.getItem(TOKEN_KEY) || "";
+    } catch {
+      memToken = "";
+    }
+  }
+  return memToken;
+}
 
 export function setToken(token: string) {
-  sessionStorage.setItem(TOKEN_KEY, token.trim());
-}
-
-export function getToken() {
-  return sessionStorage.getItem(TOKEN_KEY) || "";
-}
-
-function headers(json: boolean): HeadersInit {
-  const h: Record<string, string> = {};
-  const token = getToken();
-  if (token) h.Authorization = `Bearer ${token}`;
-  if (json) h["Content-Type"] = "application/json";
-  return h;
-}
-
-async function parse<T>(res: Response): Promise<T> {
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const message = body.error || (res.status === 401 ? "需要面板口令" : `请求失败 ${res.status}`);
-    const err = new Error(message) as Error & { issues?: Issue[]; body?: unknown; status?: number };
-    err.issues = body.issues;
-    err.body = body;
-    err.status = res.status;
-    throw err;
+  memToken = token.trim();
+  try {
+    if (memToken) sessionStorage.setItem(TOKEN_KEY, memToken);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* storage unavailable: memory only */
   }
-  return body as T;
 }
 
-export function getTopology() {
-  return fetch("/api/topology", { headers: headers(false) }).then((r) => parse<Topology>(r));
+export function clearToken() {
+  setToken("");
 }
+
+const unauthorizedListeners = new Set<() => void>();
+
+/** Called whenever a request comes back 401. Returns an unsubscribe function. */
+export function onUnauthorized(cb: () => void): () => void {
+  unauthorizedListeners.add(cb);
+  return () => unauthorizedListeners.delete(cb);
+}
+
+// ---------------------------------------------------------------- errors ---
+
+/**
+ * Every failed request throws this. `code` is the handler's machine-readable
+ * code (see ui.tsx errorTitle for the Chinese wording), `inUseBy` the
+ * referrers of a refused delete or change, `body` the whole error body (Mesh
+ * and lists errors carry extra fields there).
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly field?: string;
+  readonly inUseBy: Ref[];
+  readonly issues?: Issue[];
+  readonly body: ApiErrorBody;
+
+  constructor(status: number, body: ApiErrorBody, fallbackCode = "") {
+    const message =
+      (typeof body.error === "string" && body.error) ||
+      (status === 401 ? "需要面板口令" : status === 0 ? "无法连接面板服务" : `请求失败（HTTP ${status}）`);
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = (typeof body.code === "string" && body.code) || fallbackCode;
+    this.field = typeof body.field === "string" ? body.field : undefined;
+    this.inUseBy = Array.isArray(body.in_use_by) ? body.in_use_by : [];
+    this.issues = Array.isArray(body.issues) ? body.issues : undefined;
+    this.body = body;
+  }
+}
+
+export function isApiError(e: unknown): e is ApiError {
+  return e instanceof ApiError;
+}
+
+// --------------------------------------------------------------- request ---
+
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+export async function request<T>(method: Method, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      cache: "no-store",
+      credentials: "same-origin",
+      signal,
+    });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") throw e;
+    throw new ApiError(0, {}, "network");
+  }
+  const text = await res.text();
+  let data: unknown = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {};
+    }
+  }
+  if (!res.ok) {
+    if (res.status === 401) unauthorizedListeners.forEach((cb) => cb());
+    const errBody = data && typeof data === "object" ? (data as ApiErrorBody) : {};
+    throw new ApiError(res.status, errBody, res.status === 401 ? "unauthorized" : "");
+  }
+  return data as T;
+}
+
+const enc = encodeURIComponent;
+
+/** Mutations that only change the stored document say so. */
+export interface ApplyRequired {
+  apply_required?: boolean;
+}
+
+// ------------------------------------------------------------------ core ---
+
+export const health = () => request<{ status: string; service: string }>("GET", "/api/health");
+export const getMeta = () => request<Meta>("GET", "/api/meta");
+export const getTopology = () => request<Topology>("GET", "/api/topology");
 
 export function putTopology(topo: Topology, draft: boolean) {
-  const url = draft ? "/api/topology?draft=1" : "/api/topology";
-  return fetch(url, {
-    method: "PUT",
-    headers: headers(true),
-    body: JSON.stringify(topo),
-  }).then((r) =>
-    parse<{ topology: Topology; issues: Issue[]; paths: PathReport[]; draft: boolean }>(r),
-  );
+  return request<TopologySaveResult>("PUT", draft ? "/api/topology?draft=1" : "/api/topology", topo);
 }
 
-export function validate(topo: Topology) {
-  return fetch("/api/validate", {
-    method: "POST",
-    headers: headers(true),
-    body: JSON.stringify(topo),
-  }).then((r) => parse<{ issues: Issue[]; paths: PathReport[] }>(r));
-}
+export const validate = (topo?: Topology) =>
+  request<{ issues: Issue[]; paths: PathReport[] }>("POST", "/api/validate", topo ?? {});
 
-export function diff(topo: Topology) {
-  return fetch("/api/diff", {
-    method: "POST",
-    headers: headers(true),
-    body: JSON.stringify(topo),
-  }).then((r) => parse<{ diff: string; order: string[]; issues: Issue[] }>(r));
-}
+export const compile = (topo?: Topology) => request<Record<string, unknown>>("POST", "/api/compile", topo ?? {});
 
-export interface HostStep {
-  name: string;
-  ok: boolean;
-  skipped?: boolean;
-  detail?: string;
-}
+/** Without a topology the stored document is compiled and compared. */
+export const diff = (topo?: Topology) => request<DiffResult>("POST", "/api/diff", topo ?? {});
 
-export interface HostReport {
-  transaction: string;
-  kind: string;
-  from_version: number;
-  to_version: number;
-  diff: Record<string, string[] | number[] | undefined>;
-  steps?: HostStep[];
-  warnings?: string[];
-  committed: boolean;
-  compensated?: boolean;
-}
+export const apply = (dryRun: boolean, install: boolean) =>
+  request<ApplyResult>("POST", "/api/apply", { dry_run: dryRun, install });
 
-export function apply(dryRun: boolean, install: boolean) {
-  return fetch("/api/apply", {
-    method: "POST",
-    headers: headers(true),
-    body: JSON.stringify({ dry_run: dryRun, install }),
-  }).then((r) =>
-    parse<{ dry_run: boolean; install: boolean; wrote?: string[]; order: string[]; diff: string; host?: HostReport }>(r),
-  );
-}
-
-// "runtime" restores the host (files, interfaces, units, nft tables) to the
-// previous snapshot in one transaction; "snapshot" only swaps the data-dir
-// snapshots and is refused by the backend once Meridian is installed on the
-// host unless asked for explicitly. There is no implicit default.
-export type RollbackMode = "runtime" | "snapshot";
-
+/**
+ * "runtime" restores the host and the data directory in one transaction;
+ * "snapshot" only swaps the data-dir snapshots (refused once installed unless
+ * explicit). There is no implicit default.
+ */
 export function rollback(mode: RollbackMode) {
   const body = mode === "runtime" ? { install: true } : { snapshot_only: true };
-  return fetch("/api/rollback", { method: "POST", headers: headers(true), body: JSON.stringify(body) }).then((r) =>
-    parse<{ status: string; mode: RollbackMode; host?: HostReport | null }>(r),
+  return request<{ status: string; mode: RollbackMode; host?: HostReport | null }>("POST", "/api/rollback", body);
+}
+
+/** Cheap, read-only: agent reachability, installed-vs-stored, pending transaction, job states. */
+export const getStatus = () => request<PanelStatus>("GET", "/api/status");
+export const hostStatus = () => request<HostStatus>("GET", "/api/host");
+export const recoverHost = () => request<{ status: string; host?: HostReport | null }>("POST", "/api/host/recover", {});
+
+/** Dry run by default; `dryRun: false` really connects and provisions. */
+export function provision(nodeId: string, opts: { dryRun?: boolean; generateKeys?: boolean } = {}) {
+  return request<ProvisionResult>("POST", "/api/provision", {
+    node_id: nodeId,
+    dry_run: opts.dryRun ?? true,
+    ...(opts.generateKeys ? { generate_keys: true } : {}),
+  });
+}
+
+// --------------------------------------------------------------- servers ---
+
+export const listServers = () => request<{ servers: ServerView[] }>("GET", "/api/servers");
+export const getServer = (id: string) => request<{ server: ServerView }>("GET", `/api/servers/${enc(id)}`);
+export const createServer = (input: ServerInput) => request<{ server: ServerView }>("POST", "/api/servers", input);
+export const updateServer = (id: string, patch: ServerPatch) =>
+  request<{ server: ServerView }>("PATCH", `/api/servers/${enc(id)}`, patch);
+export const deleteServer = (id: string) => request<{ deleted: string }>("DELETE", `/api/servers/${enc(id)}`);
+export const discoverHostKey = (id: string) =>
+  request<{ discovery: HostKeyDiscovery; server: ServerView }>("POST", `/api/servers/${enc(id)}/host-key/discover`, {});
+/** `fingerprint` must be exactly the discovered (or mismatching) value. */
+export const trustHostKey = (id: string, fingerprint: string) =>
+  request<{ server: ServerView }>("POST", `/api/servers/${enc(id)}/host-key/trust`, { fingerprint });
+export const forgetHostKey = (id: string) => request<{ server: ServerView }>("DELETE", `/api/servers/${enc(id)}/host-key`);
+export const testServer = (id: string) =>
+  request<{ test: ConnectionTest; server: ServerView }>("POST", `/api/servers/${enc(id)}/test`, {});
+
+// ------------------------------------------------------- SSH credentials ---
+
+export const listCredentials = () => request<{ credentials: SSHCredentialView[] }>("GET", "/api/ssh-credentials");
+export const getCredential = (id: string) =>
+  request<{ credential: SSHCredentialView }>("GET", `/api/ssh-credentials/${enc(id)}`);
+export const createCredential = (input: SSHCredentialCreate) =>
+  request<{ credential: SSHCredentialView }>("POST", "/api/ssh-credentials", input);
+export const updateCredential = (id: string, patch: SSHCredentialPatch) =>
+  request<{ credential: SSHCredentialView }>("PATCH", `/api/ssh-credentials/${enc(id)}`, patch);
+/** Same ID, same kind, new secret. */
+export const rotateCredential = (id: string, secret: SSHSecretInput) =>
+  request<{ credential: SSHCredentialView }>("PUT", `/api/ssh-credentials/${enc(id)}/secret`, secret);
+export const deleteCredential = (id: string) => request<{ deleted: string }>("DELETE", `/api/ssh-credentials/${enc(id)}`);
+
+// ------------------------------------------------------------ Cloudflare ---
+
+export const listAccounts = () => request<CloudflareAccountsView>("GET", "/api/cloudflare/accounts");
+export const getAccount = (id: string) =>
+  request<{ account: CloudflareAccountView }>("GET", `/api/cloudflare/accounts/${enc(id)}`);
+export const createAccount = (input: CloudflareAccountInput) =>
+  request<{ account: CloudflareAccountView }>("POST", "/api/cloudflare/accounts", input);
+export const updateAccount = (id: string, patch: CloudflareAccountPatch) =>
+  request<{ account: CloudflareAccountView }>("PATCH", `/api/cloudflare/accounts/${enc(id)}`, patch);
+export const rotateAccountToken = (id: string, apiToken: string) =>
+  request<{ account: CloudflareAccountView }>("PUT", `/api/cloudflare/accounts/${enc(id)}/token`, { api_token: apiToken });
+export const deleteAccount = (id: string) => request<{ deleted: string }>("DELETE", `/api/cloudflare/accounts/${enc(id)}`);
+export const checkAccount = (id: string) =>
+  request<{ check: PermissionCheck; account: CloudflareAccountView }>("POST", `/api/cloudflare/accounts/${enc(id)}/check`, {});
+/** "" clears the selection. */
+export const setMeshAccount = (account: string) =>
+  request<{ mesh_account: string | null }>("PUT", "/api/cloudflare/mesh-account", { account });
+export const getCloudflareRequirements = () => request<CloudflareRequirements>("GET", "/api/cloudflare/requirements");
+
+// ------------------------------------------------------------------ Mesh ---
+
+export const getMesh = () => request<MeshStatus>("GET", "/api/mesh");
+export const meshDeploy = (body: MeshRunBody = {}) => request<MeshRunResult>("POST", "/api/mesh/deploy", body);
+/** Takes nothing: servers, credentials, host keys and the account come from the journal. */
+export const meshWithdraw = () => request<MeshRunResult>("POST", "/api/mesh/withdraw", {});
+
+/** Legacy single-account endpoints (act on the Mesh account). Prefer the account API. */
+export const putMeshCredentials = (accountId: string, apiToken: string) =>
+  request<{ credentials: { account_id?: string; token_set: boolean } }>("PUT", "/api/mesh/credentials", {
+    account_id: accountId,
+    api_token: apiToken,
+  });
+export const deleteMeshCredentials = () => request<{ credentials: null }>("DELETE", "/api/mesh/credentials");
+
+// ----------------------------------------------------------------- lists ---
+
+export const getLists = () => request<ListsView>("GET", "/api/lists");
+export const setListsPolicy = (policy: ListsPolicy) => request<ListsView>("PUT", "/api/lists/policy", { policy });
+/** 202 with the started job; 409 update_running; 503 host_unavailable. */
+export const updateLists = (body: { lists?: ListKind[]; policy?: ListsPolicy } = {}) =>
+  request<{ job: ListsJob }>("POST", "/api/lists/update", body);
+export const getListsJob = () => request<{ job: ListsJob | null }>("GET", "/api/lists/job");
+export const getListsStatus = () => request<{ status: ListsHostStatus }>("GET", "/api/lists/status");
+
+// --------------------------------------------------------- region groups ---
+
+export const listGroups = () => request<RegionGroupsView>("GET", "/api/region-groups");
+export const getGroup = (id: string) =>
+  request<{ group: RegionGroupView; thresholds: RegionGroupsView["thresholds"] }>("GET", `/api/region-groups/${enc(id)}`);
+export const createGroup = (input: RegionGroupInput) =>
+  request<{ group: RegionGroupView } & ApplyRequired>("POST", "/api/region-groups", input);
+export const updateGroup = (id: string, patch: RegionGroupPatch) =>
+  request<{ group: RegionGroupView } & ApplyRequired>("PATCH", `/api/region-groups/${enc(id)}`, patch);
+export const deleteGroup = (id: string) =>
+  request<{ deleted: string } & ApplyRequired>("DELETE", `/api/region-groups/${enc(id)}`);
+export const setDefaultGroup = (group: string) =>
+  request<{ default_group: string; group: RegionGroupView } & ApplyRequired>("PUT", "/api/region-groups/default", { group });
+export const postGroupHealth = (observations: { id: string; up: boolean }[]) =>
+  request<{ groups: RegionGroupView[]; flipped: string[] }>("POST", "/api/region-groups/health", { observations });
+
+// --------------------------------------------------------- remote access ---
+
+export const getRemoteAccess = () => request<RemoteAccessView>("GET", "/api/remote-access");
+export const putRemoteAccess = (patch: RemoteSettingsPatch) =>
+  request<RemoteAccessView>("PUT", "/api/remote-access", patch);
+export const listRemoteDevices = () =>
+  request<{ devices: RemoteDeviceView[]; runtime: RemoteRuntimeView }>("GET", "/api/remote-access/devices");
+export const getRemoteDevice = (id: string) =>
+  request<{ device: RemoteDeviceView; runtime: RemoteRuntimeView }>("GET", `/api/remote-access/devices/${enc(id)}`);
+/** The response holds the one-time configuration: component state only. */
+export const createRemoteDevice = (input: RemoteDeviceInput) =>
+  request<RemoteDeviceConfigResult>("POST", "/api/remote-access/devices", input);
+export const updateRemoteDevice = (id: string, patch: RemoteDevicePatch) =>
+  request<{ device: RemoteDeviceView } & ApplyRequired>("PATCH", `/api/remote-access/devices/${enc(id)}`, patch);
+export const deleteRemoteDevice = (id: string) =>
+  request<{ deleted: string } & ApplyRequired>("DELETE", `/api/remote-access/devices/${enc(id)}`);
+/** New keys; the old public key stops working after the next install. */
+export const regenerateRemoteDevice = (id: string, opts: { preshared_key?: boolean } = {}) =>
+  request<RemoteDeviceConfigResult>("POST", `/api/remote-access/devices/${enc(id)}/regenerate`, opts);
+
+// ---------------------------------------------------------------- unlock ---
+
+export const getUnlock = () => request<UnlockView>("GET", "/api/unlock");
+export const reportUnlock = (body: unknown) =>
+  request<{ pending_apply: boolean; decisions: Record<string, string> }>("POST", "/api/unlock/report", body);
+export const getUnlockCatalog = () => request<ProbeCatalogView>("GET", "/api/unlock/catalog");
+export const runUnlock = (sel: ProbeSelection = {}) => request<{ job: ProbeJob }>("POST", "/api/unlock/run", sel);
+export const getUnlockJobs = () => request<ProbeJobsView>("GET", "/api/unlock/jobs");
+export const getUnlockJob = (id: string) =>
+  request<{ job: ProbeJob; running: boolean }>("GET", `/api/unlock/jobs/${enc(id)}`);
+export const cancelUnlockJob = (id: string) =>
+  request<{ cancelled: string }>("POST", `/api/unlock/jobs/${enc(id)}/cancel`);
+export function getUnlockResults(filter: { service?: string; exit?: string; group?: string; family?: string } = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) if (v) q.set(k, v);
+  const qs = q.toString();
+  return request<{ results: ProbeResultRow[]; validation: string; validation_text: string }>(
+    "GET",
+    `/api/unlock/results${qs ? `?${qs}` : ""}`,
   );
 }
 
-export interface HostStatus {
-  installed: {
-    version: number;
-    created_at?: string;
-    files: number;
-    interfaces: string[];
-    units: string[];
-    nft_tables: string[];
-    route_tables: number[];
-    dns: boolean;
-  } | null;
-  pending: { id: string; kind: string; phase: string; error?: string; started: string; from_version: number; to_version: number } | null;
-  agent: { ok: boolean; error?: string };
-}
+// ------------------------------------------------------------------ leak ---
 
-export function hostStatus() {
-  return fetch("/api/host", { headers: headers(false) }).then((r) => parse<HostStatus>(r));
-}
-
-export function recoverHost() {
-  return fetch("/api/host/recover", { method: "POST", headers: headers(true), body: "{}" }).then((r) =>
-    parse<{ status: string; host?: HostReport | null }>(r),
-  );
-}
-
-export interface PoolView {
-  id: string;
-  preferred: string;
-  residential: boolean;
-  mesh_backup: boolean;
-  fails_need: number;
-  recovers_need: number;
-  cooldown_sec: number;
-  active?: string;
-  members: { id: string; name: string; ix_bound: boolean; residential: boolean; priority: number; preferred: boolean; up?: boolean }[];
-}
-
-export function getPools() {
-  return fetch("/api/pools", { headers: headers(false) }).then((r) => parse<{ pools: PoolView[] }>(r));
-}
-
-export interface UnlockView {
-  services: { rule_id: string; name: string; pool: string; preferred: string; members: string[]; pin: boolean }[];
-  states: Record<string, { active?: string; sched_fails?: number; demoted?: boolean; unavailable?: boolean; preferred?: string }>;
-  history: {
-    at: string;
-    observed_at?: string;
-    kind: string;
-    service: string;
-    exit_id: string;
-    family?: string;
-    ok: boolean;
-    rejected?: string;
-    note?: string;
-  }[];
-  next_run: string;
-  interval_sec: number;
-  pending_apply: boolean;
-  decisions: Record<string, string>;
-}
-
-export function getUnlock() {
-  return fetch("/api/unlock", { headers: headers(false) }).then((r) => parse<UnlockView>(r));
-}
-
-export function reportUnlock(body: unknown) {
-  return fetch("/api/unlock/report", { method: "POST", headers: headers(true), body: JSON.stringify(body) }).then((r) =>
-    parse<{ pending_apply: boolean; decisions: Record<string, string> }>(r),
-  );
-}
-
-// ---- Panel-run unlock probes ------------------------------------------------
-// The panel only names catalog services, exits and address families. The
-// probe itself runs in meridian-host through the exit's own mark and transit
-// address; no URL, host or command is ever sent from here.
-
-/** network_ok | unlocked | not_unlocked | failed | unknown */
-export type ProbeCategory = "network_ok" | "unlocked" | "not_unlocked" | "failed" | "unknown";
-
-export interface ProbeJobItem {
-  service: string;
-  service_name: string;
-  exit_id: string;
-  exit_region?: string;
-  family: "ipv4" | "ipv6";
-  /** queued | running | done | skipped */
-  state: string;
-  started_at?: string;
-  finished_at?: string;
-  category?: ProbeCategory;
-  region?: string;
-  evidence?: string;
-  egress?: string;
-  error?: string;
-  /** accepted | accepted:inconclusive | rejected:<reason> | note:<text> | not_ingested:<why> */
-  ingest?: string;
-}
-
-export interface ProbeJob {
-  id: string;
-  kind: "manual" | "scheduled";
-  /** running | done | cancelled | timeout | interrupted */
-  state: string;
-  created_at: string;
-  finished_at?: string;
-  error?: string;
-  items: ProbeJobItem[];
-}
-
-export interface ProbeCatalogEntry {
-  service: string;
-  name: string;
-  reachability: boolean;
-  basis: string;
-}
-
-export interface ProbeJobsView {
-  jobs: ProbeJob[];
-  running: string;
-  catalog: ProbeCatalogEntry[];
-  available: boolean;
-}
-
-export interface ProbeSelection {
-  services?: string[];
-  exits?: string[];
-  families?: ("ipv4" | "ipv6")[];
-}
-
-export function runUnlock(sel: ProbeSelection = {}) {
-  return fetch("/api/unlock/run", { method: "POST", headers: headers(true), body: JSON.stringify(sel) }).then((r) =>
-    parse<{ job: ProbeJob }>(r),
-  );
-}
-
-export function getUnlockJobs() {
-  return fetch("/api/unlock/jobs", { headers: headers(false) }).then((r) => parse<ProbeJobsView>(r));
-}
-
-export function cancelUnlockJob(id: string) {
-  return fetch(`/api/unlock/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: headers(true) }).then((r) =>
-    parse<{ cancelled: string }>(r),
-  );
-}
-
-export interface LeakItem {
-  id: string;
-  status: string;
-  /** automated | integration | human | limitation */
-  scope?: string;
-  title: string;
-  detail: string;
-}
-
-export function getLeakcheck() {
-  return fetch("/api/leakcheck", { headers: headers(false) }).then((r) => parse<{ items: LeakItem[] }>(r));
-}
-
-export function provision(nodeId: string) {
-  return fetch("/api/provision", {
-    method: "POST",
-    headers: headers(true),
-    body: JSON.stringify({ node_id: nodeId, dry_run: true }),
-  }).then((r) => parse<{ dry_run: boolean; script: string; node_id: string }>(r));
-}
-
-// ---- Mesh deployment (panel-driven) ----------------------------------------
-// The Cloudflare API token is write-only: the backend never returns it.
-// The SSH private key is sent per request and never stored.
-
-export interface MeshIssue {
-  code: string;
-  message: string;
-  node_id?: string;
-  link_id?: string;
-}
-
-export interface MeshStage {
-  name: string;
-  status: string;
-  started?: string;
-  finished?: string;
-  error?: string;
-  detail?: string[];
-}
-
-/** SSH target a run pinned: where it connected and the host key it saw. */
-export interface MeshHostPin {
-  node_id: string;
-  name?: string;
-  role: string;
-  ssh_host: string;
-  ssh_port: number;
-  ssh_user: string;
-  host_key?: string;
-}
-
-export interface MeshJournal {
-  run_id: string;
-  state: string;
-  /** Cloudflare account the run's nodes and routes live in. */
-  account_id?: string;
-  /** Withdrawal goes to exactly these targets and requires these host keys. */
-  hosts?: MeshHostPin[] | null;
-  started: string;
-  updated: string;
-  fail_after?: string;
-  stages: MeshStage[];
-  nodes: { node_id: string; name: string; cf_id?: string; state: string; error?: string }[] | null;
-  routes: { link_id: string; exit_id: string; network: string; tunnel_id: string; comment: string; cf_id?: string; state: string; error?: string }[] | null;
-  remotes: { node_id: string; host?: MeshHostPin; state: string; error?: string }[] | null;
-  targets: string[] | null;
-  error?: string;
-  compensation_errors?: string[];
-  /** Always "unverified": the panel has no Linux packet-forwarding evidence. */
-  dataplane: string;
-}
-
-export interface MeshPlan {
-  addressing: {
-    link_v4: string;
-    host_v4: string;
-    sidecar_v4: string;
-    host_v6: string;
-    sidecar_v6: string;
-    v6_bits: number;
-    host_mac: string;
-    sidecar_mac: string;
-    host_iface: string;
-    sidecar_iface: string;
-  };
-  nodes: { id: string; name: string; role: string; ssh_host?: string; ssh_port?: number; ssh_user?: string }[] | null;
-  routes: { link_id: string; exit_id: string; network: string }[] | null;
-  return_v4: string[] | null;
-  return_v6: string[] | null;
-  issues: MeshIssue[] | null;
-}
-
-export interface MeshStatus {
-  dataplane: string;
-  dataplane_note: string;
-  fault_injection: boolean;
-  stages: string[];
-  credentials?: { account_id?: string; token_set: boolean };
-  credentials_error?: string;
-  plan?: MeshPlan;
-  plan_error?: string;
-  journal?: MeshJournal | null;
-  journal_error?: string;
-}
-
-export interface MeshRunBody {
-  private_key_pem?: string;
-  trust_new_host?: boolean;
-  nodes?: Record<string, { ssh_host?: string; ssh_port?: number; ssh_user?: string }>;
-  fail_after?: string;
-}
-
-export interface MeshRunResult {
-  journal?: MeshJournal | null;
-  dataplane: string;
-  dataplane_note: string;
-  error?: string;
-  stage?: string;
-  compensated?: boolean;
-  compensation_errors?: string[] | null;
-}
-
-export function getMesh() {
-  return fetch("/api/mesh", { headers: headers(false) }).then((r) => parse<MeshStatus>(r));
-}
-
-export function putMeshCredentials(accountId: string, apiToken: string) {
-  return fetch("/api/mesh/credentials", {
-    method: "PUT",
-    headers: headers(true),
-    body: JSON.stringify({ account_id: accountId, api_token: apiToken }),
-  }).then((r) => parse<{ credentials: { account_id?: string; token_set: boolean } }>(r));
-}
-
-export function deleteMeshCredentials() {
-  return fetch("/api/mesh/credentials", { method: "DELETE", headers: headers(false) }).then((r) =>
-    parse<{ credentials: null }>(r),
-  );
-}
-
-export function meshDeploy(body: MeshRunBody) {
-  return fetch("/api/mesh/deploy", { method: "POST", headers: headers(true), body: JSON.stringify(body) }).then((r) =>
-    parse<MeshRunResult>(r),
-  );
-}
-
-/** A withdrawal only takes the SSH key: targets and host keys come from the journal. */
-export function meshWithdraw(body: { private_key_pem?: string }) {
-  return fetch("/api/mesh/withdraw", { method: "POST", headers: headers(true), body: JSON.stringify(body) }).then((r) =>
-    parse<MeshRunResult>(r),
-  );
-}
+export const getLeakcheck = () => request<{ items: LeakItem[] }>("GET", "/api/leakcheck");

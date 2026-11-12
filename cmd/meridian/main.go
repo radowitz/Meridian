@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/radowitz/meridian/internal/api"
 	"github.com/radowitz/meridian/internal/hostexec"
+	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/store"
 )
 
@@ -21,6 +24,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "host-restore" {
 		os.Exit(hostRestore(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "lists-update" {
+		os.Exit(listsUpdate(os.Args[2:]))
 	}
 	bind := env("MERIDIAN_BIND", "192.168.100.88:8787")
 	if err := api.CheckBind(bind); err != nil {
@@ -46,14 +52,24 @@ func main() {
 	srv := &api.Server{
 		Store:   st,
 		DataDir: data,
-		WebDir:  os.Getenv("MERIDIAN_WEB_DIR"),
-		Token:   token,
+		// Servers, SSH credentials and Cloudflare accounts with their
+		// secrets: outside the snapshots, 0700/0600. Docker uses a volume of
+		// its own (deploy/docker-compose.yml); default <data>/secrets.
+		SecretsDir: os.Getenv("MERIDIAN_SECRETS_DIR"),
+		WebDir:     os.Getenv("MERIDIAN_WEB_DIR"),
+		Token:      token,
 		// Every host runtime action goes through meridian-host. If it is not
 		// reachable, installs and runtime rollbacks fail explicitly.
 		Host: hostClient,
 		// Unlock probes go through the same agent (/v1/probe), so the panel
 		// container needs no NET_ADMIN / NET_RAW of its own.
 		Prober: hostClient,
+		// List updates ("update now") run on the host through the agent's
+		// fixed list action (/v1/lists).
+		Lists: hostClient,
+		// Remote-access peer status (handshake, transfer) is read through
+		// the agent's parameterless /v1/remote-access/status.
+		RemoteStatus: hostClient,
 	}
 	// A host transaction interrupted by a restart is compensated (or its
 	// commit finished) before the panel serves requests. A failure is logged
@@ -63,6 +79,17 @@ func main() {
 		log.Printf("unfinished host transaction could not be recovered: %v", err)
 	} else if rep != nil {
 		log.Printf("recovered host transaction %s (compensated=%v committed=%v)", rep.Transaction, rep.Compensated, rep.Committed)
+	}
+	// Old Mesh credential file and topology ssh_* fields move into the
+	// credential store (idempotent; errors name no secret).
+	for _, err := range srv.MigrateCredentials() {
+		log.Printf("credential migration incomplete: %v", err)
+	}
+	// Legacy exit pools become region groups (idempotent; one row write).
+	if rep, err := st.MigrateRegionGroups(); err != nil {
+		log.Printf("region-group migration failed: %v", err)
+	} else if rep.Changed {
+		log.Printf("region-group migration: created groups %v, %d rules, %d nodes", rep.CreatedGroups, rep.Rules, rep.Nodes)
 	}
 	srv.StartUnlockScheduler()
 	log.Printf("meridian panel listening on %s (LAN only). token file: %s", bind, filepath.Join(data, "panel.token"))
@@ -91,7 +118,7 @@ func hostAgent() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("meridian host agent listening on %s (actions: activate, health, rollback; read-only probe)", sock)
+	log.Printf("meridian host agent listening on %s (actions: activate, health, rollback, list update; read-only probe)", sock)
 	if err := agent.Serve(l); err != nil {
 		log.Fatal(err)
 	}
@@ -145,6 +172,83 @@ func hostRestore(args []string) int {
 		fmt.Println("meridian-restore-ok: data plane healthy, nothing restarted")
 	}
 	return 0
+}
+
+// listsUpdate is what the generated meridian-update-geosite.sh /
+// meridian-update-chnroute.sh run (as root): one request to meridian-host's
+// fixed list action, the same path as the panel's "update now". It takes
+// only enumerated values and managed names; every one is checked again by
+// the agent. Exit 0 every list updated, 1 nothing updated (or refused),
+// 2 some lists kept their previous version.
+func listsUpdate(args []string) int {
+	fs := flag.NewFlagSet("lists-update", flag.ContinueOnError)
+	kinds := fs.String("lists", "geosite,chnroute", "geosite and/or chnroute, comma separated")
+	policy := fs.String("policy", string(lists.DefaultPolicy), "domestic | overseas | automatic")
+	geosite := fs.String("geosite", "", "v2fly category names, comma separated (with geosite)")
+	var kws []lists.Keyword
+	fs.Func("keyword", "id=keyword (repeatable, with geosite)", func(v string) error {
+		id, kw, ok := strings.Cut(v, "=")
+		if !ok {
+			return fmt.Errorf("want id=keyword")
+		}
+		kws = append(kws, lists.Keyword{ID: id, Value: kw})
+		return nil
+	})
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return 1
+	}
+	req := hostexec.ListsRequest{
+		RequestID: fmt.Sprintf("cli-%d", time.Now().UnixNano()),
+		Policy:    *policy,
+		Lists:     splitComma(*kinds),
+		Geosite:   splitComma(*geosite),
+		Keywords:  kws,
+	}
+	c := &hostexec.Client{
+		Socket:    env("MERIDIAN_HOST_SOCKET", hostexec.DefaultSocket),
+		TokenFile: env("MERIDIAN_HOST_TOKEN_FILE", hostexec.DefaultTokenFile),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	rep, err := c.UpdateLists(ctx, req)
+	for _, l := range rep.Lists {
+		switch {
+		case l.Updated:
+			fmt.Printf("updated %s from %s (%d entries) %s\n", l.List, l.Source, l.Count, l.URL)
+		default:
+			fmt.Printf("kept    %s: %s\n", l.List, l.Error)
+		}
+	}
+	if rep.DNSRestart != "" {
+		fmt.Printf("restarted %s\n", rep.DNSRestart)
+	}
+	for _, w := range rep.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+	switch {
+	case err != nil:
+		fmt.Fprintln(os.Stderr, "lists-not-updated:", err)
+		return 1
+	case rep.OK:
+		fmt.Println("lists-updated")
+		return 0
+	case rep.Partial:
+		fmt.Fprintln(os.Stderr, "lists-partial: some lists kept their previous version")
+		return 2
+	default:
+		fmt.Fprintln(os.Stderr, "lists-not-updated:", rep.Error)
+		return 1
+	}
+}
+
+func splitComma(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func firstLine(s string) string {

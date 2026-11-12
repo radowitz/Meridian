@@ -43,7 +43,85 @@ SmartDNS 只绑在网关的局域网地址上。
 - nftables 把测试设备发往任意地址的 UDP/TCP 53 和 TCP 853 重定向到本机。
 - 已知 DoH 域名返回 SOA，已知 DoH 地址的 443 在转发链上被拒绝。这只覆盖清单，不能说绝对防住了 DoH。
 
-chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly/domain-list-community（MIT）。GPL 的规则包只作为可选数据源，不放进仓库，也不链进面板。
+chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly/domain-list-community（MIT）。GPL 的规则包只作为可选数据源，不放进仓库，也不链进面板。下载、展开和发布见下一节「名单源」。
+
+## 名单源
+
+### 策略与地址
+
+拓扑设置里的 `list_source` 只有三个值，空等于 `automatic`：
+
+| 值 | 尝试顺序 |
+| --- | --- |
+| `domestic`（国内） | 只用国内镜像 |
+| `overseas`（海外） | 只用 GitHub raw |
+| `automatic`（全自动） | 先国内镜像，失败再 GitHub raw |
+
+地址写死在 `internal/lists`，请求里没有任何 URL：
+
+| 源 | geosite（`<base>/<分类名>`） | China IP（`<base>/china.txt`、`<base>/china6.txt`） |
+| --- | --- | --- |
+| 国内 | `https://cdn.jsdelivr.net/gh/v2fly/domain-list-community@master/data` | `https://cdn.jsdelivr.net/gh/gaoyifan/china-operator-ip@ip-lists` |
+| 海外 | `https://raw.githubusercontent.com/v2fly/domain-list-community/master/data` | `https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists` |
+
+国内源不经过 `raw.githubusercontent.com`。2026-11-12 从用户网关实测 jsDelivr 这两个路径可达（china.txt 约 97 KB / 0.8 s），GitHub raw 大多超时；这只是一次观测，换线路或换时间要重测。宿主上 `meridian-host.service` 的环境变量 `MERIDIAN_GEOSITE_BASE_URL` / `MERIDIAN_CHNROUTE_BASE_URL`（只接受带主机名的 http/https）可以把**国内**源换成局域网副本；面板和请求改不了它。
+
+本轮覆盖的“名单”只有这两类。GeoIP / ASN 规则仍然不写进数据面（校验给 `match_not_enforced` 警告），所以没有 GeoIP 或 ASN 数据要下载。其余联网下载不按名单源处理，原样保留：出口上的 regioncheck 镜像（`docker pull`，由运维在出口上做，属于镜像而非名单）、解锁探测访问的服务首页（探测目标，不是数据）、SmartDNS / Mesh 容器镜像、`install.sh` 的 apt 包。
+
+### 一次更新
+
+只有手动：面板「立即更新」（`POST /api/lists/update`）或宿主上 root 运行 `meridian-update-geosite.sh` / `meridian-update-chnroute.sh`。两个脚本只是 `exec meridian lists-update …`，走的是同一个 host agent 固定动作 `/v1/lists`。本轮不加定时任务。
+
+1. 下载与检查（不持锁、不改宿主）：每个名单按策略顺序逐个源尝试。geosite 分类在**同一个源**上把它的 include 闭包整个取齐（并发 6，每个文件连接 10 s、单次 60 s、5xx/网络错误重试 1 次、上限 8 MiB；每个名单在每个源上总共 5 min），展开、校验通过才算这个源成功；任何一个子文件失败，整个名单换下一个源重来，不会把两个源的文件拼在一起。China IP 两个地址族各自独立选源。
+2. 发布（持 host agent 的动作锁，最多等 `LockWait`，和安装/回滚互斥）：geosite / 关键词文件各自写临时文件后 `rename`，一个名单要么全新要么全旧；chnroute 把所有通过的地址族放进**一个** `nft -f` 事务（每族 `flush set` + `add element`），nft 接受后才替换 `/var/lib/meridian/lists/china*.txt` 和重载副本 `lists/chnroute.nft`。有 geosite/关键词文件变化时重启 SmartDNS（它只在启动时读 domain-set 文件），仍在锁内。
+3. 结果写进宿主 `/var/lib/meridian/lists/status.json`：每个名单当前生效的版本（来源、URL、时间、条数）和最近一次更新的完整报告（每个源的尝试、耗时、错误、是否保留旧版）。
+
+失败的名单保留上一份完整版本；从未存在的 geosite 文件建成空文件，只为让 SmartDNS 能启动。只有一个更新能同时运行；第二个请求得到 503。
+
+### v2fly 格式的处理
+
+按 v2fly/domain-list-community README（2026-11-12 读取）：
+
+| 条目 | 处理 |
+| --- | --- |
+| 无前缀域名、`domain:` | 写入 domain-set（SmartDNS 按后缀匹配，与 v2fly 语义相同） |
+| `full:` | 写入 domain-set。SmartDNS 的 domain-set 没有精确匹配，所以它的子域也会命中，是略宽的近似 |
+| `keyword:`、`regexp:` | 丢弃并计数（报告里 `dropped`）：domain-set 表达不了子串和正则。正则仍要能编译，否则整个文件算格式错误 |
+| `@attr` | 记在条目上，只用于 include 过滤；发布整个分类时不按属性筛 |
+| `include:x` | 递归展开 x 的完整结果 |
+| `include:x @a @-b` | 只取同时带 `@a`、不带 `@b` 的条目（属性名可以带 `!`，如 `@-!cn`） |
+| `&list`（归属） | 忽略：它把条目加进**另一个**名单，只有扫描全部文件才能实现。被别处 `&` 归属进来的条目因此缺失 |
+| `#` 注释 | 行内任意位置起到行尾 |
+
+整份文件只要有一行不是注释、空行或上面这些合法条目（未知前缀、非法域名、多余的词、HTML），就算格式错误。界限：include 深度 16，单个分类闭包 2048 个文件（2026-11-12 实测 `cn` 用到 361 个，`geolocation-!cn` 超过 512），展开后 50 万条；循环（含自身包含）、缺失的 include、超界都让这个名单在这个源上失败。菱形包含不是循环。名单发布到 `geosite/<名称里非字母数字换成 _>.txt`，请求的是真实名称（`category-ads-all`），两个名称落到同一个文件时校验报错。
+
+### 信任边界
+
+镜像是第三方，服务的是决定流量走向的数据。内容检查只证明“形状对”，不证明“内容真”：
+
+- 能挡住：HTML 错误页 / 门户页（Content-Type 或内容形状）、二进制、空文件、截断（Content-Length 不符、行不完整、China IP 少于 1000 条 IPv4 / 300 条 IPv6）、比上一版少一半以上（上一版至少 200 条时）、China IP 里与保留地址重叠、短于 /8（v4）或 /16（v6）的前缀、IPv4 总量超过 6 亿地址、https 跳转到 http。
+- 挡不住：恶意或过期镜像给出格式正确但内容错误的数据。往 `cn` 里加境外域名，会让这些名字走国内 DoT 并写入 `direct4/6`，即绕过隧道直连；往 China IP 里加境外网段（在上面的上限之内）同理。删掉条目只会让国内流量绕路。jsDelivr 对分支引用有缓存，不同文件可能来自上游不同的提交，也可能比 GitHub 落后。
+- 所以报告里写的是“来源”，不是“已验证”。需要更强保证时，用自己核对过的局域网副本替换国内源。
+
+### API
+
+错误体与其他资源一致：`{"error","code","field"?}`。
+
+| 方法 路径 | 说明 |
+| --- | --- |
+| `GET /api/lists` | `policy`、`saved`（是否显式保存过）、`policies`、`order`（本策略的尝试顺序）、`sources`（编译进程序的地址；宿主 drop-in 的覆盖只出现在报告的 `attempts[].url` 里）、`lists`（`geosite` 分类名、`keywords`、`chnroute`）、`host_available`、`job`（正在跑或最近一次） |
+| `PUT /api/lists/policy` | `{"policy":"domestic|overseas|automatic"}`，写入拓扑设置并返回同上；422 `invalid_field`/`policy`，400 `bad_request` |
+| `POST /api/lists/update` | 可选 `{"lists":["geosite","chnroute"],"policy":"…"}`（空体 = 两类、已保存的策略）。202 `{"job"}`；409 `update_running`（带当前 job）；503 `host_unavailable`；422 `invalid_field`（`lists`/`policy`）或 `invalid_lists`（拓扑里的名称无法提交） |
+| `GET /api/lists/job` | `{"job"}`：`state` 为 `running` / `done`（宿主执行了，逐个名单看 `report.lists`）/ `failed`（宿主不可达、忙或拒绝，什么都没改）；最近一次在面板重启后仍可读 |
+| `GET /api/lists/status` | 宿主 `status.json`：`published`（每个名单当前生效的来源、URL、时间、条数）和 `last`（最近一次报告，不论从面板还是脚本发起）；503/502 `host_unavailable` |
+
+报告里每个名单：`list`（`geosite:<名>`、`keyword:<id>`、`chnroute4`、`chnroute6`）、`updated`、`kept`、`source`、`url`、`count`、`files`、`dropped`、`current`、`attempts[]`（源、URL、是否成功、错误、耗时）、`error`；整体还有 `ok`、`partial`、`dns_changed`、`dns_restart`、`warnings`。进度只有 running → done/failed 两段，不报告单个文件的进度。
+
+宿主侧固定动作 `POST /v1/lists`（`request_id`、`policy`、`lists`、`geosite`、`keywords`，未知字段拒绝）与只读的 `POST /v1/lists/status`，同样需要 agent 口令和 uid 0。分类名只能是 `[a-z0-9][a-z0-9!_-]{0,63}`，最多 64 个，落到同一文件的名称拒绝；关键词 id `[a-z0-9_]{1,80}`、值 `[A-Za-z0-9._-]{1,64}`，最多 64 个；整个更新 15 分钟上限，调用方断开也会跑完并记录。
+
+### 重载后 chnroute
+
+每次 `meridian.service` 重载都重建 `inet meridian`。网关的 `meridian-up.sh` 在检查前把 `lists/chnroute.nft`（只允许 `flush set` / `add element` 两个 chnroute 集合的行）接在编译出的规则后面，生成 `lists/.boot.nft`，仍然只做一次 `nft -c -f` 和一次 `nft -f`；副本有别的行、或与当前规则合起来 `nft -c` 不通过时，忽略副本，只加载编译出的规则（chnroute 为空，直到下次更新）。
 
 ## IPv6 和 ROS
 
@@ -61,15 +139,241 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 4. 阿里云
 5. 家宽网关
 
-差分看的是上一份已应用文本和这一份编译结果。面板不在宿主上直接执行命令：安装和运行态回滚写入 Meridian 自己的文件后，经宿主上的 `meridian-host`（固定的 activate / health / rollback 三个动作，只接受受管资源名；另有只读的解锁探测 `/v1/probe`）完成 daemon-reload、启动 `meridian.service` 和相关 unit、健康检查，以及删除旧清单独有的接口、unit、nft 表和路由表。每次安装都记录受管清单（文件、接口、unit、nft 表、路由表、sidecar 和版本），回滚按清单求差并只激活目标清单里的接口，不再扫描 `/etc/wireguard/m*.conf`。数据目录快照和宿主网络在同一份持久事务里，失败即补偿，进程重启时恢复；面板的回滚必须明确选择「含宿主网络」或「只回滚数据目录」（后者在已安装时需要显式 `snapshot_only`）。开机时转发保持关闭，`meridian-guard.service` 先装兜底表，`meridian-up.sh` 在防火墙就绪后才打开转发。`meridian.nft` 是单个 nft 事务，只替换 `inet meridian`（网关上还有 `inet meridian_guard` 兜底表），加载失败时旧表原样保留；`meridian-up.sh` 先 `nft -c` 再 `nft -f`，并且在打开转发和装路由之前完成。网关的 IPv6 在路由层没有局域网入口的 unreachable 规则，从局域网转发、既没有国内 mark 也没有出口 mark 的包由兜底表在 forward 上丢弃。细节和尚未在 Linux 上验证的部分见 [验收清单](verification.md#防火墙原子替换与-lan-兜底)。
+差分看的是上一份已应用文本和这一份编译结果。面板不在宿主上直接执行命令：安装和运行态回滚写入 Meridian 自己的文件后，经宿主上的 `meridian-host`（固定的 activate / health / rollback 三个动作，只接受受管资源名；另有名单更新 `/v1/lists`、只读的名单状态 `/v1/lists/status`、解锁探测 `/v1/probe` 和远程接入运行状态 `/v1/remote-access/status`，见「名单源」「解锁」「远程接入」）完成 daemon-reload、启动 `meridian.service` 和相关 unit、健康检查，以及删除旧清单独有的接口、unit、nft 表和路由表。每次安装都记录受管清单（文件、接口、unit、nft 表、路由表、sidecar 和版本），回滚按清单求差并只激活目标清单里的接口，不再扫描 `/etc/wireguard/m*.conf`。数据目录快照和宿主网络在同一份持久事务里，失败即补偿，进程重启时恢复；面板的回滚必须明确选择「含宿主网络」或「只回滚数据目录」（后者在已安装时需要显式 `snapshot_only`）。开机时转发保持关闭，`meridian-guard.service` 先装兜底表，`meridian-up.sh` 在防火墙就绪后才打开转发。`meridian.nft` 是单个 nft 事务，只替换 `inet meridian`（网关上还有 `inet meridian_guard` 兜底表），加载失败时旧表原样保留；`meridian-up.sh` 先 `nft -c` 再 `nft -f`，并且在打开转发和装路由之前完成。网关的 IPv6 在路由层没有局域网入口的 unreachable 规则，从局域网转发、既没有国内 mark 也没有出口 mark 的包由兜底表在 forward 上丢弃。细节和尚未在 Linux 上验证的部分见 [验收清单](verification.md#防火墙原子替换与-lan-兜底)。
 
-## 出口池
+### 面板状态（`GET /api/status`）
 
-每个出口仍有自己的 fwmark 和中转地址。一个池的首选成员是：IX 绑定优先，然后是池内优先级，再然后是 ID。香港默认池 `hk` 不收家宽；家宽在 `hk-residential`。
+只读、无副作用，供顶栏轮询（默认 20 秒，有任务运行时 5 秒）。不算 Mesh 计划、不带探测目录和任务明细。
 
-网关按规则把流量标到首选成员的 mark 上。枢纽上，这个 mark 对应的路由表默认从该成员的 WireGuard 接口出去。成员健康检查在枢纽上做：连续 3 次失败才把这张表的下一跳换成同池里下一个还活着的成员。连续 5 次成功并且距离上次切换至少 120 秒，才切回已经恢复的首选。这 120 秒只挡住「切回去」，不会把下一跳留在已经判死的成员上。只失败一次不会换。池里所有 WireGuard 成员都失败、并且这条池有待命的 Mesh 边时，下一跳才变成 `mmesh`。没有 Mesh 时保持原表，靠黑洞兜住，不会改去别的国家。
+| 字段 | 含义 |
+| --- | --- |
+| `agent` | `{configured, ok, error}`：对 host agent 做一次 health（3 秒超时）。`configured=false` 表示面板没有宿主执行通道 |
+| `lists_available` / `probe_available` | 名单更新 / 解锁探测此刻能否执行（动作已配置且 agent 应答） |
+| `install.state` | 存储的拓扑与**已安装清单**比较（`Manifest.canonical_sha256`，不是已应用快照）：`in_sync`、`changed`、`not_installed`（宿主上什么都没装）、`invalid`（拓扑无法编译，附 `error` 和错误级 `issues`）、`unknown`（接管的旧版安装没有摘要，无法比较） |
+| `install.installed_version` / `installed_at` / `origin` | 已安装清单的版本、时间、来源；未安装为 `null` |
+| `install.applied` / `applied_matches` | 是否应用过，以及存储的拓扑是否等于上一次应用的快照。`changed` 且 `applied_matches=true` 即「已应用（写入数据目录）但未安装」——`/api/diff` 在这种情况下显示没有变化 |
+| `pending` | 未完成的宿主事务（同 `GET /api/host`） |
+| `jobs.lists` / `jobs.unlock` / `jobs.mesh` | `{state, running, id, started_at, finished_at, error}`：名单任务、解锁探测（运行中的或最近一轮）和 Mesh 部署记录的状态；没有时 `state: "none"`，记录损坏时 `state: "error"` |
+
+### 旧版安装的接管
+
+旧版（没有受管清单的版本）直接把文件写进宿主，`DataDir/host/installed/` 里没有清单。新版第一次「安装到本机」时，在快照轮换和任何宿主写入之前，先在事务锁内判断宿主上是否有旧版数据面（以 `usr/local/sbin/meridian-up.sh` 存在为准）：
+
+1. 收集旧版可能拥有的文件：旧快照 `applied/`、`previous/` 里网关的文件、本次要写入的文件，以及宿主上 Meridian 命名的文件（`etc/wireguard/m*.conf`、`usr/local/sbin/meridian-*`、`etc/nftables.d/meridian*.nft`、Meridian 生成的 unit、`rt_tables.d/meridian.conf`、`sysctl.d/99-meridian.conf`、`etc/meridian/forwarding.conf`）。只收宿主上真实存在的。
+2. 用这些文件推出旧版清单（接口、unit、nft 表、路由表、DNS），名字必须通过 `meridian-host` 的校验，否则拒绝。
+3. WireGuard 配置里的 `PrivateKey` 必须正好是面板保存的网关私钥，恢复副本里换成占位符（和其他已安装副本一样不含私钥，恢复时在安装边界注入，得到逐字节相同的文件）。私钥不同、仍是占位符或无法识别时拒绝接管：面板没有别处可以安全保存另一把私钥，不能保证恢复。
+4. 旧版的启动脚本在每次启动时按 `99-meridian.conf` 设置转发。升级脚本会把这个文件里开机即转发的行改成 0；如果宿主当前双栈转发都开着，恢复副本里这两行记成 1，补偿后重新启动旧版时转发和升级前一样打开（这也恢复了旧版「开机即转发」的行为，接管成功并完成新版安装后就被新版文件替换）。
+5. 经 `meridian-host` 的只读 `health` 检查旧版资源（`meridian.service`、unit、接口、nft 表、DNS）。不健康就拒绝：没有一个在运行的旧版可以恢复。
+6. 旧版有新拓扑不再包含的 unit 或接口时拒绝：宿主 agent 只移除自己激活过的资源，这些旧资源会被拒绝移除。先让新拓扑保留它们完成接管，下一次安装再删除。
+7. 以上都通过才把旧版清单（`origin: "legacy"`）和恢复副本原子地写成 `host/installed/`，之后的安装就是普通的「旧清单 → 新清单」事务：激活失败时补偿把文件逐字节写回、移除新版独有的接口/unit/表（`inet meridian_guard` 移除前先关转发），再经 `meridian-host` 激活旧清单并做健康检查。
+
+任何一步拒绝时宿主、快照和数据目录都没有改动，错误里列出发现的旧版文件和原因。恢复副本放在 `DataDir/host/installed/`（目录 0750、文件 0640，与其他已安装副本相同，不含私钥），不在快照目录里，也不经 API 返回。
+
+## 服务器、SSH 凭据与 Cloudflare 账户
+
+拓扑节点描述数据面里的一跳；「怎么登录这台机器」和「用哪个 Cloudflare 账户」是另外三类对象，由面板单独管理，节点只按 ID 引用。
+
+### 对象
+
+| 对象 | ID | 字段 | 引用 |
+| --- | --- | --- | --- |
+| 服务器 `Server` | `srv-…` | 名称、地址（主机名或 IP，不能以 `-` 开头）、端口（默认 22）、用户（默认 root）、认证方式 `password` / `key`、`credential_id`、标签、备注、主机指纹记录、`migrated_from` | 引用一个 SSH 凭据（种类必须与认证方式一致）；被至多一个拓扑节点通过 `node.server_id` 引用 |
+| SSH 凭据 `SSHCredential` | `key-…` | 名称、种类 `password` / `private_key`、备注；私钥另有派生的公开信息：密钥类型、`authorized_keys` 格式公钥、SHA256 指纹、注释、是否带口令、是否面板生成；创建 / 更新 / 轮换时间、`secret_set` | 被服务器引用 |
+| Cloudflare 账户 `CloudflareAccount` | `cf-…` | 名称、Cloudflare account id（32 位十六进制）、备注、`token_set`、权限检查结果 `permission_check`、时间 | 一个账户可被选为 Mesh 使用的账户；未撤回完的 Mesh 部署按 account id 绑定账户 |
+
+网关节点（`role=gateway`）是本机，不是远端服务器，不能带 `server_id`。两个节点不能共用一台服务器：每台服务器只对应数据面里的一个角色，指纹、凭据和部署记录都按这一对一关系解释。
+
+主机指纹状态：`unknown`（从未连接）→ `discovered`（「发现指纹」看到了指纹，尚未确认）→ `trusted`（用户在面板里明确确认了这一个指纹，已固定）；已固定后看到不同指纹记为 `mismatch`，原固定值保留，连接拒绝，直到用户确认新指纹或清除记录。确认时必须提交与 `discovered`（或 `mismatch` 时看到的新指纹）完全相同的值，防止确认到中途被替换的值。改服务器地址或端口会把指纹清回 `unknown`。迁移时从 Mesh 部署记录导入的指纹直接是 `trusted`（`source: "mesh_journal"`），照常使用。
+
+### 连接（`internal/sshexec`）
+
+面板连接远端服务器只有一条路径：`sshexec.Connector`。调用方只给服务器 ID（Mesh 撤回另给部署记录固定的凭据 ID、地址、端口、用户和指纹）；地址、端口、用户、凭据都从存储里取，请求里不能带私钥、密码、目标或命令。
+
+- **发现**（`Discover`）：TCP 连上后只做到密钥交换，在主机密钥回调里记下公钥就中止握手——不提供任何认证方式，不执行任何东西。结果经 `ObserveHostKey` 记录，返回密钥类型和 SHA256 指纹给用户比对。
+- **执行**（`RunScript`、`Test`）：连接前要求服务器状态是 `trusted`（`mismatch` 返回 `host_key_mismatch`，其余返回 `host_key_untrusted`），要求选了凭据（`no_credential`）。握手时主机密钥回调再调一次 `ObserveHostKey`：指纹不同就记为 `mismatch`、保留原固定值并断开——这一步发生在认证之前，密码或私钥根本不会被读取。只请求固定指纹那种主机密钥算法，避免多密钥主机换出另一把。
+- **秘密只在认证回调里读取**：`ssh.PasswordCallback` / `KeyboardInteractive`（只回答不回显的提示）或 `ssh.PublicKeysCallback`（带口令的私钥在这里解密），都在主机密钥通过之后才调用 `ResolveSSHWith`，读的是凭据的当前一代，所以原地轮换后立即生效。
+- **脚本走标准输入**：`bash -s`，WireGuard 私钥、Mesh 节点令牌不出现在远端进程列表里。输出最多 1 MiB。输出和所有错误文本都用 `credentials.Scrub` 去掉这次用到的密码、私钥（含逐行）和口令，长度再短也替换。
+- 拨号 10 秒、握手 20 秒超时；执行超时由调用方的 context 决定（装机 15 分钟，Mesh 每个动作 10 分钟），超时会发 SIGKILL 并断开。错误码：`unreachable`、`timeout`、`auth_failed`、`command_failed`、`not_ssh`、`host_key_untrusted`、`host_key_mismatch`、`host_key_not_pinned_by_deployment`、`target_changed`、`no_credential`、`not_found`。
+- **连接测试**：登录后只运行固定命令 `sshexec.TestCommand`（`uname -m`、`uname -r`、`/etc/os-release` 的 `PRETTY_NAME`），30 秒超时；结果（时间、成功与否、认证方式、系统、内核、架构、耗时、错误码与脱敏后的错误）记在服务器的 `last_test` 上。改地址、端口、用户、认证方式、凭据或原地轮换凭据都会清掉 `last_test`。
+
+服务器从「已添加」到「就绪」：建凭据 → 建服务器并选凭据 → `POST …/host-key/discover` → 用户核对指纹后 `POST …/host-key/trust`（提交同一个指纹）→ `POST …/test` 成功。视图里 `operable`（凭据 + 已确认指纹，装机和 Mesh 部署要求的条件）和 `ready`（再加上最近一次测试成功）。
+
+### Cloudflare 令牌权限检查
+
+`POST /api/cloudflare/accounts/{id}/check` 用存储的 token 只调用 Cloudflare 文档里的只读接口（2026-11-13 查对）：
+
+1. `GET /accounts/{account_id}/tokens/verify`（账户令牌）；被拒时再试 `GET /user/tokens/verify`（用户令牌）。要求 `status: active`。
+2. `GET /accounts/{account_id}/warp_connector?per_page=1`：能否读取这个账户的 Mesh 节点（接受 Connectors Read / Write、Connector: WARP Read / Write）。
+3. `GET /accounts/{account_id}/teamnet/routes?per_page=1&is_deleted=false`：能否读取路由（接受 Networks Read / Write、Tunnel Read / Write）。
+
+它能证明：token 有效且 active、在这个账户可用、能读 Mesh 节点和路由。**它不能证明写权限**：两个列表接口同时接受 Read 和 Write；读取 token 自己的权限清单要额外的「API Tokens Read」权限，面板不要求也不读取；要证明写权限只能真的创建东西，检查从不这样做。缺写权限会在部署的「创建 Cloudflare 节点」阶段失败并被补偿。结果 `{checked_at, ok, token_status, token_kind, confirmed[], unconfirmed[], missing[], checks[{name, endpoint, status: pass|denied|error|skipped, detail}], detail}` 存在账户上：`ok` 表示执行的每一项都通过（不等于写权限已证实）；`denied`（4xx）把对应权限列进 `missing`；网络错误、429、5xx 记为 `error`，不算缺权限。token 不出现在结果和错误里。所需权限和创建步骤由 `GET /api/cloudflare/requirements` 提供（`mesh.RequiredPermissions`、`mesh.TokenHowTo`）：账户级 `Cloudflare One Connectors Write` 和 `Cloudflare One Networks Write`。
+
+Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入新账户再撤回旧部署。任何时刻最多一个 Mesh 部署记录，它绑定一个 account id；被选为 Mesh 使用的账户只有一个（`mesh_account`）。规则沿用之前的绑定：部署处于进行中、已发布或未撤回完时，绑定的账户不能删除、不能改 account id、Mesh 选择不能切到别的 account id；同一账户可以随时轮换 token。
+
+### 存储
+
+元数据（三类对象与 `mesh_account`）在 `<secrets>/index.json`，每份密文在 `<secrets>/secrets/<id>-<代>.json`。`<secrets>` 默认是 `DataDir/secrets`，Docker 部署用单独的命名卷 `meridian-secrets`（`MERIDIAN_SECRETS_DIR=/var/lib/meridian-secrets`）。
+
+- 目录 0700（打开时收紧），文件 0600，写入走同目录临时文件 + fsync + rename；读取时文件权限带 group/other 位就拒绝使用。
+- 轮换写新一代密文文件，再原子替换索引，最后删旧文件；中途中断时索引仍指向完整的旧一代，下次打开清掉没有被索引引用的密文文件。
+- 不在快照目录（`applied/`、`previous/`、`host/`）里，不进拓扑、编译产物、差异和数据库；API 只返回元数据和 `secret_set` / `token_set`。
+- 没有做静态加密：面板要无人值守地使用这些凭据，解密密钥只能放在同一台机器、同一个进程能读到的地方。gateway 上的 root、能读 Docker 卷的人、拿到面板口令的人都能用到它们；单独的卷和权限只防止它们随数据目录、快照、日志或导出被带走。这和数据库里的 WireGuard 私钥是同一信任级别。
+
+### 脱敏
+
+请求里的密码、私钥、口令和 token 只写进密文文件。API 的错误信息是固定文本，不回显输入；所有经过这些接口的错误文本再按请求里的每个密文做一次替换（不论长短，4 个字符的密码也替换）。JSON 解析错误统一为「请求格式错误」。日志只记录数量和 ID。
+
+### API
+
+所有响应都是 JSON。错误为 `{"error": 中文说明, "code": 机器可读代码, "field"?: 字段, "in_use_by"?: [{"kind","id","name"}]}`。
+
+| 方法与路径 | 请求 | 成功响应 |
+| --- | --- | --- |
+| `GET /api/servers` | | `{"servers":[服务器视图]}` |
+| `GET /api/servers/{id}` | | `{"server":视图}` |
+| `POST /api/servers` | `name, address, port?, user?, auth, credential_id?, tags?, notes?` | 201 `{"server"}` |
+| `PATCH /api/servers/{id}` | 同上任意字段 | `{"server"}` |
+| `DELETE /api/servers/{id}` | | `{"deleted":id}`；被节点或未撤回完的 Mesh 部署引用时 409 `in_use` |
+| `PATCH /api/servers/{id}`（地址、端口、用户、认证方式、凭据） | | 被未撤回完的部署固定时 409 `in_use`；名称、标签、备注照常可改 |
+| `POST /api/servers/{id}/host-key/trust` | `fingerprint` | `{"server"}`；409 `host_key_not_discovered` / `host_key_changed` |
+| `DELETE /api/servers/{id}/host-key` | | `{"server"}`（回到 `unknown`） |
+| `POST /api/servers/{id}/host-key/discover` | 无 | `{"discovery":{"key_type","fingerprint","matches_pinned"},"server"}`；502 `unreachable` / `timeout` / `not_ssh` |
+| `POST /api/servers/{id}/test` | 无 | `{"test":连接测试结果,"server"}`（测试执行了就是 200，看 `test.ok`）；409 `host_key_untrusted` / `no_credential` |
+| `GET /api/cloudflare/requirements` | | `{"permissions":[{"name","scope","why"}],"how_to":[…],"check":{"does":[…],"does_not":[…]}}` |
+| `POST /api/cloudflare/accounts/{id}/check` | 无 | `{"check":权限检查结果,"account"}` |
+| `GET /api/ssh-credentials`、`GET …/{id}` | | `{"credentials":[…]}` / `{"credential"}` |
+| `POST /api/ssh-credentials` | `name, kind:"password", password` 或 `name, kind:"private_key", private_key, passphrase?, comment?` 或 `name, kind:"private_key", generate:true, comment?` | 201 `{"credential"}`（生成时视图里就有公钥） |
+| `PATCH /api/ssh-credentials/{id}` | `name?, notes?, comment?` | `{"credential"}` |
+| `PUT /api/ssh-credentials/{id}/secret` | 与创建相同的密文字段（种类不变） | `{"credential"}`，ID 不变 |
+| `DELETE /api/ssh-credentials/{id}` | | 被服务器或未撤回完的部署引用时 409 `in_use` |
+| `GET /api/cloudflare/accounts`、`GET …/{id}` | | `{"accounts":[…],"mesh_account":id 或 null}` / `{"account"}` |
+| `POST /api/cloudflare/accounts` | `name, account_id, api_token` | 201 `{"account"}` |
+| `PATCH /api/cloudflare/accounts/{id}` | `name?, notes?, account_id?` | 409 `account_locked` |
+| `PUT /api/cloudflare/accounts/{id}/token` | `api_token` | `{"account"}` |
+| `DELETE /api/cloudflare/accounts/{id}` | | 409 `in_use` |
+| `PUT /api/cloudflare/mesh-account` | `account`（ID 或空） | `{"mesh_account"}`；409 `account_locked` |
+
+`PUT /api/topology` 检查节点引用，失败时 422：`gateway_server`（网关带了服务器）、`unknown_server`、`server_shared`、`ssh_fields_moved`。凭据存储打不开时，带 `server_id` 的拓扑不能保存，其他照常保存并在响应里给出 `migration_error`。
+
+服务器视图另带 `credential`（`id`、`name`、`kind`）、`in_use_by`、`last_test`、`operable`、`ready` 与 `missing`（`credential`、`host_key`、`connection_test`）。
+
+部署引用由存储自己检查：面板把 Mesh 部署记录里未撤回完的固定主机（`server_id`、`credential_id`、地址、端口、用户）交给 `credentials.Store.SetDeploymentPins`，删除服务器、改它的地址 / 端口 / 用户 / 认证方式 / 凭据、删除凭据都在存储锁内先查这份列表，命中就返回 409 `in_use` 和引用者（`mesh_deployment`）。schema 2 的旧记录没有 `server_id` 时按地址和端口匹配服务器、按该服务器当前的凭据匹配凭据。部署记录读不出来时所有服务器和凭据都算被引用。原地轮换凭据不受限制。凭据和账户视图带 `in_use_by`、`used_for_mesh`、`bound_deployment`。原来的 `PUT/DELETE /api/mesh/credentials` 仍可用，作用于当前 Mesh 账户（同 account id 时轮换 token，否则新建并选中）。
+
+装机 `POST /api/provision`：`{node_id, dry_run?, generate_keys?}`。`dry_run: true` 只返回带占位符、拒绝运行的预览脚本，不需要服务器。真正执行时先检查节点关联了服务器（409 `no_server`）、指纹已确认、选了凭据——都在生成或轮换 WireGuard 密钥之前；然后经连接器以 `bash -s` 执行，响应 `{dry_run:false, node_id, server_id, auth_method, host_key, public_key, output}`；失败 `{error, code, node_id, server_id, auth_method, output}`（409 主机身份类，502 连接 / 认证 / 执行类）。旧字段 `ssh_host`、`ssh_port`、`ssh_user`、`private_key_pem`、`trust_new_host` 一律 400 `field_removed`，未知字段 400 `unknown_field`。
+
+代码：`internal/model`（`Server`、`HostKey`、`ConnectionTest`）、`internal/credentials`（存储、校验、迁移、部署引用）、`internal/sshexec`（连接）、`internal/mesh/permissions.go`（权限检查）、`internal/api/resources.go`、`internal/api/ssh_ops.go`。
+
+### 迁移
+
+面板启动时和每次保存拓扑后运行，可重复执行：
+
+- `DataDir/mesh/cloudflare.json` 导入为 ID 固定的账户 `cf-mesh`，未选择 Mesh 账户时选中它，索引写入成功后才删除旧文件。中断后重跑：账户已在就只删旧文件；文件权限过宽或内容损坏时保留文件并记录原因，不导入。Mesh 部署记录不变，仍按 account id 绑定，迁移后的账户 account id 相同，撤回照常。
+- 带 `ssh_host` 的非网关节点变成服务器（ID 优先用 `srv-<节点 ID>`，`migrated_from: "node:<ID>"`，认证方式 `key`，凭据待选），节点写入 `server_id` 并清空 `ssh_*`。先写服务器索引，再保存拓扑；中断后重跑会认出 `migrated_from` 相同的服务器直接关联，不会重复。保留域名 `.invalid` 的示例地址不迁移。Mesh 部署记录里该节点固定过的主机指纹（地址和端口一致时）作为 `trusted` 导入。
+- Mesh 部署记录 schema 2 升级到 3（见「Mesh」）：每个固定主机补上 `server_id` 和 `credential_id`，其余不变。
+- 已有 `server_id` 的节点再带 `ssh_*` 时，保存被拒绝（422 `ssh_fields_moved`），避免两处地址不一致。
+
+## 地区组（出口的选择与切换）
+
+用户的需求：出口按国家或地区（香港、美国……）分成大组，每个组里有多个出口节点；每个组要么由用户指定用哪一个，要么自动切换，自动切换的顺序由用户手工排。以下是这一版定下来的领域决策，代码在 `internal/model/groups.go`（对象和迁移）、`internal/pool`（有效顺序、选择、状态机）、`internal/compile`（标记、路由、枢纽切换脚本）、`internal/api/region_groups.go`（REST）。
+
+### 对象
+
+`region_groups[]`，每个组：
+
+| 字段 | 含义 |
+| --- | --- |
+| `id` | 稳定 ID（小写字母、数字、短横线），规则用它引用 |
+| `name` / `region` | 显示名和地区（`hk`、`us`……）。同一地区允许多个组，例如香港机房组和香港家宽组 |
+| `members` | 成员出口 ID，按用户排的顺序。一个出口可以属于多个组 |
+| `mode` | `auto`（自动）或 `manual`（手动） |
+| `chosen` | 手动模式下用户指定的成员；自动模式必须为空 |
+| `on_failure` | 只在手动模式有意义：`hold`（默认，保持指定成员并告警）或 `fallback`（临时回落到有效顺序里的下一个可用成员并告警，恢复后按自动模式同样的规则切回） |
+| `require_residential` / `exclude_residential` / `require_v6` | 组的硬约束（家宽必须 / 家宽排除 / 必须有 IPv6 出口）。前两者互斥 |
+| `migrated_from` | 迁移来源，`pool:<旧池名>#<模式>[-resi][-v6]`，迁移重跑靠它认出已有的组 |
+
+`settings.default_group` 是不匹配任何规则的境外流量用的组（原来固定是 `hk` 池）。
+
+规则只能二选一：`target_group`（引用组）或 `target_exit`（显式钉死一个出口）。规则不再有自己的 `mode`；组是手动/自动的唯一事实来源。规则上的 `require_residential` / `require_v6` 保留，但不再是第二个配置点：它们是对所引用组的断言，组没有相同约束时校验报错（`residential_required` / `constraint_conflict`），不会出现"规则说要家宽、组里却能切到机房"的情况。同时带 `target_group` 和 `mode`、或同时带 `target_group` 和 `target_exit` 的规则被拒绝（`rule_mode_removed` / `rule_target_conflict`）。
+
+### 包装还是替换旧的池
+
+替换。旧的「池」只是节点上的一个名字（`pool` / `pool_priority`），规则用 `target_pool` + `mode` 指向它。地区组是独立对象；迁移后节点的 `pool` / `pool_priority`、规则的 `target_pool` / `mode` 全部清空。这几个旧字段只作为输入保留：旧面板或旧导出再写进来时，读入时立刻并入组（见下），不会形成第二份配置。没有迁移的文档（规则仍带 `target_pool`）校验直接报错 `legacy_pool_target`。
+
+### 迁移
+
+`model.MigrateRegionGroups`，在 `store.Load`（每次读库）和 API 收到整份拓扑（`PUT /api/topology`、带拓扑的 validate/compile/diff）时运行。它是纯内存变换，结果随一次整行写入保存，所以中断不会留下半份数据；对已经迁移的文档再跑是空操作。
+
+1. 每个旧池按原来的首选顺序收集成员：IX 绑定优先，然后 `pool_priority` 小的在前，再按 ID。这就是迁移后组的 `members` 顺序，所以迁移前后有效顺序完全一样（IX 优先、稳定排序）。
+2. 指向同一个池的规则按「模式 + 家宽要求 + IPv6 要求」分成变体，每个变体一个组。同池不同模式时生成独立的组，行为不丢：
+   - `auto` → 自动组；
+   - `pin` → 手动组，`chosen` 是原来的首选成员，`on_failure: fallback`。原来钉死规则用的是首选成员的 mark，而枢纽的链路切换会改这张表的下一跳，所以钉死规则其实会随链路故障临时换到同池备成员、恢复后切回，但不受解锁结果影响。手动 + 回落正是这个行为。
+3. 基本变体（优先自动、无额外约束）的组 ID 就是池名，其余是 `池名-pin`、`池名-auto-resi` 这类；与已有 ID 冲突时加序号。没有规则引用的池也生成一个自动组，节点归属不丢。
+4. 池 `hk` 的组带 `exclude_residential`（原来 `hk` 池不收家宽）；被要求家宽的规则（`require_residential` 或名字里有 Netflix / Disney）对应的组带 `require_residential`。原来这样的池里若有机房成员会直接报错，所以加约束不改变任何能通过校验的拓扑的行为。
+5. `settings.default_group` 为空时设为 `hk` 的自动组。
+6. 已有组时，带旧字段的输入并进来：节点的 `pool` 加到所有 `migrated_from` 是该池的组（追加在末尾），规则的 `target_pool` + `mode` 找到对应变体的组，没有就新建。然后清空旧字段。
+
+面板保存的解锁状态（按规则）和链路状态（按名字）不迁移：基本变体的组 ID 与旧池名相同，状态继续可用；新 ID 的组从冷启动开始。
+
+### 有效顺序
+
+`pool.Effective(topology, group)`：
+
+1. 先按硬约束过滤：节点不存在或不是出口（`missing`）、重复（`duplicate`）、组要求家宽而它不是（`residential_required`）、组排除家宽而它是（`residential_excluded`）、组要求 IPv6 而它没有 `egress_v6`（`v6_required`）。被排除的成员留在列表里，`position: -1`，带原因。
+2. 剩下的按 IX 绑定优先、其余保持用户顺序（稳定排序）。被 IX 提前的成员带 `ix_first`，因此被往后挤的带 `after_ix`。
+3. 枢纽不能直接切到的成员（只能经双栈中继或纯 Mesh 到达）仍可被静态选中，但带 `not_switchable`，不进动态候选。
+
+API 同时返回 `effective_order` 和每个成员的 `reasons`，界面直接用来解释"为什么它排在这里 / 为什么灰掉"。
+
+### 选择（静态编译）
+
+- 自动：有效顺序第一个（`preferred`）。
+- 手动：`chosen`（`chosen`）。`chosen` 不在成员里或被约束排除时校验报错 `chosen_not_eligible`；运行时万一出现，就用有效顺序第一个并标 `constraint`。
+- 没有可用成员：`none`，引用它的规则校验报错。
+
+自动组里的规则仍按服务跟随解锁映射（`internal/unlock`），只在本组的有效顺序内移动；手动组的规则不受解锁结果影响（只记录）。组的有效首选变了（改顺序、改成员、改约束）时，该服务的解锁状态按新首选重新对齐（`unlock.Reconcile`）：新首选最近一次结果是失败、而组里有已知可用的成员时，保持降级在那个成员上，切回仍要满足完整的恢复条件；对不齐的旧状态不产生任何映射（`unlock.Decisions` 要求状态的首选与当前首选一致）。
+
+### 运行时状态机（枢纽上 `meridian-failover.sh` 的 `group_step`，面板里同一份 `pool.StepGroup`）
+
+每个成员一组滞回计数：连续 3 次失败判死，连续 5 次成功判活（`FailsNeed` / `RecoversNeed`）。另外记录最近一次样本是否成功（`last_ok`）和当前连续成功的起点（`ok_since`，任何一次失败清零）。
+
+- 自动：当前成员判死时立即换到试探顺序里下一个判活的成员；全部 WireGuard 成员判死且该组有待命 Mesh 边时换到 `mmesh`；都没有时不动（靠黑洞兜底，不换国家）。切回首选需要同时满足：首选判活、最近一次样本成功、`ok_since` 起连续成功满 120 秒、距上次切换满 120 秒。首选任何一次失败都清空恢复计时，当前不健康（最近一次样本失败）就不切回——即使它在滞回意义上仍是「活」的。
+- 手动 + `hold`：永远停在 `chosen`，不切到别的成员也不切到 Mesh。`chosen` 判死时状态是 `held`，`alert: true`。
+- 手动 + `fallback`：试探顺序是 `chosen` 在前，然后是有效顺序里的其余成员。行为与自动完全相同（包括 Mesh 和切回条件），只是首选换成 `chosen`；离开 `chosen` 期间状态是 `fallback`，`alert: true`，回到 `chosen` 后告警消失。
+
+状态原因（`state.reason`）：`preferred`、`chosen`、`failover`、`fallback`、`held`、`mesh`、`constraint`、`none`。每个组记录实际成员（`active`）、原因、上次切换时间（`last_switch`）和每个成员的健康。
+
+界面必须显示：
+
+- 自动：当前实际成员；不是首选时显示「故障切换」以及首选为什么还没切回（未判活 / 最近一次失败 / 恢复计时还剩多少）。
+- 手动 + 保持：实际成员永远是指定成员；它判死时显示红色告警「指定成员不可用，按设置保持不切换」，并给出改成回落或换成员的入口。
+- 手动 + 回落：正常时同「手动」；回落期间显示告警「指定成员不可用，临时使用 X」，以及切回所需条件。
+
+面板里的状态是面板用 `POST /api/region-groups/health` 收到的样本按同一规则算出来的（`state.source: "panel_model"`）；枢纽自己的判断写在枢纽的 `/run/meridian/group/<id>/{active,reason,switched}`，两边规则相同但输入不同步，这一版面板不去读枢纽上的文件。
+
+### 静态编译与动态切换一致
+
+- 每个出口保留自己的 mark、中转地址和枢纽路由表（索引按出口 ID 排序，和以前一样）。这些出口表从此只指向自己的出口，不再被动态改写。显式钉死出口的规则、被解锁映射移到某个成员的规则，都用成员自己的 mark，所以不会被链路切换悄悄带走。
+- 每个组另有一个 mark / 中转地址 / 枢纽路由表，索引接在出口后面（按组 ID 排序）。规则和默认流量在组的静态选择可以由枢纽切换时用组的 mark；静态选择只能经中继或纯 Mesh 到达时，退回该成员自己的 mark（没有动态切换，`not_switchable`）。
+- 网关：组 mark 和出口 mark 一样进表 102、SNAT 到组的中转地址；`inet meridian_guard` 的出口 mark 范围按实际最大的 mark（出口加组）计算，选择器清理循环也覆盖到同一上限，所以增删组成员和组时兜底表的 mark 范围随编译更新。允许的接口集合是网关自己的 WireGuard 接口，与组成员无关；它不包含 `mmesh`。
+- 枢纽：静态路由脚本把组表的默认路由装到编译时的选择上，并清掉该组的运行时状态；切换脚本启动时同样清掉状态并重新装一遍编译时的选择，之后只改组表。两边用同一个 `group_hop` 函数和同一组每成员下一跳（直连 WireGuard 用 `dev <接口>`；Mesh 用 `via $MESH_NH4` / `via $MESH_NH6 dev $MESH_DEV`，并且要先有密封标记，否则黑洞）。表 100、102、150、main 以及任何出口自己的表都会被拒绝。
+- 下发：改组只改拓扑，生效要经安装事务（`meridian-up.sh` 会重启 `meridian-failover.service`，让切换脚本拿到新的策略）。枢纽上的切换是安装好的脚本自己做的，地区组没有给 `meridian-host` 增加任何动作。
+- DNS 跟随静态选择：规则的解析器是编译时选中的成员的隧道解析器。组切换到别的成员后 DNS 仍问原成员（同一地区）；原成员整个不可用时解析也会失败，这和以前的池一样，未在这一版解决。
+
+### 兼容
+
+`GET /api/pools` 和 `POST /api/pools/health` 保留，数据来自地区组（`id` 是组 ID，`priority` 是用户顺序里的位置）。面板已经重建（见「面板信息架构」），地区组在「出口」页用 `/api/region-groups` 编辑；这两个旧接口只为旧脚本保留。
 
 ## Mesh
+
+### 面板部署与撤回
+
+`POST /api/mesh/deploy` 的请求只有 `{account?, fail_after?}`：`account` 是存储里的 Cloudflare 账户 ID，省略时用当前选为 Mesh 的账户（都没有时 409 `no_mesh_account`）；给出的账户与当前选择不同时，部署在部署锁内、确认没有绑定中的部署后把它选为 Mesh 账户。响应带 `account: {id, name, account_id, source: "request"|"selected", permission_check}`。计划里每个节点只经它关联的服务器连接（地址、端口、用户、凭据、已确认指纹都从服务器取）；计划本身有效时，任何节点没有服务器、没有凭据或指纹未确认都 409 `servers_not_ready`（附 `not_ready` 列表），一个阶段都不执行。`GET /api/mesh` 另给 `plan_servers`（每个节点的 `server_id`、`ready`、`missing`、将要固定的 `host_key`）和 `mesh_account`。
+
+部署记录（`DataDir/mesh/deploy.json`，schema 3）在开始时为每个计划节点固定 `server_id`、`credential_id`、地址、端口、用户和服务器已确认的指纹，记录账户 `account_id` 和 `account_ref`（存储里的账户 ID）。之后部署的每一步和撤回都只连这些固定目标：连接器要求服务器当前的地址 / 端口 / 用户与固定值一致（否则 `target_changed`），服务器信任的指纹与固定值一致，握手看到的也是这个指纹。
+
+`POST /api/mesh/withdraw` 不接受任何字段：账户按记录绑定（当前 Mesh 账户的 account id 必须相同，否则 409 `account_mismatch`），主机按记录固定。撤回前先在部署锁内升级旧记录，再检查每台还没恢复的主机：固定的服务器和凭据都还在、服务器仍指向固定的地址。任何一台不满足都 409 `hosts_blocked`，列出原因，**什么也不撤回、不标记任何东西为已移除**。凭据原地轮换不影响撤回（读的是同一 ID 的当前一代）；删除或改指向被存储拒绝（见「服务器、SSH 凭据与 Cloudflare 账户」）。旧请求字段 `private_key_pem`、`trust_new_host`、`nodes`、`ssh_*`（撤回另有 `fail_after`、`account`）一律 400 `field_removed`。
+
+schema 2 → 3 升级（`Deployer.UpgradeJournal`，启动时和每次撤回前运行，可重复）：只处理 `server_id` 为空的固定主机；按「节点当前关联的服务器且地址 / 端口 / 用户一致」→「`migrated_from: node:<ID>` 且一致」→「唯一一台地址 / 端口 / 用户一致的服务器」找服务器，凭据取它当前的凭据；`owned remotes` 里的副本同步更新。找不到的保持为空，撤回时被 `hosts_blocked` 挡住，用户在服务器管理里补上同一台主机后重试即可。已有 `server_id` 的固定值从不被改写；比本程序新的记录被拒绝（`journal_too_new`）。
 
 Mesh 的 Compose 只生成在枢纽和对应出口上。镜像默认是官方的 `cloudflare/mesh:latest`（Cloudflare Mesh 节点，原先的 WARP connector）。要钉版本就在拓扑里写 `mesh_image`，例如 `cloudflare/mesh:2026.10.0` 或带 `@sha256:` 的摘要，不要另起一个不存在的名字。容器要 `NET_ADMIN`、`NET_RAW`、`/dev/net/tun`、`SRCNAT_ENABLED=true`，卷在 `/var/lib/cloudflare-warp`，并且打开 IPv4 转发和 IPv6 `all` / `default` 转发。网络是自己的 `meridian_mesh`，不是 host 网络。令牌放在 `/etc/meridian/mesh.env`（权限 0600），仓库里只有空的示例。
 
@@ -79,7 +383,7 @@ Mesh 的 Compose 只生成在枢纽和对应出口上。镜像默认是官方的
 
 ## 解锁
 
-出口上的 timer 每 6 小时跑一次；面板也每 6 小时经 `meridian-host` 自己探测一轮（见下文）。流媒体调用独立容器 `lmc999/regioncheck:latest`（AGPL，不链进面板）。官方镜像的入口是 `bash -lc /check.sh`，额外参数进不去，不带参数时会停在交互菜单上，所以探测脚本改用 `--entrypoint /check.sh`，并传 `-R 66`（全部平台）以及 `-M 4` / `-M 6`。镜像名可以用 `regioncheck_image` 换成你核对过的标签。AI 只做到达性探测（HTTP 状态码不是 000 就算到达，不是账号是否可用）。结果里如果写了 `Region:`，必须和出口自己的地区一致，否则算失败，避免目录地区被悄悄换掉。
+出口上的 timer 每 6 小时跑一次；面板也每 6 小时经 `meridian-host` 自己探测一轮（见下文）。流媒体调用独立容器 `lmc999/regioncheck:latest`（AGPL，不链进面板）。官方镜像的入口是 `bash -lc /check.sh`，额外参数进不去，不带参数时会停在交互菜单上，所以探测脚本改用 `--entrypoint /check.sh`，并传 `-R 66`（全部平台）以及 `-M 4` / `-M 6`。镜像名可以用 `regioncheck_image` 换成你核对过的标签。出口脚本里的 AI curl 只做到达性探测（HTTP 状态码），面板只记录、不推动解锁状态机（既不降级也不恢复）。面板探测的检测方法、证据分级和每个适配器的能力声明见 [unlock-methods.md](unlock-methods.md)；所有适配器都只在合成样本上测试过，真实平台待人工核对。结果里如果写了 `Region:`，必须和出口自己的地区一致，否则算失败，避免目录地区被悄悄换掉。
 
 连续两次定时失败才把自动规则改到同池的下一个成员。备成员自己再连续两次定时失败，就换同池里下一个还能解锁的，没有的话标成不可用并回到首选，不改国家。手动测试和健康变化不计入这两次。钉死的手动规则不进这张映射。切回首选需要首选当前健康（面板收到的首选最新结果是成功，且是 30 分钟内收到的），并且从最后一次失败之后的第一次成功起连续成功满 30 分钟；首选任何一次失败都会把这段恢复计时清零。这些时间都用面板自己的时钟，报告里的 `at` 只用于排序和有效期（早于收到时间 1 小时以上即拒绝），不能把冷却提前用完。报告按服务、出口和地址族排序，迟到的旧结果、重复报告和过期报告只记入历史，不改状态；规则见 `internal/unlock/report.go` 和[验收清单](verification.md)「切回判定与报告规则」。映射变化后要在面板里下发，数据面才会换成新的 mark。
 
@@ -98,3 +402,81 @@ Mesh 的 Compose 只生成在枢纽和对应出口上。镜像默认是官方的
 ## NAT64
 
 枢纽上有 `nat64.reserved.conf`。`enabled=false` 时前缀为空。即便在面板里打开，路由脚本也不安装这个前缀，IPv4 默认路由保持原样。真正的转换器要等以后单独做。
+
+## 远程接入（WireGuard 回家）
+
+出门在外的手机、笔记本经一个独立的 WireGuard 接口连回家里的网关。网关只把它当作和局域网同等的第二个受管入口：同一套分类、DNS 劫持、策略路由和 `inet meridian_guard`，国内直连、境外走隧道、未分类拒绝。默认关闭；关闭（或拓扑里没有 `remote_access`）时，所有节点的编译产物与没有这个功能时逐字节相同。
+
+### 决定
+
+| 事项 | 选择与理由 |
+| --- | --- |
+| 接口名 | 固定 `mra`。host agent 的接口校验只多认这一个名字（`^(m[0-9]{2,3}w?\|mmesh\|mra)$`），不和 `mNN` 隧道或 `mmesh` 冲突。它**不**算网关的隧道接口：境外 mark 永远不能从 `mra` 出去。 |
+| 网关侧私钥 | 单独一把，不复用网关节点私钥。设备配置（会被截图、扫码、转发）里写的是这把公钥；轮换骨干节点私钥不会让所有手机配置失效，反之亦然。私钥放在受限凭据存储（`internal/credentials`，0700/0600），拓扑里只有它的公钥和存储 ID；编译产物、快照、预览、差异和 API 里只有占位符 `__MERIDIAN_SECRET_<id>__`，只在安装边界（`apply.Applier.Secrets`）写进 0600 的 `/etc/wireguard/mra.conf`。 |
+| 设备私钥 | 在面板进程里生成（与节点密钥同一种 X25519 生成方式），只出现在创建或重新生成的那一次响应的完整客户端配置里，不落盘、不进日志、不进拓扑和快照。之后 API 只给公钥和元数据，`config_available` 恒为 `false`；要再拿配置只能「重新生成」，旧公钥在下一次安装后从网关上失效。 |
+| 预共享密钥（可选） | 每台设备一把，放受限凭据存储，拓扑里只记存储 ID；网关配置里是占位符，安装边界注入；客户端配置只在那一次响应里带它。重新生成时换新的一把（新 ID）。旧 ID 在没有任何快照、已安装副本或拓扑再引用之后才删除，所以失败补偿和回滚仍能写回上一份 peer 集合。 |
+| 地址 | 设备池默认 `10.67.0.0/24` 与 `fd67::/64`，都在现有私有规划（`10.66.0.0/16`、`fd66::/48`、`169.254.66.0/30`、`100.96.0.0/12`、局域网）之外；校验要求 IPv4 池在 RFC1918 内、IPv6 池在 `fc00::/7` 内，并证明它们与局域网 v4/v6、`10.66.0.0/16`、中转前缀、`fd66::/48`（及 `ula_prefix`）、Mesh `169.254.66.0/30`、Cloudflare `100.96.0.0/12`、NAT64 前缀、每条链路的隧道地址、CIDR 规则、Mesh 路由、ROS 地址和公网端点都不重叠。网关自己用池里的第一个地址（`.1` / `::1`），也是设备的 DNS。每台设备取最小的空闲主机号（从 2 起），v4 和 v6 用同一个主机号；地址存在设备记录里，设备存在期间不变（重新生成也不变），删除后才可能给新设备。池有设备时不能改池。 |
+| 上限 | 最多 64 台设备。 |
+| 设备之间 | 不互通：从 `mra` 进、再从 `mra` 出的包被守卫丢弃。 |
+| 零设备 | 打开功能就创建接口并监听端口（没有 peer，什么都进不来）；这样端口转发可以先验证，加设备只改 peer。 |
+| 关闭功能 | 下一次安装删除 `mra.conf`、接口（经受管清单由 host agent 删除）、全部 `mra` 相关 nft 规则、入站端口放行和启动脚本里的那一段。设备记录、网关私钥和预共享密钥留在面板，重新打开后原配置继续可用。旧池的黑洞路由和 `iif mra unreachable` 规则留到下次重启，它们只作用于已经不存在的接口和不再使用的私有前缀。 |
+| Endpoint 与端口 | 必须由用户填写（DDNS 名或地址），面板不猜公网地址，也不碰路由器。端口不得与网关上任何隧道监听端口、WSS 失败切换腿端口、wstunnel 本地端口、WSS 监听端口、面板端口、22/53/67/68/123/546/547/853/5353 冲突。API 返回需要在路由器上做的转发说明（UDP、外部端口、网关局域网地址、内部端口），IPv6 直连则需要路由器防火墙放行到网关全局地址的同一 UDP 端口。 |
+| 客户端模式 | `full`（全隧道）：`AllowedIPs = 0.0.0.0/0, ::/0`，DNS 指向网关。`home`（仅家网）：`AllowedIPs` 只有局域网 v4/v6 前缀和网关的两个 DNS 地址，DNS 仍写网关。仅家网模式不接管客户端的公网流量，也不保证接管它的全部 DNS（是否把所有查询交给隧道 DNS 取决于客户端系统），所以 Meridian 的分流和防泄漏规则对那部分流量不起作用。默认 `MTU = 1380`、`PersistentKeepalive = 25`。 |
+| 运行时状态 | 每台设备的最近握手和流量经 host agent 无参数的只读动作 `/v1/remote-access/status` 读取（见下面 API 表）；读不到时 API 给出原因，不伪造数值。 |
+
+### 数据面
+
+只在打开时出现，全部写在网关的 `meridian.nft`（一个 nft 事务）、早启动的 `meridian-guard.nft`、`meridian-routes.sh` 和 `meridian-up.sh` 里：
+
+- **守卫**（`inet meridian_guard`，forward，优先级 -200）：入口集合从 `iifname "<LAN>"` 变成 `iifname { "<LAN>", "mra" }`，规则不变——DNS/DoT 转发一律丢；国内 mark 只能从局域网口出去；出口与地区组 mark 只能进网关的 WireGuard 隧道接口（`mra` 不在其中）；其余全丢。之前多两条窄放行：`iifname "<LAN>" oifname "mra" ip daddr <设备 v4 池> return` 和 v6 同样一条，用于家里主机访问设备以及国内直连流量的回程。设备访问家里主机走的是「国内 mark 从局域网口出」那条，不需要额外放行。设备之间、设备到 `mra` 都没有放行。`iifname` 按名字匹配，接口还不存在时规则照样加载，不会失败也不会放行任何东西。
+- **分类**：`prerouting` 对两个入口都 `jump classify`。`classify` 开头先把目的地是设备池的包标成国内 mark（于是走表 100 里那条 `dev mra` 路由，守卫只在入口是局域网口时放行），然后与局域网完全相同。
+- **DNS**：`dns_hijack` 对 `mra` 进来的 53/853 做同样的重定向（目标是 `mra` 上的网关地址，SmartDNS 已经绑在 `[::]`）；`input` 链「DNS 只给局域网」的源地址白名单加上两个设备池；DoH 地址的 443 在转发链上同样拒绝。面板端口仍只对局域网开放，设备不能访问面板。
+- **入站端口**：`input` 链 `iifname "<LAN>" udp dport <端口> accept`，随后 `udp dport <端口> drop`（只在局域网口接受，包括经 ROS 转进来的 IPv6）。
+- **地址改写**：境外：`transit_snat` 对设备池源地址按每个出口/地区组 mark 改写到同一中转地址（v4 和 v6），上游只见中转地址。国内直连和访问家里主机：`oifname "<LAN>" ip saddr <设备 v4 池> masquerade`、v6 同理（ROS 没有回设备池的路由；局域网客户端本来就在 ROS 的子网上，所以对它们不加改写，行为不变）。
+- **MSS**：`mss` 链对进出 `mra` 的 SYN 按 `mra` 的 MTU 夹到 MTU-40 / MTU-60。
+- **路由**：主表和表 100 各有 `<池> dev mra` 与同前缀的 `blackhole … metric 32767`（接口不在时不会落到 ROS）；IPv4 `iif mra unreachable`（优先级 17851，与局域网那条同理的路由层兜底）。策略规则不变：国内 mark → 表 100，境外 mark → 表 102，之后 unreachable。
+- **启动顺序**：`meridian-up.sh` 不变的顺序——先 `nft -c` 再 `nft -f`（守卫和主表同一批）、确认守卫在、等局域网、开转发，然后才拉 WireGuard。`mra` 放在接口列表第一个（先占住监听端口），存在就 `wg syncconf`（删掉的 peer 立即从运行接口上消失），不存在就 `wg-quick up`；随后把 `mra` 的地址和 MTU 对齐到配置（`syncconf` 不改地址）、打开 `mra` 的 IPv6 转发，最后跑路由脚本。早启动的 `meridian-guard.service` 加载的守卫文件里已经带 `mra`，所以开机时在主表加载之前，设备流量同样只会被丢弃。
+- **加载失败**：两张表在同一批里，失败时内核整批回退，旧守卫和旧分类都在；启动脚本在此停下，不碰路由、转发和接口。
+
+### 设备生命周期与撤销
+
+设备的增删、停用、重新生成只改拓扑（`apply_required: true`），经 `POST /api/apply` 的受管事务生效：`mra.conf` 的新 peer 集合写入（0600，注入私钥和预共享密钥），`meridian.service` 重启跑 `meridian-up.sh`，`wg syncconf` 把运行中的 peer 集合换成文件里的那一份——停用或删除的设备在这一步就从接口上消失。激活或健康检查失败时事务补偿：写回上一份 `mra.conf`（预共享密钥仍在存储里），再激活一次，运行中的 peer 回到之前的集合。关闭整个功能时 `mra` 不在新清单里，host agent 先删除接口再写文件。
+
+### API
+
+`internal/api/remote_access.go`。错误体是 `{"error","code","field"?,"in_use_by"?}`；改动都返回 `apply_required: true`，经 `POST /api/apply` 生效。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/remote-access` | `settings`（enabled、endpoint、listen_port、ipv4_prefix、ipv6_prefix、mtu、keepalive、interface、gateway_ipv4/ipv6、dns、public_key、max_devices、device_count、defaults、modes 说明）、`router_forward`、`devices`、`issues`（按已启用校验的问题列表） |
+| `PUT /api/remote-access` | 部分更新上述设置。打开时必须已有 endpoint 和端口（`remote_not_configured`）；第一次保存生成网关密钥。校验错误码：`remote_endpoint`、`remote_port`、`remote_port_conflict`、`remote_prefix`、`remote_prefix_conflict`、`remote_mtu`、`remote_keepalive`、`remote_lan_interface`；池里有设备时改池是 `in_use`（409，列出设备）。 |
+| `GET /api/remote-access/devices`、`GET …/{id}` | 设备元数据：id、name、notes、mode、enabled、public_key、ipv4、ipv6、preshared_key（布尔）、时间戳、`config_available: false`、`config_outdated`、`runtime`、`runtime_state`；响应另带顶层 `runtime`。运行状态经 host agent 无参数的 `POST /v1/remote-access/status` 读取（只跑 `ip -o link show dev mra`、`wg show mra latest-handshakes`、`wg show mra transfer`，从不 `dump`），按公钥匹配：`runtime: {last_handshake_at（无握手为 null）, rx_bytes, tx_bytes, online（180 秒内有握手）}`；`runtime_state` 为 `ok`、`disabled`、`not_installed`（接口上还没有这个 peer）、`unavailable`、`not_read`（增删改的响应不读运行状态）。顶层 `runtime: {available, state: ok\|disabled\|agent_unavailable\|interface_absent\|error, reason, interface, read_at}`。读不到时不编造数值。 |
+| `POST /api/remote-access/devices` | `{name, notes?, mode?: full\|home, enabled?: true, preshared_key?: true}` → 201 `{device, config:{text, filename, mode, explanation, shown_once:true}, router_forward, apply_required}`。`config.text` 是唯一一次带私钥（和预共享密钥）的完整配置，二维码由面板从这段文字生成。上限 `remote_device_limit`，池满 `remote_pool_full`。 |
+| `PATCH …/{id}` | `{name?, notes?, mode?, enabled?}`；不返回配置。改模式只影响下一次重新生成的配置（`config_outdated` 变真）。 |
+| `DELETE …/{id}` | 删除设备；下一次安装后 peer 从运行接口消失。 |
+| `POST …/{id}/regenerate` | `{preshared_key?}`（缺省沿用原设置）→ 新密钥对、新预共享密钥，地址不变，响应同创建（200）。旧公钥下一次安装后失效。 |
+
+带配置的响应有 `Cache-Control: no-store`。`PUT /api/topology` 不改 `remote_access`（以存储里的为准），远程接入只经这组接口修改。
+
+### 验证状态
+
+结构测试在 `internal/compile/remote_access_test.go`（守卫按包逐条求值、分类、DNS、入站端口、地址改写、路由、启动顺序、关闭时逐字节相同）、`internal/apply/txn_test.go`（peer 随事务增删、失败补偿回到上一份 peer 集合、关闭功能删除接口、缺密钥在写文件前失败）和 API 测试里。`TestNetnsReloadNoLeak` 加了远程设备命名空间（`mra` 用 veth 代替 WireGuard），还加了地区组切换阶段（G），只能在 Linux 上以 root 运行；在新的运行日志归档之前，远程接入的运行时行为没有被验证，`docs/evidence/2026-11-12-debian13/netns-reload.log` 只覆盖加入远程接入之前的版本。网关上的 `meridian-verify.sh` 打开时核对 `mra`、对端公钥、守卫入口、DNS、端口、规则、路由和地址改写，关闭时确认没有 `mra` 接口；手机实测和路由器转发是人工签收项，步骤见 [remote-access.md](remote-access.md)。
+
+## 面板信息架构
+
+面板是一个单页应用（`web/src/App.tsx`，hash 路由），侧边栏按用途分组。每一页只用上面各节描述的 API，不在浏览器里做数据面判断；顶栏按 `GET /api/status` 显示 host agent、安装状态和正在运行的任务。
+
+| 分组 | 页面（hash） | 用途 |
+| --- | --- | --- |
+| — | 概览（`#/`） | 安装状态（`in_sync` / `changed` / `not_installed` / `invalid` / `unknown`）、host agent、未完成事务、名单 / 解锁 / Mesh 任务的最近状态和下一步该做什么 |
+| 网络 | 拓扑（`#/topology`） | 节点、链路和网关设置（局域网口、前缀、NAT64 预留）；节点只按 ID 引用服务器 |
+| 网络 | 出口（`#/exits`） | 出口节点与地区组：成员顺序、自动 / 手动、`on_failure`、硬约束、有效顺序与原因、默认境外组 |
+| 网络 | 分流规则（`#/rules`） | 规则（目标是地区组或显式出口）与解锁映射 |
+| 网络 | 名单（`#/lists`） | 名单源策略、立即更新（经 `meridian-host`）、宿主记录的每个名单的来源 / 时间 / 条数 |
+| 资源 | 服务器（`#/servers`） | 服务器、发现与确认主机指纹、连接测试、装机 |
+| 资源 | 密钥（`#/keys`） | SSH 凭据（密码、导入或生成的私钥）；只写不读 |
+| 资源 | Cloudflare（`#/cloudflare`） | Cloudflare 账户、令牌权限检查、Mesh 账户选择、Mesh 部署与撤回 |
+| 接入 | 远程接入（`#/remote`） | 端点、端口、地址池、设备（一次性配置与二维码、重新生成、停用）、路由器转发说明、运行状态 |
+| 运维 | 部署（`#/deploy`） | 校验、差分、写入数据目录、安装到本机、回滚（含宿主网络或只回滚数据目录）、宿主事务恢复 |
+| 运维 | 解锁（`#/unlock`） | 面板探测（立即测试）、结果与证据分级、出口报告 |
+| 运维 | 防泄露（`#/leak`） | 四类检查：生成配置核对（只说明配置包含）、隔离 Linux 集成（永远「未执行」）、人工签收（永远「待人工签收」）、已知限制；任何一项都不证明不泄露 |

@@ -3,19 +3,14 @@
 package provision
 
 import (
-	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"path"
 	"strings"
-	"time"
 
 	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/ssh"
 
 	"github.com/radowitz/meridian/internal/apply"
 	"github.com/radowitz/meridian/internal/compile"
@@ -173,8 +168,20 @@ func FilesFor(bundle map[string]string, nodeID string) map[string]string {
 // InjectPrivate replaces the placeholder in WireGuard configs. It fails when a
 // config needs a key and private is empty or malformed, so a caller never
 // ships a placeholder to a host.
+//
+// A remote-access secret placeholder (gateway only) is refused: SSH
+// provisioning never carries credential-store secrets.
 func InjectPrivate(files map[string]string, private string) (map[string]string, error) {
-	return apply.InjectPrivateKeys(files, private)
+	out, err := apply.InjectPrivateKeys(files, private)
+	if err != nil {
+		return nil, err
+	}
+	for p, body := range out {
+		if _, err := apply.InjectSecrets(strings.TrimPrefix(p, "/"), body, nil); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // KeyPolicy says how ResolveNodeKey may obtain a node's WireGuard key.
@@ -260,113 +267,9 @@ func Redact(script, private string) string {
 	return apply.RedactSecret(script, private)
 }
 
-type SSHRequest struct {
-	Host          string
-	Port          int
-	User          string
-	PrivateKeyPEM string
-	TrustNewHost  bool
-	KnownHosts    ssh.HostKeyCallback
-}
-
-// Run executes a script over SSH. The key PEM is not written to disk here.
-func Run(req SSHRequest, script string) (string, error) {
-	if req.Port == 0 {
-		req.Port = 22
-	}
-	signer, err := ssh.ParsePrivateKey([]byte(req.PrivateKeyPEM))
-	if err != nil {
-		return "", fmt.Errorf("SSH 私钥无法解析")
-	}
-	callback := req.KnownHosts
-	if callback == nil {
-		if req.TrustNewHost {
-			callback = ssh.InsecureIgnoreHostKey()
-		} else {
-			return "", fmt.Errorf("没有 known_hosts 记录。确认主机指纹后，用 trust_new_host 保存一次")
-		}
-	}
-	cfg := &ssh.ClientConfig{
-		User:            req.User,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: callback,
-		Timeout:         20 * time.Second,
-	}
-	addr := net.JoinHostPort(req.Host, fmt.Sprintf("%d", req.Port))
-	client, err := ssh.Dial("tcp", addr, cfg)
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-	var stdout, stderr bytes.Buffer
-	session.Stdout = &stdout
-	session.Stderr = &stderr
-	if err := session.Run(script); err != nil {
-		return stdout.String() + stderr.String(), fmt.Errorf("远程脚本失败: %w", err)
-	}
-	return stdout.String() + stderr.String(), nil
-}
-
-// RunScript executes a script over SSH like Run, but sends it on stdin to
-// "bash -s" instead of as the remote command line, so a secret inside the
-// script (the Mesh node token) never appears in the remote process list.
-// ctx bounds the whole session.
-func RunScript(ctx context.Context, req SSHRequest, script string) (string, error) {
-	if req.Port == 0 {
-		req.Port = 22
-	}
-	signer, err := ssh.ParsePrivateKey([]byte(req.PrivateKeyPEM))
-	if err != nil {
-		return "", fmt.Errorf("SSH 私钥无法解析")
-	}
-	callback := req.KnownHosts
-	if callback == nil {
-		if req.TrustNewHost {
-			callback = ssh.InsecureIgnoreHostKey()
-		} else {
-			return "", fmt.Errorf("没有 known_hosts 记录。确认主机指纹后，用 trust_new_host 保存一次")
-		}
-	}
-	cfg := &ssh.ClientConfig{
-		User:            req.User,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: callback,
-		Timeout:         20 * time.Second,
-	}
-	addr := net.JoinHostPort(req.Host, fmt.Sprintf("%d", req.Port))
-	client, err := ssh.Dial("tcp", addr, cfg)
-	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-	session, err := client.NewSession()
-	if err != nil {
-		return "", err
-	}
-	defer session.Close()
-	var stdout, stderr bytes.Buffer
-	session.Stdout = &stdout
-	session.Stderr = &stderr
-	session.Stdin = strings.NewReader(script)
-	done := make(chan error, 1)
-	go func() { done <- session.Run("bash -s") }()
-	select {
-	case err = <-done:
-	case <-ctx.Done():
-		_ = session.Signal(ssh.SIGKILL)
-		client.Close()
-		return stdout.String() + stderr.String(), fmt.Errorf("远程脚本超时: %w", ctx.Err())
-	}
-	if err != nil {
-		return stdout.String() + stderr.String(), fmt.Errorf("远程脚本失败: %w", err)
-	}
-	return stdout.String() + stderr.String(), nil
-}
+// SSH execution lives in internal/sshexec: provisioning connects only
+// through a managed server with a stored credential and a confirmed host
+// key. This package builds the script and never dials.
 
 func safeHostPath(p string) (string, bool) {
 	if !strings.HasPrefix(p, "/") || strings.Contains(p, "..") || strings.ContainsAny(p, "\r\n\x00") {

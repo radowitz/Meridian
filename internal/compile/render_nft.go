@@ -16,10 +16,10 @@ type mssClamp struct {
 	MSS6 int
 }
 
-func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, mss4, mss6 int, decisions map[string]string, clamps []mssClamp) string {
+func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan, mss4, mss6 int, decisions map[string]string, clamps []mssClamp) string {
 	switch n.Role {
 	case model.RoleGateway:
-		return renderGatewayNFT(t, tunnels, exits, mss4, mss6, decisions, clamps)
+		return renderGatewayNFT(t, tunnels, exits, groups, mss4, mss6, decisions, clamps)
 	case model.RoleExit:
 		return renderExitNFT(t, n)
 	default:
@@ -27,18 +27,32 @@ func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPla
 	}
 }
 
-func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4, mss6 int, decisions map[string]string, clamps []mssClamp) string {
+func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan, mss4, mss6 int, decisions map[string]string, clamps []mssClamp) string {
 	lan := gatewayLAN(t)
-	def, _ := defaultExit(t, exits)
-	rules := planRules(t, exits, decisions)
+	def, _ := defaultExit(t, groups)
+	rules := planRules(t, exits, groups, decisions)
+	rp := planRemote(t)
+	// in is the managed ingress match: the LAN NIC, plus mra when remote
+	// access is on. Disabled renders byte for byte what it did before.
+	in := fmt.Sprintf("\"%s\"", lan)
+	if rp != nil {
+		in = fmt.Sprintf("{ \"%s\", \"%s\" }", lan, rp.Iface)
+	}
 	var sb strings.Builder
 	sb.WriteString("#!/usr/sbin/nft -f\n")
 	sb.WriteString("# Meridian gateway policy. This whole file is one nft transaction: it\n")
 	sb.WriteString("# replaces only tables inet meridian_guard and inet meridian, never the\n")
 	sb.WriteString("# rest of the ruleset. Load it with nft -c -f first, then nft -f.\n")
-	fmt.Fprintf(&sb, "# default-exit %s mark %#x\n", def.Node.ID, def.Mark)
+	fmt.Fprintf(&sb, "# default-exit %s group %s mark %#x\n", def.Exit.Node.ID, t.Settings.DefaultGroup, def.Mark)
+	for _, g := range groups {
+		kind := "static"
+		if g.Dynamic {
+			kind = "dynamic"
+		}
+		fmt.Fprintf(&sb, "# group %s mark %#x transit %s target %s %s\n", g.Group.ID, g.Mark, g.TransitV4, g.Target.Node.ID, kind)
+	}
 	fmt.Fprintf(&sb, "# mss-clamp v4 %d v6 %d\n", mss4, mss6)
-	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits))
+	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits, groups...), rp)
 	writeAtomicReplace(&sb, tableMain)
 	sb.WriteString("table inet meridian {\n")
 
@@ -93,6 +107,13 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
 	}
 
 	sb.WriteString("  chain classify {\n")
+	if rp != nil {
+		// Device-bound packets (from the LAN, or direct replies from ROS
+		// after de-NAT) take table 100, where the pools are on mra. The
+		// guard lets them out on mra only when they came in on the LAN NIC.
+		fmt.Fprintf(&sb, "    ip daddr %s meta mark set %#x return comment \"remote-access devices, delivered on %s\"\n", rp.V4, markDomestic, rp.Iface)
+		fmt.Fprintf(&sb, "    ip6 daddr %s meta mark set %#x return\n", rp.V6, markDomestic)
+	}
 	sb.WriteString("    ip daddr @underlay4 drop comment \"clients cannot bypass the tunnel by talking to an endpoint\"\n")
 	sb.WriteString("    ip daddr 10.66.0.0/16 drop comment \"tunnel v4 is not a LAN destination\"\n")
 	sb.WriteString("    ip6 daddr fc00::/7 drop comment \"ULA, including fd66, never goes to ROS\"\n")
@@ -103,9 +124,9 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
 	sb.WriteString("    ip daddr { 224.0.0.0/4, 255.255.255.255 } return\n")
 	for _, rp := range rules {
 		for _, pred := range sourcePreds(rp.Rule) {
-			fmt.Fprintf(&sb, "    %sip daddr @%s meta mark set %#x return\n", pred, rp.Set4, rp.Exit.Mark)
+			fmt.Fprintf(&sb, "    %sip daddr @%s meta mark set %#x return\n", pred, rp.Set4, rp.Mark)
 			if !rp.FilterAAAA {
-				fmt.Fprintf(&sb, "    %sip6 daddr @%s meta mark set %#x return\n", pred, rp.Set6, rp.Exit.Mark)
+				fmt.Fprintf(&sb, "    %sip6 daddr @%s meta mark set %#x return\n", pred, rp.Set6, rp.Mark)
 			}
 		}
 	}
@@ -126,10 +147,16 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
 	fmt.Fprintf(&sb, "    meta nfproto ipv6 meta mark set %#x return\n", def.Mark)
 	sb.WriteString("  }\n\n")
 
-	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname \"%s\" jump classify\n  }\n\n", lan)
+	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname %s jump classify\n  }\n\n", in)
 
 	// Only lower an advertised MSS. Raising a small MSS black-holes TCP.
 	sb.WriteString("  chain mss {\n    type filter hook forward priority mangle; policy accept;\n")
+	if rp != nil {
+		for _, dir := range []string{"iifname", "oifname"} {
+			fmt.Fprintf(&sb, "    %s \"%s\" tcp flags syn meta nfproto ipv4 tcp option maxseg size > %d tcp option maxseg size set %d\n", dir, rp.Iface, rp.mss4(), rp.mss4())
+			fmt.Fprintf(&sb, "    %s \"%s\" tcp flags syn meta nfproto ipv6 tcp option maxseg size > %d tcp option maxseg size set %d\n", dir, rp.Iface, rp.mss6(), rp.mss6())
+		}
+	}
 	for _, c := range clamps {
 		if c.MSS4 > 0 {
 			fmt.Fprintf(&sb, "    tcp flags syn meta mark %#x meta nfproto ipv4 tcp option maxseg size > %d tcp option maxseg size set %d\n", c.Mark, c.MSS4, c.MSS4)
@@ -144,25 +171,31 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
     type filter hook forward priority filter; policy accept;
     iifname "%s" ip daddr @doh4 tcp dport 443 reject comment "known DoH list, not exhaustive"
     iifname "%s" ip6 daddr @doh6 tcp dport 443 reject
-  }
-
 `, lan, lan)
+	if rp != nil {
+		fmt.Fprintf(&sb, "    iifname \"%s\" ip daddr @doh4 tcp dport 443 reject\n    iifname \"%s\" ip6 daddr @doh6 tcp dport 443 reject\n", rp.Iface, rp.Iface)
+	}
+	sb.WriteString("  }\n\n")
 
 	v6src := "fe80::/10"
 	if t.Settings.LANIPv6Prefix != "" {
 		v6src = "fe80::/10, " + t.Settings.LANIPv6Prefix
 	}
-	fmt.Fprintf(&sb, `  chain dns_hijack {
-    type nat hook prerouting priority dstnat; policy accept;
-    iifname "%s" meta nfproto ipv4 udp dport { 53, 853 } redirect to :53
+	sb.WriteString("  chain dns_hijack {\n    type nat hook prerouting priority dstnat; policy accept;\n")
+	hijack := []string{lan}
+	if rp != nil {
+		hijack = append(hijack, rp.Iface)
+	}
+	for _, i := range hijack {
+		fmt.Fprintf(&sb, `    iifname "%s" meta nfproto ipv4 udp dport { 53, 853 } redirect to :53
     iifname "%s" meta nfproto ipv4 tcp dport 53 redirect to :53
     iifname "%s" meta nfproto ipv4 tcp dport 853 redirect to :853
     iifname "%s" meta nfproto ipv6 udp dport { 53, 853 } redirect to :53
     iifname "%s" meta nfproto ipv6 tcp dport 53 redirect to :53
     iifname "%s" meta nfproto ipv6 tcp dport 853 redirect to :853
-  }
-
-`, lan, lan, lan, lan, lan, lan)
+`, i, i, i, i, i, i)
+	}
+	sb.WriteString("  }\n\n")
 	// UDP/853 (DoQ) is redirected at port 53 above: nothing here speaks DoQ,
 	// and leaving it forwarded would bypass SmartDNS.
 	// SmartDNS listens on the wildcard (render_dns.go), so this chain is
@@ -170,10 +203,20 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
 	// own queries (127.0.0.1, or its LAN address, both arrive on lo) must
 	// work with the firewall loaded. iifname "lo" never matches a packet
 	// that came in on a NIC, including LAN queries redirected above.
-	fmt.Fprintf(&sb, `  chain input {
+	v4src := lanNet(t)
+	if rp != nil {
+		v4src = fmt.Sprintf("{ %s, %s }", lanNet(t), rp.V4)
+		v6src += ", " + rp.V6.String()
+	}
+	sb.WriteString(`  chain input {
     type filter hook input priority filter; policy accept;
     iifname "lo" meta l4proto { tcp, udp } th dport { 53, 853 } accept comment "DNS from this host itself"
-    tcp dport { 53, 853 } ip saddr != %s drop comment "DNS only from the LAN"
+`)
+	if rp != nil {
+		fmt.Fprintf(&sb, "    iifname \"%s\" udp dport %d accept comment \"remote-access WireGuard, LAN NIC only\"\n", lan, rp.Port)
+		fmt.Fprintf(&sb, "    udp dport %d drop comment \"remote-access port is not reachable on any other interface\"\n", rp.Port)
+	}
+	fmt.Fprintf(&sb, `    tcp dport { 53, 853 } ip saddr != %s drop comment "DNS only from the LAN"
     udp dport { 53, 853 } ip saddr != %s drop
     tcp dport { 53, 853 } ip6 saddr != { %s } drop
     udp dport { 53, 853 } ip6 saddr != { %s } drop
@@ -181,14 +224,26 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
     tcp dport %d meta nfproto ipv6 drop
   }
 
-`, lanNet(t), lanNet(t), v6src, v6src, panelPort(t), lanNet(t), panelPort(t))
+`, v4src, v4src, v6src, v6src, panelPort(t), lanNet(t), panelPort(t))
 
 	sb.WriteString("  chain transit_snat {\n    type nat hook postrouting priority srcnat; policy accept;\n")
-	for _, e := range exits {
-		fmt.Fprintf(&sb, "    ip saddr %s meta mark %#x snat to %s\n", lanNet(t), e.Mark, e.TransitV4)
+	for _, m := range markPlans(exits, groups) {
+		fmt.Fprintf(&sb, "    ip saddr %s meta mark %#x snat to %s\n", lanNet(t), m.Mark, m.TransitV4)
 		if t.Settings.LANIPv6Prefix != "" {
-			fmt.Fprintf(&sb, "    ip6 saddr %s meta mark %#x snat to %s\n", t.Settings.LANIPv6Prefix, e.Mark, e.TransitV6)
+			fmt.Fprintf(&sb, "    ip6 saddr %s meta mark %#x snat to %s\n", t.Settings.LANIPv6Prefix, m.Mark, m.TransitV6)
 		}
+		if rp != nil {
+			fmt.Fprintf(&sb, "    ip saddr %s meta mark %#x snat to %s\n", rp.V4, m.Mark, m.TransitV4)
+			fmt.Fprintf(&sb, "    ip6 saddr %s meta mark %#x snat to %s\n", rp.V6, m.Mark, m.TransitV6)
+		}
+	}
+	if rp != nil {
+		// ROS has no route back to the pools, and LAN hosts may not route
+		// them to this host: domestic-direct and device-to-LAN traffic
+		// leaves with the gateway's own LAN address. LAN clients are on
+		// ROS's subnet and stay untranslated, as before.
+		fmt.Fprintf(&sb, "    oifname \"%s\" ip saddr %s masquerade comment \"remote-access devices: direct and LAN\"\n", lan, rp.V4)
+		fmt.Fprintf(&sb, "    oifname \"%s\" ip6 saddr %s masquerade\n", lan, rp.V6)
 	}
 	sb.WriteString("  }\n}\n")
 	return sb.String()
@@ -267,15 +322,37 @@ const (
 )
 
 // guardLastExitMark is the top of the exit-mark range the guard lets into
-// a tunnel: the routes script's range, widened if a topology has more exits.
-func guardLastExitMark(exits []ExitPlan) uint32 {
+// a tunnel: the routes script's range, widened if a topology has more exit
+// and region-group marks. The routes script's selector cleanup uses the
+// same bound, so adding or removing groups and members keeps both in step.
+func guardLastExitMark(exits []ExitPlan, groups ...GroupPlan) uint32 {
 	last := exitMarkLast
-	for _, e := range exits {
-		if e.Mark > last {
-			last = e.Mark
+	for _, m := range markPlans(exits, groups) {
+		if m.Mark > last {
+			last = m.Mark
 		}
 	}
 	return last
+}
+
+// markPlan is one exit-range fwmark the gateway installs: a per-exit mark
+// or a region-group mark.
+type markPlan struct {
+	Mark      uint32
+	Index     int
+	TransitV4 string
+	TransitV6 string
+}
+
+func markPlans(exits []ExitPlan, groups []GroupPlan) []markPlan {
+	out := make([]markPlan, 0, len(exits)+len(groups))
+	for _, e := range exits {
+		out = append(out, markPlan{e.Mark, e.Index, e.TransitV4, e.TransitV6})
+	}
+	for _, g := range groups {
+		out = append(out, markPlan{g.Mark, g.Index, g.TransitV4, g.TransitV6})
+	}
+	return out
 }
 
 // writeAtomicReplace emits the create-then-delete prefix of the nft
@@ -329,23 +406,38 @@ func gatewayTunnelIfaces(tunnels []Tunnel) []string {
 // It hooks forward only, so RA, ND and traffic to the gateway itself
 // (input) are not affected, and traffic arriving from a tunnel is not
 // matched.
-func writeGuardTable(sb *strings.Builder, lan string, tunnelIfaces []string, lastExitMark uint32) {
+//
+// With remote access on (rp != nil) the ingress set is the LAN NIC plus mra
+// with the same rules; mra is never in tunnelIfaces, so an exit mark can
+// never leave through it. Two narrow accepts let LAN hosts (and direct
+// replies from ROS) reach the device pools on mra; nothing else may leave on
+// mra from an ingress, so devices cannot reach each other. iifname matches
+// by name, so the early-boot copy loads before mra exists.
+func writeGuardTable(sb *strings.Builder, lan string, tunnelIfaces []string, lastExitMark uint32, rp *remotePlan) {
 	sb.WriteString("# LAN fail-closed guard. Independent of table inet meridian: it reads only\n")
 	sb.WriteString("# the fwmark and the output interface, so if classification is missing\n")
 	sb.WriteString("# every forwarded LAN packet is unmarked and dropped here.\n")
 	writeAtomicReplace(sb, tableGuard)
 	fmt.Fprintf(sb, "table inet %s {\n", tableGuard)
 	fmt.Fprintf(sb, "  chain forward {\n    type filter hook forward priority %d; policy accept;\n", guardPriority)
-	fmt.Fprintf(sb, "    iifname \"%s\" meta l4proto { tcp, udp } th dport { 53, 853 } drop comment \"DNS is answered locally, never forwarded\"\n", lan)
-	fmt.Fprintf(sb, "    iifname \"%s\" meta mark %#x oifname \"%s\" return comment \"domestic: direct via ROS or LAN only\"\n", lan, markDomestic, lan)
+	in := fmt.Sprintf("\"%s\"", lan)
+	if rp != nil {
+		in = fmt.Sprintf("{ \"%s\", \"%s\" }", lan, rp.Iface)
+	}
+	fmt.Fprintf(sb, "    iifname %s meta l4proto { tcp, udp } th dport { 53, 853 } drop comment \"DNS is answered locally, never forwarded\"\n", in)
+	if rp != nil {
+		fmt.Fprintf(sb, "    iifname \"%s\" oifname \"%s\" ip daddr %s return comment \"LAN and direct replies to remote-access devices\"\n", lan, rp.Iface, rp.V4)
+		fmt.Fprintf(sb, "    iifname \"%s\" oifname \"%s\" ip6 daddr %s return\n", lan, rp.Iface, rp.V6)
+	}
+	fmt.Fprintf(sb, "    iifname %s meta mark %#x oifname \"%s\" return comment \"domestic: direct via ROS or LAN only\"\n", in, markDomestic, lan)
 	if len(tunnelIfaces) > 0 {
 		quoted := make([]string, len(tunnelIfaces))
 		for i, name := range tunnelIfaces {
 			quoted[i] = "\"" + name + "\""
 		}
-		fmt.Fprintf(sb, "    iifname \"%s\" meta mark %#x-%#x oifname { %s } return comment \"exit marks: WireGuard only\"\n", lan, markExitBase, lastExitMark, strings.Join(quoted, ", "))
+		fmt.Fprintf(sb, "    iifname %s meta mark %#x-%#x oifname { %s } return comment \"exit marks: WireGuard only\"\n", in, markExitBase, lastExitMark, strings.Join(quoted, ", "))
 	}
-	fmt.Fprintf(sb, "    iifname \"%s\" counter drop comment \"fail closed: unclassified or misrouted LAN traffic, v4 and v6\"\n", lan)
+	fmt.Fprintf(sb, "    iifname %s counter drop comment \"fail closed: unclassified or misrouted LAN traffic, v4 and v6\"\n", in)
 	sb.WriteString("  }\n}\n")
 }
 

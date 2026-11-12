@@ -34,54 +34,6 @@ func u(s string) *url.URL {
 	return x
 }
 
-func TestAdapterClassification(t *testing.T) {
-	cases := []struct {
-		name, service, region string
-		resp                  Response
-		want                  Category
-		wantRegion            string
-	}{
-		{"netflix 403", "auto-netflix", "hk", Response{Status: 403, URL: u("https://www.netflix.com/title/81280792")}, CatNotUnlocked, ""},
-		{"netflix 404 originals only", "auto-netflix", "hk", Response{Status: 404, URL: u("https://www.netflix.com/title/81280792")}, CatNotUnlocked, ""},
-		{"netflix 200 body HK on HK exit", "auto-netflix", "hk", Response{Status: 200, URL: u("https://www.netflix.com/hk-en/title/81280792"),
-			Body: []byte(`<script>netflix.reactContext = {"models":{"geo":{"data":{"requestCountry":{"id":"HK","supported":true}}}}}</script>`)}, CatUnlocked, "hk"},
-		{"netflix 200 US catalog on HK exit", "auto-netflix", "hongkong", Response{Status: 200, URL: u("https://www.netflix.com/title/81280792"),
-			Body: []byte(`{"requestCountry":{"id":"US"}}`)}, CatNotUnlocked, "us"},
-		{"netflix 200 path region only", "auto-netflix", "jp", Response{Status: 200, URL: u("https://www.netflix.com/jp/title/81280792")}, CatUnlocked, "jp"},
-		{"netflix 200 no marker", "auto-netflix", "us", Response{Status: 200, URL: u("https://www.netflix.com/title/81280792"), Body: []byte("<html>")}, CatUnknown, ""},
-		{"netflix 500", "auto-netflix", "us", Response{Status: 500, URL: u("https://www.netflix.com/title/81280792")}, CatUnknown, ""},
-		{"disney unavailable redirect", "auto-disney", "hk", Response{Status: 302, URL: u("https://www.disneyplus.com/unavailable")}, CatNotUnlocked, ""},
-		{"disney 403", "auto-disney", "hk", Response{Status: 403, URL: u("https://www.disneyplus.com/")}, CatNotUnlocked, ""},
-		{"disney body region", "auto-disney", "hk", Response{Status: 200, URL: u("https://www.disneyplus.com/"), Body: []byte(`{"countryCode":"HK"}`)}, CatUnlocked, "hk"},
-		{"disney lang-region path, wrong region", "auto-disney", "hk", Response{Status: 200, URL: u("https://www.disneyplus.com/en-sg")}, CatNotUnlocked, "sg"},
-		{"disney 200 nothing", "auto-disney", "hk", Response{Status: 200, URL: u("https://www.disneyplus.com/")}, CatUnknown, ""},
-		{"openai unsupported", "auto-openai", "us", Response{Status: 403, URL: u("https://api.openai.com/compliance/cookie_requirements"),
-			Body: []byte(`{"error":{"code":"unsupported_country","message":"Country, region, or territory not supported"}}`)}, CatNotUnlocked, ""},
-		{"openai reachable", "auto-openai", "us", Response{Status: 401, URL: u("https://api.openai.com/compliance/cookie_requirements"), Body: []byte(`{"error":{"code":"invalid_api_key"}}`)}, CatNetworkOK, ""},
-		{"openai 502", "auto-openai", "us", Response{Status: 502}, CatUnknown, ""},
-		{"claude unavailable", "auto-anthropic", "us", Response{Status: 307, URL: u("https://claude.ai/app-unavailable-in-region")}, CatNotUnlocked, ""},
-		{"claude challenge", "auto-anthropic", "us", Response{Status: 403, URL: u("https://claude.ai/"), Body: []byte("<title>Just a moment...</title>")}, CatUnknown, ""},
-		{"claude ok", "auto-anthropic", "us", Response{Status: 200, URL: u("https://claude.ai/login")}, CatNetworkOK, ""},
-		{"gemini any status is reachability", "auto-gemini", "us", Response{Status: 403, URL: u("https://gemini.google.com/")}, CatNetworkOK, ""},
-	}
-	for _, c := range cases {
-		a, ok := Lookup(c.service)
-		if !ok {
-			t.Fatalf("%s: no adapter", c.name)
-		}
-		v := a.Classify(c.resp, c.region)
-		if v.Category != c.want || v.Region != c.wantRegion {
-			t.Errorf("%s: got %s/%q (%s), want %s/%q", c.name, v.Category, v.Region, v.Evidence, c.want, c.wantRegion)
-		}
-		if v.Evidence == "" {
-			t.Errorf("%s: verdict without evidence", c.name)
-		}
-		if a.Reachability && (v.Category == CatUnlocked || v.Category == CatNotUnlocked) {
-			t.Errorf("%s: reachability adapter claimed a platform verdict", c.name)
-		}
-	}
-}
-
 func TestCatalogIsFixedHTTPS(t *testing.T) {
 	seen := map[string]bool{}
 	for _, a := range Catalog {
@@ -89,19 +41,68 @@ func TestCatalogIsFixedHTTPS(t *testing.T) {
 			t.Fatalf("duplicate %s", a.Service)
 		}
 		seen[a.Service] = true
-		x := u(a.URL)
-		if x.Scheme != "https" || x.Port() != "" || x.RawQuery != "" {
-			t.Errorf("%s: target must be plain https on 443 without query: %s", a.Service, a.URL)
+		if a.Basis == "" || a.Limits == "" || len(a.Sources) == 0 || len(a.Platforms) == 0 || len(a.Returns) == 0 {
+			t.Errorf("%s: capability declaration incomplete", a.Service)
 		}
-		found := false
-		for _, h := range a.Hosts {
-			found = found || h == x.Hostname()
+		if a.Capability == CapUnsupported {
+			if len(a.Checks) != 0 {
+				t.Errorf("%s: unsupported adapter with checks", a.Service)
+			}
+			continue
 		}
-		if !found || a.Basis == "" || a.Classify == nil {
-			t.Errorf("%s: incomplete adapter", a.Service)
+		primaries := 0
+		for _, c := range a.Checks {
+			if c.Primary {
+				primaries++
+			}
+			if len(c.Hosts) == 0 || len(c.Hosts) > 3 || len(c.Steps) == 0 || len(c.Steps) > 3 || c.Classify == nil {
+				t.Errorf("%s/%s: incomplete or oversized check", a.Service, c.Platform)
+			}
+			for i, st := range c.Steps {
+				x := u(strings.Replace(st.URL, ValuePlaceholder, "v", 1))
+				if x.Scheme != "https" || x.Port() != "" || x.User != nil || x.Fragment != "" {
+					t.Errorf("%s: target must be plain https on 443: %s", a.Service, st.URL)
+				}
+				if strings.Count(st.URL, ValuePlaceholder) > 1 || (strings.Contains(st.URL, ValuePlaceholder) && i == 0) {
+					t.Errorf("%s: placeholder only after a first step: %s", a.Service, st.URL)
+				}
+				if strings.Contains(x.Path, ValuePlaceholder) || strings.Contains(x.Host, "{") {
+					t.Errorf("%s: placeholder only in the query: %s", a.Service, st.URL)
+				}
+				found := false
+				for _, h := range c.Hosts {
+					found = found || h == x.Hostname()
+				}
+				if !found {
+					t.Errorf("%s: step host %s not in the check's host list", a.Service, x.Hostname())
+				}
+				if i < len(c.Steps)-1 && i == 0 && strings.Contains(c.Steps[len(c.Steps)-1].URL, ValuePlaceholder) && st.Extract == nil {
+					t.Errorf("%s: placeholder without an extracting step", a.Service)
+				}
+				if i == len(c.Steps)-1 && st.Extract != nil {
+					t.Errorf("%s: final step must not extract", a.Service)
+				}
+				for _, h := range st.Headers {
+					if !allowedHeaders[h[0]] || strings.ContainsAny(h[1], "\r\n") {
+						t.Errorf("%s: header %q not allowed", a.Service, h[0])
+					}
+					if strings.EqualFold(h[0], "Cookie") || strings.EqualFold(h[0], "Authorization") {
+						t.Errorf("%s: credentials header", a.Service)
+					}
+				}
+			}
+		}
+		if primaries != 1 {
+			t.Errorf("%s: %d primary checks", a.Service, primaries)
+		}
+		if a.Capability == CapReachability && (a.Allows(CatUnlocked) || a.Allows(CatNotUnlocked)) {
+			t.Errorf("%s: reachability adapter declares a platform verdict", a.Service)
+		}
+		if a.Capability != CapReachability && a.Allows(CatNetworkOK) {
+			t.Errorf("%s: verdict adapter declares reachability", a.Service)
 		}
 	}
-	if _, ok := Lookup("https://evil.example/"); ok {
+	if _, ok := Lookup("https://evil.example/"); ok || Probeable("https://evil.example/") {
 		t.Fatal("lookup must be by catalog id only")
 	}
 }
@@ -159,7 +160,7 @@ func newPlatform(t *testing.T) *platform {
 	p := &platform{hits: map[string]int{}, traceIPs: []string{"203.0.113.5"}, traceLoc: "HK", handlers: map[string]http.HandlerFunc{}}
 	hosts := append([]string(nil), traceHosts...)
 	for _, a := range Catalog {
-		hosts = append(hosts, a.Hosts...)
+		hosts = append(hosts, a.Hosts()...)
 	}
 	hosts = append(hosts, "evil.example")
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -295,7 +296,7 @@ func TestRunPinnedHappyPath(t *testing.T) {
 	n := &fakeNet{p: p, fam: unlock.FamilyIPv4, dev: "m00"}
 	rep := newProber(p, n).Run(context.Background(), Spec{
 		ExitID: "hk-resi", Family: unlock.FamilyIPv4, Region: "hk", ExpectAddr: netip.MustParseAddr("203.0.113.5"),
-		Services: []string{"auto-netflix", "auto-disney", "auto-gemini"},
+		Services: []string{"auto-netflix", "auto-disney", "auto-perplexity"},
 	})
 	if !rep.Egress.Confirmed || rep.Egress.Basis != "address" || rep.Egress.Interface != "m00" {
 		t.Fatalf("egress: %+v", rep.Egress)
@@ -313,8 +314,8 @@ func TestRunPinnedHappyPath(t *testing.T) {
 	if d := resultOf(rep, "auto-disney"); d.Category != CatUnknown {
 		t.Fatalf("disney redirect off-list should be classified, not followed: %+v", d)
 	}
-	if g := resultOf(rep, "auto-gemini"); g.Category != CatNetworkOK {
-		t.Fatalf("gemini: %+v", g)
+	if g := resultOf(rep, "auto-perplexity"); g.Category != CatNetworkOK || g.Grade != GradeReachability || g.Capability != CapReachability {
+		t.Fatalf("perplexity: %+v", g)
 	}
 	for _, d := range n.dials {
 		if !d.Addr().Is4() || d.Port() != 443 {
@@ -368,7 +369,7 @@ func TestRunForcedFamilyNoFallback(t *testing.T) {
 	// The exit resolver has only AAAA for everything; a v4 probe must fail,
 	// not quietly use v6.
 	n := &fakeNet{p: p, fam: unlock.FamilyIPv4, dev: "m00", only: unlock.FamilyIPv6}
-	rep := newProber(p, n).Run(context.Background(), Spec{ExitID: "us", Family: unlock.FamilyIPv4, Region: "hk", Services: []string{"auto-gemini"}})
+	rep := newProber(p, n).Run(context.Background(), Spec{ExitID: "us", Family: unlock.FamilyIPv4, Region: "hk", Services: []string{"auto-perplexity"}})
 	if rep.Egress.Confirmed || len(n.dials) != 0 || !strings.Contains(rep.Egress.Error, "ipv4") {
 		t.Fatalf("%+v %v", rep.Egress, n.dials)
 	}
@@ -376,9 +377,12 @@ func TestRunForcedFamilyNoFallback(t *testing.T) {
 	p6 := newPlatform(t)
 	p6.traceIPs = []string{"2001:db8::5"}
 	n6 := &fakeNet{p: p6, fam: unlock.FamilyIPv6, dev: "m00"}
-	rep = newProber(p6, n6).Run(context.Background(), Spec{ExitID: "us", Family: unlock.FamilyIPv6, Region: "hk", Services: []string{"auto-gemini"}})
-	if !rep.Egress.Confirmed || resultOf(rep, "auto-gemini").Category != CatNetworkOK {
+	rep = newProber(p6, n6).Run(context.Background(), Spec{ExitID: "us", Family: unlock.FamilyIPv6, Region: "hk", Services: []string{"auto-perplexity", "auto-kktv"}})
+	if !rep.Egress.Confirmed || resultOf(rep, "auto-perplexity").Category != CatNetworkOK {
 		t.Fatalf("v6: %+v %+v", rep.Egress, rep.Results)
+	}
+	if k := resultOf(rep, "auto-kktv"); k.Category != CatUnknown || k.Signal != SigFamily || p6.count("api.kktv.me") != 0 {
+		t.Fatalf("an IPv4-only adapter must not send on IPv6: %+v", k)
 	}
 	for _, d := range n6.dials {
 		if !d.Addr().Is6() {
@@ -433,7 +437,7 @@ func TestRunTimeoutCancelAndConcurrency(t *testing.T) {
 	if g := resultOf(rep, "auto-gemini"); g.Category != CatFailed || g.Error != "超时" {
 		t.Fatalf("timeout: %+v", g)
 	}
-	if c := resultOf(rep, "auto-copilot"); c.Category != CatNetworkOK {
+	if c := resultOf(rep, "auto-perplexity"); c.Category != CatNetworkOK {
 		t.Fatalf("a slow neighbour must not fail others: %+v", c)
 	}
 	// Two services at most at once, plus nothing else in flight.
@@ -458,7 +462,7 @@ func TestRunRejectsUnknownServiceAndFamily(t *testing.T) {
 	if rep.Results[0].Category != CatFailed || len(n.dials) != 0 {
 		t.Fatalf("%+v", rep)
 	}
-	rep = newProber(p, n).Run(context.Background(), Spec{ExitID: "us", Family: unlock.FamilyIPv4, Region: "us", Services: []string{"auto-bahamut"}})
+	rep = newProber(p, n).Run(context.Background(), Spec{ExitID: "us", Family: unlock.FamilyIPv4, Region: "us", Services: []string{"auto-nope"}})
 	if rep.Results[0].Category != CatFailed || len(n.dials) != 0 {
 		t.Fatalf("%+v", rep)
 	}

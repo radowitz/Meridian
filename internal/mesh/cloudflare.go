@@ -162,7 +162,13 @@ type cfMsg struct {
 }
 
 func (c *CFClient) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
-	u := strings.TrimRight(c.Base, "/") + "/accounts/" + c.AccountID + path
+	return c.doAbs(ctx, method, "/accounts/"+c.AccountID+path, path, query, body, out)
+}
+
+// doAbs calls abs (relative to Base); errors name shown instead.
+func (c *CFClient) doAbs(ctx context.Context, method, abs, shown string, query url.Values, body any, out any) error {
+	path := shown
+	u := strings.TrimRight(c.Base, "/") + abs
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}

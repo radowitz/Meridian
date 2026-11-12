@@ -6,6 +6,8 @@ import (
 
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/remoteaccess"
 )
 
 func TestExampleChecklistPasses(t *testing.T) {
@@ -150,5 +152,118 @@ func TestMeshItemsNeverClaimForwarding(t *testing.T) {
 		if it.ID == "mesh_nexthop" && it.Status != Fail {
 			t.Fatalf("default dev mmesh not flagged: %+v", it)
 		}
+	}
+}
+
+func itemsByID(items []Item) map[string]Item {
+	got := map[string]Item{}
+	for _, it := range items {
+		got[it.ID] = it
+	}
+	return got
+}
+
+// raTopology is the example with remote access on and one enabled device.
+func raTopology(t *testing.T) model.Topology {
+	t.Helper()
+	topo := defaults.Example()
+	gw, err := remoteaccess.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := remoteaccess.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	topo.RemoteAccess = &model.RemoteAccess{Enabled: true, Endpoint: "home.example.net", ListenPort: 51900, PublicKey: gw.Public, KeyID: "ra-key-test",
+		Devices: []model.RemoteDevice{{ID: "dev-aaaa", Name: "phone", Mode: model.RemoteModeFull, Enabled: true, PublicKey: dev.Public, IPv4: "10.67.0.2", IPv6: "fd67::2"}}}
+	return topo
+}
+
+// Region groups, the boot guard, the chnroute re-add, key placeholders
+// and remote access are automated checks of the generated text; remote
+// access adds human items (phone, router, IPv6) that are never pass, and a
+// limitation for home-only mode. With the feature off nothing about it is
+// claimed beyond "not enabled".
+func TestNewWorkItemsAndScopes(t *testing.T) {
+	off := defaults.Example()
+	b, err := compile.Compile(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := itemsByID(CheckBundle(off, b.Files))
+	for _, id := range []string{"group_marks_routed", "boot_guard_matches", "chnroute_readd", "bundle_keys_placeholder"} {
+		if it := got[id]; it.Status != Pass || it.Scope != ScopeAutomated {
+			t.Errorf("%s: %+v", id, it)
+		}
+	}
+	if it := got["remote_access_config"]; it.Status != Skip || it.Scope != ScopeAutomated {
+		t.Errorf("remote off: %+v", got["remote_access_config"])
+	}
+	for _, id := range []string{"remote_phone_full", "remote_router_forward", "remote_home_mode"} {
+		if _, ok := got[id]; ok {
+			t.Errorf("%s listed without remote access", id)
+		}
+	}
+	for id, scope := range map[string]string{"real_exit_switch": ScopeHuman, "unlock_platform_verdicts": ScopeHuman, "lists_update_runtime": ScopeIntegration, "secrets_at_rest": ScopeLimitation} {
+		if it, ok := got[id]; !ok || it.Scope != scope {
+			t.Errorf("%s: %+v", id, it)
+		}
+	}
+
+	on := raTopology(t)
+	b, err = compile.Compile(on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := CheckBundle(on, b.Files)
+	got = itemsByID(items)
+	if it := got["remote_access_config"]; it.Status != Pass {
+		t.Fatalf("remote on: %+v", it)
+	}
+	for _, id := range []string{"remote_phone_full", "remote_phone_home", "remote_router_forward", "remote_ipv6"} {
+		if it := got[id]; it.Status != PendingSignoff || it.Scope != ScopeHuman {
+			t.Errorf("%s: %+v", id, it)
+		}
+	}
+	if it := got["remote_home_mode"]; it.Status != KnownLimitation {
+		t.Errorf("remote_home_mode: %+v", it)
+	}
+	for _, it := range items {
+		if it.Status == Fail {
+			t.Errorf("%s fails on a valid topology: %s", it.ID, it.Detail)
+		}
+		if (it.Scope == ScopeIntegration || it.Scope == ScopeHuman) && it.Status == Pass {
+			t.Errorf("%s claims an unexecuted check passed", it.ID)
+		}
+	}
+
+	// Broken generated text is caught.
+	mut := func(path, old, new string) map[string]string {
+		files := map[string]string{}
+		for k, v := range b.Files {
+			files[k] = v
+		}
+		files[path] = strings.Replace(files[path], old, new, 1)
+		return files
+	}
+	for name, c := range map[string]struct {
+		files map[string]string
+		id    string
+	}{
+		"group rule dropped": {mut("nodes/gw/usr/local/sbin/meridian-routes.sh", "ip -6 rule add fwmark 0x10f unreachable", "true"), "group_marks_routed"},
+		"guard range short":  {mut("nodes/gw/etc/nftables.d/meridian.nft", "0x101-0x140", "0x101-0x110"), "group_marks_routed"},
+		"boot guard differs": {mut("nodes/gw/etc/nftables.d/meridian-guard.nft", `"mra"`, `"mrb"`), "boot_guard_matches"},
+		"no chnroute readd":  {mut("nodes/gw/usr/local/sbin/meridian-up.sh", "MERIDIAN_CHNROUTE_SAVED=", "X="), "chnroute_readd"},
+		"key in bundle":      {mut("nodes/gw/etc/wireguard/mra.conf", "PrivateKey = __MERIDIAN_SECRET_ra-key-test__", "PrivateKey = "+on.RemoteAccess.PublicKey), "bundle_keys_placeholder"},
+		"mra not in guard":   {mut("nodes/gw/etc/nftables.d/meridian.nft", `iifname { "eth0", "mra" } counter drop`, `iifname "eth0" counter drop`), "remote_access_config"},
+	} {
+		if it := itemsByID(CheckBundle(on, c.files))[c.id]; it.Status != Fail {
+			t.Errorf("%s: %s not flagged: %+v", name, c.id, it)
+		}
+	}
+	stale := mut("nodes/gw/usr/local/sbin/meridian-routes.sh", "# failover companions", "ip link set 'mra' up\n# failover companions")
+	if it := itemsByID(CheckBundle(off, stale))["remote_access_config"]; it.Status != Fail {
+		t.Errorf("mra in the files of a topology without remote access not flagged: %+v", it)
 	}
 }

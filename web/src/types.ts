@@ -30,6 +30,7 @@ export interface Node {
   ix_bound: boolean;
   v6_workaround?: string;
   dualstack_relay?: boolean;
+  /** Legacy input only: merged into region groups on save, never returned. */
   pool?: string;
   pool_priority?: number;
   public_key?: string;
@@ -37,6 +38,10 @@ export interface Node {
   endpoint_v4?: string;
   endpoint_v6?: string;
   listen_port?: number;
+  /** Managed server (GET /api/servers) this node runs on. When set, the
+   * ssh_* fields stay empty: address and login live on the server. */
+  server_id?: string;
+  /** Pre-server SSH target; migrated into a server when the topology is saved. */
   ssh_host?: string;
   ssh_port?: number;
   ssh_user?: string;
@@ -78,9 +83,12 @@ export interface Rule {
   source_mac?: string;
   source_ipv4?: string;
   source_ipv6?: string;
-  target_pool?: string;
+  /** Exactly one of target_group / target_exit. */
+  target_group?: string;
   target_exit?: string;
-  mode: "pin" | "auto";
+  /** Legacy input only (migrated into region groups); never returned. */
+  target_pool?: string;
+  mode?: "pin" | "auto";
   require_residential: boolean;
   require_v6: boolean;
   notes?: string;
@@ -103,6 +111,25 @@ export interface Settings {
   transit_v6_prefix: string;
   unlock_interval_sec?: number;
   nat64?: { reserved: boolean; enabled: boolean; prefix?: string };
+  default_group?: string;
+  /** List download source (GET/PUT /api/lists); empty means automatic. */
+  list_source?: "domestic" | "overseas" | "automatic";
+}
+
+/** Region group (GET /api/region-groups has the live view). */
+export interface RegionGroup {
+  id: string;
+  name: string;
+  region?: string;
+  members: string[];
+  mode: "auto" | "manual";
+  chosen?: string;
+  on_failure?: "hold" | "fallback";
+  require_residential?: boolean;
+  exclude_residential?: boolean;
+  require_v6?: boolean;
+  notes?: string;
+  migrated_from?: string;
 }
 
 export interface Topology {
@@ -110,6 +137,7 @@ export interface Topology {
   nodes: Node[];
   links: Link[];
   rules: Rule[];
+  region_groups?: RegionGroup[];
 }
 
 export interface Issue {
@@ -120,6 +148,9 @@ export interface Issue {
   link_id?: string;
   rule_id?: string;
   exit_id?: string;
+  group_id?: string;
+  device_id?: string;
+  field?: string;
 }
 
 export interface PathReport {
@@ -147,3 +178,919 @@ export const roleLabel: Record<Role, string> = {
   hub: "枢纽",
   exit: "出口",
 };
+
+// ===========================================================================
+// API views. Field names follow the Go handlers in internal/api/*.go; the
+// backend is the source of truth. Secrets never appear in any of these:
+// passwords, private keys, passphrases, API tokens and device private keys
+// are write-only (requests may carry them, responses never do).
+// ===========================================================================
+
+/** A referrer in `in_use_by` (409 in_use and resource views). */
+export interface Ref {
+  /** node | server | credential | mesh_deployment | rule | settings | remote_device | group … */
+  kind: string;
+  id: string;
+  name?: string;
+}
+
+/** Error body of every handler: `{error, code, field?, in_use_by?}` plus extras. */
+export interface ApiErrorBody {
+  error?: string;
+  code?: string;
+  field?: string;
+  in_use_by?: Ref[];
+  issues?: Issue[];
+  [extra: string]: unknown;
+}
+
+// ---- Core / host -----------------------------------------------------------
+
+export interface Meta {
+  transports: string[];
+  roles: string[];
+  match_types: string[];
+  modes: string[];
+  on_failure: string[];
+  phase: number;
+  features: string[];
+}
+
+export interface HostStep {
+  name: string;
+  ok: boolean;
+  skipped?: boolean;
+  detail?: string;
+}
+
+export interface HostReport {
+  transaction: string;
+  kind: string;
+  from_version: number;
+  to_version: number;
+  diff: Record<string, string[] | number[] | undefined>;
+  steps?: HostStep[];
+  warnings?: string[];
+  committed: boolean;
+  compensated?: boolean;
+}
+
+export interface InstalledManifest {
+  version: number;
+  created_at?: string;
+  files: number;
+  interfaces: string[];
+  units: string[];
+  nft_tables: string[];
+  route_tables: number[];
+  dns: boolean;
+  origin?: string;
+}
+
+export interface HostStatus {
+  /** null: nothing installed on the gateway yet. */
+  installed: InstalledManifest | null;
+  pending: { id: string; kind: string; phase: string; error?: string; started: string; from_version: number; to_version: number } | null;
+  agent: { ok: boolean; error?: string };
+}
+
+/** GET /api/status: the cheap read-only summary behind the top bar. */
+export type InstallStateCode = "in_sync" | "changed" | "not_installed" | "invalid" | "unknown";
+
+export interface StatusJob {
+  /** none | running | done | failed | cancelled | timeout | interrupted | published | compensating | compensation_failed | withdrawn | error */
+  state: string;
+  running: boolean;
+  id?: string;
+  started_at?: string;
+  finished_at?: string;
+  error?: string;
+}
+
+export interface PanelStatus {
+  agent: { configured: boolean; ok: boolean; error?: string };
+  /** A list update could run now (lists action configured and agent reachable). */
+  lists_available: boolean;
+  /** An unlock probe could run now. */
+  probe_available: boolean;
+  install: {
+    /** Stored topology vs the INSTALLED manifest (not the applied snapshot). */
+    state: InstallStateCode;
+    installed_version: number | null;
+    installed_at?: string;
+    origin?: string;
+    /** Something was applied (written to the data directory) before. */
+    applied: boolean;
+    /** Stored topology equals the last applied snapshot. */
+    applied_matches: boolean;
+    /** invalid: the compile error. */
+    error?: string;
+    issues?: Issue[];
+  };
+  pending: HostStatus["pending"];
+  jobs: { lists: StatusJob; unlock: StatusJob; mesh: StatusJob };
+}
+
+export interface TopologySaveResult {
+  topology: Topology;
+  issues: Issue[];
+  paths: PathReport[];
+  draft: boolean;
+  migration_error?: string;
+}
+
+export interface DiffResult {
+  /** "（没有变化）\n" when the compiled text equals the last applied one. */
+  diff: string;
+  order: string[];
+  issues: Issue[];
+}
+
+export interface ApplyResult {
+  dry_run: boolean;
+  install: boolean;
+  wrote?: string[];
+  order: string[];
+  diff: string;
+  host?: HostReport;
+}
+
+export type RollbackMode = "runtime" | "snapshot";
+
+export interface ProvisionResult {
+  dry_run: boolean;
+  node_id: string;
+  script?: string;
+  [extra: string]: unknown;
+}
+
+// ---- Servers ---------------------------------------------------------------
+
+export type HostKeyState = "unknown" | "discovered" | "trusted" | "mismatch";
+
+export interface HostKey {
+  state: HostKeyState;
+  /** Pinned fingerprint (trusted and mismatch). */
+  fingerprint?: string;
+  key_type?: string;
+  pinned_at?: string;
+  /** operator | mesh_journal */
+  source?: string;
+  /** Awaiting confirmation (discovered) or the conflicting key (mismatch). */
+  seen_fingerprint?: string;
+  seen_key_type?: string;
+  seen_at?: string;
+}
+
+export interface ConnectionTest {
+  at: string;
+  ok: boolean;
+  auth_method?: "password" | "key";
+  /** unreachable | timeout | auth_failed | host_key_mismatch | host_key_untrusted | command_failed */
+  code?: string;
+  error?: string;
+  os?: string;
+  kernel?: string;
+  arch?: string;
+  duration_ms: number;
+}
+
+export type AuthMethod = "password" | "key";
+
+export interface ServerView {
+  id: string;
+  name: string;
+  address: string;
+  port: number;
+  user: string;
+  auth: AuthMethod;
+  credential_id?: string;
+  credential: { id: string; name: string; kind: CredentialKind } | null;
+  /** Omitted when empty (omitempty on the model). */
+  tags?: string[];
+  notes?: string;
+  host_key: HostKey;
+  created_at: string;
+  updated_at: string;
+  migrated_from?: string;
+  last_test?: ConnectionTest | null;
+  /** Credential selected and host key trusted. */
+  operable: boolean;
+  /** Operable and the last connection test passed. */
+  ready: boolean;
+  /** credential | host_key | connection_test */
+  missing: string[];
+  in_use_by: Ref[];
+  node: Ref | null;
+}
+
+export interface ServerInput {
+  name: string;
+  address: string;
+  port?: number;
+  user?: string;
+  auth: AuthMethod;
+  credential_id?: string;
+  tags?: string[];
+  notes?: string;
+}
+
+export type ServerPatch = Partial<ServerInput>;
+
+export interface HostKeyDiscovery {
+  key_type: string;
+  fingerprint: string;
+  matches_pinned: boolean;
+}
+
+// ---- SSH credentials -------------------------------------------------------
+
+export type CredentialKind = "password" | "private_key";
+
+export interface SSHCredentialView {
+  id: string;
+  name: string;
+  kind: CredentialKind;
+  notes?: string;
+  key_type?: string;
+  /** authorized_keys line (private_key only). */
+  public_key?: string;
+  fingerprint?: string;
+  comment?: string;
+  has_passphrase?: boolean;
+  generated?: boolean;
+  secret_set: boolean;
+  created_at: string;
+  updated_at: string;
+  rotated_at?: string;
+  in_use_by: Ref[];
+}
+
+/** Secret part of a create or rotate request. Never stored in the browser. */
+export type SSHSecretInput =
+  | { kind: "password"; password: string }
+  | { kind: "private_key"; private_key: string; passphrase?: string; comment?: string }
+  | { kind: "private_key"; generate: true; comment?: string };
+
+export type SSHCredentialCreate = SSHSecretInput & { name: string; notes?: string };
+
+export interface SSHCredentialPatch {
+  name?: string;
+  notes?: string;
+  comment?: string;
+}
+
+// ---- Cloudflare -------------------------------------------------------------
+
+export interface PermissionProbe {
+  name: string;
+  endpoint: string;
+  /** pass | denied | error | skipped */
+  status: string;
+  detail?: string;
+}
+
+export interface PermissionCheck {
+  checked_at: string;
+  /** Every probe that ran passed. Not a proof of write access. */
+  ok: boolean;
+  missing?: string[];
+  detail?: string;
+  /** active | disabled | expired | "" */
+  token_status?: string;
+  /** account | user */
+  token_kind?: string;
+  confirmed?: string[];
+  unconfirmed?: string[];
+  checks?: PermissionProbe[];
+}
+
+export interface CloudflareAccountView {
+  id: string;
+  name: string;
+  account_id: string;
+  notes?: string;
+  token_set: boolean;
+  permission_check?: PermissionCheck;
+  created_at: string;
+  updated_at: string;
+  rotated_at?: string;
+  migrated_from?: string;
+  used_for_mesh: boolean;
+  bound_deployment: Ref | null;
+  in_use_by: Ref[];
+}
+
+export interface CloudflareAccountsView {
+  accounts: CloudflareAccountView[];
+  mesh_account: string | null;
+}
+
+export interface CloudflareAccountInput {
+  name: string;
+  account_id: string;
+  api_token: string;
+  notes?: string;
+}
+
+export interface CloudflareAccountPatch {
+  name?: string;
+  account_id?: string;
+  notes?: string;
+}
+
+export interface CloudflareRequirements {
+  permissions: { name: string; scope: string; why: string }[];
+  how_to: string[];
+  check: { does: string[]; does_not: string[] };
+}
+
+// ---- Mesh -------------------------------------------------------------------
+
+export interface MeshIssue {
+  code: string;
+  message: string;
+  node_id?: string;
+  link_id?: string;
+}
+
+export interface MeshStage {
+  name: string;
+  /** pending | running | done | failed | skipped */
+  status: string;
+  started?: string;
+  finished?: string;
+  error?: string;
+  detail?: string[];
+}
+
+/** SSH target a run pinned: where it connected and the host key it saw. */
+export interface MeshHostPin {
+  node_id: string;
+  name?: string;
+  role: string;
+  server_id?: string;
+  credential_id?: string;
+  ssh_host: string;
+  ssh_port: number;
+  ssh_user: string;
+  host_key?: string;
+}
+
+export interface MeshJournal {
+  schema?: number;
+  run_id: string;
+  /** running | published | failed | compensating | compensation_failed | withdrawn */
+  state: string;
+  account_id?: string;
+  account_ref?: string;
+  hosts?: MeshHostPin[] | null;
+  started: string;
+  updated: string;
+  fail_after?: string;
+  stages: MeshStage[];
+  nodes: { node_id: string; name: string; cf_id?: string; state: string; error?: string }[] | null;
+  routes:
+    | { link_id: string; exit_id: string; network: string; tunnel_id: string; comment: string; cf_id?: string; state: string; error?: string }[]
+    | null;
+  remotes: { node_id: string; host?: MeshHostPin; state: string; error?: string }[] | null;
+  targets: string[] | null;
+  error?: string;
+  compensation_errors?: string[];
+  /** Always "unverified". */
+  dataplane: string;
+}
+
+export interface MeshPlan {
+  addressing: {
+    link_v4: string;
+    host_v4: string;
+    sidecar_v4: string;
+    host_v6: string;
+    sidecar_v6: string;
+    v6_bits: number;
+    host_mac: string;
+    sidecar_mac: string;
+    host_iface: string;
+    sidecar_iface: string;
+  };
+  nodes:
+    | {
+        id: string;
+        name: string;
+        role: string;
+        server_id?: string;
+        credential_id?: string;
+        ssh_host?: string;
+        ssh_port?: number;
+        ssh_user?: string;
+        host_key?: string;
+      }[]
+    | null;
+  routes: { link_id: string; exit_id: string; network: string }[] | null;
+  return_v4: string[] | null;
+  return_v6: string[] | null;
+  issues: MeshIssue[] | null;
+}
+
+export interface MeshNodeReadiness {
+  node_id: string;
+  name: string;
+  role: string;
+  server_id: string;
+  server_name: string;
+  ready: boolean;
+  /** server | credential | host_key */
+  missing: string[];
+  host_key?: string;
+  auth_method?: string;
+}
+
+export interface MeshAccountSummary {
+  id: string;
+  name: string;
+  account_id: string;
+  /** request | selected */
+  source: string;
+  permission_check: PermissionCheck | null;
+}
+
+export interface MeshStatus {
+  dataplane: string;
+  dataplane_note: string;
+  fault_injection: boolean;
+  stages: string[];
+  credentials?: { account_id?: string; token_set: boolean };
+  credentials_error?: string;
+  mesh_account: MeshAccountSummary | null;
+  plan?: MeshPlan;
+  plan_servers?: MeshNodeReadiness[];
+  plan_error?: string;
+  journal?: MeshJournal | null;
+  journal_error?: string;
+}
+
+export interface MeshRunBody {
+  account?: string;
+  fail_after?: string;
+}
+
+/** Response of deploy / withdraw, also the body of their 409 / 502 errors. */
+export interface MeshRunResult {
+  journal?: MeshJournal | null;
+  dataplane: string;
+  dataplane_note: string;
+  account?: MeshAccountSummary;
+  error?: string;
+  code?: string;
+  stage?: string;
+  compensated?: boolean;
+  compensation_errors?: string[] | null;
+  not_ready?: MeshNodeReadiness[];
+}
+
+// ---- Lists ------------------------------------------------------------------
+
+export type ListsPolicy = "domestic" | "overseas" | "automatic";
+export type ListKind = "geosite" | "chnroute";
+
+export interface ListSourceInfo {
+  name: string;
+  geosite_base: string;
+  chnroute_base: string;
+}
+
+export interface ListAttempt {
+  source: string;
+  url: string;
+  ok: boolean;
+  error?: string;
+  duration_ms: number;
+}
+
+export interface PublishedList {
+  source: string;
+  url: string;
+  updated_at: string;
+  count: number;
+  files?: number;
+}
+
+export interface ListResult {
+  /** geosite:<name> | keyword:<id> | chnroute4 | chnroute6 */
+  list: string;
+  kind: string;
+  updated: boolean;
+  kept: boolean;
+  source?: string;
+  url?: string;
+  count?: number;
+  files?: number;
+  dropped?: Record<string, number>;
+  current?: PublishedList;
+  attempts?: ListAttempt[];
+  error?: string;
+}
+
+export interface ListsReport {
+  policy: ListsPolicy;
+  sources: string[];
+  started_at: string;
+  finished_at: string;
+  ok: boolean;
+  partial: boolean;
+  lists: ListResult[] | null;
+  error?: string;
+  dns_changed: boolean;
+  dns_restart?: string;
+  warnings?: string[];
+}
+
+export interface ListsJob {
+  id: string;
+  /** running | done | failed */
+  state: "running" | "done" | "failed";
+  policy: ListsPolicy;
+  lists: string[];
+  started_at: string;
+  finished_at?: string;
+  report?: ListsReport;
+  error?: string;
+}
+
+export interface ListsView {
+  policy: ListsPolicy;
+  /** false: never saved, the effective policy is the default. */
+  saved: boolean;
+  policies: ListsPolicy[];
+  order: string[];
+  sources: ListSourceInfo[];
+  lists: { geosite: string[] | null; keywords: { id: string; keyword: string }[]; chnroute: string[] };
+  host_available: boolean;
+  job: ListsJob | null;
+}
+
+export interface ListsHostStatus {
+  published: Record<string, PublishedList>;
+  last?: ListsReport;
+}
+
+// ---- Region groups ------------------------------------------------------------
+
+export interface GroupMemberView {
+  id: string;
+  name: string;
+  region?: string;
+  user_position: number;
+  /** Effective position, -1 when excluded. */
+  position: number;
+  eligible: boolean;
+  ix_bound: boolean;
+  residential: boolean;
+  egress_v6: boolean;
+  switchable?: boolean;
+  reasons: { code: string; message: string }[];
+  target: boolean;
+  active: boolean;
+  health: {
+    up: boolean;
+    fails: number;
+    goods: number;
+    last_ok: boolean | null;
+    ok_since: string | null;
+    last_at: string | null;
+  } | null;
+}
+
+export interface GroupStateView {
+  /** Member ID, "mmesh" (Mesh last hop) or "" (no member). */
+  active: string;
+  reason: string;
+  alert: boolean;
+  alert_message?: string;
+  last_switch: string | null;
+  /** false until health samples arrived. */
+  observed: boolean;
+  source: string;
+  return_blocked_by?: string;
+  return_not_before?: string;
+}
+
+export interface RegionGroupView extends RegionGroup {
+  on_failure_effective?: "hold" | "fallback";
+  is_default: boolean;
+  effective_order: string[];
+  target: string;
+  target_reason: string;
+  switchable: boolean;
+  switch_order: string[];
+  mesh_backup: boolean;
+  fwmark?: string;
+  table?: number;
+  member_status: GroupMemberView[];
+  state: GroupStateView;
+  in_use_by: Ref[];
+}
+
+export interface GroupThresholds {
+  fails_need: number;
+  recovers_need: number;
+  cooldown_sec: number;
+}
+
+export interface RegionGroupsView {
+  groups: RegionGroupView[];
+  default_group: string;
+  thresholds: GroupThresholds;
+}
+
+export type RegionGroupInput = Omit<RegionGroup, "migrated_from">;
+export type RegionGroupPatch = Partial<RegionGroupInput>;
+
+// ---- Remote access ------------------------------------------------------------
+
+export type RemoteMode = "full" | "home";
+
+export interface RemoteSettingsView {
+  enabled: boolean;
+  endpoint: string;
+  listen_port: number;
+  ipv4_prefix: string;
+  ipv6_prefix: string;
+  mtu: number;
+  keepalive: number;
+  interface: string;
+  gateway_ipv4: string;
+  gateway_ipv6: string;
+  dns: string[];
+  public_key: string;
+  max_devices: number;
+  device_count: number;
+  defaults: { ipv4_prefix: string; ipv6_prefix: string; mtu: number; keepalive: number; mode: RemoteMode };
+  /** mode → explanation */
+  modes: Record<string, string>;
+}
+
+export interface RemoteSettingsPatch {
+  enabled?: boolean;
+  endpoint?: string;
+  listen_port?: number;
+  ipv4_prefix?: string;
+  ipv6_prefix?: string;
+  mtu?: number;
+  keepalive?: number;
+}
+
+export interface RemoteDeviceRuntime {
+  last_handshake_at: string | null;
+  rx_bytes: number;
+  tx_bytes: number;
+  online: boolean;
+}
+
+export interface RemoteDeviceView {
+  id: string;
+  name: string;
+  notes: string;
+  mode: RemoteMode;
+  enabled: boolean;
+  public_key: string;
+  ipv4: string;
+  ipv6: string;
+  preshared_key: boolean;
+  created_at: string;
+  updated_at: string;
+  key_created_at: string;
+  /** Always false: the configuration was shown once and is not stored. */
+  config_available: boolean;
+  config_outdated: boolean;
+  runtime: RemoteDeviceRuntime | null;
+  /** ok | disabled | not_installed | unavailable | not_read */
+  runtime_state: string;
+}
+
+export interface RemoteRuntimeView {
+  available: boolean;
+  /** ok | disabled | agent_unavailable | interface_absent | error */
+  state: string;
+  reason?: string;
+  interface: string;
+  read_at?: string;
+}
+
+export interface RouterForward {
+  protocol: string;
+  external_port: number;
+  internal_address: string;
+  internal_port: number;
+  description: string;
+  ipv6_note: string;
+}
+
+export interface RemoteAccessView {
+  settings: RemoteSettingsView;
+  router_forward: RouterForward;
+  devices: RemoteDeviceView[];
+  runtime?: RemoteRuntimeView;
+  issues: Issue[];
+  apply_required?: boolean;
+}
+
+export interface RemoteDeviceInput {
+  name: string;
+  notes?: string;
+  mode?: RemoteMode;
+  enabled?: boolean;
+  preshared_key?: boolean;
+}
+
+export interface RemoteDevicePatch {
+  name?: string;
+  notes?: string;
+  mode?: RemoteMode;
+  enabled?: boolean;
+  preshared_key?: boolean;
+}
+
+/**
+ * The one-time client configuration (contains the device private key).
+ * Keep it in component state only; never persist, log or put it in a URL.
+ */
+export interface RemoteClientConfig {
+  text: string;
+  filename: string;
+  mode: RemoteMode;
+  explanation: string;
+  shown_once: boolean;
+}
+
+export interface RemoteDeviceConfigResult {
+  device: RemoteDeviceView;
+  config: RemoteClientConfig;
+  router_forward: RouterForward;
+  apply_required: boolean;
+}
+
+// ---- Unlock -------------------------------------------------------------------
+
+export interface UnlockView {
+  services: { rule_id: string; name: string; pool: string; preferred: string; members: string[]; pin: boolean }[];
+  states: Record<
+    string,
+    {
+      pool?: string;
+      active?: string;
+      sched_fails?: number;
+      active_fails?: number;
+      demoted?: boolean;
+      unavailable?: boolean;
+      preferred?: string;
+      /** Start of the preferred member's unbroken success streak while demoted. */
+      preferred_ok_at?: string;
+      preferred_seen_at?: string;
+      backup_ok_at?: string;
+    }
+  >;
+  history: {
+    at: string;
+    observed_at?: string;
+    kind: string;
+    service: string;
+    exit_id: string;
+    family?: string;
+    ok: boolean;
+    rejected?: string;
+    note?: string;
+  }[];
+  next_run: string;
+  interval_sec: number;
+  pending_apply: boolean;
+  decisions: Record<string, string>;
+}
+
+/** network_ok | unlocked | not_unlocked | failed | unknown */
+export type ProbeCategory = "network_ok" | "unlocked" | "not_unlocked" | "failed" | "unknown";
+export type ProbeGrade = "platform_signal" | "reachability_only" | "unknown_response" | "error";
+export type ProbeCapability = "region_verdict" | "verdict" | "reachability" | "unsupported";
+
+export interface ProbePart {
+  platform: string;
+  primary?: boolean;
+  category: ProbeCategory;
+  grade: ProbeGrade;
+  signal?: string;
+  region?: string;
+  status?: number;
+  evidence?: string;
+  error?: string;
+}
+
+export interface ProbeJobItem {
+  service: string;
+  service_name: string;
+  exit_id: string;
+  exit_region?: string;
+  family: "ipv4" | "ipv6";
+  /** queued | running | done | skipped */
+  state: string;
+  started_at?: string;
+  finished_at?: string;
+  category?: ProbeCategory;
+  region?: string;
+  evidence?: string;
+  egress?: string;
+  error?: string;
+  /** accepted | accepted:inconclusive | rejected:<reason> | note:<text> | not_ingested:<why> */
+  ingest?: string;
+  grade?: ProbeGrade;
+  signal?: string;
+  capability?: ProbeCapability;
+  /** "synthetic_only" in this build: not validated against real platforms. */
+  validation?: string;
+  status?: number;
+  parts?: ProbePart[];
+  egress_ip?: string;
+  egress_basis?: string;
+  egress_iface?: string;
+  group?: string;
+  group_mode?: string;
+  in_group?: boolean;
+  active_exit?: string;
+}
+
+export interface ProbeJob {
+  id: string;
+  kind: "manual" | "scheduled";
+  /** running | done | cancelled | timeout | interrupted */
+  state: string;
+  created_at: string;
+  finished_at?: string;
+  error?: string;
+  items: ProbeJobItem[];
+}
+
+export interface ProbeCatalogEntry {
+  service: string;
+  name: string;
+  reachability: boolean;
+  basis: string;
+  capability?: ProbeCapability;
+  returns?: ProbeCategory[];
+  ipv4_only?: boolean;
+  probeable?: boolean;
+  platforms?: { name: string; checked: boolean; primary: boolean; note?: string }[];
+  requests?: string[];
+  hosts?: string[];
+  combine?: string;
+  limits?: string;
+  sources?: { name: string; url: string; checked: string }[];
+  validation?: string;
+  validation_text?: string;
+  enabled?: boolean;
+  group?: string;
+  group_mode?: string;
+}
+
+export interface ProbeJobsView {
+  jobs: ProbeJob[];
+  running: string;
+  catalog: ProbeCatalogEntry[];
+  available: boolean;
+  validation?: string;
+  validation_text?: string;
+}
+
+export interface ProbeCatalogView {
+  catalog: ProbeCatalogEntry[];
+  available: boolean;
+  validation: string;
+  validation_text: string;
+  grades: ProbeGrade[];
+  ingest_rule: string;
+}
+
+export interface ProbeResultRow extends ProbeJobItem {
+  exit_name?: string;
+  exit_groups: { id: string; name: string; mode: string; active?: string }[];
+  service_active?: string;
+  is_active: boolean;
+  ingestible: boolean;
+}
+
+export interface ProbeSelection {
+  services?: string[];
+  exits?: string[];
+  groups?: string[];
+  families?: ("ipv4" | "ipv6")[];
+}
+
+// ---- Leak check -----------------------------------------------------------------
+
+export interface LeakItem {
+  id: string;
+  status: string;
+  /** automated | integration | human | limitation */
+  scope?: string;
+  title: string;
+  detail: string;
+}

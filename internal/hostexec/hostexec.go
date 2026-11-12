@@ -7,7 +7,9 @@
 //
 //   - A fixed action set: activate, health, rollback, plus the read-only
 //     probe (probe.go: one managed exit, one forced address family, services
-//     from a fixed catalog). There is no generic "run", no shell, and no
+//     from a fixed catalog) and the list update (lists.go: a source policy,
+//     list kinds and managed category names; URLs come from package lists)
+//     and the parameterless remote-access status read (wgstatus.go). There is no generic "run", no shell, and no
 //     caller-supplied path, URL, host or argument string.
 //   - Parameters only name managed resources, and every name must match the
 //     pattern compile can produce (ValidUnit, ValidInterface, ...). Paths and
@@ -47,6 +49,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/radowitz/meridian/internal/lists"
 )
 
 // Actions. The unlock probe has its own endpoint and parameter set
@@ -116,7 +120,7 @@ var ErrUnavailable = errors.New("面板没有宿主执行能力（meridian-host 
 
 var (
 	unitRe      = regexp.MustCompile(`^(meridian-[a-z0-9][a-z0-9-]{0,40}|wstunnel-meridian|wstunnel-client-[a-z0-9][a-z0-9-]{0,40})\.(service|timer)$`)
-	ifaceRe     = regexp.MustCompile(`^(m[0-9]{2,3}w?|mmesh)$`)
+	ifaceRe     = regexp.MustCompile(`^(m[0-9]{2,3}w?|mmesh|mra)$`)
 	requestIDRe = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,160}$`)
 	// Units started by fixed steps, never by name from a caller.
 	reservedUnits = map[string]bool{
@@ -130,7 +134,9 @@ var (
 // ValidUnit reports whether name is a unit Meridian generates.
 func ValidUnit(name string) bool { return unitRe.MatchString(name) && !reservedUnits[name] }
 
-// ValidInterface reports whether name is a Meridian WireGuard or Mesh interface.
+// ValidInterface reports whether name is a Meridian WireGuard or Mesh
+// interface: a tunnel (mNN, mNNw), the Mesh veth or the remote-access
+// interface mra (one fixed name, nothing else).
 func ValidInterface(name string) bool { return ifaceRe.MatchString(name) }
 
 // ValidNFTTable reports whether name is one of Meridian's own nft tables.
@@ -225,6 +231,9 @@ var programs = map[string][]string{
 	"nft":        {"/usr/sbin/nft", "/sbin/nft"},
 	"sysctl":     {"/usr/sbin/sysctl", "/sbin/sysctl"},
 	"docker":     {"/usr/bin/docker"},
+	// wg is used only by the remote-access status read, with two fixed
+	// subcommands that print public keys and counters (never "dump").
+	"wg": {"/usr/bin/wg", "/usr/sbin/wg", "/bin/wg"},
 }
 
 // ExecRunner runs real binaries with a fixed minimal environment.
@@ -299,7 +308,8 @@ type Agent struct {
 
 	// MaxProbes caps concurrent probes (each one exit + family); default 2.
 	MaxProbes int
-	// ProbeTimeout bounds one probe request; default 2m.
+	// ProbeTimeout bounds one probe request; default 3m (14 services, four
+	// at a time, 20 s each, plus the two egress checks).
 	ProbeTimeout time.Duration
 	// ProbeTargetTimeout bounds one service inside a probe; default 20s.
 	ProbeTargetTimeout time.Duration
@@ -307,6 +317,16 @@ type Agent struct {
 	ProbeRootCAs *x509.CertPool
 	// ProbeNetwork replaces the pinned network (tests only).
 	ProbeNetwork ProbeNetworkFunc
+
+	// List updates (lists.go). ListsDir holds geosite/, keywords/ and
+	// lists/; default /var/lib/meridian. ListsGetter and ListsSources
+	// replace the downloader and the source table (tests only).
+	ListsDir     string
+	ListsGetter  lists.Getter
+	ListsSources func(lists.Policy) ([]lists.Source, error)
+	// ListsTimeout bounds one whole update; default 15m.
+	ListsTimeout time.Duration
+	listsBusy    chan struct{}
 
 	once   sync.Once
 	sem    chan struct{}
@@ -350,19 +370,26 @@ func (a *Agent) init() {
 			a.MaxProbes = 2
 		}
 		if a.ProbeTimeout <= 0 {
-			a.ProbeTimeout = 2 * time.Minute
+			a.ProbeTimeout = 3 * time.Minute
 		}
 		a.probes = map[int]context.CancelFunc{}
+		a.listsBusy = make(chan struct{}, 1)
+		if a.ListsTimeout <= 0 {
+			a.ListsTimeout = 15 * time.Minute
+		}
 		a.ledger = &ledger{path: a.LedgerPath}
 	})
 }
 
-// Handler serves POST /v1/action and POST /v1/probe.
+// Handler serves POST /v1/action, /v1/probe, /v1/lists and /v1/lists/status.
 func (a *Agent) Handler() http.Handler {
 	a.init()
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/action", a.serveAction)
 	mux.HandleFunc("POST /v1/probe", a.serveProbe)
+	mux.HandleFunc("POST /v1/lists", a.serveLists)
+	mux.HandleFunc("POST /v1/lists/status", a.serveListsStatus)
+	mux.HandleFunc("POST /v1/remote-access/status", a.serveRemoteAccessStatus)
 	return mux
 }
 

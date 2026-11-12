@@ -255,8 +255,50 @@ func contains(ss []string, s string) bool {
 	return false
 }
 
-// Service is an automatic rule that follows the unlock map.
-// Pinned rules are listed so the panel can show them, but Decisions skips them.
+// Reconcile aligns a service's state with its current group: members in
+// effective order and the preferred member (svc.Preferred). It is a no-op
+// while both still match. When the preferred member changed, the state
+// restarts on the new one, keeping what is known about each member, with
+// one exception that protects the return rule: if the new preferred's
+// latest result is a failure and another member is known good, the service
+// stays demoted on that member, and returning needs the full CanReturn
+// condition (a fresh success streak of ReturnCooldown). A just-failed exit
+// is never made active by a reorder. An active member that left the group
+// is dropped the same way.
+func Reconcile(s State, svc Service) State {
+	if s.Preferred == svc.Preferred && (s.Active == "" || contains(svc.Members, s.Active)) {
+		s.Pool = svc.Pool
+		return s
+	}
+	known := map[string]bool{}
+	for id, ok := range s.Known {
+		if contains(svc.Members, id) {
+			known[id] = ok
+		}
+	}
+	next := State{Pool: svc.Pool, Preferred: svc.Preferred, Active: svc.Preferred, Known: known}
+	if svc.Preferred == "" {
+		next.Active = ""
+		return next
+	}
+	if ok, seen := known[svc.Preferred]; seen && !ok {
+		for _, id := range svc.Members {
+			if id != svc.Preferred && known[id] {
+				next.Active = id
+				next.Demoted = true
+				break
+			}
+		}
+		if !next.Demoted {
+			next.Unavailable = true
+		}
+	}
+	return next
+}
+
+// Service is a rule aimed at a region group. Pool holds the group ID.
+// Rules of a manual group are listed with Pin set so the panel can show
+// them, but Decisions skips them.
 type Service struct {
 	RuleID    string   `json:"rule_id"`
 	Name      string   `json:"name"`
@@ -320,6 +362,12 @@ func Decisions(snap Snapshot, services []Service) map[string]string {
 		}
 		st, ok := snap.Services[svc.RuleID]
 		if !ok || st.Active == "" || st.Active == svc.Preferred {
+			continue
+		}
+		// A state computed for another preferred member (the group was
+		// reordered, re-chosen or re-constrained and not yet reconciled)
+		// moves nothing.
+		if st.Preferred != svc.Preferred {
 			continue
 		}
 		if !contains(svc.Members, st.Active) {
@@ -485,7 +533,9 @@ func ruleAlias(line string) (string, bool) {
 }
 
 // AIReachable treats a completed HTTP response as reachability from that
-// exit. Code 0 is a timeout or reset. This is not an account check.
+// exit. Code 0 is a timeout or reset. This is not an account check, and the
+// panel records these lines with a note only: reachability never steps the
+// state machine (see api.reachOnlyNote, docs/unlock-methods.md).
 func AIReachable(httpCode int) bool { return httpCode > 0 }
 
 // AIRuleID maps a curl target name onto a default-table rule.

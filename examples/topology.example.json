@@ -14,7 +14,12 @@
       "1.12.12.12"
     ],
     "transit_v4_prefix": "10.66.200.0/24",
-    "transit_v6_prefix": "fd66:0:0:ff::/64"
+    "transit_v6_prefix": "fd66:0:0:ff::/64",
+    "nat64": {
+      "reserved": true,
+      "enabled": false
+    },
+    "default_group": "hk"
   },
   "nodes": [
     {
@@ -126,10 +131,31 @@
       "nat_dial_out": false,
       "residential": false,
       "ix_bound": true,
-      "pool": "hk",
       "endpoint_v4": "203.0.113.30",
       "listen_port": 51820,
       "ssh_host": "hk-ix.example.invalid",
+      "ssh_port": 22,
+      "ssh_user": "root"
+    },
+    {
+      "id": "hk-2",
+      "name": "香港出口（备）",
+      "role": "exit",
+      "region": "hk",
+      "managed": true,
+      "x": 1100,
+      "y": 40,
+      "wan_interface": "eth0",
+      "path_v4": true,
+      "path_v6": true,
+      "egress_v4": true,
+      "egress_v6": true,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false,
+      "endpoint_v4": "203.0.113.31",
+      "listen_port": 51820,
+      "ssh_host": "hk-2.example.invalid",
       "ssh_port": 22,
       "ssh_user": "root"
     },
@@ -149,8 +175,27 @@
       "nat_dial_out": true,
       "residential": true,
       "ix_bound": false,
-      "pool": "hk-residential",
       "ssh_host": "hk-resi.example.invalid",
+      "ssh_port": 22,
+      "ssh_user": "root"
+    },
+    {
+      "id": "hk-resi-2",
+      "name": "香港家宽（备）",
+      "role": "exit",
+      "region": "hk",
+      "managed": true,
+      "x": 1100,
+      "y": 160,
+      "wan_interface": "eth0",
+      "path_v4": true,
+      "path_v6": true,
+      "egress_v4": true,
+      "egress_v6": true,
+      "nat_dial_out": true,
+      "residential": true,
+      "ix_bound": false,
+      "ssh_host": "hk-resi-2.example.invalid",
       "ssh_port": 22,
       "ssh_user": "root"
     },
@@ -170,7 +215,6 @@
       "nat_dial_out": false,
       "residential": false,
       "ix_bound": false,
-      "pool": "jp",
       "endpoint_v4": "203.0.113.40",
       "listen_port": 51820,
       "ssh_host": "jp.example.invalid",
@@ -193,7 +237,6 @@
       "nat_dial_out": false,
       "residential": false,
       "ix_bound": false,
-      "pool": "sg",
       "endpoint_v4": "198.51.100.10",
       "listen_port": 51820,
       "ssh_host": "sg.example.invalid",
@@ -216,10 +259,99 @@
       "nat_dial_out": false,
       "residential": false,
       "ix_bound": false,
-      "pool": "us",
       "endpoint_v4": "198.51.100.20",
       "listen_port": 51820,
       "ssh_host": "us.example.invalid",
+      "ssh_port": 22,
+      "ssh_user": "root"
+    },
+    {
+      "id": "us-2",
+      "name": "美国出口（备）",
+      "role": "exit",
+      "region": "us",
+      "managed": true,
+      "x": 1100,
+      "y": 480,
+      "wan_interface": "eth0",
+      "path_v4": true,
+      "path_v6": true,
+      "egress_v4": true,
+      "egress_v6": true,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false,
+      "endpoint_v4": "198.51.100.21",
+      "listen_port": 51820,
+      "ssh_host": "us-2.example.invalid",
+      "ssh_port": 22,
+      "ssh_user": "root"
+    },
+    {
+      "id": "ds-relay",
+      "name": "双栈中继",
+      "role": "exit",
+      "region": "hk",
+      "managed": true,
+      "x": 900,
+      "y": 680,
+      "wan_interface": "eth0",
+      "path_v4": true,
+      "path_v6": true,
+      "egress_v4": true,
+      "egress_v6": true,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false,
+      "dualstack_relay": true,
+      "endpoint_v4": "203.0.113.60",
+      "endpoint_v6": "2001:db8::60",
+      "listen_port": 51820,
+      "ssh_host": "ds-relay.example.invalid",
+      "ssh_port": 22,
+      "ssh_user": "root"
+    },
+    {
+      "id": "v6-exit",
+      "name": "纯 IPv6 出口",
+      "role": "exit",
+      "region": "us",
+      "managed": true,
+      "x": 1100,
+      "y": 680,
+      "wan_interface": "eth0",
+      "path_v4": false,
+      "path_v6": true,
+      "egress_v4": false,
+      "egress_v6": true,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false,
+      "v6_workaround": "dualstack_relay",
+      "endpoint_v6": "2001:db8::70",
+      "listen_port": 51870,
+      "ssh_host": "v6-exit.example.invalid",
+      "ssh_port": 22,
+      "ssh_user": "root"
+    },
+    {
+      "id": "v6-v4out",
+      "name": "v6 入 v4 出",
+      "role": "exit",
+      "region": "us",
+      "managed": true,
+      "x": 1100,
+      "y": 780,
+      "wan_interface": "eth0",
+      "path_v4": false,
+      "path_v6": true,
+      "egress_v4": true,
+      "egress_v6": false,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false,
+      "v6_workaround": "mesh",
+      "ssh_host": "v6-v4out.example.invalid",
       "ssh_port": 22,
       "ssh_user": "root"
     },
@@ -239,7 +371,6 @@
       "nat_dial_out": true,
       "residential": false,
       "ix_bound": false,
-      "pool": "tw",
       "ssh_host": "tw.example.invalid",
       "ssh_port": 22,
       "ssh_user": "root"
@@ -425,6 +556,116 @@
       "enabled": true,
       "standby": true,
       "mtu": 1280
+    },
+    {
+      "id": "hub-hk2",
+      "name": "枢纽到备港出口",
+      "from": "hk-hub",
+      "to": "hk-2",
+      "transport": "direct_wg",
+      "enabled": true,
+      "standby": false,
+      "mtu": 1420,
+      "wg_port": 51820,
+      "keepalive": 25,
+      "from_v4": "10.66.12.1",
+      "to_v4": "10.66.12.2",
+      "from_ula": "fd66:0:0:12::1",
+      "to_ula": "fd66:0:0:12::2"
+    },
+    {
+      "id": "hub-hk2-mesh",
+      "name": "枢纽到备港出口 Mesh",
+      "from": "hk-hub",
+      "to": "hk-2",
+      "transport": "cf_mesh",
+      "enabled": true,
+      "standby": true,
+      "mtu": 1280
+    },
+    {
+      "id": "hkresi2-hub",
+      "name": "香港家宽备机拨向枢纽",
+      "from": "hk-resi-2",
+      "to": "hk-hub",
+      "transport": "direct_wg",
+      "enabled": true,
+      "standby": false,
+      "mtu": 1420,
+      "wg_port": 51853,
+      "keepalive": 25,
+      "from_v4": "10.66.13.2",
+      "to_v4": "10.66.13.1",
+      "from_ula": "fd66:0:0:13::2",
+      "to_ula": "fd66:0:0:13::1"
+    },
+    {
+      "id": "hub-us2",
+      "name": "枢纽到美国备出口",
+      "from": "hk-hub",
+      "to": "us-2",
+      "transport": "direct_wg",
+      "enabled": true,
+      "standby": false,
+      "mtu": 1420,
+      "wg_port": 51820,
+      "keepalive": 25,
+      "from_v4": "10.66.41.1",
+      "to_v4": "10.66.41.2",
+      "from_ula": "fd66:0:0:41::1",
+      "to_ula": "fd66:0:0:41::2"
+    },
+    {
+      "id": "hub-us-mesh",
+      "name": "枢纽到美国 Mesh 备路",
+      "from": "hk-hub",
+      "to": "us",
+      "transport": "cf_mesh",
+      "enabled": true,
+      "standby": true,
+      "mtu": 1280
+    },
+    {
+      "id": "hub-dsrelay",
+      "name": "枢纽到双栈中继",
+      "from": "hk-hub",
+      "to": "ds-relay",
+      "transport": "direct_wg",
+      "enabled": true,
+      "standby": false,
+      "mtu": 1420,
+      "wg_port": 51820,
+      "keepalive": 25,
+      "from_v4": "10.66.60.1",
+      "to_v4": "10.66.60.2",
+      "from_ula": "fd66:0:0:60::1",
+      "to_ula": "fd66:0:0:60::2"
+    },
+    {
+      "id": "dsrelay-v6",
+      "name": "双栈中继到纯 v6 出口",
+      "from": "ds-relay",
+      "to": "v6-exit",
+      "transport": "direct_wg",
+      "enabled": true,
+      "standby": false,
+      "mtu": 1420,
+      "wg_port": 51870,
+      "keepalive": 25,
+      "from_v4": "10.66.70.1",
+      "to_v4": "10.66.70.2",
+      "from_ula": "fd66:0:0:70::1",
+      "to_ula": "fd66:0:0:70::2"
+    },
+    {
+      "id": "hub-v6v4-mesh",
+      "name": "枢纽到 v6 入 v4 出（Mesh）",
+      "from": "hk-hub",
+      "to": "v6-v4out",
+      "transport": "cf_mesh",
+      "enabled": true,
+      "standby": true,
+      "mtu": 1280
     }
   ],
   "rules": [
@@ -437,8 +678,7 @@
       "overridden": false,
       "match_type": "geosite",
       "match_value": "openai",
-      "target_pool": "us",
-      "mode": "auto",
+      "target_group": "us",
       "require_residential": false,
       "require_v6": false,
       "notes": "池内其他 US；全部不可用则告警，不改到其他国家",
@@ -459,8 +699,7 @@
       "overridden": false,
       "match_type": "geosite",
       "match_value": "anthropic",
-      "target_pool": "us",
-      "mode": "auto",
+      "target_group": "us",
       "require_residential": false,
       "require_v6": false,
       "domains": [
@@ -478,8 +717,7 @@
       "overridden": false,
       "match_type": "domain",
       "match_value": "gemini.google.com",
-      "target_pool": "us",
-      "mode": "auto",
+      "target_group": "us",
       "require_residential": false,
       "require_v6": false,
       "notes": "只纳入 Gemini 与相关 API，不要把整个 geosite:google 送去美国",
@@ -498,8 +736,7 @@
       "overridden": false,
       "match_type": "domain",
       "match_value": "copilot.microsoft.com",
-      "target_pool": "us",
-      "mode": "auto",
+      "target_group": "us",
       "require_residential": false,
       "require_v6": false,
       "notes": "收窄到 Copilot，避免误伤整个 Microsoft 365",
@@ -516,8 +753,7 @@
       "overridden": false,
       "match_type": "geosite",
       "match_value": "perplexity",
-      "target_pool": "us",
-      "mode": "auto",
+      "target_group": "us",
       "require_residential": false,
       "require_v6": false,
       "domains": [
@@ -534,8 +770,7 @@
       "overridden": false,
       "match_type": "domain",
       "match_value": "grok.x.ai",
-      "target_pool": "us",
-      "mode": "auto",
+      "target_group": "us",
       "require_residential": false,
       "require_v6": false,
       "notes": "默认不把整个 X/Twitter 钉死到 US",
@@ -553,8 +788,7 @@
       "overridden": false,
       "match_type": "geosite",
       "match_value": "netflix",
-      "target_pool": "hk-residential",
-      "mode": "auto",
+      "target_group": "hk-residential",
       "require_residential": true,
       "require_v6": false,
       "notes": "必须是 residential；失败只告警，不暗中换国家",
@@ -575,8 +809,7 @@
       "overridden": false,
       "match_type": "geosite",
       "match_value": "disney",
-      "target_pool": "hk-residential",
-      "mode": "auto",
+      "target_group": "hk-residential",
       "require_residential": true,
       "require_v6": false,
       "domains": [
@@ -595,8 +828,7 @@
       "overridden": false,
       "match_type": "geosite",
       "match_value": "mytvsuper",
-      "target_pool": "hk",
-      "mode": "auto",
+      "target_group": "hk",
       "require_residential": false,
       "require_v6": false,
       "notes": "优先 hk-ix；若解锁要求家宽，再改走 residential",
@@ -614,8 +846,7 @@
       "overridden": false,
       "match_type": "geosite",
       "match_value": "bahamut",
-      "target_pool": "tw",
-      "mode": "auto",
+      "target_group": "tw",
       "require_residential": false,
       "require_v6": false,
       "notes": "失败则标记不可用，不改走日本",
@@ -634,8 +865,7 @@
       "overridden": false,
       "match_type": "suffix",
       "match_value": "kktv.me",
-      "target_pool": "tw",
-      "mode": "auto",
+      "target_group": "tw",
       "require_residential": false,
       "require_v6": false,
       "domains": [
@@ -651,8 +881,7 @@
       "overridden": false,
       "match_type": "suffix",
       "match_value": "linetv.tw",
-      "target_pool": "tw",
-      "mode": "auto",
+      "target_group": "tw",
       "require_residential": false,
       "require_v6": false,
       "domains": [
@@ -668,8 +897,7 @@
       "overridden": false,
       "match_type": "suffix",
       "match_value": "hamivideo.hinet.net",
-      "target_pool": "tw",
-      "mode": "auto",
+      "target_group": "tw",
       "require_residential": false,
       "require_v6": false,
       "domains": [
@@ -685,8 +913,7 @@
       "overridden": false,
       "match_type": "geosite",
       "match_value": "abema",
-      "target_pool": "jp",
-      "mode": "auto",
+      "target_group": "jp",
       "require_residential": false,
       "require_v6": false,
       "domains": [
@@ -703,14 +930,125 @@
       "overridden": false,
       "match_type": "domain",
       "match_value": "api.example.com",
-      "target_pool": "us",
-      "mode": "pin",
+      "target_group": "us-pin",
       "require_residential": false,
       "require_v6": false,
       "notes": "手动规则优先于自动表。example.com 是文档域名。",
       "domains": [
         "api.example.com"
       ]
+    }
+  ],
+  "region_groups": [
+    {
+      "id": "hk",
+      "name": "香港（机房）",
+      "region": "hk",
+      "members": [
+        "hk-ix",
+        "hk-2"
+      ],
+      "mode": "auto",
+      "exclude_residential": true,
+      "notes": "默认境外组。IX 绑定的 hk-ix 优先；家宽不进这个组。",
+      "migrated_from": "pool:hk#auto"
+    },
+    {
+      "id": "hk-residential",
+      "name": "香港（家宽）",
+      "region": "hk",
+      "members": [
+        "hk-resi",
+        "hk-resi-2"
+      ],
+      "mode": "auto",
+      "require_residential": true,
+      "migrated_from": "pool:hk-residential#auto-resi"
+    },
+    {
+      "id": "jp",
+      "name": "日本",
+      "region": "jp",
+      "members": [
+        "jp"
+      ],
+      "mode": "auto",
+      "migrated_from": "pool:jp#auto"
+    },
+    {
+      "id": "relay",
+      "name": "双栈中继",
+      "region": "hk",
+      "members": [
+        "ds-relay"
+      ],
+      "mode": "auto",
+      "migrated_from": "pool:relay#auto"
+    },
+    {
+      "id": "sg",
+      "name": "新加坡",
+      "region": "sg",
+      "members": [
+        "sg"
+      ],
+      "mode": "auto",
+      "migrated_from": "pool:sg#auto"
+    },
+    {
+      "id": "tw",
+      "name": "台湾",
+      "region": "tw",
+      "members": [
+        "tw"
+      ],
+      "mode": "auto",
+      "migrated_from": "pool:tw#auto"
+    },
+    {
+      "id": "us",
+      "name": "美国",
+      "region": "us",
+      "members": [
+        "us",
+        "us-2"
+      ],
+      "mode": "auto",
+      "migrated_from": "pool:us#auto"
+    },
+    {
+      "id": "us-pin",
+      "name": "美国（指定）",
+      "region": "us",
+      "members": [
+        "us",
+        "us-2"
+      ],
+      "mode": "manual",
+      "chosen": "us",
+      "on_failure": "fallback",
+      "notes": "旧的钉死规则：指定 us，链路故障时临时回落到 us-2。",
+      "migrated_from": "pool:us#pin"
+    },
+    {
+      "id": "v6",
+      "name": "美国（纯 IPv6）",
+      "region": "us",
+      "members": [
+        "v6-exit"
+      ],
+      "mode": "auto",
+      "migrated_from": "pool:v6#auto"
+    },
+    {
+      "id": "v6-nat",
+      "name": "美国（v6 入 v4 出）",
+      "region": "us",
+      "members": [
+        "v6-v4out"
+      ],
+      "mode": "auto",
+      "migrated_from": "pool:v6-nat#auto"
     }
   ]
 }

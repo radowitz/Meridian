@@ -45,6 +45,10 @@ const (
 	MatchASN     MatchType = "asn"
 )
 
+// RuleMode is the pre-region-group rule mode. It is legacy input only:
+// MigrateRegionGroups turns pin/auto into a group's mode and clears it. A
+// migrated rule never carries a mode (the group is the single source of
+// truth); validation rejects one that does.
 type RuleMode string
 
 const (
@@ -79,11 +83,13 @@ type Node struct {
 	// DualstackRelay is an IX-after hop with both address families. The hub
 	// reaches it with v4; a pure-v6 exit dials it with v6. It is not a way
 	// around the IX.
-	DualstackRelay bool   `json:"dualstack_relay,omitempty"`
-	Pool           string `json:"pool,omitempty"`
-	// PoolPriority breaks ties inside a pool. IX-bound members still win.
-	// Lower numbers are tried first. Zero is the default.
-	PoolPriority int `json:"pool_priority,omitempty"`
+	DualstackRelay bool `json:"dualstack_relay,omitempty"`
+	// Pool and PoolPriority are legacy input only. Membership and order live
+	// in Topology.Groups; MigrateRegionGroups adds the node to the groups
+	// migrated from this pool (IX-bound first, then lower PoolPriority,
+	// then ID) and clears both fields.
+	Pool         string `json:"pool,omitempty"`
+	PoolPriority int    `json:"pool_priority,omitempty"`
 
 	// PublicKey is safe to store. PrivateKey is generated on apply and
 	// redacted by the API. Leave both empty in git.
@@ -99,6 +105,15 @@ type Node struct {
 	EndpointV6 string `json:"endpoint_v6,omitempty"`
 	ListenPort int    `json:"listen_port,omitempty"`
 
+	// ServerID names the managed server (internal/credentials) this node
+	// runs on: address, SSH login and pinned host key live there. The
+	// gateway is the local host and never has one; two nodes never share
+	// one. See docs/architecture.md「服务器、SSH 凭据与 Cloudflare 账户」.
+	ServerID string `json:"server_id,omitempty"`
+
+	// SSHHost, SSHPort and SSHUser are the pre-server SSH target. They are
+	// migrated into a Server (and cleared) when the panel starts or the
+	// topology is saved; a node with ServerID must leave them empty.
 	SSHHost string `json:"ssh_host,omitempty"`
 	SSHPort int    `json:"ssh_port,omitempty"`
 	SSHUser string `json:"ssh_user,omitempty"`
@@ -157,10 +172,18 @@ type Rule struct {
 	SourceIPv4 string `json:"source_ipv4,omitempty"`
 	SourceIPv6 string `json:"source_ipv6,omitempty"`
 
+	// TargetGroup or TargetExit, exactly one. TargetExit pins one exit
+	// (its own mark; never moved by health or unlock results). TargetGroup
+	// follows the group's mode, choice and failover.
+	TargetGroup string `json:"target_group,omitempty"`
+	TargetExit  string `json:"target_exit,omitempty"`
+	// TargetPool and Mode are legacy input only (see MigrateRegionGroups).
 	TargetPool string   `json:"target_pool,omitempty"`
-	TargetExit string   `json:"target_exit,omitempty"`
-	Mode       RuleMode `json:"mode"`
+	Mode       RuleMode `json:"mode,omitempty"`
 
+	// RequireResidential / RequireV6 are assertions about the target: a
+	// target group must carry the same constraint, a target exit must
+	// satisfy it. They are not a second place to configure the group.
 	RequireResidential bool   `json:"require_residential"`
 	RequireV6          bool   `json:"require_v6"`
 	Notes              string `json:"notes,omitempty"`
@@ -214,6 +237,16 @@ type Settings struct {
 	// RegioncheckImage is the OCI image for the exit unlock probe.
 	// Empty means lmc999/regioncheck:latest. It stays a separate container.
 	RegioncheckImage string `json:"regioncheck_image,omitempty"`
+
+	// ListSource is where geosite categories and the China IP lists are
+	// downloaded from: "domestic" (jsDelivr mirror), "overseas" (GitHub
+	// raw) or "automatic" (domestic, then overseas). Empty means automatic.
+	// The URLs are fixed in internal/lists; see docs/architecture.md「名单源」.
+	ListSource string `json:"list_source,omitempty"`
+
+	// DefaultGroup carries foreign traffic no rule matched (formerly the
+	// fixed "hk" pool). MigrateRegionGroups sets it to the hk auto group.
+	DefaultGroup string `json:"default_group,omitempty"`
 }
 
 // NAT64 is the placeholder for a future translator in front of a pure-v6
@@ -230,6 +263,93 @@ type Topology struct {
 	Nodes    []Node   `json:"nodes"`
 	Links    []Link   `json:"links"`
 	Rules    []Rule   `json:"rules"`
+	// Groups are the region groups exits are selected through. See
+	// groups.go and docs/architecture.md「地区组」.
+	Groups []RegionGroup `json:"region_groups,omitempty"`
+	// RemoteAccess is the road-warrior WireGuard entrance on the gateway
+	// (remote_access.go). Nil or disabled compiles to exactly what a
+	// topology without it compiles to.
+	RemoteAccess *RemoteAccess `json:"remote_access,omitempty"`
+}
+
+// Auth methods of a Server.
+const (
+	AuthPassword = "password"
+	AuthKey      = "key"
+)
+
+// Host key states of a Server.
+const (
+	// HostKeyUnknown: never contacted (or the record was cleared).
+	HostKeyUnknown = "unknown"
+	// HostKeyDiscovered: a fingerprint was seen and awaits explicit
+	// confirmation by the operator. Nothing is pinned yet.
+	HostKeyDiscovered = "discovered"
+	// HostKeyTrusted: the operator confirmed Fingerprint; every connection
+	// must present exactly this key.
+	HostKeyTrusted = "trusted"
+	// HostKeyMismatch: a pinned server presented another key. Connections
+	// are refused until the operator confirms the new key or clears the pin.
+	HostKeyMismatch = "mismatch"
+)
+
+// HostKey is the SSH host identity record of a Server. Fingerprints are
+// ssh.FingerprintSHA256 values ("SHA256:…"); none of this is secret.
+type HostKey struct {
+	State string `json:"state"`
+	// Fingerprint is the pinned key (trusted and mismatch states).
+	Fingerprint string `json:"fingerprint,omitempty"`
+	KeyType     string `json:"key_type,omitempty"`
+	PinnedAt    string `json:"pinned_at,omitempty"`
+	// Source says where the pin came from: "operator" or "mesh_journal"
+	// (imported from a Mesh deployment's pinned host during migration).
+	Source string `json:"source,omitempty"`
+	// Seen is the last fingerprint presented that is not pinned: the one
+	// awaiting confirmation (discovered) or the conflicting one (mismatch).
+	Seen        string `json:"seen_fingerprint,omitempty"`
+	SeenKeyType string `json:"seen_key_type,omitempty"`
+	SeenAt      string `json:"seen_at,omitempty"`
+}
+
+// Server is a managed remote host (relay, hub, exit…), independent of the
+// topology. It carries no secret: CredentialID refers to an SSH credential
+// whose material lives only in the restricted credential store.
+type Server struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Address      string   `json:"address"`
+	Port         int      `json:"port"`
+	User         string   `json:"user"`
+	Auth         string   `json:"auth"`
+	CredentialID string   `json:"credential_id,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	Notes        string   `json:"notes,omitempty"`
+	HostKey      HostKey  `json:"host_key"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
+	// MigratedFrom is "node:<id>" for a server created from a topology
+	// node's old ssh_* fields.
+	MigratedFrom string `json:"migrated_from,omitempty"`
+	// LastTest is the last "test connection" result. It is cleared when the
+	// endpoint, user, auth method or credential changes, or the credential
+	// is rotated: the old result no longer says anything about them.
+	LastTest *ConnectionTest `json:"last_test,omitempty"`
+}
+
+// ConnectionTest is the outcome of the fixed, read-only "test connection"
+// command on a trusted server. Error is scrubbed of every secret.
+type ConnectionTest struct {
+	At         string `json:"at"`
+	OK         bool   `json:"ok"`
+	AuthMethod string `json:"auth_method,omitempty"` // password | key
+	// Code classifies a failure: unreachable, timeout, auth_failed,
+	// host_key_mismatch, host_key_untrusted, command_failed.
+	Code       string `json:"code,omitempty"`
+	Error      string `json:"error,omitempty"`
+	OS         string `json:"os,omitempty"`
+	Kernel     string `json:"kernel,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
 }
 
 func (t Topology) NodeByID(id string) (Node, bool) {
@@ -239,6 +359,15 @@ func (t Topology) NodeByID(id string) (Node, bool) {
 		}
 	}
 	return Node{}, false
+}
+
+func (t Topology) GroupByID(id string) (RegionGroup, bool) {
+	for _, g := range t.Groups {
+		if g.ID == id {
+			return g, true
+		}
+	}
+	return RegionGroup{}, false
 }
 
 func (t Topology) LinkByID(id string) (Link, bool) {

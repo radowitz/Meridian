@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/hostexec"
 )
 
@@ -67,6 +68,9 @@ type Manifest struct {
 	RouteTables []int         `json:"route_tables"`
 	Sidecars    []string      `json:"sidecars"`
 	DNS         bool          `json:"dns"`
+	// Origin is "legacy" for a manifest built by adopting a host installed
+	// by a version without manifests (see adoptLegacy); empty otherwise.
+	Origin string `json:"origin,omitempty"`
 }
 
 // Empty is the state "nothing of Meridian is installed".
@@ -618,18 +622,18 @@ func (t *txn) abort(op string, cause error) error {
 	t.j.Phase = phaseCompensate
 	t.j.Attempt++
 	if t.j.Error == "" {
-		t.j.Error = redactErr(cause, a.PrivateKey).Error()
+		t.j.Error = a.redactErr(cause).Error()
 	}
 	if err := a.saveJournal(t.j); err != nil {
 		return &TxnError{Op: op, Err: cause, CompErr: err, Report: t.rep}
 	}
 	if err := t.compensate(); err != nil {
-		t.j.Error = redactErr(cause, a.PrivateKey).Error() + "；补偿失败：" + redactErr(err, a.PrivateKey).Error()
+		t.j.Error = a.redactErr(cause).Error() + "；补偿失败：" + a.redactErr(err).Error()
 		_ = a.saveJournal(t.j)
-		return &TxnError{Op: op, Err: redactErr(cause, a.PrivateKey), CompErr: redactErr(err, a.PrivateKey), Report: t.rep}
+		return &TxnError{Op: op, Err: a.redactErr(cause), CompErr: a.redactErr(err), Report: t.rep}
 	}
 	t.rep.Compensated = true
-	return &TxnError{Op: op, Err: redactErr(cause, a.PrivateKey), Compensated: true, Report: t.rep}
+	return &TxnError{Op: op, Err: a.redactErr(cause), Compensated: true, Report: t.rep}
 }
 
 func (t *txn) compensate() error {
@@ -797,4 +801,202 @@ func syncDir(dir string) error {
 	defer d.Close()
 	_ = d.Sync() // best effort; not all filesystems support it
 	return nil
+}
+
+// ErrLegacyInstall means the host runs a Meridian data plane installed by a
+// version without manifests, and it cannot be adopted reliably. Nothing on
+// the host, in the snapshots or in the data directory was changed.
+var ErrLegacyInstall = errors.New("宿主上有旧版 Meridian 数据面（没有受管清单），无法可靠接管；已停止，宿主、快照和数据目录都没有改动")
+
+var (
+	privateKeyLine = regexp.MustCompile(`(?m)^[ \t]*PrivateKey[ \t]*=[ \t]*(\S+)[ \t]*$`)
+	bootForwarding = regexp.MustCompile(`(?m)^([ \t]*net\.(?:ipv4\.ip_forward|ipv6\.conf\.all\.forwarding)[ \t]*=[ \t]*)0([ \t]*)$`)
+)
+
+func (a Applier) forwardingOn() bool {
+	f := a.Forwarding
+	if f == nil {
+		if filepath.Clean(a.hostRoot()) != "/" {
+			return false
+		}
+		f = hostexec.ProcForwarding
+	}
+	on, err := f()
+	return err == nil && on
+}
+
+// legacyCandidates lists host paths an older version may have installed:
+// the gateway files of the old snapshots, the files about to be written,
+// and Meridian-named files found on the host.
+func (a Applier) legacyCandidates(to map[string]string) []string {
+	set := map[string]bool{}
+	for p := range to {
+		set[p] = true
+	}
+	for _, snap := range []string{"applied", "previous"} {
+		if files, err := readNodeFiles(filepath.Join(a.data(), snap), a.localID()); err == nil {
+			for p := range files {
+				set[p] = true
+			}
+		}
+	}
+	root := a.hostRoot()
+	scan := func(dir string, keep func(string) bool) {
+		entries, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(dir)))
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if keep(e.Name()) {
+				set[dir+"/"+e.Name()] = true
+			}
+		}
+	}
+	scan("etc/wireguard", func(n string) bool {
+		return strings.HasSuffix(n, ".conf") && hostexec.ValidInterface(strings.TrimSuffix(n, ".conf"))
+	})
+	scan("usr/local/sbin", func(n string) bool { return strings.HasPrefix(n, "meridian-") })
+	scan("etc/nftables.d", func(n string) bool { return strings.HasPrefix(n, "meridian") && strings.HasSuffix(n, ".nft") })
+	scan("etc/systemd/system", hostexec.ValidUnit)
+	for _, p := range []string{"etc/iproute2/rt_tables.d/meridian.conf", "etc/sysctl.d/99-meridian.conf", "etc/meridian/forwarding.conf"} {
+		set[p] = true
+	}
+	out := make([]string, 0, len(set))
+	for p := range set {
+		if allowed(p) && !strings.Contains(p, "..") {
+			out = append(out, p)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// adoptLegacy runs inside the transaction lock, before anything changes,
+// when the host has no installed manifest. If an older version's data plane
+// is on the host (meridian-up.sh exists), it records what is actually there
+// as the installed manifest (origin "legacy") with a restore copy, so a
+// failed first install compensates back to the old, running data plane.
+// It refuses, changing nothing, when that cannot be done reliably: a
+// WireGuard config whose private key is not the gateway key the panel
+// holds, a file that is not a regular file or names a resource the host
+// agent would not accept, old resources the new configuration would have
+// to remove, or an old data plane that is not healthy. to are the node
+// files the transaction will install. The returned notes go into the
+// transaction report.
+func (a Applier) adoptLegacy(rt Runtime, to map[string]string) ([]string, error) {
+	inst, err := a.Installed()
+	if err != nil || !inst.Empty() {
+		return nil, err
+	}
+	root := a.hostRoot()
+	if fi, err := os.Stat(filepath.Join(root, "usr", "local", "sbin", "meridian-up.sh")); err != nil || !fi.Mode().IsRegular() {
+		return nil, nil
+	}
+	refuse := func(format string, args ...any) error {
+		return fmt.Errorf("%w：%s", ErrLegacyInstall, fmt.Sprintf(format, args...))
+	}
+	files := map[string]string{}
+	var found []string
+	for _, rel := range a.legacyCandidates(to) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		fi, err := os.Lstat(p)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, refuse("读取 /%s 失败：%v", rel, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return nil, refuse("/%s 不是普通文件", rel)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, refuse("读取 /%s 失败：%v", rel, err)
+		}
+		files[rel] = string(b)
+		found = append(found, "/"+rel)
+	}
+	// The restore copy never holds a private key: it must be the gateway
+	// key, which the install boundary injects again (byte-identical).
+	for rel, body := range files {
+		if !isWireGuardConf(rel) {
+			continue
+		}
+		m := privateKeyLine.FindAllStringSubmatch(body, -1)
+		switch {
+		case len(m) != 1:
+			return nil, refuse("/%s 没有唯一的 PrivateKey 行", rel)
+		case a.PrivateKey == "" || m[0][1] != a.PrivateKey:
+			return nil, refuse("/%s 的私钥不是面板保存的网关私钥（或仍是占位符）；面板不能另存这把私钥，也就不能保证恢复。"+
+				"把旧版的私钥填进网关节点，或在宿主上停用旧版后再安装", rel)
+		}
+		files[rel] = strings.ReplaceAll(body, a.PrivateKey, compile.PrivateKeyPlaceholder)
+	}
+	var notes []string
+	// The old meridian-up.sh applies 99-meridian.conf, forwarding included.
+	// install.sh's upgrade rewrites its boot-time forwarding lines to 0:
+	// restarting the old version from that file would leave forwarding off.
+	if _, newer := files["etc/meridian/forwarding.conf"]; !newer {
+		if body, ok := files["etc/sysctl.d/99-meridian.conf"]; ok && bootForwarding.MatchString(body) && a.forwardingOn() {
+			files["etc/sysctl.d/99-meridian.conf"] = bootForwarding.ReplaceAllString(body, "${1}1${2}")
+			notes = append(notes, "旧版恢复副本里 99-meridian.conf 的转发行记为 1：接管时双栈转发是打开的，旧版启动脚本按这个文件设置转发")
+		}
+	}
+	m, err := DeriveManifest(a.localID(), files, a.nextVersion(), "")
+	if err != nil {
+		return nil, refuse("%v", err)
+	}
+	m.Origin = "legacy"
+	m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	if len(m.Sidecars) > 0 {
+		return nil, refuse("旧版在网关上留有 Mesh sidecar 配置")
+	}
+	target, err := DeriveManifest(a.localID(), to, 0, "")
+	if err != nil {
+		return nil, err
+	}
+	if extra := append(minus(m.Units, target.Units), minus(m.Interfaces, target.Interfaces)...); len(extra) > 0 {
+		return nil, refuse("旧版运行着新配置不再包含的 %s；宿主 agent 只移除自己激活过的资源。先保留它们完成这次安装，下一次安装再删除",
+			strings.Join(extra, "、"))
+	}
+	if rt != nil {
+		r := m.resources()
+		r.DNS = m.DNS
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		res, err := rt.Do(ctx, hostexec.Request{Action: hostexec.ActionHealth, RequestID: "adopt-" + randID(), Resources: r})
+		cancel()
+		if err != nil || !res.OK {
+			var failed []string
+			for _, st := range res.Steps {
+				if !st.OK && !st.Skipped {
+					failed = append(failed, st.Name)
+				}
+			}
+			if err != nil && len(failed) == 0 {
+				failed = append(failed, err.Error())
+			}
+			return nil, refuse("旧版数据面不健康（%s），没有可恢复的运行状态。修好旧版或在宿主上停用它后再安装；发现的旧版文件：%s",
+				strings.Join(failed, "；"), strings.Join(found, " "))
+		}
+	}
+	// Write the restore copy beside installed/ and rename it into place:
+	// a crash leaves either no manifest (adoption runs again) or a whole one.
+	tmp := filepath.Join(a.hostDir(), "adopt-"+randID())
+	if err := writeInstalledCopy(tmp, a.localID(), files, m); err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, err
+	}
+	if err := os.RemoveAll(a.installedDir()); err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, err
+	}
+	if err := os.Rename(tmp, a.installedDir()); err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, err
+	}
+	if err := syncDir(a.hostDir()); err != nil {
+		return nil, err
+	}
+	notes = append([]string{fmt.Sprintf("已接管旧版安装（清单版本 %d，%d 个文件）：失败时补偿恢复到旧版并重新激活", m.Version, len(m.Files))}, notes...)
+	return notes, nil
 }

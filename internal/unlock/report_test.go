@@ -219,3 +219,70 @@ func TestInconclusiveNeverDemotesButBreaksRecovery(t *testing.T) {
 		t.Fatalf("history must say inconclusive: %+v", snap.History)
 	}
 }
+
+// N4: a reachability-only or unknown probe result reaches Ingest as
+// KindInconclusive. However many arrive, on the preferred or on the backup,
+// they never demote, never restore and never count as a recovery success.
+func TestInconclusiveCanNeitherDemoteNorRestore(t *testing.T) {
+	now := at(0)
+	inc := func(exit string, d time.Duration) Observation {
+		return Observation{Service: "auto-openai", ExitID: exit, Kind: KindInconclusive, ObservedAt: now.Add(d),
+			Results: map[Family]bool{FamilyIPv4: false, FamilyIPv6: false}}
+	}
+	// Not demoted: a run of inconclusive results on the preferred.
+	snap := Snapshot{}
+	for i := 0; i < 6; i++ {
+		d := time.Duration(i) * 20 * time.Minute
+		Ingest(&snap, inc("us", d), members(), "", now.Add(d+time.Minute))
+		Ingest(&snap, inc("us-2", d), members(), "", now.Add(d+time.Minute))
+	}
+	if st := snap.Services["auto-openai"]; st.Demoted || st.SchedFails != 0 || st.Active != "us" || st.Unavailable {
+		t.Fatalf("inconclusive results moved the rule: %+v", st)
+	}
+	if d := Decisions(snap, []Service{{RuleID: "auto-openai", Pool: "us", Preferred: "us", Members: members()}}); len(d) != 0 {
+		t.Fatalf("inconclusive results produced a decision: %v", d)
+	}
+
+	// Demoted: inconclusive results on the preferred for two hours never
+	// start the recovery streak, and the backup stays.
+	snap = demotedSnap()
+	for i := 0; i < 8; i++ {
+		d := time.Duration(i) * 15 * time.Minute
+		Ingest(&snap, inc("us", d), members(), "", now.Add(d+time.Minute))
+	}
+	st := snap.Services["auto-openai"]
+	if !st.Demoted || st.Active != "us-2" || !st.PreferredOKAt.IsZero() || st.Known["us"] || st.CanReturn(now.Add(3*time.Hour)) {
+		t.Fatalf("inconclusive results restored or started recovery: %+v", st)
+	}
+	// Inconclusive on the backup does not move the rule elsewhere either.
+	Ingest(&snap, inc("us-2", 3*time.Hour), members(), "", now.Add(3*time.Hour+time.Minute))
+	if st := snap.Services["auto-openai"]; st.Active != "us-2" || !st.Demoted {
+		t.Fatalf("inconclusive on the backup moved the rule: %+v", st)
+	}
+}
+
+// Stale and wrong-exit results are refused before they can step the state.
+func TestStaleAndWrongExitResultsRejected(t *testing.T) {
+	snap := demotedSnap()
+	now := at(0)
+	before := snap.Services["auto-openai"]
+	out := Ingest(&snap, Observation{Service: "auto-openai", ExitID: "us", Kind: KindManual, ObservedAt: now.Add(-2 * time.Hour),
+		Results: map[Family]bool{FamilyIPv4: true}}, members(), "", now)
+	if len(out) != 1 || out[0].Accepted || out[0].Rejected != RejectStale {
+		t.Fatalf("stale success admitted: %+v", out)
+	}
+	// An exit that is not a member of the group (the panel passes a note
+	// for it) is recorded only.
+	out = Ingest(&snap, Observation{Service: "auto-openai", ExitID: "jp", Kind: KindScheduled, ObservedAt: now,
+		Results: map[Family]bool{FamilyIPv4: true}}, members(), "出口不在该服务的池里", now)
+	if len(out) != 1 || out[0].Accepted || out[0].Note == "" {
+		t.Fatalf("wrong-exit result admitted: %+v", out)
+	}
+	// Even without the note, Advance ignores an exit outside the members.
+	Ingest(&snap, Observation{Service: "auto-openai", ExitID: "jp", Kind: KindScheduled, ObservedAt: now.Add(time.Minute),
+		Results: map[Family]bool{FamilyIPv4: true}}, members(), "", now.Add(time.Minute))
+	after := snap.Services["auto-openai"]
+	if after.Active != before.Active || after.Demoted != before.Demoted || after.Known["jp"] || !after.PreferredOKAt.IsZero() {
+		t.Fatalf("wrong-exit result changed the state: %+v", after)
+	}
+}

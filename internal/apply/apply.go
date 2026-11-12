@@ -57,6 +57,12 @@ type Applier struct {
 	// An install whose WireGuard files still need a key fails before any host
 	// file is written when this is empty or malformed.
 	PrivateKey string
+	// Secrets are the credential-store WireGuard secrets (remote-access
+	// private key, pre-shared keys) by id. Like PrivateKey they are injected
+	// only while writing etc/wireguard/ files to the host; every other copy
+	// keeps the __MERIDIAN_SECRET_<id>__ placeholder. A placeholder whose id
+	// is missing fails before any host file is written.
+	Secrets map[string]string
 	// HostRoot is where installs write. Empty means "/". Tests use a temp dir.
 	HostRoot string
 	// Host is the host execution boundary (hostexec.Client). An install to
@@ -66,6 +72,10 @@ type Applier struct {
 	// Activate is a test shim: when Host is nil, a Runtime whose activate
 	// calls this function (health and removal succeed).
 	Activate func() error
+	// Forwarding reports whether IPv4 and IPv6 forwarding are both on (used
+	// when adopting a legacy install). Nil: /proc on the real root, "off"
+	// for a test HostRoot.
+	Forwarding func() (bool, error)
 }
 
 func (a Applier) hostRoot() string {
@@ -130,6 +140,19 @@ func (a Applier) Diff(next string) (string, error) {
 	return Unified(string(prev), next), nil
 }
 
+// AppliedCanonical returns the canonical text of the last applied snapshot
+// ("", false when nothing was applied yet). Read-only.
+func (a Applier) AppliedCanonical() (string, bool, error) {
+	b, err := os.ReadFile(filepath.Join(a.data(), "applied", "canonical.txt"))
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return string(b), true, nil
+}
+
 // begin takes the transaction lock and refuses to start while an earlier
 // transaction is unfinished. The returned func releases the lock.
 func (a Applier) begin() (func(), error) {
@@ -190,8 +213,14 @@ func (a Applier) Apply(b *compile.Bundle, dryRun bool) (Result, error) {
 		return Result{}, err
 	}
 	defer unlock()
+	var notes []string
 	if a.Install {
 		if err := a.probe(rt); err != nil {
+			return Result{}, err
+		}
+		// A host installed by a version without manifests is adopted (or
+		// refused) before anything is written.
+		if notes, err = a.adoptLegacy(rt, local); err != nil {
 			return Result{}, err
 		}
 	}
@@ -246,6 +275,7 @@ func (a Applier) Apply(b *compile.Bundle, dryRun bool) (Result, error) {
 	sort.Strings(wrote)
 	res.Wrote = wrote
 	t := &txn{a: a, j: j, toFiles: local, rt: rt, rep: a.newReport(j)}
+	t.rep.Warnings = append(t.rep.Warnings, notes...)
 	if err := t.execute("安装"); err != nil {
 		return Result{}, err
 	}
@@ -297,6 +327,12 @@ func (a Applier) RollbackReport() (*HostReport, error) {
 			return nil, err
 		}
 		if err := a.probe(rt); err != nil {
+			return nil, err
+		}
+		if _, err := a.adoptLegacy(rt, files); err != nil {
+			return nil, err
+		}
+		if from, err = a.Installed(); err != nil {
 			return nil, err
 		}
 	}
@@ -393,6 +429,9 @@ func (a Applier) prepareHost(files map[string]string) ([]hostFile, error) {
 		}
 		body, err := InjectPrivateKey(rel, files[rel], a.PrivateKey)
 		if err != nil {
+			return nil, err
+		}
+		if body, err = InjectSecrets(rel, body, a.Secrets); err != nil {
 			return nil, err
 		}
 		out = append(out, hostFile{rel: rel, body: []byte(body), mode: hostMode(rel)})
