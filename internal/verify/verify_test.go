@@ -72,3 +72,83 @@ func TestSysctlSnapshot(t *testing.T) {
 		t.Fatal("strict rp_filter was accepted")
 	}
 }
+
+// The panel never runs integration tests, real clients, ROS queries or
+// captures, so none of those items may say "pass": they are unknown or
+// pending human sign-off. Automated items only read generated text.
+func TestChecklistDoesNotClaimUnexecutedEvidence(t *testing.T) {
+	b, err := compile.Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := CheckBundle(defaults.Example(), b.Files)
+	seen := map[string]Item{}
+	for _, it := range items {
+		seen[it.ID] = it
+		switch it.Scope {
+		case ScopeAutomated:
+			if it.Status == Unknown || it.Status == PendingSignoff {
+				t.Errorf("%s: automated item with status %s", it.ID, it.Status)
+			}
+		case ScopeIntegration:
+			if it.Status != Unknown {
+				t.Errorf("%s: integration evidence the panel did not run is %s, want unknown", it.ID, it.Status)
+			}
+		case ScopeHuman:
+			if it.Status != PendingSignoff {
+				t.Errorf("%s: human item is %s, want pending_signoff", it.ID, it.Status)
+			}
+		case ScopeLimitation:
+			if it.Status != KnownLimitation {
+				t.Errorf("%s: %s", it.ID, it.Status)
+			}
+		default:
+			t.Errorf("%s has no evidence scope", it.ID)
+		}
+		if strings.Contains(it.Detail, "不泄漏") && !strings.Contains(it.Detail, "不是") {
+			t.Errorf("%s claims no leak: %s", it.ID, it.Detail)
+		}
+	}
+	for id, scope := range map[string]string{
+		"dnsleak_client": ScopeHuman, "webrtc_srflx": ScopeHuman, "ros_ula_blackhole": ScopeHuman,
+		"tunnel_cut": ScopeHuman, "redirect_on_wire": ScopeHuman,
+		"netns_reload_no_leak": ScopeIntegration, "gateway_verify_script": ScopeIntegration,
+	} {
+		if it, ok := seen[id]; !ok || it.Scope != scope {
+			t.Errorf("%s missing or in the wrong scope: %+v", id, it)
+		}
+	}
+}
+
+// Mesh: the generated next-hops are an automated pass at most; the
+// forwarding evidence is integration (unknown) and human (pending), never pass.
+func TestMeshItemsNeverClaimForwarding(t *testing.T) {
+	b, err := compile.Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Item{}
+	for _, it := range CheckBundle(defaults.Example(), b.Files) {
+		got[it.ID] = it
+	}
+	if it := got["mesh_nexthop"]; it.Status != Pass || it.Scope != ScopeAutomated {
+		t.Fatalf("mesh_nexthop %+v", it)
+	}
+	if it := got["mesh_veth_forwarding"]; it.Status != Unknown || it.Scope != ScopeIntegration {
+		t.Fatalf("mesh_veth_forwarding %+v", it)
+	}
+	if it := got["mesh_e2e_forwarding"]; it.Status != PendingSignoff || it.Scope != ScopeHuman {
+		t.Fatalf("mesh_e2e_forwarding %+v", it)
+	}
+	files := map[string]string{}
+	for k, v := range b.Files {
+		files[k] = v
+	}
+	p := "nodes/hk-hub/usr/local/sbin/meridian-routes.sh"
+	files[p] = strings.ReplaceAll(files[p], "default via 169.254.66.2 dev mmesh", "default dev mmesh")
+	for _, it := range CheckBundle(defaults.Example(), files) {
+		if it.ID == "mesh_nexthop" && it.Status != Fail {
+			t.Fatalf("default dev mmesh not flagged: %+v", it)
+		}
+	}
+}

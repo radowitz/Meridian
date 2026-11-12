@@ -62,6 +62,8 @@ export interface Link {
   to_v4?: string;
   from_ula?: string;
   to_ula?: string;
+  /** cf_mesh only: CIDRs the exit end's Cloudflare Mesh node advertises. */
+  mesh_routes?: string[];
 }
 
 export interface Rule {

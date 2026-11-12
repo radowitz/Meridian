@@ -5,9 +5,26 @@
 // Kong residential, Taiwan-only services stay on TW. A pinned manual rule is
 // not in this map. Two consecutive scheduled failures are required before a
 // move; a manual click or a single health-change probe does not count.
-// Returning to the preferred member waits until that member succeeds again
-// and 30 minutes have passed since both the backup and the preferred succeeded,
-// so a still-failing preferred is not put back just because the backup works.
+//
+// Returning to the preferred member (canReturn) requires all of:
+//
+//   - the rule is demoted;
+//   - the latest result the panel holds for the preferred member is a success
+//     (any failure of the preferred, of any kind, clears PreferredOKAt at once,
+//     so the recovery streak starts again from the next success);
+//   - that latest preferred result was received within ResultFreshFor of the
+//     decision (an old success cannot trigger a return);
+//   - the preferred has been continuously successful for ReturnCooldown,
+//     measured on the panel's own clock from the first success after its last
+//     failure (PreferredOKAt). A report's own timestamp cannot shorten it.
+//
+// The backup's health is not part of the return condition: a working backup
+// is no reason to go back, and a failing backup is handled by its own
+// two-failure rule.
+//
+// Which reports may change state at all is decided by Ingest (report.go):
+// ordering, validity window and duplicate handling per service, exit and
+// address family.
 package unlock
 
 import (
@@ -22,7 +39,11 @@ const (
 	DefaultInterval = 6 * time.Hour
 	SchedFailsNeed  = 2
 	ReturnCooldown  = 30 * time.Minute
-	maxHistory      = 200
+	// ResultFreshFor bounds how long ago (panel receive time) the preferred
+	// member's latest result may have arrived and still count as "currently
+	// healthy" for a return.
+	ResultFreshFor = 30 * time.Minute
+	maxHistory     = 200
 )
 
 type Kind string
@@ -31,6 +52,15 @@ const (
 	KindScheduled Kind = "scheduled"
 	KindManual    Kind = "manual"
 	KindHealth    Kind = "health"
+	// KindInconclusive is a panel-run probe that produced no platform verdict
+	// for any family of a service on an exit: egress could not be confirmed,
+	// the transport failed or timed out, or the response was not
+	// recognisable. It never counts toward the two scheduled failures (it is
+	// not scheduled), but as a non-success it ends the preferred member's
+	// recovery streak and stops the exit from being picked as a known-good
+	// backup. Only the panel's own probe job produces it; /api/unlock/report
+	// does not accept it.
+	KindInconclusive Kind = "inconclusive"
 )
 
 // State is one automatic rule's unlock decision.
@@ -44,24 +74,38 @@ type State struct {
 	// ActiveFails counts scheduled failures of the member currently carrying
 	// the service, once it is no longer the preferred member. Two are
 	// required before trying another member of the same pool.
-	ActiveFails   int             `json:"active_fails,omitempty"`
-	Known         map[string]bool `json:"known,omitempty"`
-	BackupOKAt    time.Time       `json:"backup_ok_at,omitempty"`
-	PreferredOKAt time.Time       `json:"preferred_ok_at,omitempty"`
+	ActiveFails int             `json:"active_fails,omitempty"`
+	Known       map[string]bool `json:"known,omitempty"`
+	// BackupOKAt is informational: when the current backup was last proven.
+	// It is not part of the return condition.
+	BackupOKAt time.Time `json:"backup_ok_at,omitempty"`
+	// PreferredOKAt is the start of the preferred member's current unbroken
+	// success streak while demoted (panel clock). Zero after any failure.
+	PreferredOKAt time.Time `json:"preferred_ok_at,omitempty"`
+	// PreferredSeenAt is when the panel received the preferred member's
+	// latest result, success or failure.
+	PreferredSeenAt time.Time `json:"preferred_seen_at,omitempty"`
 }
 
-// Event is one probe of one exit for one service.
+// Event is one probe verdict of one exit for one service, after Ingest has
+// admitted it. At is the panel receive time and drives cooldown and
+// freshness; ObservedAt (when the probe ran) is only used for ordering.
 type Event struct {
-	Service string
-	ExitID  string
-	OK      bool
-	Kind    Kind
-	At      time.Time
+	Service    string
+	ExitID     string
+	Family     Family
+	OK         bool
+	Kind       Kind
+	At         time.Time
+	ObservedAt time.Time
 }
 
 // Advance applies one probe. members is the pool in preference order.
 // An exit outside members is ignored: that is how a US probe cannot move
 // a Netflix rule, and how a Japan exit cannot become the Taiwan path.
+//
+// Advance does not check ordering or staleness; callers that take reports
+// from the network must go through Ingest.
 func Advance(s State, ev Event, members []string) State {
 	if s.Known == nil {
 		s.Known = map[string]bool{}
@@ -76,6 +120,14 @@ func Advance(s State, ev Event, members []string) State {
 		return s
 	}
 	s.Known[ev.ExitID] = ev.OK
+	if ev.ExitID == s.Preferred {
+		s.PreferredSeenAt = ev.At
+		if !ev.OK {
+			// Any failure of the preferred, scheduled or not, breaks the
+			// recovery streak. Only a later success can start it again.
+			s.PreferredOKAt = time.Time{}
+		}
+	}
 	if ev.Kind == KindScheduled && ev.ExitID == s.Preferred {
 		if ev.OK {
 			s.SchedFails = 0
@@ -87,7 +139,7 @@ func Advance(s State, ev Event, members []string) State {
 	if ev.OK && ev.ExitID == s.Preferred && s.Demoted && s.PreferredOKAt.IsZero() {
 		s.PreferredOKAt = ev.At
 	}
-	if ev.OK && s.Demoted && ev.ExitID == s.Active && ev.ExitID != s.Preferred && s.BackupOKAt.IsZero() {
+	if ev.OK && s.Demoted && ev.ExitID == s.Active && ev.ExitID != s.Preferred {
 		s.BackupOKAt = ev.At
 	}
 	if !s.Demoted && s.SchedFails >= SchedFailsNeed {
@@ -98,8 +150,6 @@ func Advance(s State, ev Event, members []string) State {
 			s.Unavailable = false
 			s.BackupOKAt = time.Time{}
 			s.PreferredOKAt = time.Time{}
-			// A member already proven is the one success that starts the
-			// return cooldown. An unproven member waits for its own probe.
 			if good, seen := s.Known[alt]; seen && good {
 				s.BackupOKAt = ev.At
 			}
@@ -137,7 +187,7 @@ func Advance(s State, ev Event, members []string) State {
 			}
 		}
 	}
-	if s.Demoted && s.canReturn(ev.At) {
+	if s.Demoted && s.CanReturn(ev.At) {
 		s.Active = s.Preferred
 		s.Demoted = false
 		s.Unavailable = false
@@ -148,15 +198,25 @@ func Advance(s State, ev Event, members []string) State {
 	return s
 }
 
-func (s State) canReturn(now time.Time) bool {
-	if !s.Demoted || s.BackupOKAt.IsZero() || s.PreferredOKAt.IsZero() {
+// CanReturn reports whether a demoted rule may go back to its preferred
+// member at now (panel clock). See the package comment for the rule.
+func (s State) CanReturn(now time.Time) bool {
+	if !s.Demoted || s.Preferred == "" {
 		return false
 	}
-	start := s.BackupOKAt
-	if s.PreferredOKAt.After(start) {
-		start = s.PreferredOKAt
+	if ok, seen := s.Known[s.Preferred]; !seen || !ok {
+		return false
 	}
-	return !now.Before(start.Add(ReturnCooldown))
+	if s.PreferredOKAt.IsZero() || s.PreferredSeenAt.IsZero() {
+		return false
+	}
+	if now.Before(s.PreferredSeenAt) || now.Sub(s.PreferredSeenAt) > ResultFreshFor {
+		return false
+	}
+	if s.PreferredSeenAt.Before(s.PreferredOKAt) {
+		return false
+	}
+	return !now.Before(s.PreferredOKAt.Add(ReturnCooldown))
 }
 
 func pickBackup(s State, members []string) string {
@@ -208,12 +268,17 @@ type Service struct {
 
 // HistoryEntry is one stored probe line.
 type HistoryEntry struct {
-	At      time.Time `json:"at"`
-	Kind    Kind      `json:"kind"`
-	Service string    `json:"service"`
-	ExitID  string    `json:"exit_id"`
-	OK      bool      `json:"ok"`
-	Note    string    `json:"note,omitempty"`
+	At         time.Time `json:"at"`
+	ObservedAt time.Time `json:"observed_at,omitempty"`
+	Kind       Kind      `json:"kind"`
+	Service    string    `json:"service"`
+	ExitID     string    `json:"exit_id"`
+	Family     Family    `json:"family,omitempty"`
+	OK         bool      `json:"ok"`
+	// Rejected is set when Ingest refused the result (stale, out of order,
+	// duplicate, future). A rejected result never changes State.
+	Rejected string `json:"rejected,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
 
 // Snapshot is the document stored under the unlock kv key.
@@ -224,6 +289,14 @@ type Snapshot struct {
 	// PendingApply is set when an automatic rule's exit changed and the
 	// rendered routes have not been installed yet.
 	PendingApply bool `json:"pending_apply"`
+	// Latest is the newest admitted result per ResultKey.String().
+	Latest map[string]ResultRecord `json:"latest,omitempty"`
+	// Applied is the newest probe run that stepped the state machine, per
+	// "service|exit", across families.
+	Applied map[string]ResultRecord `json:"applied,omitempty"`
+	// Clock is the last receive time handed out by Stamp. It only moves
+	// forward, so two reports never share a receive time.
+	Clock time.Time `json:"clock,omitempty"`
 }
 
 // Interval returns the configured period, or 6 hours when unset.
@@ -257,8 +330,10 @@ func Decisions(snap Snapshot, services []Service) map[string]string {
 	return out
 }
 
-// Apply merges one event into the snapshot. wrongPool notes a probe that
-// must not move this service (the exit is not in the service's pool).
+// Apply merges one already-admitted event into the snapshot. A non-empty
+// note records the probe without moving the service (pinned rule, or the
+// exit is not in the service's pool). Network reports go through Ingest,
+// which calls Apply only for admitted results.
 func Apply(snap *Snapshot, ev Event, members []string, note string) {
 	if snap.Services == nil {
 		snap.Services = map[string]State{}
@@ -272,9 +347,14 @@ func Apply(snap *Snapshot, ev Event, members []string, note string) {
 	if prev.Active != next.Active && next.Active != "" {
 		snap.PendingApply = true
 	}
-	snap.History = append(snap.History, HistoryEntry{
-		At: ev.At, Kind: ev.Kind, Service: ev.Service, ExitID: ev.ExitID, OK: ev.OK, Note: note,
+	snap.addHistory(HistoryEntry{
+		At: ev.At, ObservedAt: ev.ObservedAt, Kind: ev.Kind, Service: ev.Service,
+		ExitID: ev.ExitID, Family: ev.Family, OK: ev.OK, Note: note,
 	})
+}
+
+func (snap *Snapshot) addHistory(h HistoryEntry) {
+	snap.History = append(snap.History, h)
 	if len(snap.History) > maxHistory {
 		snap.History = snap.History[len(snap.History)-maxHistory:]
 	}
@@ -358,6 +438,9 @@ func RegionsMatch(exitRegion, reported string) bool {
 	}
 	return normRegion(exitRegion) == normRegion(reported)
 }
+
+// NormRegion folds region spellings (HK, hongkong, Hong Kong) to one code.
+func NormRegion(s string) string { return normRegion(s) }
 
 func normRegion(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))

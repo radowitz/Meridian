@@ -1,14 +1,11 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,8 +15,6 @@ import (
 	"github.com/radowitz/meridian/internal/unlock"
 	"github.com/radowitz/meridian/internal/verify"
 )
-
-var errUnlockExecUnset = errors.New("unset")
 
 const (
 	unlockKey = "unlock"
@@ -256,12 +251,19 @@ func (s *Server) getUnlock(w http.ResponseWriter, r *http.Request) {
 }
 
 type reportBody struct {
-	ExitID   string          `json:"exit_id"`
-	Kind     string          `json:"kind"`
-	At       string          `json:"at,omitempty"`
+	ExitID string `json:"exit_id"`
+	Kind   string `json:"kind"`
+	// At is when the probe ran (RFC3339). It only orders results and bounds
+	// their age (unlock.MaxReportAge); cooldowns use the panel clock.
+	At string `json:"at,omitempty"`
+	// Family applies to Services, Raw and AI: "", any, ipv4 or ipv6.
+	Family   string          `json:"family,omitempty"`
 	Services map[string]bool `json:"services,omitempty"`
 	Raw      string          `json:"raw,omitempty"`
-	AI       string          `json:"ai,omitempty"`
+	// Raw4 / Raw6 are regioncheck output of the -M 4 / -M 6 runs.
+	Raw4 string `json:"raw4,omitempty"`
+	Raw6 string `json:"raw6,omitempty"`
+	AI   string `json:"ai,omitempty"`
 }
 
 func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
@@ -294,30 +296,54 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("kind 只能是 scheduled、manual 或 health"))
 		return
 	}
-	// Hysteresis uses the server clock. A client-supplied at can otherwise
-	// backdate the 30-minute return cooldown and move a route immediately.
+	family, ok := unlock.ParseFamily(in.Family)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, errors.New("family 只能是 ipv4、ipv6 或留空"))
+		return
+	}
+	// The reporter's at only orders results and is checked against the
+	// validity window in unlock.Ingest. Hysteresis uses the server clock, so
+	// a backdated at cannot use up the 30-minute return cooldown.
+	var observed time.Time
 	if in.At != "" {
-		if _, err := time.Parse(time.RFC3339, in.At); err != nil {
+		observed, err = time.Parse(time.RFC3339, in.At)
+		if err != nil {
 			writeErr(w, http.StatusBadRequest, errors.New("at 需要 RFC3339 时间"))
 			return
 		}
 	}
-	when := time.Now().UTC()
 	if len(in.Services) > 64 {
 		writeErr(w, http.StatusBadRequest, errors.New("services 过多"))
 		return
 	}
-	results := map[string]bool{}
+	results := map[string]map[unlock.Family]bool{}
+	put := func(id string, f unlock.Family, v bool) {
+		if results[id] == nil {
+			results[id] = map[unlock.Family]bool{}
+		}
+		if prev, seen := results[id][f]; seen {
+			// Same rule as ParseRegionCheckFor: within one family of one
+			// run, an acceptable Yes is not erased by another line.
+			v = prev || v
+		}
+		results[id][f] = v
+	}
 	for k, v := range in.Services {
 		if id, ok := canonicalService(k); ok {
-			results[id] = v
+			put(id, family, v)
 		}
 	}
 	for k, v := range unlock.ParseRegionCheckFor(in.Raw, exit.Region) {
-		results[k] = v
+		put(k, family, v)
+	}
+	for k, v := range unlock.ParseRegionCheckFor(in.Raw4, exit.Region) {
+		put(k, unlock.FamilyIPv4, v)
+	}
+	for k, v := range unlock.ParseRegionCheckFor(in.Raw6, exit.Region) {
+		put(k, unlock.FamilyIPv6, v)
 	}
 	for k, v := range unlock.ParseAICodes(in.AI) {
-		results[k] = v
+		put(k, family, v)
 	}
 	if len(results) == 0 {
 		writeErr(w, http.StatusBadRequest, errors.New("没有识别出的服务结果。未知格式不会被当成失败。"))
@@ -328,32 +354,25 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 	for _, svc := range servicesOf(t) {
 		svcByID[svc.RuleID] = svc
 	}
-	for id, okResult := range results {
+	ids := make([]string, 0, len(results))
+	for id := range results {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	now := time.Now().UTC()
+	var outcomes []unlock.Outcome
+	for _, id := range ids {
 		svc, found := svcByID[id]
 		if !found {
 			continue
 		}
-		ev := unlock.Event{Service: id, ExitID: exit.ID, OK: okResult, Kind: kind, At: when}
-		note := ""
-		if svc.Pin {
-			note = "钉死规则不受解锁结果影响，只记录。"
-		} else if !containsStr(svc.Members, exit.ID) {
-			note = "出口不在该服务的池里，不改变路由，也不换国家。"
-		} else if snap.Services == nil {
-			snap.Services = map[string]unlock.State{}
-		}
-		prev := snap.Services[id]
-		if prev.Pool == "" {
-			prev.Pool = svc.Pool
-			prev.Preferred = svc.Preferred
-			prev.Active = svc.Preferred
-		}
-		snap.Services[id] = prev
-		unlock.Apply(&snap, ev, svc.Members, note)
+		note := ingestNote(svc, exit.ID)
+		seedState(&snap, svc)
+		ob := unlock.Observation{Service: id, ExitID: exit.ID, Kind: kind, ObservedAt: observed, Results: results[id]}
+		outcomes = append(outcomes, unlock.Ingest(&snap, ob, svc.Members, note, now)...)
 	}
-	if kind == unlock.KindScheduled {
-		snap.NextRun = when.Add(unlock.Interval(t.Settings.UnlockIntervalSec))
-	}
+	// An exit-side report does not move NextRun: that is the panel's own
+	// probe schedule (unlock_probe.go).
 	if err := s.saveUnlock(snap); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -362,6 +381,7 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 		"pending_apply": snap.PendingApply,
 		"decisions":     unlock.Decisions(snap, servicesOf(t)),
 		"states":        snap.Services,
+		"outcomes":      outcomes,
 	})
 }
 
@@ -394,81 +414,6 @@ func canonicalService(name string) (string, bool) {
 	}
 }
 
-func (s *Server) postUnlockRun(w http.ResponseWriter, r *http.Request) {
-	path, err := resolveUnlockExec()
-	if errors.Is(err, errUnlockExecUnset) {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "没有配置 MERIDIAN_UNLOCK_EXEC。在出口上运行 regioncheck 容器，再把 JSON 结果 POST 到 /api/unlock/report。面板不会编造探测结果。",
-		})
-		return
-	}
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
-	defer cancel()
-	out, err := runUnlockExec(ctx, path)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, errors.New("解锁探测命令失败"))
-		return
-	}
-	var in reportBody
-	if json.Unmarshal(out, &in) != nil {
-		writeErr(w, http.StatusBadGateway, errors.New("探测命令没有输出 JSON"))
-		return
-	}
-	if in.Kind == "" {
-		in.Kind = string(unlock.KindManual)
-	}
-	buf, _ := json.Marshal(in)
-	req, _ := http.NewRequest(http.MethodPost, "/api/unlock/report", strings.NewReader(string(buf)))
-	req.Header = r.Header.Clone()
-	rr := newResponseRecorder()
-	s.postUnlockReport(rr, req)
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(rr.code)
-	_, _ = w.Write(rr.body)
-}
-
-// resolveUnlockExec accepts only an absolute path to a regular executable.
-// The value is not passed to a shell, and it cannot smuggle arguments.
-func resolveUnlockExec() (string, error) {
-	raw := strings.TrimSpace(os.Getenv("MERIDIAN_UNLOCK_EXEC"))
-	if raw == "" {
-		return "", errUnlockExecUnset
-	}
-	if !filepath.IsAbs(raw) || strings.ContainsAny(raw, " \t\r\n\"'`$|&;<>*?[]{}\\") {
-		return "", errors.New("MERIDIAN_UNLOCK_EXEC 必须是不带参数的绝对路径，不能交给 shell")
-	}
-	fi, err := os.Stat(raw)
-	if err != nil || !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
-		return "", errors.New("MERIDIAN_UNLOCK_EXEC 不是可执行文件")
-	}
-	if fi.Mode()&0o002 != 0 {
-		return "", errors.New("MERIDIAN_UNLOCK_EXEC 不能是全局可写")
-	}
-	return raw, nil
-}
-
-func runUnlockExec(ctx context.Context, path string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, path)
-	cmd.Env = stripSecretEnv(os.Environ())
-	cmd.Stdin = nil
-	return cmd.CombinedOutput()
-}
-
-func stripSecretEnv(env []string) []string {
-	out := make([]string, 0, len(env))
-	for _, e := range env {
-		if strings.HasPrefix(e, "MERIDIAN_TOKEN=") {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
 func (s *Server) getLeakcheck(w http.ResponseWriter, r *http.Request) {
 	t, err := s.topology()
 	if err != nil {
@@ -483,71 +428,6 @@ func (s *Server) getLeakcheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": verify.CheckBundle(t, b.Files)})
 }
 
-// StartUnlockScheduler moves the stored next-run timestamp. It does not
-// invent probe results when MERIDIAN_UNLOCK_EXEC is unset.
-func (s *Server) StartUnlockScheduler() {
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.tickUnlock()
-		}
-	}()
-}
-
-func (s *Server) tickUnlock() {
-	s.mu.Lock()
-	t, err := s.topology()
-	if err != nil {
-		s.mu.Unlock()
-		return
-	}
-	snap := s.loadUnlock()
-	now := time.Now().UTC()
-	interval := unlock.Interval(t.Settings.UnlockIntervalSec)
-	if snap.NextRun.IsZero() {
-		snap.NextRun = now.Add(interval)
-		_ = s.saveUnlock(snap)
-		s.mu.Unlock()
-		return
-	}
-	if now.Before(snap.NextRun) {
-		s.mu.Unlock()
-		return
-	}
-	path, err := resolveUnlockExec()
-	if err != nil {
-		note := "到达 6 小时定时，但没有配置探测命令，路由保持不变。"
-		if !errors.Is(err, errUnlockExecUnset) {
-			note = "定时探测命令被拒绝（必须是绝对路径的可执行文件，不能是 shell 命令），路由保持不变。"
-		}
-		snap.History = append(snap.History, unlock.HistoryEntry{
-			At: now, Kind: unlock.KindScheduled, Note: note,
-		})
-		snap.NextRun = now.Add(interval)
-		_ = s.saveUnlock(snap)
-		s.mu.Unlock()
-		return
-	}
-	// Advance the schedule before running the command. The command may POST
-	// /api/unlock/report, which takes the same lock.
-	snap.NextRun = now.Add(interval)
-	_ = s.saveUnlock(snap)
-	s.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
-	if _, err := runUnlockExec(ctx, path); err != nil {
-		s.mu.Lock()
-		snap := s.loadUnlock()
-		snap.History = append(snap.History, unlock.HistoryEntry{
-			At: time.Now().UTC(), Kind: unlock.KindScheduled, Note: "定时探测命令失败，路由保持不变。",
-		})
-		_ = s.saveUnlock(snap)
-		s.mu.Unlock()
-	}
-}
-
 func readLimited(r *http.Request, n int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(r.Body, n))
 }
@@ -559,21 +439,4 @@ func containsStr(ss []string, s string) bool {
 		}
 	}
 	return false
-}
-
-type memResponse struct {
-	code int
-	body []byte
-	h    http.Header
-}
-
-func newResponseRecorder() *memResponse {
-	return &memResponse{code: 200, h: http.Header{}}
-}
-
-func (m *memResponse) Header() http.Header { return m.h }
-func (m *memResponse) WriteHeader(c int)   { m.code = c }
-func (m *memResponse) Write(b []byte) (int, error) {
-	m.body = append(m.body, b...)
-	return len(b), nil
 }

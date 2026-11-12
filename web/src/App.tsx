@@ -59,7 +59,7 @@ export default function App() {
         {err ? <Alert type="error" showIcon message={err} style={{ marginBottom: 12 }} /> : "正在读取拓扑…"}
         <Input.Password
           style={{ width: 280 }}
-          placeholder="面板口令（/var/lib/meridian/panel.token）"
+          placeholder="面板口令（docker compose exec meridian cat /var/lib/meridian/panel.token）"
           value={token}
           onChange={(e) => {
             setTokenValue(e.target.value);

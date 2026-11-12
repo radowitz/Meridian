@@ -1,0 +1,31 @@
+OK   host has /etc/meridian/dns/cert.pem
+OK   host has /etc/meridian/dns/key.pem
+OK   host has /var/lib/meridian/geosite/abema.txt
+OK   host has /var/lib/meridian/geosite/anthropic.txt
+OK   host has /var/lib/meridian/geosite/apple.txt
+OK   host has /var/lib/meridian/geosite/bahamut.txt
+OK   host has /var/lib/meridian/geosite/cn.txt
+OK   host has /var/lib/meridian/geosite/disney.txt
+OK   host has /var/lib/meridian/geosite/mytvsuper.txt
+OK   host has /var/lib/meridian/geosite/netflix.txt
+OK   host has /var/lib/meridian/geosite/openai.txt
+OK   host has /var/lib/meridian/geosite/perplexity.txt
+OK   container running
+OK   NET_ADMIN granted
+OK   container reads /etc/meridian/dns/cert.pem
+OK   container reads /etc/meridian/dns/key.pem
+OK   container reads /var/lib/meridian/geosite/abema.txt
+OK   container reads /var/lib/meridian/geosite/anthropic.txt
+OK   container reads /var/lib/meridian/geosite/apple.txt
+OK   container reads /var/lib/meridian/geosite/bahamut.txt
+OK   container reads /var/lib/meridian/geosite/cn.txt
+OK   container reads /var/lib/meridian/geosite/disney.txt
+OK   container reads /var/lib/meridian/geosite/mytvsuper.txt
+OK   container reads /var/lib/meridian/geosite/netflix.txt
+OK   container reads /var/lib/meridian/geosite/openai.txt
+OK   container reads /var/lib/meridian/geosite/perplexity.txt
+OK   resolver answers on 192.168.100.88:53 (source 192.168.100.88)
+OK   resolver answers on 192.168.100.88:53/tcp
+OK   resolver answers on 127.0.0.1:53
+OK   baidu.com address is in inet meridian direct4
+meridian-smartdns-verify-ok

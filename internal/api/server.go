@@ -3,11 +3,13 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,10 +17,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/radowitz/meridian/internal/apply"
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/hostexec"
+	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/provision"
 	"github.com/radowitz/meridian/internal/store"
@@ -32,9 +37,36 @@ type Server struct {
 	// Token is required on /api except /api/health. An empty token disables
 	// the check so unit tests can call the handler directly. main always sets one.
 	Token string
-	// mu covers read-modify-write of the unlock and pool documents.
+	// HostRoot is where an install writes host files. Empty means "/".
+	// Tests point it at a temp dir.
+	HostRoot string
+	// Host is the host execution boundary (a hostexec.Client to
+	// meridian-host). main always sets it; an install without it fails
+	// explicitly instead of skipping service activation.
+	Host apply.Runtime
+	// Activate is a test shim used when Host is nil (see apply.Applier).
+	Activate func() error
+	// MeshCF and MeshRemote replace the Cloudflare client and the SSH
+	// executor of the Mesh deployment (tests only; nil means the real ones).
+	MeshCF     func(mesh.Credentials) (mesh.Cloudflare, error)
+	MeshRemote func() mesh.Remote
+	// Prober is the host agent's read-only unlock probe (the same
+	// hostexec.Client as Host in main). Nil: the panel cannot probe and the
+	// scheduler records that, without inventing results.
+	Prober ProbeRuntime
+	// ProbeJobTimeout bounds one probe job; zero means 15 minutes.
+	ProbeJobTimeout time.Duration
+	// mu covers read-modify-write of the unlock, pool and probe-job documents.
 	mu sync.Mutex
+	// jobMu guards job, the one probe job that may run at a time.
+	jobMu sync.Mutex
+	job   *jobHandle
+	// keyMu serialises key resolution so two installs cannot generate two keys.
+	keyMu sync.Mutex
 }
+
+// localNodeID is the node whose files an install writes on this host.
+const localNodeID = "gw"
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -47,13 +79,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/diff", s.postDiff)
 	mux.HandleFunc("POST /api/apply", s.postApply)
 	mux.HandleFunc("POST /api/rollback", s.postRollback)
+	mux.HandleFunc("GET /api/host", s.getHost)
+	mux.HandleFunc("POST /api/host/recover", s.postHostRecover)
 	mux.HandleFunc("POST /api/provision", s.postProvision)
 	mux.HandleFunc("GET /api/pools", s.getPools)
 	mux.HandleFunc("POST /api/pools/health", s.postPoolHealth)
 	mux.HandleFunc("GET /api/unlock", s.getUnlock)
 	mux.HandleFunc("POST /api/unlock/report", s.postUnlockReport)
 	mux.HandleFunc("POST /api/unlock/run", s.postUnlockRun)
+	mux.HandleFunc("GET /api/unlock/jobs", s.getUnlockJobs)
+	mux.HandleFunc("POST /api/unlock/jobs/{id}/cancel", s.postUnlockJobCancel)
 	mux.HandleFunc("GET /api/leakcheck", s.getLeakcheck)
+	mux.HandleFunc("GET /api/mesh", s.getMesh)
+	mux.HandleFunc("PUT /api/mesh/credentials", s.putMeshCredentials)
+	mux.HandleFunc("DELETE /api/mesh/credentials", s.deleteMeshCredentials)
+	mux.HandleFunc("POST /api/mesh/deploy", s.postMeshDeploy)
+	mux.HandleFunc("POST /api/mesh/withdraw", s.postMeshWithdraw)
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
 	}
@@ -260,10 +301,34 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	t, err := s.topology()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+	install := body.Install && !body.DryRun
+	var t model.Topology
+	var key string
+	var err error
+	if install {
+		// A peer without a usable public key would only be caught by
+		// "wg setconf" after the host was touched. Refuse first: before the
+		// key is generated, before any file is written or snapshot moves.
+		// Compile, preview and diff keep accepting such a topology.
+		if pre, err := s.topology(); err == nil {
+			if pb, err := s.compileTopo(pre); err == nil && refusePeerKeys(w, pb) {
+				return
+			}
+		}
+		// First install generates and stores the gateway key; later installs
+		// reuse it. Resolution happens before compile so peers see the
+		// matching public key, and before any host file is written.
+		t, key, err = s.resolveKey(localNodeID, provision.KeyGenerateIfMissing)
+		if err != nil {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+	} else {
+		t, err = s.topology()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 	b, err := s.compileTopo(t)
 	if err != nil {
@@ -275,9 +340,14 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	res, err := s.applier(body.Install).Apply(b, body.DryRun)
+	if install && refusePeerKeys(w, b) {
+		return
+	}
+	ap := s.applier(body.Install)
+	ap.PrivateKey = key
+	res, err := ap.Apply(b, body.DryRun)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeTxnErr(w, err, key, http.StatusInternalServerError)
 		return
 	}
 	if !body.DryRun {
@@ -286,14 +356,187 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// refusePeerKeys answers 422 when the local node's WireGuard configs in b
+// name a peer whose public key is missing, the placeholder or malformed.
+func refusePeerKeys(w http.ResponseWriter, b *compile.Bundle) bool {
+	probs := b.PeerKeyProblems(localNodeID)
+	if len(probs) == 0 {
+		return false
+	}
+	seen := map[string]bool{}
+	var peers []string
+	for _, p := range probs {
+		if !seen[p.Peer] {
+			seen[p.Peer] = true
+			peers = append(peers, p.Peer)
+		}
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"error": fmt.Sprintf("拒绝安装：本机 WireGuard 配置里这些对端节点没有可用的公钥（缺失、仍是占位符或格式不对）：%s。"+
+			"先在对端生成密钥（「生成脚本」/ provision 的 generate_keys）或在拓扑里填入 44 字符的 base64 公钥；宿主上没有写入任何文件。",
+			strings.Join(peers, "、")),
+		"peer_key_problems": probs,
+	})
+	return true
+}
+
+type rollbackBody struct {
+	// Install makes it a runtime rollback: host files, interfaces, units and
+	// tables follow the previous snapshot in the same transaction.
+	Install bool `json:"install"`
+	// SnapshotOnly explicitly asks for a data-dir-only swap on a host that
+	// has Meridian installed. Without it such a request is refused.
+	SnapshotOnly bool `json:"snapshot_only"`
+}
+
 func (s *Server) postRollback(w http.ResponseWriter, r *http.Request) {
-	var body applyBody
-	_ = decodeOptional(r, &body)
-	if err := s.applier(body.Install).Rollback(); err != nil {
-		writeErr(w, http.StatusConflict, err)
+	var body rollbackBody
+	if err := decodeOptional(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "rolled_back"})
+	if body.Install && body.SnapshotOnly {
+		writeErr(w, http.StatusBadRequest, errors.New("install 与 snapshot_only 不能同时设置"))
+		return
+	}
+	ap := s.applier(body.Install)
+	ap.SnapshotOnly = body.SnapshotOnly
+	if body.Install {
+		_, key, err := s.resolveKey(localNodeID, provision.KeyReuse)
+		if err != nil {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		ap.PrivateKey = key
+	}
+	rep, err := ap.RollbackReport()
+	if err != nil {
+		writeTxnErr(w, err, ap.PrivateKey, http.StatusConflict)
+		return
+	}
+	mode := "snapshot"
+	if body.Install {
+		mode = "runtime"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "rolled_back", "mode": mode, "host": rep})
+}
+
+// writeTxnErr maps install/rollback failures. A failed host transaction
+// carries its report (steps, diff, whether it was compensated).
+func writeTxnErr(w http.ResponseWriter, err error, key string, fallback int) {
+	msg := apply.RedactSecret(err.Error(), key)
+	var te *apply.TxnError
+	switch {
+	case errors.Is(err, apply.ErrNoHostExec):
+		writeErr(w, http.StatusServiceUnavailable, errors.New(msg))
+	case errors.Is(err, apply.ErrPending), errors.Is(err, apply.ErrRuntimeRollbackRequired):
+		writeErr(w, http.StatusConflict, errors.New(msg))
+	case errors.As(err, &te):
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error":       msg,
+			"compensated": te.Compensated,
+			"host":        te.Report,
+		})
+	default:
+		writeErr(w, fallback, errors.New(msg))
+	}
+}
+
+// getHost reports what is installed on the host, any unfinished
+// transaction and whether the host execution boundary answers.
+func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
+	ap := s.applier(true)
+	inst, err := ap.Installed()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	pending, err := ap.Pending()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	agent := map[string]any{"ok": false}
+	switch {
+	case s.Host != nil:
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		_, perr := s.Host.Do(ctx, hostexec.Request{Action: hostexec.ActionHealth, RequestID: "status-" + randHex(4)})
+		cancel()
+		agent["ok"] = perr == nil
+		if perr != nil {
+			agent["error"] = perr.Error()
+		}
+	case s.Activate != nil:
+		agent["ok"] = true
+		agent["error"] = "test shim"
+	default:
+		agent["error"] = apply.ErrNoHostExec.Error()
+	}
+	var installed any
+	if !inst.Empty() {
+		installed = map[string]any{
+			"version": inst.Version, "created_at": inst.CreatedAt, "files": len(inst.Files),
+			"interfaces": inst.Interfaces, "units": inst.Units, "nft_tables": inst.NFTTables,
+			"route_tables": inst.RouteTables, "dns": inst.DNS,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"installed": installed, "pending": pending, "agent": agent})
+}
+
+// postHostRecover compensates (or finishes) an unfinished host transaction.
+func (s *Server) postHostRecover(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.RecoverHost()
+	if err != nil {
+		writeTxnErr(w, err, "", http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "recovered", "host": rep})
+}
+
+// RecoverHost runs apply.Recover with the gateway key. main calls it at
+// startup so a transaction interrupted by a restart is not left half-done.
+func (s *Server) RecoverHost() (*apply.HostReport, error) {
+	ap := s.applier(true)
+	if p, err := ap.Pending(); err != nil || p == nil {
+		return nil, err
+	}
+	// The key is needed only to rewrite WireGuard configs; a gateway that
+	// never had one cannot have them installed.
+	if _, key, err := s.resolveKey(localNodeID, provision.KeyReuse); err == nil {
+		ap.PrivateKey = key
+	}
+	rep, err := ap.Recover()
+	if err != nil {
+		return rep, errors.New(apply.RedactSecret(err.Error(), ap.PrivateKey))
+	}
+	return rep, nil
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// resolveKey loads the topology, resolves nodeID's private key under policy
+// and persists a generated key or a filled-in public key before returning.
+func (s *Server) resolveKey(nodeID string, policy provision.KeyPolicy) (model.Topology, string, error) {
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
+	t, err := s.topology()
+	if err != nil {
+		return model.Topology{}, "", err
+	}
+	key, changed, err := provision.ResolveNodeKey(&t, nodeID, policy)
+	if err != nil {
+		return model.Topology{}, "", err
+	}
+	if changed {
+		if err := s.Store.Save(t); err != nil {
+			return model.Topology{}, "", err
+		}
+	}
+	return t, key, nil
 }
 
 type provisionBody struct {
@@ -327,42 +570,51 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("该节点不需要装机（例如 IX 专线）"))
 		return
 	}
+	run := !body.DryRun && body.PrivateKeyPEM != ""
+	var key, pub string
+	switch {
+	case body.GenerateKeys && !body.DryRun:
+		// Rotate: store the new pair before compiling so peer configs carry
+		// the matching public key.
+		t, key, err = s.resolveKey(node.ID, provision.KeyRotate)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		node, _ = t.NodeByID(node.ID)
+		pub = node.PublicKey
+	case run:
+		// generate_keys=false reuses the stored key. A node without one fails
+		// here, before SSH connects or any remote config is overwritten.
+		t, key, err = s.resolveKey(node.ID, provision.KeyReuse)
+		if err != nil {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+	}
 	b, err := s.compileTopo(t)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
 	files := provision.FilesFor(b.Files, node.ID)
-	var pub string
-	if body.GenerateKeys && !body.DryRun {
-		kp, err := provision.GenerateKeypair()
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		files = provision.InjectPrivate(files, kp.Private)
-		pub = kp.Public
-		for i := range t.Nodes {
-			if t.Nodes[i].ID == node.ID {
-				t.Nodes[i].PublicKey = kp.Public
-				t.Nodes[i].PrivateKey = kp.Private
-			}
-		}
-		if err := s.Store.Save(t); err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
-	script := provision.Script(node.Name, files)
-	if body.DryRun || body.PrivateKeyPEM == "" {
+	if !run {
+		// Preview: built from the redacted files, so it carries the
+		// placeholder and refuses to run if copied to a host.
 		writeJSON(w, http.StatusOK, map[string]any{
 			"dry_run":    true,
 			"node_id":    node.ID,
 			"public_key": pub,
-			"script":     provision.Redact(script, lookupPrivate(t, node.ID)),
+			"script":     provision.Redact(provision.Script(node.Name, files), key),
 		})
 		return
 	}
+	injected, err := provision.InjectPrivate(files, key)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	script := provision.Script(node.Name, injected)
 	host := body.SSHHost
 	if host == "" {
 		host = node.SSHHost
@@ -380,8 +632,8 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	}, script)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{
-			"error":  err.Error(),
-			"output": provision.Redact(out, lookupPrivate(t, node.ID)),
+			"error":  provision.Redact(err.Error(), key),
+			"output": provision.Redact(out, key),
 		})
 		return
 	}
@@ -389,20 +641,12 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		"dry_run":    false,
 		"node_id":    node.ID,
 		"public_key": pub,
-		"output":     provision.Redact(out, lookupPrivate(t, node.ID)),
+		"output":     provision.Redact(out, key),
 	})
 }
 
-func lookupPrivate(t model.Topology, id string) string {
-	n, ok := t.NodeByID(id)
-	if !ok {
-		return ""
-	}
-	return n.PrivateKey
-}
-
 func (s *Server) applier(install bool) apply.Applier {
-	return apply.Applier{DataDir: s.DataDir, Install: install, LocalID: "gw"}
+	return apply.Applier{DataDir: s.DataDir, Install: install, LocalID: localNodeID, HostRoot: s.HostRoot, Host: s.Host, Activate: s.Activate}
 }
 
 func (s *Server) bodyOrStored(r *http.Request) (model.Topology, error) {

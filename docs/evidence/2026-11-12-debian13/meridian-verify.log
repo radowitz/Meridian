@@ -1,0 +1,29 @@
+meridian-verify 20261112T135202Z iface=ens192 gateway=192.168.100.88 ros=192.168.100.1 ros6=<ROS 链路本地地址，已隐去>
+PASS sysctl net.ipv4.conf.all.rp_filter: 2
+PASS sysctl net.ipv4.conf.default.rp_filter: 2
+PASS sysctl net.ipv4.conf.ens192.rp_filter: 2
+PASS sysctl net.ipv4.conf.all.send_redirects: 0
+PASS sysctl net.ipv4.conf.ens192.send_redirects: 0
+PASS sysctl net.ipv4.conf.all.accept_redirects: 0
+PASS sysctl net.ipv6.conf.all.accept_redirects: 0
+PASS sysctl net.ipv4.ip_forward: 1
+PASS sysctl net.ipv6.conf.all.forwarding: 1
+PASS gateway_address: 192.168.100.88 is on ens192
+PASS ros_neighbour: 192.168.100.1 is reached on-link via ens192
+PASS ula_not_via_ros: no ULA route in any table uses ens192 or ROS (evidence ula-routes.txt)
+PASS nft_guard: inet meridian_guard is loaded: forward hook at -200 with the fail-closed LAN drop
+PASS dns_hijack_53: LAN 53 is redirected to the local resolver
+PASS dns_hijack_853: LAN 853 is redirected locally
+PASS dns_input_drop: non-LAN 53/853 is dropped on input
+PASS ula_drop: forwarded ULA is dropped
+PENDING-HUMAN ros_ula_blackhole: not executed. On ROS (read-only): /ipv6 route print where blackhole and (dst-address=fd00::/8 or dst-address=fc00::/7); archive the output, or rerun with MERIDIAN_ROS_SSH=user@192.168.100.1
+PENDING-HUMAN dns_leak_client: dnsleaktest.com and ipleak.net on the test device (v4 and v6), plus a WAN capture with no 53/853 from it; this script runs no browser
+PENDING-HUMAN webrtc_srflx: browserleaks/ipleak WebRTC on the test device: srflx must be the exit address; a host GUA is a known limitation
+PENDING-HUMAN redirect_on_wire: capture on the test device while browsing: no ICMP redirect from 192.168.100.88 pointing at 192.168.100.1
+PENDING-HUMAN tunnel_cut: take the exit tunnel down while the test device keeps browsing; capture on ens192: nothing foreign leaves towards 192.168.100.1, and the device gets no answer instead of a home-WAN answer
+NOT-RUN-HERE netns_reload_no_leak: isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsReloadNoLeak (archive the log)
+NOT-RUN-HERE smartdns: sudo bash deploy/verify-smartdns.sh (archive the output)
+NOT-RUN-HERE host_exec: sudo bash deploy/verify-host-exec.sh and --boot after a reboot (archive the output)
+NOT-RUN-HERE mesh_veth: isolated Linux integration: sudo bash deploy/verify-mesh-veth.sh (dual-stack forwarding through the mmesh next-hops; archive the output). Mesh stays unverified until then
+evidence: <证据目录>
+meridian-verify-local-ok: local gateway checks passed. This is not a leak test; release still needs every PENDING-HUMAN and NOT-RUN-HERE item signed off with archived evidence.

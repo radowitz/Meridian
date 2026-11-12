@@ -8,6 +8,7 @@
 package compile
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -17,7 +18,12 @@ import (
 	"github.com/radowitz/meridian/internal/validate"
 )
 
-const privateKeyPlaceholder = "__MERIDIAN_PRIVATE_KEY__"
+// PrivateKeyPlaceholder stands in for a node's WireGuard private key in every
+// compiled bundle, snapshot, preview and diff. Only the install boundary
+// (apply.Applier with a key, or the provision script) replaces it.
+const PrivateKeyPlaceholder = "__MERIDIAN_PRIVATE_KEY__"
+
+const privateKeyPlaceholder = PrivateKeyPlaceholder
 const publicKeyPlaceholder = "EXAMPLE_PUBLIC_KEY_DO_NOT_USE"
 
 // Bundle is a deterministic set of files keyed by repo-relative path
@@ -49,6 +55,69 @@ func (b Bundle) Canonical() string {
 
 func (b Bundle) File(path string) string {
 	return b.Files[path]
+}
+
+// PeerKeyProblem is one WireGuard peer of a node whose public key cannot be
+// used: missing, still the placeholder, or not a 32-byte base64 key.
+type PeerKeyProblem struct {
+	Peer  string `json:"peer"`
+	Iface string `json:"iface"`
+	Key   string `json:"key,omitempty"`
+}
+
+// PeerKeyProblems inspects the WireGuard configs the bundle holds for one
+// node (nodes/<id>/etc/wireguard/*.conf) and lists every peer whose
+// PublicKey would make "wg setconf" fail. Compile, preview and diff accept
+// such a topology; only an install to the host must refuse it, before
+// anything is written.
+func (b Bundle) PeerKeyProblems(nodeID string) []PeerKeyProblem {
+	prefix := "nodes/" + nodeID + "/etc/wireguard/"
+	var paths []string
+	for p := range b.Files {
+		if strings.HasPrefix(p, prefix) && strings.HasSuffix(p, ".conf") {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths)
+	var out []PeerKeyProblem
+	for _, p := range paths {
+		iface := strings.TrimSuffix(strings.TrimPrefix(p, prefix), ".conf")
+		inPeer, peer, key, haveKey := false, "", "", false
+		flush := func() {
+			if inPeer && (!haveKey || !ValidWGKey(key)) {
+				if peer == "" {
+					peer = "?"
+				}
+				out = append(out, PeerKeyProblem{Peer: peer, Iface: iface, Key: key})
+			}
+		}
+		for _, raw := range strings.Split(b.Files[p], "\n") {
+			line := strings.TrimSpace(raw)
+			switch {
+			case strings.HasPrefix(line, "["):
+				flush()
+				inPeer, peer, key, haveKey = line == "[Peer]", "", "", false
+			case inPeer && strings.HasPrefix(line, "# peer-node "):
+				peer = strings.TrimSpace(strings.TrimPrefix(line, "# peer-node "))
+			case inPeer && strings.HasPrefix(line, "PublicKey"):
+				if k, v, ok := strings.Cut(line, "="); ok && strings.TrimSpace(k) == "PublicKey" {
+					key, haveKey = strings.TrimSpace(v), true
+				}
+			}
+		}
+		flush()
+	}
+	return out
+}
+
+// ValidWGKey reports whether s is a WireGuard key: standard base64 of
+// exactly 32 bytes. The placeholder and an empty string are not.
+func ValidWGKey(s string) bool {
+	if len(s) != 44 || s == publicKeyPlaceholder {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(s)
+	return err == nil && len(raw) == 32
 }
 
 // ValidationError is returned when the topology cannot be compiled.
@@ -124,6 +193,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			add(prefix+"etc/wireguard/"+tun.Iface()+".conf", renderWG(t, tun, n))
 		}
 		add(prefix+"etc/sysctl.d/99-meridian.conf", renderSysctl(t, n))
+		add(prefix+"etc/meridian/forwarding.conf", renderForwarding(t, n))
 		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, exits))
 		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, exits))
 		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels))
@@ -134,6 +204,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		}
 		if n.Role == model.RoleGateway {
 			add(prefix+"usr/local/sbin/meridian-verify.sh", renderVerifyScript(t))
+			add(prefix+"etc/nftables.d/meridian-guard.nft", renderGuardNFT(t, tunnels, exits))
 		}
 		if n.Role == model.RoleExit {
 			add(prefix+"usr/local/sbin/meridian-unlock-probe.sh", renderUnlockProbe(t, n))
@@ -147,7 +218,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		if n.Role != model.RoleGateway && meshPeer(t, n.ID) {
 			add(prefix+"etc/meridian/mesh-sidecar.compose.yml", renderMeshCompose(t))
 			add(prefix+"etc/meridian/mesh.env.example", renderMeshEnvExample())
-			add(prefix+"usr/local/sbin/meridian-mesh-up.sh", renderMeshUp())
+			add(prefix+"usr/local/sbin/meridian-mesh-up.sh", renderMeshUp(t))
 		}
 		if srv := renderWstunnelServer(n, tunnels); srv != "" {
 			add(prefix+"etc/systemd/system/wstunnel-meridian.service", srv)

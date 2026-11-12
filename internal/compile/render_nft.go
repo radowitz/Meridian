@@ -28,17 +28,18 @@ func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPla
 }
 
 func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4, mss6 int, decisions map[string]string, clamps []mssClamp) string {
-	lan := t.Settings.LANInterface
-	if lan == "" {
-		lan = "eth0"
-	}
+	lan := gatewayLAN(t)
 	def, _ := defaultExit(t, exits)
 	rules := planRules(t, exits, decisions)
 	var sb strings.Builder
 	sb.WriteString("#!/usr/sbin/nft -f\n")
-	sb.WriteString("# Meridian gateway policy. Reloading this file deletes only table inet meridian.\n")
+	sb.WriteString("# Meridian gateway policy. This whole file is one nft transaction: it\n")
+	sb.WriteString("# replaces only tables inet meridian_guard and inet meridian, never the\n")
+	sb.WriteString("# rest of the ruleset. Load it with nft -c -f first, then nft -f.\n")
 	fmt.Fprintf(&sb, "# default-exit %s mark %#x\n", def.Node.ID, def.Mark)
 	fmt.Fprintf(&sb, "# mss-clamp v4 %d v6 %d\n", mss4, mss6)
+	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits))
+	writeAtomicReplace(&sb, tableMain)
 	sb.WriteString("table inet meridian {\n")
 
 	writeSet(&sb, "chnroute", "ipv4_addr", false, nil)
@@ -164,8 +165,14 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
 `, lan, lan, lan, lan, lan, lan)
 	// UDP/853 (DoQ) is redirected at port 53 above: nothing here speaks DoQ,
 	// and leaving it forwarded would bypass SmartDNS.
+	// SmartDNS listens on the wildcard (render_dns.go), so this chain is
+	// what keeps it a LAN resolver. Loopback is accepted first: this host's
+	// own queries (127.0.0.1, or its LAN address, both arrive on lo) must
+	// work with the firewall loaded. iifname "lo" never matches a packet
+	// that came in on a NIC, including LAN queries redirected above.
 	fmt.Fprintf(&sb, `  chain input {
     type filter hook input priority filter; policy accept;
+    iifname "lo" meta l4proto { tcp, udp } th dport { 53, 853 } accept comment "DNS from this host itself"
     tcp dport { 53, 853 } ip saddr != %s drop comment "DNS only from the LAN"
     udp dport { 53, 853 } ip saddr != %s drop
     tcp dport { 53, 853 } ip6 saddr != { %s } drop
@@ -195,6 +202,7 @@ func renderExitNFT(t model.Topology, n model.Node) string {
 	var sb strings.Builder
 	sb.WriteString("#!/usr/sbin/nft -f\n")
 	fmt.Fprintf(&sb, "# exit %s public NAT. Tunnel ULA and the LAN prefix are translated here, not on the home gateway.\n", n.ID)
+	writeAtomicReplace(&sb, tableMain)
 	sb.WriteString("table inet meridian {\n")
 	sb.WriteString("  chain srcnat {\n    type nat hook postrouting priority srcnat; policy accept;\n")
 	if n.EgressV4 {
@@ -229,6 +237,7 @@ func renderTransitNFT(n model.Node, tunnels []Tunnel) string {
 	var sb strings.Builder
 	sb.WriteString("#!/usr/sbin/nft -f\n")
 	sb.WriteString("# Transit node. Does not NAT client traffic and does not own the default route.\n")
+	writeAtomicReplace(&sb, tableMain)
 	sb.WriteString("table inet meridian {\n")
 	if len(ports) > 0 {
 		parts := make([]string, len(ports))
@@ -241,6 +250,103 @@ func renderTransitNFT(n model.Node, tunnels []Tunnel) string {
 	}
 	sb.WriteString("}\n")
 	return sb.String()
+}
+
+const (
+	tableMain  = "meridian"
+	tableGuard = "meridian_guard"
+	// guardPriority puts the guard ahead of every Meridian forward chain
+	// (mss at mangle -150, doh at filter 0) and of the usual filter-priority
+	// chains of other tables. Order is not what makes it binding: a drop in
+	// any base chain is final, while an accept only ends that one chain, so
+	// no accept elsewhere can let a packet past this table.
+	guardPriority = -200
+	// exitMarkLast is the highest exit mark the routes script cleans up
+	// (0x101 + 63, the selector loop in render_routes.go).
+	exitMarkLast = markExitBase + 63
+)
+
+// guardLastExitMark is the top of the exit-mark range the guard lets into
+// a tunnel: the routes script's range, widened if a topology has more exits.
+func guardLastExitMark(exits []ExitPlan) uint32 {
+	last := exitMarkLast
+	for _, e := range exits {
+		if e.Mark > last {
+			last = e.Mark
+		}
+	}
+	return last
+}
+
+// writeAtomicReplace emits the create-then-delete prefix of the nft
+// atomic-replacement idiom. "table" is a no-op when the table already
+// exists and creates an empty one on first install, so "delete table" never
+// fails; the table block that follows recreates it. All three are in the
+// same file and so in the same netlink batch: if any later line is
+// rejected, the kernel aborts the batch and the old table is untouched.
+func writeAtomicReplace(sb *strings.Builder, table string) {
+	fmt.Fprintf(sb, "table inet %s\n", table)
+	fmt.Fprintf(sb, "delete table inet %s\n", table)
+}
+
+// gatewayTunnelIfaces lists every WireGuard interface on the gateway,
+// including failover companions, so the guard keeps working when the
+// failover script moves table 102 between them.
+func gatewayTunnelIfaces(tunnels []Tunnel) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, tun := range tunnels {
+		if tun.West.Role != model.RoleGateway && tun.East.Role != model.RoleGateway {
+			continue
+		}
+		name := tun.Iface()
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sortStrings(out)
+	return out
+}
+
+// writeGuardTable renders the LAN fail-closed guard. It lives in its own
+// table so that deleting, breaking or replacing table inet meridian (which
+// holds classification, DNS hijack and SNAT) cannot remove it, and it never
+// references a set or chain of that table. It only looks at what the
+// classifier leaves on the packet (the fwmark) and where routing sent it:
+//
+//   - mark 0x64 (domestic) may only leave on the LAN NIC, i.e. to ROS or a
+//     LAN host via table 100. This is the intended direct path for domestic
+//     IPv4 and IPv6 (chnroute, direct sets, private/LAN prefixes).
+//   - an exit mark may only leave on a gateway WireGuard interface (table
+//     102). An exit-marked packet routed to ROS is dropped.
+//   - anything else forwarded from the LAN is dropped: unmarked traffic
+//     (classification missing, or the IPv6 main-table default via ROS that
+//     the routes script deliberately leaves without an iif rule), and
+//     DNS/DoT that escaped the hijack.
+//
+// It hooks forward only, so RA, ND and traffic to the gateway itself
+// (input) are not affected, and traffic arriving from a tunnel is not
+// matched.
+func writeGuardTable(sb *strings.Builder, lan string, tunnelIfaces []string, lastExitMark uint32) {
+	sb.WriteString("# LAN fail-closed guard. Independent of table inet meridian: it reads only\n")
+	sb.WriteString("# the fwmark and the output interface, so if classification is missing\n")
+	sb.WriteString("# every forwarded LAN packet is unmarked and dropped here.\n")
+	writeAtomicReplace(sb, tableGuard)
+	fmt.Fprintf(sb, "table inet %s {\n", tableGuard)
+	fmt.Fprintf(sb, "  chain forward {\n    type filter hook forward priority %d; policy accept;\n", guardPriority)
+	fmt.Fprintf(sb, "    iifname \"%s\" meta l4proto { tcp, udp } th dport { 53, 853 } drop comment \"DNS is answered locally, never forwarded\"\n", lan)
+	fmt.Fprintf(sb, "    iifname \"%s\" meta mark %#x oifname \"%s\" return comment \"domestic: direct via ROS or LAN only\"\n", lan, markDomestic, lan)
+	if len(tunnelIfaces) > 0 {
+		quoted := make([]string, len(tunnelIfaces))
+		for i, name := range tunnelIfaces {
+			quoted[i] = "\"" + name + "\""
+		}
+		fmt.Fprintf(sb, "    iifname \"%s\" meta mark %#x-%#x oifname { %s } return comment \"exit marks: WireGuard only\"\n", lan, markExitBase, lastExitMark, strings.Join(quoted, ", "))
+	}
+	fmt.Fprintf(sb, "    iifname \"%s\" counter drop comment \"fail closed: unclassified or misrouted LAN traffic, v4 and v6\"\n", lan)
+	sb.WriteString("  }\n}\n")
 }
 
 func writeSet(sb *strings.Builder, name, typ string, timeout bool, elements []string) {

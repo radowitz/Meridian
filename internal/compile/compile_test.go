@@ -1,6 +1,11 @@
 package compile
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -166,4 +171,221 @@ func lineWith(body, needle string) string {
 		}
 	}
 	return ""
+}
+
+// Regression for the review repro (compile_repro_test.go): a node with a
+// stored private key must not leak it into the compiled bundle. The bundle,
+// previews, diffs and snapshots stay redacted; the key is injected only at the
+// install boundary (apply.Applier.PrivateKey / provision.InjectPrivate), which
+// internal/apply and internal/api test end to end.
+func TestStoredPrivateKeyStaysOutOfBundle(t *testing.T) {
+	topo := defaults.Example()
+	keys := map[string]string{}
+	for i := range topo.Nodes {
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			t.Fatal(err)
+		}
+		k := base64.StdEncoding.EncodeToString(raw[:])
+		topo.Nodes[i].PrivateKey = k
+		keys[topo.Nodes[i].ID] = k
+	}
+	b, err := Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canon := b.Canonical()
+	for id, k := range keys {
+		if strings.Contains(canon, k) {
+			t.Fatalf("stored private key of %s leaked into the bundle", id)
+		}
+	}
+	n := 0
+	for p, s := range b.Files {
+		if !strings.Contains(p, "/etc/wireguard/") {
+			continue
+		}
+		n++
+		if !strings.Contains(s, "PrivateKey = "+PrivateKeyPlaceholder+"\n") {
+			t.Fatalf("%s must carry the placeholder for install-time injection", p)
+		}
+	}
+	if n == 0 {
+		t.Fatal("no WireGuard configs rendered")
+	}
+}
+
+// The Compose SmartDNS service must see every file the generated config
+// loads, at the same path, and hold NET_ADMIN for nftset. Whether the image
+// actually starts and fills the sets is checked by deploy/verify-smartdns.sh
+// on a Linux host.
+func TestSmartDNSComposeMountsEveryReference(t *testing.T) {
+	b, err := Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := b.File("nodes/gw/etc/smartdns/smartdns.conf")
+	refs := SmartDNSFileRefs(conf)
+	if len(refs) < 4 {
+		t.Fatalf("expected cert, key and domain-set refs, got %v", refs)
+	}
+	under := func(p string) bool {
+		for _, d := range SmartDNSSharedDirs {
+			if strings.HasPrefix(p, d+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, r := range refs {
+		if !under(r) {
+			t.Fatalf("smartdns.conf loads %s outside SmartDNSSharedDirs", r)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "docker-compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := composeService(string(raw), "smartdns")
+	if svc == "" {
+		t.Fatal("no smartdns service in docker-compose.yml")
+	}
+	if !strings.Contains(svc, "- NET_ADMIN") {
+		t.Fatal("smartdns service needs cap NET_ADMIN for nftset")
+	}
+	for _, d := range SmartDNSSharedDirs {
+		if !strings.Contains(svc, "- "+d+":"+d+":ro") {
+			t.Fatalf("smartdns service does not mount %s read-only", d)
+		}
+	}
+	// The controller writes the domain sets; they must be the same host dirs,
+	// not a path inside its private named volume.
+	ctl := composeService(string(raw), "meridian")
+	for _, d := range []string{"/var/lib/meridian/geosite", "/var/lib/meridian/keywords", "/etc/meridian"} {
+		if !strings.Contains(ctl, "- "+d+":"+d+"\n") {
+			t.Fatalf("controller does not share %s with the host", d)
+		}
+	}
+	if strings.Contains(svc, "meridian-data") {
+		t.Fatal("smartdns must not mount the panel database volume")
+	}
+}
+
+// composeService returns the indented block of one top-level service.
+func composeService(doc, name string) string {
+	start := strings.Index(doc, "\n  "+name+":\n")
+	if start < 0 {
+		return ""
+	}
+	rest := doc[start+1:]
+	lines := strings.Split(rest, "\n")
+	var out []string
+	out = append(out, lines[0])
+	for _, l := range lines[1:] {
+		if l != "" && !strings.HasPrefix(l, "    ") && !strings.HasPrefix(l, "  #") {
+			break
+		}
+		if strings.HasPrefix(l, "  #") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n") + "\n"
+}
+
+func TestExitUpRestartsSmartDNSAfterTunnels(t *testing.T) {
+	b, err := Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := b.File("nodes/tw/usr/local/sbin/meridian-up.sh")
+	wg := strings.Index(up, "wg-quick up")
+	restart := strings.Index(up, "systemctl restart smartdns.service")
+	if wg < 0 || restart < wg {
+		t.Fatal("exit meridian-up.sh must restart smartdns after WireGuard is up")
+	}
+	if b.File("nodes/tw/etc/smartdns/smartdns.conf") == "" {
+		t.Fatal("exit has no resolver config")
+	}
+	if strings.Contains(b.File("nodes/gw/usr/local/sbin/meridian-up.sh"), "systemctl restart smartdns") {
+		t.Fatal("gateway SmartDNS runs in Compose; its up script must not restart a host unit")
+	}
+}
+
+// The up script activates exactly the manifest's interfaces (no m*.conf
+// glob, so a config left by a rolled-back apply is not restarted) and fails
+// on a listed config that is missing.
+func TestUpScriptActivatesListedInterfacesOnly(t *testing.T) {
+	b, err := Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, up := range b.Files {
+		if !strings.HasSuffix(path, "/usr/local/sbin/meridian-up.sh") {
+			continue
+		}
+		node := strings.Split(path, "/")[1]
+		if strings.Contains(up, "m*.conf") || strings.Contains(up, "nullglob") {
+			t.Errorf("%s still scans tunnel files", path)
+		}
+		var want []string
+		for p := range b.Files {
+			if strings.HasPrefix(p, "nodes/"+node+"/etc/wireguard/") {
+				want = append(want, strings.TrimSuffix(filepath.Base(p), ".conf"))
+			}
+		}
+		sort.Strings(want)
+		if len(want) > 0 && !strings.Contains(up, "for iface in "+strings.Join(want, " ")+"; do\n") {
+			t.Errorf("%s does not list exactly %v", path, want)
+		}
+		if len(want) > 0 && !strings.Contains(up, "meridian-wg-missing") {
+			t.Errorf("%s must fail on a missing listed config", path)
+		}
+		if !strings.Contains(up, "meridian-systemd-missing") {
+			t.Errorf("%s must fail explicitly without systemd", path)
+		}
+	}
+}
+
+// Boot window: systemd-sysctl applies /etc/sysctl.d before meridian.service
+// loads the guard, so no sysctl.d file may turn forwarding on; on the
+// gateway it is explicitly off. Forwarding comes from forwarding.conf,
+// applied by the up script after the guard check. The early-boot guard file
+// exists for meridian-guard.service.
+func TestForwardingOnlyAfterGuard(t *testing.T) {
+	b, err := Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range b.Files {
+		if !strings.HasSuffix(path, "/etc/sysctl.d/99-meridian.conf") {
+			continue
+		}
+		for _, line := range strings.Split(body, "\n") {
+			if (strings.Contains(line, "forwarding=") || strings.Contains(line, "ip_forward=")) && !strings.HasSuffix(line, "=0") {
+				t.Errorf("%s enables forwarding at boot: %s", path, line)
+			}
+		}
+		node := strings.Split(path, "/")[1]
+		if !strings.Contains(b.File("nodes/"+node+"/etc/meridian/forwarding.conf"), "net.ipv4.ip_forward=1") {
+			t.Errorf("%s: forwarding.conf missing", node)
+		}
+	}
+	gw := b.File("nodes/gw/etc/sysctl.d/99-meridian.conf")
+	if !strings.Contains(gw, "net.ipv4.ip_forward=0") || !strings.Contains(gw, "net.ipv6.conf.all.forwarding=0") {
+		t.Fatal("gateway must keep forwarding off at boot")
+	}
+	up := b.File("nodes/gw/usr/local/sbin/meridian-up.sh")
+	guard := strings.Index(up, "meridian-guard-missing")
+	fwd := strings.Index(up, "MERIDIAN_FWD=")
+	if guard < 0 || fwd < guard {
+		t.Fatal("gateway forwarding must be enabled only after the guard check")
+	}
+	if strings.Contains(up, "sysctl --system") {
+		t.Fatal("sysctl --system would re-apply the boot-time forwarding=0")
+	}
+	g := b.File("nodes/gw/etc/nftables.d/meridian-guard.nft")
+	if !strings.Contains(g, "table inet meridian_guard {") || strings.Contains(g, "table inet meridian {") {
+		t.Fatal("early-boot guard file must hold only the guard table")
+	}
 }

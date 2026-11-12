@@ -42,6 +42,7 @@ flowchart LR
 - SSH 装机脚本用 `wg syncconf` 更新，避免拆掉 NAT 映射。演练模式不连接远端。
 - 二期：同一池里可以有多台香港出口和多条家宽。健康检查在枢纽上做，连续失败才换下一跳，并带回滞。Mesh 以 sidecar 跑在枢纽和出口上。
 - 三期：纯 IPv6 出口经双栈中继或 Mesh 到达；NAT64 只生成占位文件；面板有防泄露清单，并写明 WebRTC host 候选的 GUA 限制。
+- 验收分三级：`go test` 的自动化回归、在 Linux 上实际运行并存档的集成证据（netns 测试、`meridian-verify.sh` 等），以及测试机 / ROS / 断隧道 / 抓包的人工签收。单元测试和面板的「配置包含」都不证明没有泄漏，见[验收清单](docs/verification.md)。
 
 ## 路线图
 
@@ -60,6 +61,12 @@ flowchart LR
 ```bash
 sudo bash deploy/debian/install.sh
 sudo docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+面板口令在面板容器的命名卷里，宿主上直接 `cat /var/lib/meridian/panel.token` 通常读不到，要从容器里读：
+
+```bash
+sudo docker compose -f deploy/docker-compose.yml exec meridian cat /var/lib/meridian/panel.token
 ```
 
 浏览器打开 `http://192.168.100.88:8787`。示例拓扑里的 `203.0.113.0/24`、`198.51.100.0/24`、`2001:db8::/32` 和 `example.invalid` 都是文档占位，下发前必须换成你自己的端点。不要把真实地址、密钥或 token 提交进仓库。
@@ -83,4 +90,4 @@ MERIDIAN_BIND=127.0.0.1:8787 MERIDIAN_DATA=/tmp/meridian MERIDIAN_WEB_DIR=web/di
 
 Meridian is a LAN policy-routing gateway. Test clients use `192.168.100.88` as their IPv4 gateway and DNS. China prefixes go straight out via RouterOS `192.168.100.1`. Everything else must cross Aliyun Shanghai, the Shenzhen–Hong Kong IX, and the Hong Kong hub before it reaches an exit. The existing mihomo host and RouterOS stay untouched.
 
-The compiler covers the IX path, pool failover, a Mesh sidecar that cannot bypass the IX, six-hour unlock hysteresis, and pure-IPv6 reachability through a dual-stack relay or Mesh. NAT64 is reserved and is not installed into the routing table. Documentation addresses only; do not commit real endpoints or keys.
+The compiler covers the IX path, pool failover, a Mesh sidecar that cannot bypass the IX, six-hour unlock hysteresis, and pure-IPv6 reachability through a dual-stack relay or Mesh. Streaming/AI unlock tests can be started from the panel (解锁 → 面板探测) and run on the same chain as the six-hour schedule: meridian-host sends them through the chosen exit's fwmark and transit address over a forced IPv4 or IPv6, confirms the actual egress before and after, and only fixed catalog targets are probed; real-platform verdicts and the on-gateway egress still need human sign-off (docs/verification.md). NAT64 is reserved and is not installed into the routing table. Documentation addresses only; do not commit real endpoints or keys. Read the panel token from inside the container (`docker compose -f deploy/docker-compose.yml exec meridian cat /var/lib/meridian/panel.token`); it lives in a named volume, not on the host path. Unit tests and the panel checklist only check generated configuration; they do not prove the absence of leaks. Release needs the gateway `meridian-verify.sh` output, isolated Linux integration logs and human sign-off on a real client, ROS, a tunnel cut and packet captures (docs/verification.md).

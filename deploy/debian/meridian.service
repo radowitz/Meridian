@@ -1,16 +1,36 @@
 [Unit]
-Description=Meridian data plane restore
-After=network-online.target docker.service
-Wants=network-online.target
+Description=Meridian data plane restore (meridian-up.sh)
+Wants=network-online.target meridian-guard.service
+After=network-online.target docker.service meridian-guard.service
 ConditionFileIsExecutable=/usr/local/sbin/meridian-up.sh
+# Bounds the boot-time retries below (20 starts in 30 minutes). An activation
+# through meridian-host runs "systemctl reset-failed" first, so a limit hit
+# at boot never blocks a later install from the panel.
+StartLimitIntervalSec=30min
+StartLimitBurst=20
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Re-applies only Meridian's table, routes, and m*.conf WireGuard interfaces.
-# It does not flush the host ruleset and does not change the main default route,
-# so SSH to 192.168.100.88 keeps working if a later step fails.
+# Runs at boot and on every activation requested through meridian-host
+# (systemctl restart meridian.service), so both take the same path.
+# Re-applies only Meridian's tables, sysctls, routes and the WireGuard
+# interfaces listed in the installed manifest. It does not flush the host
+# ruleset and does not change the main default route, so SSH to
+# 192.168.100.88 keeps working if a later step fails. Any failure fails the
+# unit, which meridian-host reports to the panel.
 ExecStart=/usr/local/sbin/meridian-up.sh
+# meridian-up.sh waits (60 s by default) for the LAN interface, its address
+# and an on-link ROS next-hop after loading the firewall and guard. ifupdown
+# "allow-hotplug" + DHCP reaches network-online.target before the lease, so
+# at boot the LAN can be late. On timeout the script exits 75
+# (meridian-lan-not-ready) without having enabled forwarding or installed
+# routes; only that exit status is retried. Every other failure (bad nft
+# batch, missing guard, WireGuard error) stays failed for an operator.
+TimeoutStartSec=170
+Restart=no
+RestartForceExitStatus=75
+RestartSec=15
 
 [Install]
 WantedBy=multi-user.target

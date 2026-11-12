@@ -7,6 +7,53 @@ import (
 	"github.com/radowitz/meridian/internal/model"
 )
 
+// SmartDNSSharedDirs are the host directories the gateway SmartDNS config
+// reads from: its config, the DoT certificate pair, and the geosite and
+// keyword domain sets written by meridian-up.sh / meridian-update-geosite.sh.
+// A resolver running in its own container must mount every one of them at the
+// same path (deploy/docker-compose.yml), and needs CAP_NET_ADMIN for nftset.
+// smartDNSCertFile and smartDNSKeyFile are created by install.sh and, when
+// missing, by the gateway meridian-up.sh.
+const (
+	smartDNSCertFile = "/etc/meridian/dns/cert.pem"
+	smartDNSKeyFile  = "/etc/meridian/dns/key.pem"
+)
+
+var SmartDNSSharedDirs = []string{
+	"/etc/smartdns",
+	"/etc/meridian/dns",
+	"/var/lib/meridian/geosite",
+	"/var/lib/meridian/keywords",
+}
+
+// SmartDNSFileRefs lists the files a SmartDNS config loads, in order of
+// appearance: "-file" arguments (domain-set) and the global DoT certificate
+// directives "bind-cert-file" and "bind-cert-key-file". SmartDNS has no
+// per-bind certificate options; "bind-tls ... -cert-file" is rejected
+// ("unknown bind option").
+func SmartDNSFileRefs(conf string) []string {
+	var out []string
+	for _, line := range strings.Split(conf, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			switch fields[0] {
+			case "bind-cert-file", "bind-cert-key-file":
+				out = append(out, fields[1])
+				continue
+			}
+		}
+		for i := 0; i+1 < len(fields); i++ {
+			if fields[i] == "-file" {
+				out = append(out, fields[i+1])
+			}
+		}
+	}
+	return out
+}
+
 func renderGatewayDNS(t model.Topology, exits []ExitPlan, decisions map[string]string) string {
 	def, _ := defaultExit(t, exits)
 	rules := planRules(t, exits, decisions)
@@ -19,18 +66,24 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, decisions map[string]s
 	sb.WriteString("cache-size 65536\n")
 	sb.WriteString("serve-expired yes\n")
 	sb.WriteString("rr-ttl-min 60\n")
-	fmt.Fprintf(&sb, "bind %s:53\n", lanHost(t))
-	fmt.Fprintf(&sb, "bind-tcp %s:53\n", lanHost(t))
-	// [::] is required so hijacked IPv6 queries, which nft redirect delivers
-	// to this host's GUA, have a listener. The nft input chain drops
-	// port 53/853 from sources outside the LAN, so this is not an open resolver.
+	// One wildcard listener per port and protocol. In SmartDNS "[::]" is a
+	// dual-stack socket: an extra IPv4-specific bind on the same port (the
+	// LAN address or 127.0.0.1) fails with "Address already in use" and the
+	// resolver does not start. The wildcard also has to exist for hijacked
+	// IPv6 queries, which nft redirect delivers to this host's GUA.
+	// So SmartDNS answers on every address of this host. Who may ask is
+	// decided by the input chain of table inet meridian: 53/853 only from
+	// the LAN prefixes and from loopback (this host itself); everything else
+	// is dropped. That chain is loaded by meridian.service; between Docker
+	// starting this resolver at boot and meridian.service the only
+	// restriction is that this host sits on the LAN behind ROS.
 	sb.WriteString("bind [::]:53\n")
 	sb.WriteString("bind-tcp [::]:53\n")
-	sb.WriteString("bind 127.0.0.1:53\n")
-	sb.WriteString("bind-tcp 127.0.0.1:53\n")
 	sb.WriteString("# DoT certificate will not match the name the client dialed. Strict clients fail closed and fall back to port 53.\n")
-	fmt.Fprintf(&sb, "bind-tls %s:853 -cert-file /etc/meridian/dns/cert.pem -key-file /etc/meridian/dns/key.pem\n", lanHost(t))
-	sb.WriteString("bind-tls [::]:853 -cert-file /etc/meridian/dns/cert.pem -key-file /etc/meridian/dns/key.pem\n")
+	sb.WriteString("# The certificate is global in SmartDNS (bind-cert-*); bind-tls takes no certificate options.\n")
+	sb.WriteString("bind-cert-file " + smartDNSCertFile + "\n")
+	sb.WriteString("bind-cert-key-file " + smartDNSKeyFile + "\n")
+	sb.WriteString("bind-tls [::]:853\n")
 	sb.WriteString("\n")
 
 	dots := t.Settings.DomesticDoT
@@ -150,20 +203,105 @@ func renderExitDNS(n model.Node, tunnels []Tunnel) string {
 	return sb.String()
 }
 
+// listFetchShell is shared by the list update scripts: every download has a
+// connect timeout, a total timeout and a small retry, and goes to a
+// temporary file first. The base URLs and timeouts can be overridden with
+// environment variables (docs/install-debian13.md) without editing the
+// generated scripts; nothing is read from a file, because /etc/meridian is
+// writable from the panel container and these scripts run as root.
+const listFetchShell = `connect_timeout=${MERIDIAN_FETCH_CONNECT_TIMEOUT:-10}
+max_time=${MERIDIAN_FETCH_MAX_TIME:-120}
+retries=${MERIDIAN_FETCH_RETRIES:-2}
+for v in "$connect_timeout" "$max_time" "$retries"; do
+  case "$v" in ''|*[!0-9]*) echo "MERIDIAN_FETCH_* must be whole numbers" >&2; exit 1 ;; esac
+done
+check_base() {
+  case "$1" in
+    http://*|https://*) ;;
+    *) echo "refusing base URL $1: only http:// or https://" >&2; exit 1 ;;
+  esac
+}
+# fetch URL OUT: complete download to OUT, or non-zero (OUT may be partial).
+fetch() {
+  curl -fsSL --connect-timeout "$connect_timeout" --max-time "$max_time" \
+    --retry "$retries" --retry-delay 3 -o "$2" "$1"
+}
+`
+
 func renderChnrouteScript() string {
 	return `#!/bin/bash
-# Download the MIT-licensed China IP list and load it into the meridian sets.
-# This does not flush the rest of the nftables ruleset.
+# Download the MIT-licensed China IP lists (gaoyifan/china-operator-ip) and
+# load them into sets chnroute / chnroute6 of table inet meridian. The rest
+# of the ruleset is not touched.
+#
+# A set is only replaced when its list downloaded completely, is non-empty
+# and every line is an address or prefix of the right family. The flush and
+# the new elements go into one nft transaction, so a failed load keeps the
+# old elements; a failed or empty download never empties a populated set and
+# never overwrites the saved list in /var/lib/meridian.
+#
+# Overrides (environment, no file is read):
+#   MERIDIAN_CHNROUTE_BASE_URL  directory holding china.txt and china6.txt
+#                               (default: the project's raw GitHub branch)
+#   MERIDIAN_FETCH_CONNECT_TIMEOUT / MERIDIAN_FETCH_MAX_TIME / MERIDIAN_FETCH_RETRIES
+# Exit status: 0 both sets updated, 1 nothing updated, 2 only one family updated.
 set -euo pipefail
 dir=/var/lib/meridian
+base=${MERIDIAN_CHNROUTE_BASE_URL:-https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists}
+base=${base%/}
+` + listFetchShell + `check_base "$base"
 mkdir -p "$dir"
-curl -fsSL -o "$dir/china.txt" https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china.txt
-curl -fsSL -o "$dir/china6.txt" https://raw.githubusercontent.com/gaoyifan/china-operator-ip/ip-lists/china6.txt
-nft flush set inet meridian chnroute
-nft flush set inet meridian chnroute6
-awk 'NF && $1 !~ /^#/ { printf "add element inet meridian chnroute { %s }\n", $1 }' "$dir/china.txt" > "$dir/chnroute.nft"
-awk 'NF && $1 !~ /^#/ { printf "add element inet meridian chnroute6 { %s }\n", $1 }' "$dir/china6.txt" >> "$dir/chnroute.nft"
-nft -f "$dir/chnroute.nft"
+tmp=$(mktemp -d "$dir/.chnroute.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+# valid FAMILY IN OUT: entries only; fails on an empty list or a stray line
+# (an HTML error page, a captive portal, a truncated line).
+valid() {
+  awk -v fam="$1" '
+    /^[[:space:]]*(#|$)/ { next }
+    { e = $1 }
+    fam == "4" && e ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/[0-9]+)?$/ { print e; n++; next }
+    fam == "6" && e ~ /^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(\/[0-9]+)?$/ { print e; n++; next }
+    { bad++ }
+    END { if (bad > 0 || n == 0) exit 1 }
+  ' "$2" > "$3"
+}
+updated=0
+failed=0
+batch="$tmp/chnroute.nft"
+: > "$batch"
+for fam in 4 6; do
+  if [ "$fam" = 4 ]; then name=china.txt; set=chnroute; else name=china6.txt; set=chnroute6; fi
+  if ! fetch "$base/$name" "$tmp/$name"; then
+    echo "chnroute: download of $base/$name failed or timed out; set $set and $dir/$name left unchanged" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  if ! valid "$fam" "$tmp/$name" "$tmp/$name.ok"; then
+    echo "chnroute: $base/$name is empty or not an IPv$fam list; set $set and $dir/$name left unchanged" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  echo "flush set inet meridian $set" >> "$batch"
+  awk -v s="$set" '{ printf "add element inet meridian %s { %s }\n", s, $1 }' "$tmp/$name.ok" >> "$batch"
+  updated=$((updated + 1))
+  echo "$name" >> "$tmp/updated"
+done
+if [ "$updated" -eq 0 ]; then
+  echo "chnroute-not-updated: nothing could be fetched from $base (set MERIDIAN_CHNROUTE_BASE_URL to a reachable copy); nft sets unchanged" >&2
+  exit 1
+fi
+if ! nft -f "$batch"; then
+  echo "chnroute-not-updated: nft rejected the batch; the sets keep their previous elements" >&2
+  exit 1
+fi
+while IFS= read -r name; do
+  mv -f "$tmp/$name" "$dir/$name"
+done < "$tmp/updated"
+cp -f "$batch" "$dir/chnroute.nft"
+if [ "$failed" -ne 0 ]; then
+  echo "chnroute-partial: $updated of 2 lists updated" >&2
+  exit 2
+fi
 echo chnroute-updated
 `
 }
@@ -184,36 +322,66 @@ func renderGeositeScript(t model.Topology) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("# Pull v2fly/domain-list-community category files (MIT) and strip them for SmartDNS.\n")
-	sb.WriteString("# GPL rule packs are not vendored. A missing category is skipped, not fatal.\n")
+	sb.WriteString("# GPL rule packs are not vendored.\n")
+	sb.WriteString("# A list file is only replaced when its download completed and produced at\n")
+	sb.WriteString("# least one domain; otherwise the previous file stays (an empty one is only\n")
+	sb.WriteString("# created when none exists, so SmartDNS can start).\n")
+	sb.WriteString("#\n")
+	sb.WriteString("# Overrides (environment, no file is read):\n")
+	sb.WriteString("#   MERIDIAN_GEOSITE_BASE_URL  directory holding the category files\n")
+	sb.WriteString("#                              (default: the project's raw GitHub data directory)\n")
+	sb.WriteString("#   MERIDIAN_FETCH_CONNECT_TIMEOUT / MERIDIAN_FETCH_MAX_TIME / MERIDIAN_FETCH_RETRIES\n")
+	sb.WriteString("# Exit status: 0 every category updated, 1 nothing fetched, 2 some categories failed.\n")
 	sb.WriteString("set -u\n")
 	sb.WriteString("shopt -s nullglob\n")
 	sb.WriteString("dir=/var/lib/meridian\nmkdir -p \"$dir/geosite\" \"$dir/raw\" \"$dir/keywords\"\n")
-	sb.WriteString("base=https://raw.githubusercontent.com/v2fly/domain-list-community/master/data\n")
-	sb.WriteString("fetch() {\n")
+	sb.WriteString("base=${MERIDIAN_GEOSITE_BASE_URL:-https://raw.githubusercontent.com/v2fly/domain-list-community/master/data}\n")
+	sb.WriteString("base=${base%/}\n")
+	sb.WriteString(listFetchShell)
+	sb.WriteString("check_base \"$base\"\n")
+	sb.WriteString("tmp=$(mktemp -d \"$dir/.geosite.XXXXXX\") || exit 1\n")
+	sb.WriteString("trap 'rm -rf \"$tmp\"' EXIT\n")
+	sb.WriteString("ok=0\nfailed=0\n")
+	sb.WriteString("keep() {\n")
+	sb.WriteString("  [ -f \"$dir/geosite/$1.txt\" ] || : > \"$dir/geosite/$1.txt\"\n")
+	sb.WriteString("}\n")
+	sb.WriteString("get() {\n")
 	sb.WriteString("  name=\"$1\"\n")
-	sb.WriteString("  if ! curl -fsSL -o \"$dir/raw/$name\" \"$base/$name\"; then\n")
-	sb.WriteString("    echo \"skip $name\" >&2\n")
-	sb.WriteString("    [ -f \"$dir/geosite/$name.txt\" ] || : > \"$dir/geosite/$name.txt\"\n")
-	sb.WriteString("    return 0\n")
+	sb.WriteString("  if ! fetch \"$base/$name\" \"$tmp/$name.raw\"; then\n")
+	sb.WriteString("    echo \"geosite: $name download failed or timed out; previous list kept\" >&2\n")
+	sb.WriteString("    failed=$((failed + 1)); keep \"$name\"; return 0\n")
 	sb.WriteString("  fi\n")
 	sb.WriteString("  awk '\n")
 	sb.WriteString("    /^full:/ { sub(/^full:/, \"\"); sub(/@.*$/, \"\"); print; next }\n")
 	sb.WriteString("    /^domain:/ { sub(/^domain:/, \"\"); sub(/@.*$/, \"\"); print; next }\n")
 	sb.WriteString("    /^keyword:/ || /^regexp:/ || /^include:/ || /^#/ { next }\n")
 	sb.WriteString("    NF { sub(/@.*$/, \"\"); print }\n")
-	sb.WriteString("  ' \"$dir/raw/$name\" | sort -u > \"$dir/geosite/$name.txt\"\n")
+	sb.WriteString("  ' \"$tmp/$name.raw\" | awk 'NF { print $1 }' | sort -u > \"$tmp/$name.txt\"\n")
+	sb.WriteString("  if [ ! -s \"$tmp/$name.txt\" ]; then\n")
+	sb.WriteString("    echo \"geosite: $name has no domains (empty or not a category file); previous list kept\" >&2\n")
+	sb.WriteString("    failed=$((failed + 1)); keep \"$name\"; return 0\n")
+	sb.WriteString("  fi\n")
+	sb.WriteString("  mv -f \"$tmp/$name.raw\" \"$dir/raw/$name\"\n")
+	sb.WriteString("  mv -f \"$tmp/$name.txt\" \"$dir/geosite/$name.txt\"\n")
+	sb.WriteString("  ok=$((ok + 1))\n")
 	sb.WriteString("}\n")
 	for _, name := range list {
-		fmt.Fprintf(&sb, "fetch %s\n", name)
+		fmt.Fprintf(&sb, "get %s\n", name)
 	}
 	sb.WriteString("keyword_rule() {\n")
 	sb.WriteString("  id=\"$1\"\n")
 	sb.WriteString("  kw=\"$2\"\n")
 	sb.WriteString("  out=\"$dir/keywords/${id}.txt\"\n")
-	sb.WriteString("  : > \"$out\"\n")
 	sb.WriteString("  files=(\"$dir\"/geosite/*.txt)\n")
+	sb.WriteString("  : > \"$tmp/kw\"\n")
 	sb.WriteString("  if [ ${#files[@]} -gt 0 ]; then\n")
-	sb.WriteString("    grep -F -i -h -e \"$kw\" \"${files[@]}\" | sort -u > \"$out\" || true\n")
+	sb.WriteString("    grep -F -i -h -e \"$kw\" \"${files[@]}\" | sort -u > \"$tmp/kw\" || true\n")
+	sb.WriteString("  fi\n")
+	sb.WriteString("  # An empty result never replaces a populated keyword list.\n")
+	sb.WriteString("  if [ -s \"$tmp/kw\" ]; then\n")
+	sb.WriteString("    mv -f \"$tmp/kw\" \"$out\"\n")
+	sb.WriteString("  elif [ ! -f \"$out\" ]; then\n")
+	sb.WriteString("    : > \"$out\"\n")
 	sb.WriteString("  fi\n")
 	sb.WriteString("}\n")
 	for _, r := range t.Rules {
@@ -222,6 +390,14 @@ func renderGeositeScript(t model.Topology) string {
 		}
 		fmt.Fprintf(&sb, "keyword_rule %s %s\n", shQuote(sanitize(r.ID)), shQuote(r.MatchValue))
 	}
+	sb.WriteString("if [ \"$ok\" -eq 0 ]; then\n")
+	sb.WriteString("  echo \"geosite-not-updated: nothing could be fetched from $base (set MERIDIAN_GEOSITE_BASE_URL to a reachable copy); lists unchanged\" >&2\n")
+	sb.WriteString("  exit 1\n")
+	sb.WriteString("fi\n")
+	sb.WriteString("if [ \"$failed\" -ne 0 ]; then\n")
+	sb.WriteString("  echo \"geosite-partial: $ok updated, $failed kept from before\" >&2\n")
+	sb.WriteString("  exit 2\n")
+	sb.WriteString("fi\n")
 	sb.WriteString("echo geosite-updated\n")
 	return sb.String()
 }

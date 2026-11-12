@@ -1,20 +1,26 @@
-# Host networking is required so the controller can install WireGuard and nftables
-# into the Debian host. The process still binds only MERIDIAN_BIND (LAN address).
+# The panel writes Meridian's own host files through the bind mounts below,
+# and asks meridian-host (deploy/debian/meridian-host.service, on the host)
+# for every runtime action: daemon-reload, starting meridian.service and the
+# generated units, health checks and removal of owned interfaces/tables.
+# The container itself has no NET_ADMIN, no /dev/net/tun and no systemd: if
+# meridian-host is not reachable, "install" fails explicitly.
+# Host networking is kept only so the panel can bind MERIDIAN_BIND (LAN address).
 # Mesh is intentionally not defined here. It does not run on the home gateway.
 # The hub's generated bundle has etc/meridian/mesh-sidecar.compose.yml instead.
 services:
   meridian:
+    image: meridian:local
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     network_mode: host
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    devices:
-      - /dev/net/tun:/dev/net/tun
     volumes:
+      # Panel database (holds WireGuard private keys) and panel.token stay in
+      # the named volume. Only the SmartDNS domain sets are host directories,
+      # so the resolver container can read them without seeing the database.
       - meridian-data:/var/lib/meridian
+      - /var/lib/meridian/geosite:/var/lib/meridian/geosite
+      - /var/lib/meridian/keywords:/var/lib/meridian/keywords
       - /etc/wireguard:/etc/wireguard
       - /etc/nftables.d:/etc/nftables.d
       - /etc/sysctl.d:/etc/sysctl.d
@@ -23,23 +29,45 @@ services:
       - /etc/systemd/system:/etc/systemd/system
       - /etc/iproute2/rt_tables.d:/etc/iproute2/rt_tables.d
       - /usr/local/sbin:/usr/local/sbin
+      # Host execution boundary: the root-only socket directory (kept across
+      # agent restarts) and its token, read-only. Created by install.sh.
+      - /run/meridian-host:/run/meridian-host
+      - /etc/meridian-host/agent.token:/run/secrets/meridian-host.token:ro
     environment:
       MERIDIAN_BIND: 192.168.100.88:8787
       MERIDIAN_DATA: /var/lib/meridian
       MERIDIAN_WEB_DIR: /usr/share/meridian/web
+      MERIDIAN_HOST_SOCKET: /run/meridian-host/agent.sock
+      MERIDIAN_HOST_TOKEN_FILE: /run/secrets/meridian-host.token
     restart: unless-stopped
 
-  # Optional. Enable after /etc/smartdns/smartdns.conf exists:
+  # Optional. Enable after the first install has written
+  # /etc/smartdns/smartdns.conf and created the inet meridian nft table:
   #   docker compose --profile dns up -d
+  # Every path the generated config loads is mounted read-only at the same
+  # path (compile.SmartDNSSharedDirs): DoT certificate, geosite and keyword
+  # domain sets. NET_ADMIN is required for nftset writes into inet meridian.
+  # Verify on the gateway with deploy/verify-smartdns.sh (Linux + Docker).
   # Pin the image digest before production; do not rely on :latest long-term.
+  # The fixed container name lets meridian-host restart it after an install
+  # changes smartdns.conf (it never takes a container name from the panel).
   smartdns:
     profiles: ["dns"]
+    container_name: meridian-smartdns
     image: pymumu/smartdns:latest
     network_mode: host
+    cap_add:
+      - NET_ADMIN
     volumes:
       - /etc/smartdns:/etc/smartdns:ro
+      - /etc/meridian/dns:/etc/meridian/dns:ro
+      - /var/lib/meridian/geosite:/var/lib/meridian/geosite:ro
+      - /var/lib/meridian/keywords:/var/lib/meridian/keywords:ro
     restart: unless-stopped
-    command: ["-f", "-c", "/etc/smartdns/smartdns.conf"]
+    # The image has no ENTRYPOINT (its CMD is "/usr/sbin/smartdns -f -x"), so
+    # the binary must be named here; with only flags the container fails to
+    # start ("exec: -f: executable file not found").
+    command: ["/usr/sbin/smartdns", "-f", "-x", "-c", "/etc/smartdns/smartdns.conf"]
 
 volumes:
   meridian-data:

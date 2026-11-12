@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/unlock"
 )
@@ -54,7 +55,9 @@ func renderMeshCompose(t model.Topology) string {
 # networking, so it cannot replace the host default route or the IX path.
 # Do not deploy this file on the home gateway.
 # The token is read from /etc/meridian/mesh.env (mode 0600). Do not commit one.
+# The panel's Mesh deployment writes that file; it never stores the token.
 # Pin settings.mesh_image to a digest after you have pulled a tag you trust.
+name: meridian-mesh
 services:
   mesh:
     image: %s
@@ -82,27 +85,61 @@ networks:
     name: meridian_mesh
 volumes:
   mesh-lib:
+    name: meridian_mesh_lib
 `, meshImage(t))
 }
 
 func renderMeshEnvExample() string {
 	return `# Copy to /etc/meridian/mesh.env and chmod 600.
 # Put the Cloudflare Mesh node token here. Leave it empty in git.
+# The panel's Mesh deployment (部署 → Mesh) writes this file itself.
 MESH_NODE_TOKEN=
 `
 }
 
-func renderMeshUp() string {
-	// 169.254.66.0/30 is link-local on the veth only. It is outside 10.66.0.0/16
-	// (tunnel aggregate, routed west) and outside the LAN, so a missing
-	// connected route cannot send this hop toward Aliyun or ROS.
-	return `#!/bin/bash
+// renderMeshUp attaches the veth to the sidecar and seals it. The veth is
+// an Ethernet device, so both ends get fixed MACs, IPv4 and IPv6 link
+// addresses and permanent neighbour entries for each other; the host's
+// exit tables then use "via <sidecar> dev mmesh" (see mesh.Addressing).
+// The seal is only written after both next-hops answered a ping.
+func renderMeshUp(t model.Topology) string {
+	a := mesh.DefaultAddressing()
+	ret4, ret6 := mesh.ReturnPrefixes(t)
+	return strings.NewReplacer(
+		"@HOST4@", a.HostV4CIDR(),
+		"@SIDE4@", a.SidecarV4CIDR(),
+		"@NH4@", a.NextHopV4(),
+		"@HOSTIP4@", a.HostV4.String(),
+		"@HOST6@", a.HostV6CIDR(),
+		"@SIDE6@", a.SidecarV6CIDR(),
+		"@NH6@", a.NextHopV6(),
+		"@HOSTIP6@", a.HostV6.String(),
+		"@HOSTMAC@", a.HostMAC,
+		"@SIDEMAC@", a.SidecarMAC,
+		"@LINK4@", a.LinkV4.String(),
+		"@TABLE@", fmt.Sprint(mesh.SidecarTable),
+		"@RET4@", strings.Join(ret4, " "),
+		"@RET6@", strings.Join(ret6, " "),
+	).Replace(meshUpBody)
+}
+
+// 169.254.66.0/30 and fe80::66:1/2 exist on the veth only. The IPv4 link is
+// outside 10.66.0.0/16 (tunnel aggregate, routed west) and outside the LAN,
+// so a missing connected route cannot send this hop toward Aliyun or ROS.
+const meshUpBody = `#!/bin/bash
 # Attach a veth to the Mesh sidecar netns and seal it.
 # Traffic the host injects on mmesh must not follow the container's default
 # route: that route is the docker bridge, which NATs onto this machine's WAN.
 # On the hub, that WAN is the VPS default route and would skip the exit.
-# The seal sends injected packets into table 170 (warp routes, or unreachable)
+# The seal sends injected packets into table @TABLE@ (warp routes, or unreachable)
 # at priority 17000. It never installs a route in table 100, 102, 150, or main.
+#
+# mmesh is an Ethernet veth, not a point-to-point tunnel. Routes onto it
+# must name a next-hop: via @NH4@ dev mmesh and via @NH6@ dev mmesh.
+# Both ends have fixed MACs and permanent neighbour entries, so no ARP/ND
+# is sent for public destinations and no proxy ARP/ND is needed.
+# The seal (/run/meridian/mesh-sealed) is only written when both next-hops
+# answer from the host.
 # This script refuses to run on the home gateway (192.168.100.88).
 set -u
 seal_only=0
@@ -158,14 +195,19 @@ if ip link show mmesh >/dev/null 2>&1; then
   fi
 fi
 if ! ip link show mmesh >/dev/null 2>&1; then
-  ip link add mmesh type veth peer name mmesh-c || {
+  ip link add mmesh address @HOSTMAC@ type veth peer name mmesh-c address @SIDEMAC@ || {
     echo "mesh veth failed" >&2
     unseal
     exit 0
   }
 fi
+ip link set mmesh address @HOSTMAC@ || true
+ip link set mmesh addrgenmode none >/dev/null 2>&1 || true
+sysctl -qw net.ipv6.conf.mmesh.disable_ipv6=0 >/dev/null 2>&1 || true
+sysctl -qw net.ipv6.conf.mmesh.accept_ra=0 >/dev/null 2>&1 || true
 ip link set mmesh up || true
-ip addr replace 169.254.66.1/30 dev mmesh || true
+ip addr replace @HOST4@ dev mmesh || true
+ip -6 addr replace @HOST6@ dev mmesh nodad || true
 if ip link show mmesh-c >/dev/null 2>&1; then
   ip link set mmesh-c netns "$pid" || true
 fi
@@ -180,12 +222,25 @@ for key in net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter net.ipv4.
 done
 if ! nsenter -t "$pid" -n bash -s <<'EOS'
 set -eu
+ip link set mmesh-c address @SIDEMAC@
+ip link set mmesh-c addrgenmode none >/dev/null 2>&1 || true
 ip link set mmesh-c up
-ip addr replace 169.254.66.2/30 dev mmesh-c
-ip route flush table 170 2>/dev/null || true
-ip route replace unreachable default metric 32767 table 170
-ip -6 route flush table 170 2>/dev/null || true
-ip -6 route replace unreachable default metric 32767 table 170
+ip addr replace @SIDE4@ dev mmesh-c
+ip -6 addr replace @SIDE6@ dev mmesh-c nodad
+ip neigh replace @HOSTIP4@ lladdr @HOSTMAC@ dev mmesh-c nud permanent
+ip -6 neigh replace @HOSTIP6@ lladdr @HOSTMAC@ dev mmesh-c nud permanent
+# Return path: replies for Meridian prefixes go back to the host end of the
+# veth (explicit next-hop), not out of the docker bridge.
+for p in @RET4@; do
+  ip route replace "$p" via @HOSTIP4@ dev mmesh-c
+done
+for p in @RET6@; do
+  ip -6 route replace "$p" via @HOSTIP6@ dev mmesh-c
+done
+ip route flush table @TABLE@ 2>/dev/null || true
+ip route replace unreachable default metric 32767 table @TABLE@
+ip -6 route flush table @TABLE@ 2>/dev/null || true
+ip -6 route replace unreachable default metric 32767 table @TABLE@
 warp=""
 for d in $(ip -o link show | awk -F': ' '{print $2}' | cut -d@ -f1); do
   case "$d" in
@@ -206,38 +261,53 @@ copy_routes() {
       *'dev eth'*|*'dev docker'*|*'dev br-'*|*'dev veth'*) continue ;;
     esac
     # shellcheck disable=SC2086
-    ip $fam route replace $spec table 170 || true
+    ip $fam route replace $spec table @TABLE@ || true
   done
 }
 copy_routes -4 "$warp"
 copy_routes -6 "$warp"
-ip route replace 169.254.66.0/30 dev mmesh-c table 170 || true
-while ip rule del iif mmesh-c lookup 170 >/dev/null 2>&1; do :; done || true
-ip rule add iif mmesh-c lookup 170 priority 17000
-while ip -6 rule del iif mmesh-c lookup 170 >/dev/null 2>&1; do :; done || true
-ip -6 rule add iif mmesh-c lookup 170 priority 17000
+ip route replace @LINK4@ dev mmesh-c table @TABLE@ || true
+while ip rule del iif mmesh-c lookup @TABLE@ >/dev/null 2>&1; do :; done || true
+ip rule add iif mmesh-c lookup @TABLE@ priority 17000
+while ip -6 rule del iif mmesh-c lookup @TABLE@ >/dev/null 2>&1; do :; done || true
+ip -6 rule add iif mmesh-c lookup @TABLE@ priority 17000
 if command -v nft >/dev/null 2>&1; then
-  nft delete table inet meridian_mesh >/dev/null 2>&1 || true
-  nft add table inet meridian_mesh
-  nft add chain inet meridian_mesh forward '{ type filter hook forward priority filter; policy accept; }'
+  # One nft transaction: create-if-missing, delete, recreate. Either the
+  # whole batch commits or the previous table stays.
   if [ -n "$warp" ]; then
-    nft add rule inet meridian_mesh forward iifname "mmesh-c" oifname != "$warp" drop
+    rule="iifname \"mmesh-c\" oifname != \"$warp\" drop"
   else
-    nft add rule inet meridian_mesh forward iifname "mmesh-c" drop
+    rule="iifname \"mmesh-c\" drop"
   fi
+  nft -f - <<NFT
+table inet meridian_mesh
+delete table inet meridian_mesh
+table inet meridian_mesh {
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    $rule
+  }
+}
+NFT
 fi
 EOS
 then
-  mkdir -p /run/meridian
-  : > /run/meridian/mesh-sealed
-  echo "mesh sidecar sealed; exit tables may use dev mmesh, IX tables may not"
+  ip neigh replace @NH4@ lladdr @SIDEMAC@ dev mmesh nud permanent || true
+  ip -6 neigh replace @NH6@ lladdr @SIDEMAC@ dev mmesh nud permanent || true
+  if ping -c 1 -W 2 -n -I mmesh @NH4@ >/dev/null 2>&1 && ping -6 -c 1 -W 2 -n @NH6@%mmesh >/dev/null 2>&1; then
+    mkdir -p /run/meridian
+    : > /run/meridian/mesh-sealed
+    echo "mesh sidecar sealed; next-hops @NH4@ and @NH6@%mmesh answer; exit tables may use them, IX tables may not"
+  else
+    echo "mesh next-hop @NH4@ or @NH6@%mmesh does not answer; exit tables stay blackholed" >&2
+    unseal
+  fi
 else
   echo "mesh seal failed; exit tables stay blackholed" >&2
   unseal
 fi
 exit 0
 `
-}
 
 func renderNAT64(t model.Topology) string {
 	var sb strings.Builder
@@ -257,83 +327,224 @@ func renderNAT64(t model.Topology) string {
 	return sb.String()
 }
 
+// renderVerifyScript is meridian-verify.sh: checks that the script itself
+// executes on the Debian gateway, each with its raw output saved as
+// evidence. It never reports a check it did not run as passed. A missing
+// nft binary or a missing Meridian table is a failure. Client DNS leak,
+// WebRTC, ICMP redirect captures and tunnel-cut tests cannot be executed
+// from here and are printed as PENDING-HUMAN; the ROS fd00::/8 check runs
+// only when MERIDIAN_ROS_SSH is set, otherwise it is PENDING-HUMAN too.
+// The final line is meridian-verify-local-ok only when every local check
+// passed; that line is not a leak test and not a release sign-off.
 func renderVerifyScript(t model.Topology) string {
 	gw := t.Settings.GatewayLANIP
 	if gw == "" {
 		gw = "192.168.100.88/24"
 	}
+	gwAddr := gw
+	if p, err := netip.ParsePrefix(gw); err == nil {
+		gwAddr = p.Addr().String()
+	} else if a, err := netip.ParseAddr(gw); err == nil {
+		gwAddr = a.String()
+	}
 	ros := t.Settings.ROSIPv4
 	if ros == "" {
 		ros = "192.168.100.1"
+	}
+	ros6 := ""
+	if a, err := netip.ParseAddr(t.Settings.ROSv6LLA); err == nil && a.Is6() {
+		ros6 = a.String()
 	}
 	iface := t.Settings.LANInterface
 	if iface == "" {
 		iface = "eth0"
 	}
-	return fmt.Sprintf(`#!/bin/bash
-# Same-subnet redirect and rp_filter check for the gateway.
-# Exits 0 when the generated policy is present in the running kernel.
-# A missing /proc (container build) is a skip, not a failure.
+	return strings.NewReplacer(
+		"@IFACE@", shQuote(iface),
+		"@GWADDR@", shQuote(gwAddr),
+		"@ROS4@", shQuote(ros),
+		"@ROS6@", shQuote(ros6),
+	).Replace(verifyScriptBody)
+}
+
+const verifyScriptBody = `#!/bin/bash
+# meridian-verify.sh: local checks on the Debian gateway (run as root).
+#
+# What this script can establish: the running kernel's sysctls, the LAN
+# address, that ROS is an on-link neighbour, that no ULA route points at
+# ROS or out of the LAN port, and that nft tables inet meridian and
+# inet meridian_guard are loaded with the DNS hijack, the DNS input drop,
+# the ULA drop and the fail-closed forward guard. Every command's raw
+# output is saved under the evidence directory.
+#
+# What it cannot establish: that a real client does not leak. DNS leak and
+# WebRTC tests need a browser on the test device; ICMP redirects and tunnel
+# cuts need a packet capture. Those are printed as PENDING-HUMAN and must be
+# signed off with archived evidence (docs/verification.md). The ROS
+# fd00::/8 check only runs when MERIDIAN_ROS_SSH=user@host is set (one
+# read-only "/ipv6 route print"); otherwise it is PENDING-HUMAN as well.
+#
+# Exit status: 0 every local check passed (meridian-verify-local-ok),
+# 1 at least one FAIL, 2 no FAIL but something could not be checked.
 set -u
-fail=0
-note() { echo "$*"; }
-bad() { echo "FAIL: $*"; fail=1; }
-if [ ! -d /proc/sys/net ]; then
-  echo "SKIP: no /proc/sys/net; run this on the Debian gateway"
-  exit 0
+iface=@IFACE@
+gw_addr=@GWADDR@
+ros4=@ROS4@
+ros6=@ROS6@
+ts=$(date -u +%Y%m%dT%H%M%SZ)
+evdir=${MERIDIAN_VERIFY_EVIDENCE_DIR:-/var/log/meridian-verify/$ts}
+if ! mkdir -p "$evdir" 2>/dev/null; then
+  evdir=$(mktemp -d) || { echo "FAIL evidence: cannot create an evidence directory"; exit 1; }
 fi
-read_sys() { cat "$1" 2>/dev/null || echo missing; }
-for kv in \
-  net.ipv4.conf.all.rp_filter=2 \
-  net.ipv4.conf.default.rp_filter=2 \
-  net.ipv4.conf.%s.rp_filter=2 \
-  net.ipv4.conf.all.send_redirects=0 \
-  net.ipv4.conf.%s.send_redirects=0 \
-  net.ipv6.conf.all.send_redirects=0 \
-  net.ipv4.conf.all.accept_redirects=0 \
-  net.ipv6.conf.all.accept_redirects=0 \
-  net.ipv4.ip_forward=1
- do
-  key=${kv%%%%=*}; want=${kv##*=}
-  path=/proc/sys/${key//./\/}
-  got=$(read_sys "$path")
-  if [ "$got" = "$want" ]; then
-    note "ok $key=$got"
+summary="$evdir/summary.txt"
+: > "$summary"
+fails=0
+unknowns=0
+emit() { printf '%s\n' "$*"; printf '%s\n' "$*" >> "$summary"; }
+pass() { emit "PASS $1: $2"; }
+fail() { emit "FAIL $1: $2"; fails=$((fails + 1)); }
+unknown() { emit "UNKNOWN $1: $2"; unknowns=$((unknowns + 1)); }
+pending() { emit "PENDING-HUMAN $1: $2"; }
+notrun() { emit "NOT-RUN-HERE $1: $2"; }
+# run NAME CMD...: raw output to $evdir/NAME.txt, exit status kept.
+run() {
+  name=$1; shift
+  "$@" > "$evdir/$name.txt" 2>&1
+  rc=$?
+  echo "exit=$rc" >> "$evdir/$name.txt"
+  return $rc
+}
+emit "meridian-verify $ts iface=$iface gateway=$gw_addr ros=$ros4 ros6=${ros6:-unset}"
+
+# --- kernel settings -------------------------------------------------------
+if ! command -v sysctl >/dev/null 2>&1; then
+  unknown sysctl "sysctl not found; no kernel setting was checked (run this on the gateway)"
+else
+  for kv in \
+    net.ipv4.conf.all.rp_filter=2 \
+    net.ipv4.conf.default.rp_filter=2 \
+    "net.ipv4.conf.$iface.rp_filter=2" \
+    net.ipv4.conf.all.send_redirects=0 \
+    "net.ipv4.conf.$iface.send_redirects=0" \
+    net.ipv4.conf.all.accept_redirects=0 \
+    net.ipv6.conf.all.accept_redirects=0 \
+    net.ipv4.ip_forward=1 \
+    net.ipv6.conf.all.forwarding=1
+  do
+    key=${kv%=*}; want=${kv##*=}
+    if got=$(sysctl -n "$key" 2>/dev/null); then
+      echo "$key=$got" >> "$evdir/sysctl.txt"
+      if [ "$got" = "$want" ]; then
+        pass "sysctl $key" "$got"
+      else
+        fail "sysctl $key" "$got, want $want"
+      fi
+    else
+      echo "$key=<unreadable>" >> "$evdir/sysctl.txt"
+      fail "sysctl $key" "not readable"
+    fi
+  done
+fi
+
+# --- addresses and routes --------------------------------------------------
+if ! command -v ip >/dev/null 2>&1; then
+  unknown routes "ip not found; address, neighbour and ULA route checks not run"
+else
+  if run ip-addr ip -4 -o addr show dev "$iface" && grep -qF " $gw_addr/" "$evdir/ip-addr.txt"; then
+    pass gateway_address "$gw_addr is on $iface"
   else
-    bad "$key=$got want $want"
+    fail gateway_address "$gw_addr is not on $iface (evidence ip-addr.txt)"
   fi
-done
-if ip -4 addr show dev %s 2>/dev/null | grep -q '192.168.100.88'; then
-  note "ok gateway address is 192.168.100.88"
-else
-  bad "192.168.100.88 is not on %s"
-fi
-ros=%s
-if ip route get "$ros" 2>/dev/null | grep -q 'via'; then
-  note "ok the LAN gateway is reached as a neighbour"
-fi
-# The next line must not install a route. It only fails if one already points at the LAN gateway.
-if ip -6 route show fd66::/48 2>/dev/null | grep -q "$ros"; then
-  bad "fd66 prefix is routed via the LAN gateway"
-else
-  note "ok fd66 is not via the LAN gateway"
-fi
-if command -v nft >/dev/null 2>&1 && nft list table inet meridian >/dev/null 2>&1; then
-  if nft list table inet meridian | grep -q 'dport 853'; then
-    note "ok dns hijack present"
+  if run ros-route ip -4 route get "$ros4" && grep -qE " dev $iface( |\$)" "$evdir/ros-route.txt" && ! grep -q " via " "$evdir/ros-route.txt"; then
+    pass ros_neighbour "$ros4 is reached on-link via $iface"
   else
-    bad "nft table has no 853 hijack"
+    fail ros_neighbour "$ros4 is not an on-link neighbour on $iface (evidence ros-route.txt)"
   fi
-else
-  note "SKIP nft table not loaded"
+  if run ip6-routes ip -6 route show table all; then
+    grep -E '^((unreachable|blackhole|prohibit|throw|local|anycast) )?f[cd][0-9a-f]{0,2}:' "$evdir/ip6-routes.txt" > "$evdir/ula-routes.txt" || true
+    bad=""
+    if grep -qE " dev $iface( |\$)" "$evdir/ula-routes.txt"; then bad="leaves via $iface"; fi
+    if [ -n "$ros6" ] && grep -qF "via $ros6 " "$evdir/ula-routes.txt"; then bad="points at ROS $ros6"; fi
+    if [ -n "$bad" ]; then
+      fail ula_not_via_ros "a ULA route $bad (evidence ula-routes.txt)"
+    else
+      pass ula_not_via_ros "no ULA route in any table uses $iface or ROS (evidence ula-routes.txt)"
+    fi
+  else
+    fail ula_not_via_ros "ip -6 route show table all failed (evidence ip6-routes.txt)"
+  fi
 fi
-echo "WebRTC: host candidates may still show the ISP GUA. srflx must be the exit."
-if [ "$fail" -ne 0 ]; then
+
+# --- firewall: both tables are required ------------------------------------
+if ! command -v nft >/dev/null 2>&1; then
+  fail nft "nft is not installed: there is no Meridian firewall on this host"
+else
+  if run nft-guard nft list table inet meridian_guard; then
+    g="$evdir/nft-guard.txt"
+    if grep -qE 'hook forward priority (-200|filter - 200);' "$g" && grep -q 'fail closed' "$g" && grep -qE "iifname \"$iface\" .*drop" "$g"; then
+      pass nft_guard "inet meridian_guard is loaded: forward hook at -200 with the fail-closed LAN drop"
+    else
+      fail nft_guard "inet meridian_guard is loaded but its forward hook or fail-closed drop is missing (evidence nft-guard.txt)"
+    fi
+  else
+    fail nft_guard "table inet meridian_guard is not loaded (or not readable; run as root) (evidence nft-guard.txt)"
+  fi
+  if run nft-meridian nft list table inet meridian; then
+    m="$evdir/nft-meridian.txt"
+    if grep -q 'redirect to :53' "$m"; then pass dns_hijack_53 "LAN 53 is redirected to the local resolver"; else fail dns_hijack_53 "no 53 redirect in inet meridian"; fi
+    if grep -q 'redirect to :853' "$m"; then pass dns_hijack_853 "LAN 853 is redirected locally"; else fail dns_hijack_853 "no 853 redirect in inet meridian"; fi
+    if grep -q 'DNS only from the LAN' "$m"; then pass dns_input_drop "non-LAN 53/853 is dropped on input"; else fail dns_input_drop "no non-LAN DNS drop on input"; fi
+    if grep -q 'ip6 daddr fc00::/7 drop' "$m"; then pass ula_drop "forwarded ULA is dropped"; else fail ula_drop "no fc00::/7 drop in inet meridian"; fi
+  else
+    fail nft_meridian "table inet meridian is not loaded (or not readable; run as root) (evidence nft-meridian.txt)"
+  fi
+fi
+
+# --- ROS fd00::/8 blackhole: only from a real read-only query --------------
+ros_ssh=${MERIDIAN_ROS_SSH:-}
+if [ -z "$ros_ssh" ]; then
+  pending ros_ula_blackhole "not executed. On ROS (read-only): /ipv6 route print where blackhole and (dst-address=fd00::/8 or dst-address=fc00::/7); archive the output, or rerun with MERIDIAN_ROS_SSH=user@$ros4"
+else
+  case "$ros_ssh" in
+    -*|*[!A-Za-z0-9@._:-]*)
+      fail ros_ula_blackhole "MERIDIAN_ROS_SSH refused: only user@host"
+      ;;
+    *)
+      if command -v ssh >/dev/null 2>&1 && run ros-ipv6-blackhole ssh -o BatchMode=yes -o ConnectTimeout=8 -- "$ros_ssh" '/ipv6 route print terse where blackhole'; then
+        if grep -qE 'dst-address=(fd00::/8|fc00::/7)' "$evdir/ros-ipv6-blackhole.txt"; then
+          pass ros_ula_blackhole "ROS has a ULA blackhole (evidence ros-ipv6-blackhole.txt)"
+        else
+          fail ros_ula_blackhole "ROS answered but has no fd00::/8 or fc00::/7 blackhole (evidence ros-ipv6-blackhole.txt)"
+        fi
+      else
+        unknown ros_ula_blackhole "could not query ROS over ssh; nothing was checked (evidence ros-ipv6-blackhole.txt)"
+      fi
+      ;;
+  esac
+fi
+
+# --- not executable from this script ---------------------------------------
+pending dns_leak_client "dnsleaktest.com and ipleak.net on the test device (v4 and v6), plus a WAN capture with no 53/853 from it; this script runs no browser"
+pending webrtc_srflx "browserleaks/ipleak WebRTC on the test device: srflx must be the exit address; a host GUA is a known limitation"
+pending redirect_on_wire "capture on the test device while browsing: no ICMP redirect from $gw_addr pointing at $ros4"
+pending tunnel_cut "take the exit tunnel down while the test device keeps browsing; capture on $iface: nothing foreign leaves towards $ros4, and the device gets no answer instead of a home-WAN answer"
+notrun netns_reload_no_leak "isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsReloadNoLeak (archive the log)"
+notrun smartdns "sudo bash deploy/verify-smartdns.sh (archive the output)"
+notrun host_exec "sudo bash deploy/verify-host-exec.sh and --boot after a reboot (archive the output)"
+notrun mesh_veth "isolated Linux integration: sudo bash deploy/verify-mesh-veth.sh (dual-stack forwarding through the mmesh next-hops; archive the output). Mesh stays unverified until then"
+
+emit "evidence: $evdir"
+if [ "$fails" -ne 0 ]; then
+  emit "meridian-verify-failed: $fails failed, $unknowns unknown"
   exit 1
 fi
-echo "meridian-verify-ok"
-`, iface, iface, iface, iface, ros)
-}
+if [ "$unknowns" -ne 0 ]; then
+  emit "meridian-verify-incomplete: $unknowns local checks could not run"
+  exit 2
+fi
+emit "meridian-verify-local-ok: local gateway checks passed. This is not a leak test; release still needs every PENDING-HUMAN and NOT-RUN-HERE item signed off with archived evidence."
+exit 0
+`
 
 func renderUnlockReportEnv() string {
 	return `# Copy to /etc/meridian/unlock-report.env and chmod 600.
@@ -360,25 +571,33 @@ func renderUnlockProbe(t model.Topology, n model.Node) string {
 	fmt.Fprintf(&sb, "panel=%s\n", shQuote(panel))
 	sb.WriteString(`dir=/var/lib/meridian
 mkdir -p "$dir"
+# When the probe started. The panel orders reports by this time (a late
+# report cannot overwrite a newer one) and rejects reports older than one
+# hour; its 30-minute return cooldown still runs on the panel's own clock.
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 raw="$dir/unlock-last.txt"
+raw4="$dir/unlock-last-v4.txt"
+raw6="$dir/unlock-last-v6.txt"
 ai="$dir/unlock-ai.txt"
-: > "$raw"
+: > "$raw4"
+: > "$raw6"
 run_rc() {
-  family="$1"
+  family="$1"; out="$2"
   if ! command -v docker >/dev/null 2>&1; then
-    echo "regioncheck container is not installed" >> "$raw"
+    echo "regioncheck container is not installed" >> "$out"
     return 0
   fi
   if ! docker image inspect "$image" >/dev/null 2>&1; then
-    echo "regioncheck image is not present locally: $image" >> "$raw"
-    echo "pull it on this exit with: docker pull $image" >> "$raw"
+    echo "regioncheck image is not present locally: $image" >> "$out"
+    echo "pull it on this exit with: docker pull $image" >> "$out"
     return 0
   fi
   timeout 25m docker run --rm --network host --entrypoint /check.sh \
-    "$image" -R 66 -M "$family" -E en >> "$raw" 2>&1 || true
+    "$image" -R 66 -M "$family" -E en >> "$out" 2>&1 || true
 }
-run_rc 4
-run_rc 6
+run_rc 4 "$raw4"
+run_rc 6 "$raw6"
+cat "$raw4" "$raw6" > "$raw"
 : > "$ai"
 probe() {
   id="$1"; url="$2"
@@ -400,18 +619,22 @@ if [ -f "$token_file" ] && command -v python3 >/dev/null 2>&1 && command -v curl
       echo "unlock report skipped: token missing or refused" >&2
       ;;
     *)
-      body=$(EXIT_ID="$exit_id" RAW="$raw" AI="$ai" python3 - <<'PY'
+      body=$(EXIT_ID="$exit_id" STARTED="$started" RAW4="$raw4" RAW6="$raw6" AI="$ai" python3 - <<'PY'
 import json, os
 def slurp(path):
     try:
         with open(path, "r", errors="replace") as fh:
-            return fh.read()[-200000:]
+            return fh.read()[-100000:]
     except OSError:
         return ""
+# raw4/raw6 are the -M 4 / -M 6 runs; the AI probes use curl -4.
 print(json.dumps({
     "exit_id": os.environ["EXIT_ID"],
     "kind": "scheduled",
-    "raw": slurp(os.environ["RAW"]),
+    "at": os.environ["STARTED"],
+    "family": "ipv4",
+    "raw4": slurp(os.environ["RAW4"]),
+    "raw6": slurp(os.environ["RAW6"]),
     "ai": slurp(os.environ["AI"]),
 }))
 PY

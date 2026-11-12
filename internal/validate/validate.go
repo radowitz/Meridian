@@ -198,6 +198,18 @@ func checkSettings(t model.Topology) []Issue {
 	if iss := checkIface(t.Settings.LANInterface, "局域网接口"); iss != nil {
 		out = append(out, *iss)
 	}
+	// settings.lan_interface is the only source for the gateway LAN NIC (nft
+	// guard, routes, sysctls, LAN wait, verify script). A gateway node that
+	// names a different NIC of its own would silently split them.
+	lanIf := or(t.Settings.LANInterface, "eth0")
+	for _, n := range t.Nodes {
+		if n.Role == model.RoleGateway && n.LANInterface != "" && n.LANInterface != lanIf {
+			out = append(out, Issue{
+				Code: "lan_interface_mismatch", Severity: SeverityError, NodeID: n.ID,
+				Message: fmt.Sprintf("网关节点 %s 的 lan_interface 是 %q，而 settings.lan_interface 是 %q。网关局域网口只以 settings.lan_interface 为准：把节点上的改成相同或留空。", n.Name, n.LANInterface, lanIf),
+			})
+		}
+	}
 	if t.Settings.UnlockIntervalSec > 0 && t.Settings.UnlockIntervalSec < 3600 {
 		out = append(out, Issue{
 			Code: "unlock_interval_short", Severity: SeverityWarning,

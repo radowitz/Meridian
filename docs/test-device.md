@@ -45,6 +45,10 @@ netsh interface ipv6 add route ::/0 "Ethernet" fe80::88
 
 DNS 填 IPv4 的 `192.168.100.88` 即可。ROS 的 RA 里没有 DNS，不会和这项冲突。
 
+## 签收记录
+
+这台设备上做的 DNS 泄漏、WebRTC、断隧道和抓包是[验收清单](verification.md)里的「实机人工签收」，仓库测试、面板和 `meridian-verify.sh` 都替代不了。每做一项，记下日期、当时的拓扑版本（面板快照）、这台设备的 IPv4/IPv6 默认路由（`ip route`、`ip -6 route` 或 `route print` 的输出），以及截图或 pcap 的存档位置。没有记录的项目按「待人工签收」处理。
+
 ## 不要做的事
 
 - 不要只改 IPv4 网关、不改 IPv6 默认路由。

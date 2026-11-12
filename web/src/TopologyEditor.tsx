@@ -162,6 +162,17 @@ export default function TopologyEditor({
     });
   }
 
+  // The gateway LAN NIC lives in settings.lan_interface only (nft guard,
+  // routes, sysctls, verify script). Gateway nodes follow it, so the two
+  // fields can never disagree (the validator refuses a mismatch).
+  function setGatewayLAN(value: string) {
+    onChange({
+      ...topo,
+      settings: { ...topo.settings, lan_interface: value },
+      nodes: topo.nodes.map((n) => (n.role === "gateway" ? { ...n, lan_interface: value || undefined } : n)),
+    });
+  }
+
   function patchLink(partial: Partial<Link>) {
     if (!currentLink) return;
     const next = { ...currentLink, ...partial };
@@ -230,6 +241,15 @@ export default function TopologyEditor({
                   onChange={(role) => patchNode({ role })}
                 />
               </Form.Item>
+              {currentNode.role === "gateway" && (
+                <Form.Item label="局域网接口（settings.lan_interface，网关唯一来源）">
+                  <Input
+                    value={topo.settings.lan_interface || ""}
+                    placeholder="eth0"
+                    onChange={(e) => setGatewayLAN(e.target.value.trim())}
+                  />
+                </Form.Item>
+              )}
               <Form.Item label="公网 IPv4（文档地址，NAT 拨出留空）">
                 <Input
                   value={currentNode.endpoint_v4 || ""}
@@ -312,6 +332,17 @@ export default function TopologyEditor({
               <Form.Item label="WSS MTU">
                 <InputNumber value={currentLink.wss_mtu} onChange={(wss_mtu) => patchLink({ wss_mtu: wss_mtu ?? 0 })} />
               </Form.Item>
+              {currentLink.transport === "cf_mesh" && (
+                <Form.Item label="Mesh 发布路由（出口端节点通告的 CIDR；部署时发布、失败时撤回）">
+                  <Select
+                    mode="tags"
+                    tokenSeparators={[",", " "]}
+                    placeholder="例如 198.51.100.0/24、2001:db8:66::/48"
+                    value={currentLink.mesh_routes ?? []}
+                    onChange={(mesh_routes: string[]) => patchLink({ mesh_routes: mesh_routes.map((v) => v.trim()).filter((v) => v !== "") })}
+                  />
+                </Form.Item>
+              )}
               <Form.Item label="Keepalive（秒，0 表示拒绝 NAT 拨出）">
                 <InputNumber value={currentLink.keepalive} onChange={(keepalive) => patchLink({ keepalive: keepalive ?? 0 })} />
               </Form.Item>

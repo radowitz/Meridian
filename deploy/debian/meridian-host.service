@@ -1,0 +1,55 @@
+[Unit]
+Description=Meridian host executor (fixed actions for the panel: activate, health, rollback; read-only unlock probe)
+Documentation=file:///usr/share/doc/meridian/architecture.md
+After=local-fs.target
+# The panel container bind-mounts /run/meridian-host; create it first.
+Before=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/meridian host-agent
+Environment=MERIDIAN_HOST_SOCKET=/run/meridian-host/agent.sock
+Environment=MERIDIAN_HOST_TOKEN_FILE=/etc/meridian-host/agent.token
+Environment=MERIDIAN_HOST_LEDGER=/var/lib/meridian-host/ledger.json
+Restart=on-failure
+RestartSec=2
+# The socket directory is root-only (0700) and must keep its inode across
+# agent restarts, or the panel container's bind mount would go stale.
+RuntimeDirectory=meridian-host
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+StateDirectory=meridian-host
+StateDirectoryMode=0700
+
+# Least privilege. The agent only runs systemctl (PID 1 does the work over
+# its root-only private socket), ip / nft (netlink, CAP_NET_ADMIN), sysctl on
+# net.* (CAP_NET_ADMIN), journalctl (read) and docker restart of the fixed
+# meridian-smartdns container. It never runs a shell or a caller path; the
+# up script itself runs inside meridian.service, not here.
+# AF_INET / AF_INET6 are for the read-only unlock probe (/v1/probe): fixed
+# catalog targets, sockets carrying an exit's fwmark (SO_MARK needs
+# CAP_NET_ADMIN) from its transit address on lo, DNS through the exit's
+# tunnel resolver. The probe never sends anything that fails the route check.
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -154,3 +154,64 @@ func TestParseRegionCheckDoesNotInventFailures(t *testing.T) {
 func at(sec int) time.Time {
 	return time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC).Add(time.Duration(sec) * time.Second)
 }
+
+// Review 5b01903 P2 (absorbed from unlock_repro_test.go): demoted onto b,
+// a and b both succeeded at t0, then a scheduled probe of a FAILS at
+// t0+31m. The old code returned to a on that failed probe because it only
+// looked at the historical success timestamps.
+func TestReviewReturnToFailingPreferred(t *testing.T) {
+	now := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	s := State{Preferred: "a", Active: "b", Demoted: true, Known: map[string]bool{"a": true, "b": true}, PreferredOKAt: now, PreferredSeenAt: now, BackupOKAt: now}
+	s = Advance(s, Event{ExitID: "a", OK: false, Kind: KindScheduled, At: now.Add(31 * time.Minute)}, []string{"a", "b"})
+	if s.Active == "a" || !s.Demoted {
+		t.Fatalf("returned to preferred a on its FAILED scheduled probe: %+v", s)
+	}
+	if !s.PreferredOKAt.IsZero() {
+		t.Fatalf("a failure must clear the recovery start: %+v", s)
+	}
+	// A later success of the backup, past the old cooldown, still must not
+	// put the service back on a.
+	s = Advance(s, Event{ExitID: "b", OK: true, Kind: KindScheduled, At: now.Add(2 * time.Hour)}, []string{"a", "b"})
+	if s.Active != "b" || !s.Demoted {
+		t.Fatalf("returned after a failed preferred probe: %+v", s)
+	}
+}
+
+func TestPreferredFailureRestartsCooldown(t *testing.T) {
+	m := []string{"a", "b"}
+	t0 := at(0)
+	s := State{Preferred: "a", Active: "b", Demoted: true, Known: map[string]bool{"b": true}}
+	s = Advance(s, Event{ExitID: "a", OK: true, Kind: KindScheduled, At: t0}, m)
+	if !s.PreferredOKAt.Equal(t0) {
+		t.Fatalf("first success should start the streak: %+v", s)
+	}
+	// Manual failures also break the streak: a failure is never evidence of health.
+	s = Advance(s, Event{ExitID: "a", OK: false, Kind: KindManual, At: t0.Add(20 * time.Minute)}, m)
+	s = Advance(s, Event{ExitID: "a", OK: true, Kind: KindManual, At: t0.Add(25 * time.Minute)}, m)
+	s = Advance(s, Event{ExitID: "a", OK: true, Kind: KindManual, At: t0.Add(35 * time.Minute)}, m)
+	if s.Active != "b" {
+		t.Fatalf("cooldown was counted from before the failure: %+v", s)
+	}
+	s = Advance(s, Event{ExitID: "a", OK: true, Kind: KindScheduled, At: t0.Add(25*time.Minute + ReturnCooldown)}, m)
+	if s.Active != "a" || s.Demoted {
+		t.Fatalf("30 minutes of continuous recovery should return: %+v", s)
+	}
+}
+
+func TestStalePreferredSuccessDoesNotReturn(t *testing.T) {
+	m := []string{"a", "b"}
+	s := State{Preferred: "a", Active: "b", Demoted: true, Known: map[string]bool{"b": true}}
+	s = Advance(s, Event{ExitID: "a", OK: true, Kind: KindScheduled, At: at(0)}, m)
+	// Hours later only the backup reports. The preferred's last word is old.
+	s = Advance(s, Event{ExitID: "b", OK: true, Kind: KindScheduled, At: at(0).Add(6 * time.Hour)}, m)
+	if s.Active != "b" {
+		t.Fatalf("a 6-hour-old success triggered a return: %+v", s)
+	}
+	if s.CanReturn(at(0).Add(6 * time.Hour)) {
+		t.Fatal("CanReturn accepted an expired preferred result")
+	}
+	s = Advance(s, Event{ExitID: "a", OK: true, Kind: KindScheduled, At: at(0).Add(6*time.Hour + time.Minute)}, m)
+	if s.Active != "a" {
+		t.Fatalf("a fresh success after an unbroken streak should return: %+v", s)
+	}
+}

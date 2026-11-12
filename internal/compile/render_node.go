@@ -11,27 +11,27 @@ func renderBundleReadme(t model.Topology) string {
 	return strings.TrimSpace(`
 Meridian 生成的数据面配置。
 地址若仍是 203.0.113.0/24、198.51.100.0/24、2001:db8::/32，说明这是示例，不能直接上线。
-私钥占位符 __MERIDIAN_PRIVATE_KEY__ 会在装机时生成，不要写入 git。
+私钥占位符 __MERIDIAN_PRIVATE_KEY__ 只在装机写入主机时替换为该节点的私钥（首次装机生成并保存，之后复用），编译产物、快照、预览和差异始终保留占位符，不要写入 git。
 ULA fd66::/48 只在隧道内转发，不要指向 ROS。
 IX 替换用的 WSS 会随配置一起下发并做健康探测，但在替换模式关闭时不作为默认下一跳。
 `) + "\nROS=" + t.Settings.ROSIPv4 + " 网关=" + t.Settings.GatewayLANIP + "\n"
 }
 
 func renderSysctl(t model.Topology, n model.Node) string {
-	ifName := n.LANInterface
-	if ifName == "" {
-		ifName = n.WANInterface
-	}
-	if ifName == "" {
-		ifName = t.Settings.LANInterface
-	}
-	if ifName == "" {
-		ifName = "eth0"
-	}
+	ifName := sysctlIface(t, n)
 	var sb strings.Builder
-	sb.WriteString("# Meridian forwarding. Does not flush other sysctls.\n")
-	sb.WriteString("net.ipv4.ip_forward=1\n")
-	sb.WriteString("net.ipv6.conf.all.forwarding=1\n")
+	sb.WriteString("# Meridian host sysctls. Does not flush other sysctls.\n")
+	sb.WriteString("# Forwarding is NOT turned on here: systemd-sysctl applies this file at\n")
+	sb.WriteString("# boot, before meridian.service has loaded the nft guard. meridian-up.sh\n")
+	sb.WriteString("# enables forwarding from /etc/meridian/forwarding.conf after the firewall\n")
+	sb.WriteString("# (and on the gateway the inet meridian_guard table) is loaded.\n")
+	if n.Role == model.RoleGateway {
+		// Explicitly off at boot, also overriding an earlier sysctl file,
+		// so the LAN is never forwarded before the guard exists. The up
+		// script skips these two lines.
+		sb.WriteString("net.ipv4.ip_forward=0\n")
+		sb.WriteString("net.ipv6.conf.all.forwarding=0\n")
+	}
 	sb.WriteString("net.ipv4.conf.all.rp_filter=2\n")
 	sb.WriteString("net.ipv4.conf.default.rp_filter=2\n")
 	fmt.Fprintf(&sb, "net.ipv4.conf.%s.rp_filter=2\n", ifName)
@@ -49,9 +49,60 @@ func renderSysctl(t model.Topology, n model.Node) string {
 		// forwarding=1 ignores accept_ra unless it is 2. This host is a
 		// SLAAC client of ROS and must not advertise its own prefix.
 		fmt.Fprintf(&sb, "net.ipv6.conf.%s.accept_ra=2\n", ifName)
-		fmt.Fprintf(&sb, "net.ipv6.conf.%s.forwarding=1\n", ifName)
 		sb.WriteString("# Do not run radvd or a DHCP server on this LAN.\n")
 	}
+	return sb.String()
+}
+
+// renderForwarding is applied by meridian-up.sh only after the firewall is
+// loaded, never by systemd-sysctl at boot (see renderSysctl).
+func renderForwarding(t model.Topology, n model.Node) string {
+	var sb strings.Builder
+	sb.WriteString("# Meridian forwarding. Applied by meridian-up.sh after the nft batch (and\n")
+	sb.WriteString("# on the gateway the LAN guard) is loaded. Not in /etc/sysctl.d on purpose.\n")
+	sb.WriteString("net.ipv4.ip_forward=1\n")
+	sb.WriteString("net.ipv6.conf.all.forwarding=1\n")
+	if n.Role == model.RoleGateway {
+		fmt.Fprintf(&sb, "net.ipv6.conf.%s.forwarding=1\n", sysctlIface(t, n))
+	}
+	return sb.String()
+}
+
+// sysctlIface is the interface the per-interface sysctls name. On the
+// gateway that is always settings.lan_interface, the one source of truth the
+// nft guard, the routes, the LAN wait and the verify script use too
+// (validation refuses a gateway node whose own lan_interface differs).
+func sysctlIface(t model.Topology, n model.Node) string {
+	if n.Role == model.RoleGateway {
+		return gatewayLAN(t)
+	}
+	for _, v := range []string{n.LANInterface, n.WANInterface, t.Settings.LANInterface} {
+		if v != "" {
+			return v
+		}
+	}
+	return "eth0"
+}
+
+// renderGuardNFT is the gateway LAN guard alone, loaded at early boot by
+// deploy/debian/meridian-guard.service (before systemd-sysctl, Docker and
+// meridian.service). It is the same table meridian.nft also carries, so the
+// later full load replaces it atomically with identical rules.
+// gatewayLAN is settings.lan_interface, or eth0 when unset.
+func gatewayLAN(t model.Topology) string {
+	if t.Settings.LANInterface != "" {
+		return t.Settings.LANInterface
+	}
+	return "eth0"
+}
+
+func renderGuardNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan) string {
+	lan := gatewayLAN(t)
+	var sb strings.Builder
+	sb.WriteString("#!/usr/sbin/nft -f\n")
+	sb.WriteString("# Meridian early-boot LAN guard. Loaded by meridian-guard.service before\n")
+	sb.WriteString("# forwarding can be enabled. Replaces only table inet meridian_guard.\n")
+	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits))
 	return sb.String()
 }
 
@@ -175,14 +226,24 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel) string {
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("# Bring up Meridian on this host without flushing the rest of nftables.\n")
 	sb.WriteString("# A bad line in sysctl is skipped so a wrong interface name cannot abort SSH.\n")
+	sb.WriteString("# Normally run by meridian.service (boot, and activation via meridian-host).\n")
 	sb.WriteString("set -euo pipefail\n")
-	sb.WriteString("sysctl --system >/dev/null 2>&1 || true\n")
+	sb.WriteString(nftLoadCommands(n.Role == model.RoleGateway))
+	if n.Role == model.RoleGateway {
+		// Firewall and guard are loaded; nothing has been forwarded or
+		// routed yet. At boot the LAN address may still be on its way.
+		sb.WriteString(lanWaitCommands(t))
+	}
+	// No "sysctl --system": it would re-apply the boot-time forwarding=0 of
+	// 99-meridian.conf and flap forwarding on every reload. Only Meridian's
+	// own keys are applied, forwarding last and only after the firewall.
 	sb.WriteString("if [ -f /etc/sysctl.d/99-meridian.conf ]; then\n")
 	sb.WriteString("  while IFS= read -r line; do\n")
-	sb.WriteString("    case \"$line\" in ''|'#'*) continue ;; esac\n")
+	sb.WriteString("    case \"$line\" in ''|'#'*|*ip_forward=*|*.forwarding=*) continue ;; esac\n")
 	sb.WriteString("    sysctl -w \"$line\" >/dev/null 2>&1 || echo \"skip sysctl: $line\" >&2\n")
 	sb.WriteString("  done < /etc/sysctl.d/99-meridian.conf\n")
 	sb.WriteString("fi\n")
+	sb.WriteString(forwardingCommands())
 	if n.Role == model.RoleGateway {
 		sb.WriteString(dnsSeedCommands(t))
 		sb.WriteString(`if [ ! -s /etc/meridian/dns/cert.pem ] && command -v openssl >/dev/null 2>&1; then
@@ -194,18 +255,22 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel) string {
 fi
 `)
 	}
-	sb.WriteString("shopt -s nullglob\n")
-	sb.WriteString("for conf in /etc/wireguard/m*.conf; do\n")
-	sb.WriteString("  iface=$(basename \"$conf\" .conf)\n")
-	sb.WriteString("  if ip link show \"$iface\" >/dev/null 2>&1; then\n")
-	sb.WriteString("    wg syncconf \"$iface\" <(wg-quick strip \"$conf\")\n")
-	sb.WriteString("  else\n")
-	sb.WriteString("    wg-quick up \"$conf\"\n")
-	sb.WriteString("  fi\n")
-	sb.WriteString("done\n")
-	sb.WriteString("if [ -f /etc/nftables.d/meridian.nft ]; then\n")
-	sb.WriteString("  nft -c -f /etc/nftables.d/meridian.nft\n")
-	sb.WriteString("fi\n")
+	// Only the interfaces this manifest owns, never a glob: a config left
+	// behind by another (failed or rolled-back) apply is not brought up.
+	if ifaces := tunnelIfaces(tunnels); len(ifaces) > 0 {
+		fmt.Fprintf(&sb, "for iface in %s; do\n", strings.Join(ifaces, " "))
+		sb.WriteString("  conf=\"/etc/wireguard/$iface.conf\"\n")
+		sb.WriteString("  if [ ! -f \"$conf\" ]; then\n")
+		sb.WriteString("    echo \"meridian-wg-missing: $conf is listed in this manifest but not installed\" >&2\n")
+		sb.WriteString("    exit 1\n")
+		sb.WriteString("  fi\n")
+		sb.WriteString("  if ip link show \"$iface\" >/dev/null 2>&1; then\n")
+		sb.WriteString("    wg syncconf \"$iface\" <(wg-quick strip \"$conf\")\n")
+		sb.WriteString("  else\n")
+		sb.WriteString("    wg-quick up \"$conf\"\n")
+		sb.WriteString("  fi\n")
+		sb.WriteString("done\n")
+	}
 	// Seal the Mesh sidecar before policy routes, so a mesh exit table can
 	// point at mmesh on the first boot. A mesh failure must not skip routes:
 	// the foreign path still has to install its blackhole.
@@ -215,14 +280,14 @@ fi
 		sb.WriteString("fi\n")
 	}
 	sb.WriteString("/usr/local/sbin/meridian-routes.sh\n")
-	sb.WriteString("if [ -f /etc/nftables.d/meridian.nft ]; then\n")
-	sb.WriteString("  nft delete table inet meridian >/dev/null 2>&1 || true\n")
-	sb.WriteString("  nft -f /etc/nftables.d/meridian.nft\n")
-	sb.WriteString("fi\n")
+	// No silent skip: without systemd the WSS and failover services would
+	// not run while the install still looked successful.
 	sb.WriteString("enable_unit() {\n")
-	sb.WriteString("  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then\n")
-	sb.WriteString("    systemctl enable --now \"$1\"\n")
+	sb.WriteString("  if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then\n")
+	sb.WriteString("    echo \"meridian-systemd-missing: cannot start $1 here; activate through meridian-host on the host\" >&2\n")
+	sb.WriteString("    exit 1\n")
 	sb.WriteString("  fi\n")
+	sb.WriteString("  systemctl enable --now \"$1\"\n")
 	sb.WriteString("}\n")
 	seen := map[string]bool{}
 	for _, tun := range tunnels {
@@ -246,8 +311,166 @@ fi
 	}
 	if n.Role == model.RoleExit {
 		sb.WriteString("enable_unit meridian-unlock.timer\n")
+		// The exit resolver binds to tunnel addresses, which only exist once
+		// the WireGuard interfaces above are up. A boot-time start before
+		// that fails to bind, so restart it here. Provision installs it.
+		sb.WriteString(`if [ -f /etc/smartdns/smartdns.conf ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+  if systemctl cat smartdns.service >/dev/null 2>&1; then
+    systemctl enable smartdns.service >/dev/null 2>&1 || true
+    systemctl restart smartdns.service || echo "smartdns restart failed; exit resolver is down" >&2
+  else
+    echo "smartdns.service is not installed; exit resolver is down" >&2
+  fi
+fi
+`)
 	}
 	sb.WriteString("echo meridian-up-complete\n")
+	return sb.String()
+}
+
+// tunnelIfaces lists a node's WireGuard interfaces, sorted and unique.
+func tunnelIfaces(tunnels []Tunnel) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, tun := range tunnels {
+		if name := tun.Iface(); name != "" && !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	sortStrings(out)
+	return out
+}
+
+// LANNotReadyExit is meridian-up.sh's exit status when the LAN never became
+// ready (meridian-lan-not-ready). deploy/debian/meridian.service lists it in
+// RestartForceExitStatus, so only this case is retried by systemd: nothing
+// but the nft batch and the guard has been applied when it is returned.
+const LANNotReadyExit = 75
+
+// LANWaitDefaultSec bounds the LAN wait. It must stay well inside the
+// unit's TimeoutStartSec (checked by a test against meridian.service).
+const LANWaitDefaultSec = 60
+
+// lanWaitCommands blocks (bounded) until the gateway LAN can carry the
+// routes step: settings.lan_interface exists and is up, it holds the
+// configured gateway LAN IPv4 address, and the ROS IPv4 next-hop resolves
+// on-link on that interface. Without this, a late DHCP lease at boot makes
+// "ip route replace default via <ROS> dev <lan> table 100" fail ("Nexthop
+// has invalid gateway") after forwarding was already on.
+//
+// IPv6 is deliberately not waited for. The routes step only uses the ROS
+// link-local next-hop with an explicit device, which the kernel accepts once
+// the interface exists and is up; the gateway's own RA-learned default and
+// GUA are not used by the routes step, so a late RA neither blocks boot nor
+// aborts the IPv4 data plane.
+//
+// The output is parsed in shell variables, never with a pipe into grep -q:
+// under pipefail an early-exiting grep would turn a match into a failure.
+func lanWaitCommands(t model.Topology) string {
+	return strings.NewReplacer(
+		"@LAN@", shQuote(gatewayLAN(t)),
+		"@ADDR@", shQuote(lanHost(t)),
+		"@ROS@", shQuote(t.Settings.ROSIPv4),
+		"@WAIT@", fmt.Sprint(LANWaitDefaultSec),
+		"@EXIT@", fmt.Sprint(LANNotReadyExit),
+	).Replace(`lan_if=@LAN@
+lan_addr=@ADDR@
+ros4=@ROS@
+lan_wait=${MERIDIAN_LAN_WAIT_SEC:-@WAIT@}
+case "$lan_wait" in ''|*[!0-9]*) lan_wait=@WAIT@ ;; esac
+lan_why=""
+lan_ready() {
+  local out
+  out=$(ip -o link show dev "$lan_if" 2>/dev/null) || { lan_why="interface $lan_if does not exist"; return 1; }
+  case "$out" in
+    *'<UP,'*|*',UP,'*|*',UP>'*|*'<UP>'*) ;;
+    *) lan_why="interface $lan_if is down"; return 1 ;;
+  esac
+  out=$(ip -4 -o addr show dev "$lan_if" 2>/dev/null) || out=""
+  case "$out" in
+    *" $lan_addr/"*) ;;
+    *) lan_why="$lan_if does not carry $lan_addr yet"; return 1 ;;
+  esac
+  if [ -n "$ros4" ]; then
+    out=$(ip -4 route get "$ros4" 2>/dev/null) || { lan_why="no route to ROS $ros4"; return 1; }
+    case "$out" in
+      *" via "*) lan_why="ROS $ros4 is not on-link"; return 1 ;;
+    esac
+    case "$out " in
+      *" dev $lan_if "*) ;;
+      *) lan_why="ROS $ros4 is not reached on $lan_if"; return 1 ;;
+    esac
+  fi
+  return 0
+}
+lan_waited=0
+until lan_ready; do
+  if [ "$lan_waited" -ge "$lan_wait" ]; then
+    echo "meridian-lan-not-ready: $lan_why after ${lan_waited}s; forwarding not enabled, routes not installed (systemd retries meridian.service)" >&2
+    exit @EXIT@
+  fi
+  sleep 1
+  lan_waited=$((lan_waited + 1))
+done
+`)
+}
+
+// forwardingCommands turns forwarding on from /etc/meridian/forwarding.conf.
+// It runs after nftLoadCommands, so on the gateway the guard is already
+// verified. The global keys must succeed; a per-interface key may be skipped
+// (a wrong interface name must not abort the rest).
+func forwardingCommands() string {
+	return `MERIDIAN_FWD=/etc/meridian/forwarding.conf
+if [ ! -f "$MERIDIAN_FWD" ]; then
+  echo "meridian-forwarding-missing: $MERIDIAN_FWD not found; forwarding left as is" >&2
+  exit 1
+fi
+while IFS= read -r line; do
+  case "$line" in ''|'#'*) continue ;; esac
+  case "$line" in
+    net.ipv4.ip_forward=*|net.ipv6.conf.all.forwarding=*)
+      if ! sysctl -w "$line" >/dev/null; then
+        echo "meridian-forwarding-failed: $line" >&2
+        exit 1
+      fi ;;
+    *) sysctl -w "$line" >/dev/null 2>&1 || echo "skip sysctl: $line" >&2 ;;
+  esac
+done < "$MERIDIAN_FWD"
+`
+}
+
+// nftLoadCommands loads the firewall first, before sysctl turns forwarding
+// on and before policy routes exist. The rendered meridian.nft is a single
+// atomic batch (see writeAtomicReplace), so there is no separate delete:
+// either the kernel commits every table in the file or it keeps the old
+// ones. The batch is checked with nft -c first. Any failure stops the
+// script here, so routes and forwarding are not touched on top of a
+// ruleset that did not load. On the gateway a missing file or a missing
+// guard table after the load is also a failure: forwarding must not be
+// turned on without the LAN guard.
+func nftLoadCommands(gateway bool) string {
+	var sb strings.Builder
+	sb.WriteString("MERIDIAN_NFT=/etc/nftables.d/meridian.nft\n")
+	sb.WriteString("if [ -f \"$MERIDIAN_NFT\" ]; then\n")
+	sb.WriteString("  if ! nft -c -f \"$MERIDIAN_NFT\"; then\n")
+	sb.WriteString("    echo \"meridian-nft-check-failed: running ruleset left unchanged; routes and forwarding not touched\" >&2\n")
+	sb.WriteString("    exit 1\n")
+	sb.WriteString("  fi\n")
+	sb.WriteString("  if ! nft -f \"$MERIDIAN_NFT\"; then\n")
+	sb.WriteString("    echo \"meridian-nft-load-failed: the batch was aborted as a whole; previous Meridian tables kept; routes and forwarding not touched\" >&2\n")
+	sb.WriteString("    exit 1\n")
+	sb.WriteString("  fi\n")
+	if gateway {
+		fmt.Fprintf(&sb, "  if ! nft list table inet %s >/dev/null 2>&1; then\n", tableGuard)
+		fmt.Fprintf(&sb, "    echo \"meridian-guard-missing: inet %s is not loaded; refusing to enable forwarding\" >&2\n", tableGuard)
+		sb.WriteString("    exit 1\n")
+		sb.WriteString("  fi\n")
+		sb.WriteString("else\n")
+		sb.WriteString("  echo \"meridian-nft-missing: $MERIDIAN_NFT not found; refusing to enable forwarding without the LAN guard\" >&2\n")
+		sb.WriteString("  exit 1\n")
+	}
+	sb.WriteString("fi\n")
 	return sb.String()
 }
 

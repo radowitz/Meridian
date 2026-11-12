@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/pool"
 )
@@ -39,10 +40,7 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 }
 
 func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, exits []ExitPlan) {
-	lan := t.Settings.LANInterface
-	if lan == "" {
-		lan = "eth0"
-	}
+	lan := gatewayLAN(t)
 	ros := t.Settings.ROSIPv4
 	lla := t.Settings.ROSv6LLA
 	if lla == "" {
@@ -119,9 +117,14 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	fmt.Fprintf(sb, "del_rule ip -6 rule del fwmark %#x lookup 100\n", markDomestic)
 	fmt.Fprintf(sb, "ip -6 rule add fwmark %#x lookup 100 priority %d\n", markDomestic, prioDomestic)
 	// IPv4 only. An IPv6 interface blackhole would also have to be proven
-	// not to eat RA or ND; foreign IPv6 is covered by the fwmark unreachable
-	// rule once nftables has classified it. SSH to this host is in the local
-	// table (priority 0) and is not matched by this rule.
+	// not to eat RA or ND, so there is no IPv6 counterpart here: unmarked
+	// IPv6 from the LAN can still match the main-table default via ROS. That
+	// path is closed by the forward-hook guard in table inet meridian_guard
+	// (render_nft.go), which drops every forwarded LAN packet, v4 and v6,
+	// that does not carry the domestic mark on the LAN NIC or an exit mark
+	// on a WireGuard interface. This IPv4 rule stays as a second, routing
+	// level layer. SSH to this host is in the local table (priority 0) and
+	// is not matched by this rule.
 	fmt.Fprintf(sb, "del_rule ip rule del iif %s unreachable\n", lanQ)
 	fmt.Fprintf(sb, "ip rule add iif %s unreachable priority %d\n", lanQ, prioLANDrop)
 	fmt.Fprintf(sb, "# failover companions: udp=%s wss=%s direct_wss=%s\n", ifaceOrDash(udp), ifaceOrDash(wss), ifaceOrDash(direct))
@@ -213,6 +216,7 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 	fmt.Fprintf(sb, "ip route replace 10.66.0.0/16 dev %s\n", west)
 	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", west)
 	writePrefixBlackholes(sb, t)
+	ma := mesh.DefaultAddressing()
 	for _, e := range exits {
 		if e.HubIface == "" {
 			fmt.Fprintf(sb, "# exit %s has no hub iface\n", e.Node.ID)
@@ -233,9 +237,13 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 			fmt.Fprintf(sb, "# pure-v6 %s mesh hop only; never the IX west path\n", e.Node.ID)
 			fmt.Fprintf(sb, "# mmesh is used only after meridian-mesh-up.sh has sealed the sidecar.\n")
 			fmt.Fprintf(sb, "# Without that seal, packets would follow the container default route onto this host's WAN.\n")
+			// mmesh is an Ethernet veth: an explicit next-hop the sidecar owns
+			// (never "default dev mmesh", which would ARP/ND for every
+			// destination). IPv6 uses the link-local next-hop scoped to mmesh.
+			fmt.Fprintf(sb, "# veth next-hops: %s (v4) and %s%%%s (v6)\n", ma.NextHopV4(), ma.NextHopV6(), mesh.HostIface)
 			fmt.Fprintf(sb, "if ip link show mmesh >/dev/null 2>&1 && [ -f /run/meridian/mesh-sealed ]; then\n")
-			fmt.Fprintf(sb, "  ip route replace default dev mmesh table %d\n", e.Table)
-			fmt.Fprintf(sb, "  ip -6 route replace default dev mmesh table %d\n", e.Table)
+			fmt.Fprintf(sb, "  ip route replace default via %s dev %s table %d\n", ma.NextHopV4(), mesh.HostIface, e.Table)
+			fmt.Fprintf(sb, "  ip -6 route replace default via %s dev %s table %d\n", ma.NextHopV6(), mesh.HostIface, e.Table)
 			fmt.Fprintf(sb, "else\n")
 			fmt.Fprintf(sb, "  ip route replace blackhole default table %d\n", e.Table)
 			fmt.Fprintf(sb, "  ip -6 route replace blackhole default table %d\n", e.Table)
@@ -244,7 +252,7 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 		}
 		fmt.Fprintf(sb, "# exit %s mark %#x transit %s dev %s\n", e.Node.ID, e.Mark, e.TransitV4, e.HubIface)
 		if e.Mesh {
-			fmt.Fprintf(sb, "# default via mmesh is installed above when the sidecar exists\n")
+			fmt.Fprintf(sb, "# default via the mmesh next-hop is installed above when the sidecar is sealed\n")
 		} else {
 			fmt.Fprintf(sb, "ip route replace default dev %s table %d\n", e.HubIface, e.Table)
 		}
@@ -636,6 +644,10 @@ func renderPoolChecks(t model.Topology, exits []ExitPlan) string {
 	}
 	sortStrings(names)
 	var sb strings.Builder
+	ma := mesh.DefaultAddressing()
+	// The dynamic switch uses the same explicit veth next-hops as the
+	// static routes (mesh.Addressing).
+	fmt.Fprintf(&sb, "MESH_DEV=%s\nMESH_NH4=%s\nMESH_NH6=%s\n", mesh.HostIface, ma.NextHopV4(), ma.NextHopV6())
 	sb.WriteString(poolStepShell)
 	sb.WriteString("check_pools() {\n")
 	for _, name := range names {
@@ -786,7 +798,7 @@ apply_pool_hop() {
       ;;
   esac
   if [ "$want" = "mmesh" ]; then
-    dev="mmesh"
+    dev="$MESH_DEV"
     if ! ip link show mmesh >/dev/null 2>&1 || [ ! -f /run/meridian/mesh-sealed ]; then
       ip route replace blackhole default table "$table"
       ip -6 route replace blackhole default table "$table"
@@ -797,6 +809,15 @@ apply_pool_hop() {
     dev=$(cat "/run/meridian/pool-iface/$want" 2>/dev/null || true)
   fi
   [ -n "$dev" ] || return 0
+  if [ "$dev" = "$MESH_DEV" ]; then
+    # Ethernet veth: route via the sidecar's addresses, never "dev mmesh"
+    # alone (that would ARP/ND for every public destination).
+    ip route replace default via "$MESH_NH4" dev "$MESH_DEV" table "$table"
+    ip route replace blackhole default metric 32767 table "$table"
+    ip -6 route replace default via "$MESH_NH6" dev "$MESH_DEV" table "$table"
+    ip -6 route replace blackhole default metric 32767 table "$table"
+    return 0
+  fi
   ip route replace default dev "$dev" table "$table"
   ip route replace blackhole default metric 32767 table "$table"
   ip -6 route replace default dev "$dev" table "$table"

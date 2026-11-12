@@ -134,6 +134,11 @@ type Link struct {
 	ToV4    string `json:"to_v4,omitempty"`
 	FromULA string `json:"from_ula,omitempty"`
 	ToULA   string `json:"to_ula,omitempty"`
+
+	// MeshRoutes (cf_mesh links only) are the CIDRs the exit end's
+	// Cloudflare Mesh node advertises. The panel deployment publishes them
+	// as Cloudflare routes for this run and withdraws them on failure.
+	MeshRoutes []string `json:"mesh_routes,omitempty"`
 }
 
 // Rule is either a manual entry (higher priority) or one row of the

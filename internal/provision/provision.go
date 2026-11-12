@@ -4,6 +4,7 @@ package provision
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -17,9 +18,11 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/radowitz/meridian/internal/apply"
+	"github.com/radowitz/meridian/internal/compile"
+	"github.com/radowitz/meridian/internal/model"
 )
 
-const PrivatePlaceholder = "__MERIDIAN_PRIVATE_KEY__"
+const PrivatePlaceholder = compile.PrivateKeyPlaceholder
 
 // Keypair is a WireGuard key generated in-process (not by shelling out).
 type Keypair struct {
@@ -47,6 +50,11 @@ func GenerateKeypair() (Keypair, error) {
 
 // Script writes the node's rendered files and reloads WireGuard with
 // syncconf when the interface already exists, so a NAT mapping is not torn down.
+//
+// WireGuard configs are written 0600 through a temp file. If a config still
+// holds the private-key placeholder (a preview), the script refuses to run
+// before it writes anything. When the node has a SmartDNS config, the
+// resolver is installed before any file is written and must be active at the end.
 func Script(nodeName string, files map[string]string) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
@@ -55,6 +63,12 @@ func Script(nodeName string, files map[string]string) string {
 	sb.WriteString("# Does not flush nftables, does not touch unrelated WireGuard interfaces,\n")
 	sb.WriteString("# and does not install Cloudflare Mesh on the home gateway.\n")
 	sb.WriteString("set -euo pipefail\n")
+	sb.WriteString("umask 022\n")
+	if apply.NeedsPrivateKey(files) {
+		sb.WriteString("# PREVIEW ONLY: WireGuard configs still contain " + PrivatePlaceholder + ".\n")
+		sb.WriteString("echo 'meridian: preview script still has the private-key placeholder; refusing to overwrite configs' >&2\n")
+		sb.WriteString("exit 1\n")
+	}
 	sb.WriteString("export DEBIAN_FRONTEND=noninteractive\n")
 	sb.WriteString("if ! command -v wg >/dev/null 2>&1; then\n")
 	sb.WriteString("  apt-get update -y\n")
@@ -63,6 +77,10 @@ func Script(nodeName string, files map[string]string) string {
 	sb.WriteString("if ! command -v wstunnel >/dev/null 2>&1; then\n")
 	sb.WriteString("  echo 'wstunnel is missing. Install a pinned release from https://github.com/erebe/wstunnel/releases to /usr/local/bin/wstunnel' >&2\n")
 	sb.WriteString("fi\n")
+	_, hasDNS := files["/etc/smartdns/smartdns.conf"]
+	if hasDNS {
+		sb.WriteString(smartDNSInstall)
+	}
 	paths := make([]string, 0, len(files))
 	for p := range files {
 		paths = append(paths, p)
@@ -76,20 +94,69 @@ func Script(nodeName string, files map[string]string) string {
 		}
 		body := files[p]
 		delim := heredocDelim(body)
-		fmt.Fprintf(&sb, "install -d %s\n", shellQuote(dirOf(clean)))
-		fmt.Fprintf(&sb, "cat > %s <<'%s'\n%s%s\n", shellQuote(clean), delim, ensureNL(body), delim)
-		if strings.HasSuffix(clean, ".sh") || strings.Contains(clean, "/usr/local/sbin/") {
-			fmt.Fprintf(&sb, "chmod 755 %s\n", shellQuote(clean))
-		} else {
-			fmt.Fprintf(&sb, "chmod 644 %s\n", shellQuote(clean))
+		mode, dirMode := "644", "755"
+		switch {
+		case strings.HasPrefix(clean, "/etc/wireguard/"):
+			mode, dirMode = "600", "700"
+		case strings.HasSuffix(clean, ".sh") || strings.Contains(clean, "/usr/local/sbin/"):
+			mode = "755"
 		}
+		dir := dirOf(clean)
+		fmt.Fprintf(&sb, "install -d -m %s %s\n", dirMode, shellQuote(dir))
+		fmt.Fprintf(&sb, "tmp=$(mktemp %s)\n", shellQuote(dir+"/.meridian.XXXXXX"))
+		fmt.Fprintf(&sb, "chmod %s \"$tmp\"\n", mode)
+		fmt.Fprintf(&sb, "cat > \"$tmp\" <<'%s'\n%s%s\n", delim, ensureNL(body), delim)
+		fmt.Fprintf(&sb, "mv -f \"$tmp\" %s\n", shellQuote(clean))
 	}
 	sb.WriteString("if [ -x /usr/local/sbin/meridian-up.sh ]; then\n")
 	sb.WriteString("  /usr/local/sbin/meridian-up.sh\n")
 	sb.WriteString("fi\n")
+	if hasDNS {
+		sb.WriteString(smartDNSStart)
+	}
 	sb.WriteString("echo MERIDIAN_PROVISION_OK\n")
 	return sb.String()
 }
+
+// smartDNSInstall installs the resolver before any config is replaced. The
+// distro package would otherwise start with its stock config (bind [::]:53 on
+// a public host), so a temporary policy-rc.d holds the service until our
+// config is in place, unless the host already has its own policy-rc.d.
+const smartDNSInstall = `if ! command -v smartdns >/dev/null 2>&1; then
+  hold_rc=0
+  if [ ! -e /usr/sbin/policy-rc.d ]; then
+    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+    chmod 755 /usr/sbin/policy-rc.d
+    hold_rc=1
+  fi
+  apt-get update -y || true
+  if ! apt-get install -y -o Dpkg::Options::=--force-confold smartdns; then
+    if [ "$hold_rc" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi
+    echo 'smartdns is not installable from apt. Install a pinned release from https://github.com/pymumu/smartdns/releases, then rerun.' >&2
+    exit 1
+  fi
+  if [ "$hold_rc" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi
+fi
+`
+
+// smartDNSStart runs after meridian-up.sh, when the tunnel addresses the
+// resolver binds to exist. meridian-up.sh on exits restarts it already; this
+// covers other roles and proves the unit is active.
+const smartDNSStart = `if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl enable smartdns.service >/dev/null 2>&1 || true
+  if ! systemctl is-active --quiet smartdns.service; then
+    systemctl restart smartdns.service
+  fi
+  if ! systemctl is-active --quiet smartdns.service; then
+    echo 'smartdns.service is not active after provision' >&2
+    systemctl status --no-pager smartdns.service >&2 || true
+    exit 1
+  fi
+  echo MERIDIAN_SMARTDNS_ACTIVE
+else
+  echo 'no systemd: start smartdns -c /etc/smartdns/smartdns.conf yourself' >&2
+fi
+`
 
 // FilesFor returns host paths (no nodes/<id> prefix) for one node.
 func FilesFor(bundle map[string]string, nodeID string) map[string]string {
@@ -103,21 +170,94 @@ func FilesFor(bundle map[string]string, nodeID string) map[string]string {
 	return out
 }
 
-// InjectPrivate replaces the placeholder in WireGuard configs.
-func InjectPrivate(files map[string]string, private string) map[string]string {
-	out := make(map[string]string, len(files))
-	for k, v := range files {
-		out[k] = strings.ReplaceAll(v, PrivatePlaceholder, private)
+// InjectPrivate replaces the placeholder in WireGuard configs. It fails when a
+// config needs a key and private is empty or malformed, so a caller never
+// ships a placeholder to a host.
+func InjectPrivate(files map[string]string, private string) (map[string]string, error) {
+	return apply.InjectPrivateKeys(files, private)
+}
+
+// KeyPolicy says how ResolveNodeKey may obtain a node's WireGuard key.
+type KeyPolicy int
+
+const (
+	// KeyReuse uses the stored private key and fails when there is none
+	// (remote provision with generate_keys=false, local rollback).
+	KeyReuse KeyPolicy = iota
+	// KeyGenerateIfMissing reuses a stored key, or generates one on the first
+	// install when the node has neither a private nor a public key. A node
+	// with only a public key fails: its private half lives elsewhere.
+	KeyGenerateIfMissing
+	// KeyRotate always generates a new pair (remote generate_keys=true).
+	KeyRotate
+)
+
+// ResolveNodeKey returns the node's private key under policy. When it
+// generates a key or fills in a missing public key, t is updated in place and
+// changed is true; the caller must persist t. Errors never contain the key.
+func ResolveNodeKey(t *model.Topology, nodeID string, policy KeyPolicy) (key string, changed bool, err error) {
+	idx := -1
+	for i := range t.Nodes {
+		if t.Nodes[i].ID == nodeID {
+			idx = i
+			break
+		}
 	}
-	return out
+	if idx < 0 {
+		return "", false, fmt.Errorf("节点 %s 不存在", nodeID)
+	}
+	n := &t.Nodes[idx]
+	stored := strings.TrimSpace(n.PrivateKey)
+	if stored == "***" {
+		stored = ""
+	}
+	if policy != KeyRotate && stored != "" {
+		pub, err := PublicFromPrivate(stored)
+		if err != nil {
+			return "", false, fmt.Errorf("节点 %s 已保存的私钥无效: %w", nodeID, err)
+		}
+		if strings.TrimSpace(n.PublicKey) == "" {
+			n.PublicKey = pub
+			return stored, true, nil
+		}
+		if strings.TrimSpace(n.PublicKey) != pub {
+			return "", false, fmt.Errorf("节点 %s 已保存的私钥与公钥不匹配，拒绝安装", nodeID)
+		}
+		return stored, false, nil
+	}
+	switch policy {
+	case KeyReuse:
+		return "", false, fmt.Errorf("节点 %s 没有已保存的 WireGuard 私钥；首次装机请生成密钥", nodeID)
+	case KeyGenerateIfMissing:
+		if strings.TrimSpace(n.PublicKey) != "" {
+			return "", false, fmt.Errorf("节点 %s 只有公钥没有私钥；请在拓扑中补私钥或清空公钥后重新生成", nodeID)
+		}
+	}
+	kp, err := GenerateKeypair()
+	if err != nil {
+		return "", false, err
+	}
+	n.PrivateKey = kp.Private
+	n.PublicKey = kp.Public
+	return kp.Private, true, nil
+}
+
+// PublicFromPrivate derives the WireGuard public key.
+func PublicFromPrivate(private string) (string, error) {
+	if !apply.ValidPrivateKey(private) {
+		return "", apply.ErrBadPrivateKey
+	}
+	raw, _ := base64.StdEncoding.DecodeString(private)
+	pub, err := curve25519.X25519(raw, curve25519.Basepoint)
+	if err != nil {
+		return "", apply.ErrBadPrivateKey
+	}
+	return base64.StdEncoding.EncodeToString(pub), nil
 }
 
 // Redact hides private keys in a script before it is shown in the panel.
 func Redact(script, private string) string {
-	if private == "" {
-		return script
-	}
-	return strings.ReplaceAll(script, private, PrivatePlaceholder)
+	return apply.RedactSecret(script, private)
 }
 
 type SSHRequest struct {
@@ -167,6 +307,62 @@ func Run(req SSHRequest, script string) (string, error) {
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 	if err := session.Run(script); err != nil {
+		return stdout.String() + stderr.String(), fmt.Errorf("远程脚本失败: %w", err)
+	}
+	return stdout.String() + stderr.String(), nil
+}
+
+// RunScript executes a script over SSH like Run, but sends it on stdin to
+// "bash -s" instead of as the remote command line, so a secret inside the
+// script (the Mesh node token) never appears in the remote process list.
+// ctx bounds the whole session.
+func RunScript(ctx context.Context, req SSHRequest, script string) (string, error) {
+	if req.Port == 0 {
+		req.Port = 22
+	}
+	signer, err := ssh.ParsePrivateKey([]byte(req.PrivateKeyPEM))
+	if err != nil {
+		return "", fmt.Errorf("SSH 私钥无法解析")
+	}
+	callback := req.KnownHosts
+	if callback == nil {
+		if req.TrustNewHost {
+			callback = ssh.InsecureIgnoreHostKey()
+		} else {
+			return "", fmt.Errorf("没有 known_hosts 记录。确认主机指纹后，用 trust_new_host 保存一次")
+		}
+	}
+	cfg := &ssh.ClientConfig{
+		User:            req.User,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: callback,
+		Timeout:         20 * time.Second,
+	}
+	addr := net.JoinHostPort(req.Host, fmt.Sprintf("%d", req.Port))
+	client, err := ssh.Dial("tcp", addr, cfg)
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+	session.Stdin = strings.NewReader(script)
+	done := make(chan error, 1)
+	go func() { done <- session.Run("bash -s") }()
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		client.Close()
+		return stdout.String() + stderr.String(), fmt.Errorf("远程脚本超时: %w", ctx.Err())
+	}
+	if err != nil {
 		return stdout.String() + stderr.String(), fmt.Errorf("远程脚本失败: %w", err)
 	}
 	return stdout.String() + stderr.String(), nil
