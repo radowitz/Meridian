@@ -18,6 +18,9 @@ services:
       - /etc/nftables.d:/etc/nftables.d
       - /etc/sysctl.d:/etc/sysctl.d
       - /etc/smartdns:/etc/smartdns
+      - /etc/meridian:/etc/meridian
+      - /etc/systemd/system:/etc/systemd/system
+      - /etc/iproute2/rt_tables.d:/etc/iproute2/rt_tables.d
       - /usr/local/sbin:/usr/local/sbin
     environment:
       MERIDIAN_BIND: 192.168.100.88:8787

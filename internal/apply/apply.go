@@ -5,6 +5,7 @@ package apply
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -157,7 +158,7 @@ func (a Applier) Rollback() error {
 
 func (a Applier) installLocal(applied string) error {
 	prefix := filepath.Join("nodes", a.localID())
-	return filepath.Walk(filepath.Join(applied, prefix), func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(filepath.Join(applied, prefix), func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -182,6 +183,38 @@ func (a Applier) installLocal(applied string) error {
 		}
 		return os.WriteFile(dest, body, info.Mode())
 	})
+	if err != nil {
+		return err
+	}
+	return activate()
+}
+
+// HostPathAllowed reports whether an absolute path is one Meridian may write.
+func HostPathAllowed(p string) bool {
+	rel := strings.TrimPrefix(filepath.ToSlash(p), "/")
+	if rel == "" || strings.Contains(rel, "..") || strings.HasPrefix(rel, "/") {
+		return false
+	}
+	return allowed(rel)
+}
+
+// activate runs the just-installed up script when it is on this host.
+// A missing script means the files were only staged (tests, or a data-dir apply).
+func activate() error {
+	const script = "/usr/local/sbin/meridian-up.sh"
+	if _, err := os.Stat(script); err != nil {
+		return nil
+	}
+	cmd := exec.Command(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := string(out)
+		if len(msg) > 2000 {
+			msg = msg[len(msg)-2000:]
+		}
+		return fmt.Errorf("应用网络配置失败: %w: %s", err, msg)
+	}
+	return nil
 }
 
 func safeBundlePath(path string) (string, error) {

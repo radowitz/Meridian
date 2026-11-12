@@ -122,6 +122,38 @@ func TestRejectsIXBypassSave(t *testing.T) {
 	}
 }
 
+func TestTokenRequired(t *testing.T) {
+	s := newTest(t)
+	s.Token = "test-token"
+	rr := do(s, http.MethodGet, "/api/health", nil)
+	if rr.Code != 200 {
+		t.Fatalf("health should stay open: %d", rr.Code)
+	}
+	rr = do(s, http.MethodGet, "/api/topology", nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token: %d %s", rr.Code, rr.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/topology", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	rr = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	dir := t.TempDir()
+	tok, err := LoadOrCreateToken("", dir+"/panel.token")
+	if err != nil || len(tok) < 32 {
+		t.Fatal(err)
+	}
+	again, err := LoadOrCreateToken("", dir+"/panel.token")
+	if err != nil || again != tok {
+		t.Fatalf("token not stable: %q %q %v", tok, again, err)
+	}
+	if _, err := LoadOrCreateToken("bad\ntoken", dir+"/other"); err == nil {
+		t.Fatal("newline token should be rejected")
+	}
+}
+
 func TestBindGuard(t *testing.T) {
 	if err := CheckBind("0.0.0.0:8787"); err == nil {
 		t.Fatal("wildcard bind should be refused")

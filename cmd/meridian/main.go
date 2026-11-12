@@ -19,6 +19,10 @@ func main() {
 	if err := os.MkdirAll(data, 0o750); err != nil {
 		log.Fatal(err)
 	}
+	token, err := api.LoadOrCreateToken(os.Getenv("MERIDIAN_TOKEN"), filepath.Join(data, "panel.token"))
+	if err != nil {
+		log.Fatal(err)
+	}
 	st, err := store.Open(filepath.Join(data, "meridian.db"))
 	if err != nil {
 		log.Fatal(err)
@@ -28,8 +32,9 @@ func main() {
 		Store:   st,
 		DataDir: data,
 		WebDir:  os.Getenv("MERIDIAN_WEB_DIR"),
+		Token:   token,
 	}
-	log.Printf("meridian panel listening on %s (LAN only)", bind)
+	log.Printf("meridian panel listening on %s (LAN only). token file: %s", bind, filepath.Join(data, "panel.token"))
 	if err := http.ListenAndServe(bind, srv.Handler()); err != nil {
 		log.Fatal(err)
 	}

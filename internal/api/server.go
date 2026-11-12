@@ -3,12 +3,16 @@
 package api
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/radowitz/meridian/internal/apply"
@@ -24,6 +28,9 @@ type Server struct {
 	Store   *store.Store
 	DataDir string
 	WebDir  string
+	// Token is required on /api except /api/health. An empty token disables
+	// the check so unit tests can call the handler directly. main always sets one.
+	Token string
 }
 
 func (s *Server) Handler() http.Handler {
@@ -41,7 +48,59 @@ func (s *Server) Handler() http.Handler {
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
 	}
-	return mux
+	return s.withAuth(mux)
+}
+
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.Token == "" || r.URL.Path == "/api/health" || !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if !strings.HasPrefix(got, prefix) || !constTimeEq(strings.TrimPrefix(got, prefix), s.Token) {
+			writeErr(w, http.StatusUnauthorized, errors.New("需要面板口令"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func constTimeEq(got, want string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// LoadOrCreateToken returns MERIDIAN_TOKEN when set, otherwise a token stored
+// at path with mode 0600. The value is never logged.
+func LoadOrCreateToken(envValue, path string) (string, error) {
+	if strings.TrimSpace(envValue) != "" {
+		if strings.ContainsAny(envValue, "\r\n") {
+			return "", errors.New("MERIDIAN_TOKEN 不能包含换行")
+		}
+		return strings.TrimSpace(envValue), nil
+	}
+	if b, err := os.ReadFile(path); err == nil {
+		tok := strings.TrimSpace(string(b))
+		if tok != "" && !strings.ContainsAny(tok, "\r\n") {
+			return tok, nil
+		}
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	tok := hex.EncodeToString(raw)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return tok, nil
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

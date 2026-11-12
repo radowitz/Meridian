@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Space, Tabs } from "antd";
+import { Alert, Button, Input, Space, Tabs } from "antd";
+import { getToken, setToken } from "./api";
 import type { Issue, Topology } from "./types";
 import * as api from "./api";
 import TopologyEditor from "./TopologyEditor";
@@ -12,6 +13,7 @@ export default function App() {
   const [selected, setSelected] = useState<{ kind: "node" | "link"; id: string } | null>(null);
   const [err, setErr] = useState("");
   const [paths, setPaths] = useState("");
+  const [token, setTokenValue] = useState(getToken);
 
   useEffect(() => {
     api.getTopology().then(setTopo).catch((e) => setErr(String(e)));
@@ -43,8 +45,27 @@ export default function App() {
     }
   }
 
+  function reload() {
+    setErr("");
+    api.getTopology().then(setTopo).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }
+
   if (!topo) {
-    return <div className="shell">{err ? <Alert type="error" message={err} /> : "正在读取拓扑…"}</div>;
+    return (
+      <div className="shell">
+        {err ? <Alert type="error" showIcon message={err} style={{ marginBottom: 12 }} /> : "正在读取拓扑…"}
+        <Input.Password
+          style={{ width: 280 }}
+          placeholder="面板口令（/var/lib/meridian/panel.token）"
+          value={token}
+          onChange={(e) => {
+            setTokenValue(e.target.value);
+            setToken(e.target.value);
+          }}
+          onPressEnter={reload}
+        />
+      </div>
+    );
   }
 
   const errors = issues.filter((i) => i.severity === "error");
@@ -60,6 +81,15 @@ export default function App() {
           </p>
         </div>
         <Space>
+          <Input.Password
+            style={{ width: 220 }}
+            placeholder="面板口令"
+            value={token}
+            onChange={(e) => {
+              setTokenValue(e.target.value);
+              setToken(e.target.value);
+            }}
+          />
           <Button onClick={onValidate}>校验路径</Button>
           <Button onClick={() => onSave(true)}>保存草稿</Button>
           <Button type="primary" disabled={errors.length > 0} onClick={() => onSave(false)}>

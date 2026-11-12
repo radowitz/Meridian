@@ -25,7 +25,9 @@ sudo bash deploy/debian/install.sh
 
 - 写入 `/etc/sysctl.d/99-meridian.conf`（转发、`rp_filter=2`、关闭发送重定向、局域网口 `accept_ra=2`）
 - 若存在 systemd-resolved，关掉它的 53 端口占用，把 53 留给 SmartDNS
-- 用发行版软件包安装 `docker.io`、`docker-compose`、`wireguard-tools`、`nftables`
+- 用发行版软件包安装 `docker.io`、`docker-compose-v2`（没有这个包时才用 `docker-compose`）、`wireguard-tools`、`nftables`、`openssl`
+- 把 Docker 的 `iptables` / `ip6tables` 设为 false（仅当还没有 `/etc/docker/daemon.json`）。否则 Docker 会把 FORWARD 改成 DROP，测试设备的流量被丢掉
+- 启用 `meridian.service`，开机时若 `/usr/local/sbin/meridian-up.sh` 已存在就只恢复 Meridian 自己的表和路由
 - 不停止、不修改任何名字里带 mihomo 的服务
 
 脚本不会自动改网卡地址。如果当前没有 `192.168.100.88`，它只打印警告。
@@ -38,7 +40,9 @@ sudo docker compose -f deploy/docker-compose.yml up -d --build
 
 容器使用 host 网络、`NET_ADMIN` 和 `/dev/net/tun`，这样它能操作宿主机的 WireGuard 和 nftables。面板默认只绑 `192.168.100.88:8787`。进程拒绝监听 `0.0.0.0`，避免把面板暴露到非局域网地址。
 
-浏览器打开 `http://192.168.100.88:8787`。
+首次启动会在 `/var/lib/meridian/panel.token` 写入口令（权限 0600），日志里只有文件路径。浏览器打开 `http://192.168.100.88:8787`，把这串口令填进面板。也可以事先设置 `MERIDIAN_TOKEN`。
+
+Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧的 `docker-compose` 命令时，用那一个；这份 Compose 文件需要 v2 的 `profiles`。
 
 ## 4. 换成真实端点再下发
 

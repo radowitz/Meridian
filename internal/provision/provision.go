@@ -6,13 +6,17 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
+	"path"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/radowitz/meridian/internal/apply"
 )
 
 const PrivatePlaceholder = "__MERIDIAN_PRIVATE_KEY__"
@@ -46,7 +50,8 @@ func GenerateKeypair() (Keypair, error) {
 func Script(nodeName string, files map[string]string) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
-	sb.WriteString("# Meridian provision for " + nodeName + "\n")
+	sb.WriteString("# Meridian provision\n")
+	sb.WriteString("# node: " + oneLine(nodeName) + "\n")
 	sb.WriteString("# Does not flush nftables, does not touch unrelated WireGuard interfaces,\n")
 	sb.WriteString("# and does not install Cloudflare Mesh on the home gateway.\n")
 	sb.WriteString("set -euo pipefail\n")
@@ -64,16 +69,19 @@ func Script(nodeName string, files map[string]string) string {
 	}
 	sortStrings(paths)
 	for _, p := range paths {
-		if strings.Contains(p, "..") {
+		clean, ok := safeHostPath(p)
+		if !ok {
+			fmt.Fprintf(&sb, "# rejected path %s\n", shellQuote(oneLine(p)))
 			continue
 		}
 		body := files[p]
-		fmt.Fprintf(&sb, "install -d %s\n", shellQuote(dirOf(p)))
-		fmt.Fprintf(&sb, "cat > %s <<'MERIDIAN_EOF'\n%sMERIDIAN_EOF\n", shellQuote(p), ensureNL(body))
-		if strings.HasSuffix(p, ".sh") || strings.Contains(p, "/usr/local/sbin/") {
-			fmt.Fprintf(&sb, "chmod 755 %s\n", shellQuote(p))
+		delim := heredocDelim(body)
+		fmt.Fprintf(&sb, "install -d %s\n", shellQuote(dirOf(clean)))
+		fmt.Fprintf(&sb, "cat > %s <<'%s'\n%s%s\n", shellQuote(clean), delim, ensureNL(body), delim)
+		if strings.HasSuffix(clean, ".sh") || strings.Contains(clean, "/usr/local/sbin/") {
+			fmt.Fprintf(&sb, "chmod 755 %s\n", shellQuote(clean))
 		} else {
-			fmt.Fprintf(&sb, "chmod 644 %s\n", shellQuote(p))
+			fmt.Fprintf(&sb, "chmod 644 %s\n", shellQuote(clean))
 		}
 	}
 	sb.WriteString("if [ -x /usr/local/sbin/meridian-up.sh ]; then\n")
@@ -162,6 +170,35 @@ func Run(req SSHRequest, script string) (string, error) {
 		return stdout.String() + stderr.String(), fmt.Errorf("远程脚本失败: %w", err)
 	}
 	return stdout.String() + stderr.String(), nil
+}
+
+func safeHostPath(p string) (string, bool) {
+	if !strings.HasPrefix(p, "/") || strings.Contains(p, "..") || strings.ContainsAny(p, "\r\n\x00") {
+		return "", false
+	}
+	clean := path.Clean(p)
+	if clean != p || !apply.HostPathAllowed(clean) {
+		return "", false
+	}
+	return clean, true
+}
+
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
+func heredocDelim(body string) string {
+	delim := "MERIDIAN_EOF"
+	for strings.Contains(body, delim) {
+		var buf [6]byte
+		if _, err := rand.Read(buf[:]); err != nil {
+			return "MERIDIAN_EOF_FALLBACK"
+		}
+		delim = "MERIDIAN_EOF_" + hex.EncodeToString(buf[:])
+	}
+	return delim
 }
 
 func shellQuote(s string) string {

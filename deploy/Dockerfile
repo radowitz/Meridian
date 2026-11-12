@@ -15,7 +15,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/meridian ./cmd/meridian
 FROM debian:13-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates wireguard-tools nftables iproute2 curl procps \
+        ca-certificates wireguard-tools nftables iproute2 curl procps openssl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/meridian /usr/local/bin/meridian
 COPY --from=web /src/web/dist /usr/share/meridian/web

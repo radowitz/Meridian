@@ -2,6 +2,7 @@ package provision
 
 import (
 	"encoding/base64"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -54,5 +55,28 @@ func TestProvisionScript(t *testing.T) {
 	shown := Redact(Script("台湾出口", injected), kp.Private)
 	if strings.Contains(shown, kp.Private) {
 		t.Fatal("redaction leaked the private key")
+	}
+}
+
+func TestProvisionDoesNotExecuteFileBody(t *testing.T) {
+	body := "config line\nMERIDIAN_EOF\necho INJECTED\n"
+	script := Script("name\nrm -rf /\n", map[string]string{
+		"/etc/sysctl.d/99-meridian.conf": body,
+		"/etc/cron.d/evil":               "pwn",
+		"/tmp/../etc/cron.d/evil":        "pwn",
+	})
+	if strings.Contains(script, "\nrm -rf /\n") {
+		t.Fatal("node name broke out of the comment")
+	}
+	if strings.Contains(script, "cat > '/etc/cron.d/evil'") || strings.Contains(script, "cat > '/etc/cron.d/") {
+		t.Fatal("provision wrote a cron file")
+	}
+	if !strings.Contains(script, "MERIDIAN_EOF_") {
+		t.Fatal("default heredoc delimiter was not rotated")
+	}
+	cmd := exec.Command("bash", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bash -n: %v\n%s", err, out)
 	}
 }
