@@ -1,0 +1,16 @@
+[Unit]
+Description=Meridian data plane restore
+After=network-online.target docker.service
+Wants=network-online.target
+ConditionFileIsExecutable=/usr/local/sbin/meridian-up.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Re-applies only Meridian's table, routes, and m*.conf WireGuard interfaces.
+# It does not flush the host ruleset and does not change the main default route,
+# so SSH to 192.168.100.88 keeps working if a later step fails.
+ExecStart=/usr/local/sbin/meridian-up.sh
+
+[Install]
+WantedBy=multi-user.target

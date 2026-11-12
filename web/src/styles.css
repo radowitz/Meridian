@@ -1,0 +1,92 @@
+:root {
+  color: #e7eef6;
+  background: #0c1218;
+  font-family: "Noto Sans SC", "Source Han Sans SC", "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 500px at 10% -10%, rgba(201, 133, 42, 0.16), transparent 50%),
+    #0c1218;
+}
+
+#root { min-height: 100vh; }
+
+.shell { max-width: 1440px; margin: 0 auto; padding: 20px 24px 48px; }
+
+.mast {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-end;
+  margin-bottom: 18px;
+}
+
+.mast h1 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: 0.04em;
+  font-weight: 650;
+}
+
+.mast h1 span { color: #e2a33a; }
+
+.mast p { margin: 6px 0 0; color: #9aabbb; max-width: 720px; }
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  min-height: 640px;
+}
+
+.canvas-wrap {
+  height: 680px;
+  border: 1px solid #243140;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0e1620;
+}
+
+.side, .panel {
+  background: #121a22;
+  border: 1px solid #243140;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.side h3, .panel h3 { margin: 0 0 10px; font-size: 15px; }
+
+.issues { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+.issue {
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.issue.error { background: rgba(176, 58, 46, 0.18); border: 1px solid #8c3a32; }
+.issue.warning { background: rgba(201, 133, 42, 0.12); border: 1px solid #8a6a2a; }
+
+.diff {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: #0b1016;
+  border-radius: 10px;
+  padding: 12px;
+  max-height: 480px;
+  overflow: auto;
+  border: 1px solid #243140;
+}
+
+.node-card { font-size: 12px; line-height: 1.35; }
+.node-card strong { display: block; font-size: 13px; }
+.node-card em { font-style: normal; color: #d7c4a3; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
