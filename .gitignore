@@ -1,0 +1,19 @@
+/bin/
+/dist/
+/data/
+/tmp/
+*.db
+*.db-journal
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+web/node_modules/
+web/dist/
+
+# Appliance state and rendered secrets stay on the gateway.
+/var/lib/meridian/
+/etc/meridian/
