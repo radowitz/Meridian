@@ -71,9 +71,9 @@ sudo /usr/local/sbin/meridian-verify.sh
 
 - [ ] 香港池里有多台非家宽出口，面板上首选是 IX 绑定的那台。家宽在另一个池，至少两台。
 - [ ] 把首选成员的探测连续打失败 3 次，枢纽上该池的路由表下一跳换成同池备成员。只失败 1 次时下一跳不变。（实机：看 `/run/meridian/pool`。仓库里用状态机单测覆盖了同一规则。）
-- [ ] 备成员连续成功 5 次后，120 秒冷却未到，不会切回首选。
-- [ ] 池内 WireGuard 都失败且该池有 Mesh 边时，下一跳才是 `mmesh`。没有 Mesh 时不改去别的国家。
-- [ ] 家宽网关上没有 `cloudflare/mesh`，也没有 `dev mmesh`。Mesh 只在枢纽和出口的独立网络命名空间里。
+- [ ] 备成员连续成功 5 次后，120 秒冷却未到，不会切回首选。首选已经判死时，这 120 秒不会把下一跳留在另一台也已经判死的成员上。
+- [ ] 池内 WireGuard 都失败且该池有 Mesh 边时，下一跳才是 `mmesh`，并且只有 `/run/meridian/mesh-sealed` 存在时才装这条路由。没有密封或没有 Mesh 时，这张表是黑洞，不改去别的国家，也不从枢纽的默认路由出去。
+- [ ] 家宽网关上没有 `cloudflare/mesh`，也没有 `dev mmesh`。Mesh 只在枢纽和出口的独立网络命名空间里。本机地址是 `192.168.100.88/24` 时，mesh 脚本拒绝启动。
 - [ ] `/etc/meridian/mesh.env` 权限 0600，令牌不在 git 里。文件为空时 sidecar 不启动，其余隧道照常。
 - [ ] 删掉 IX 或把 Mesh 从家宽画到出口，保存被拒绝。
 
@@ -85,7 +85,8 @@ sudo /usr/local/sbin/meridian-verify.sh
 - [ ] 池里没有成员能解锁时标成不可用，不会改到日本或别的国家。
 - [ ] 切回首选前，首选已经再次成功，并且过了 30 分钟。
 - [ ] 映射变化后，下发之前数据面仍是旧的 mark。下发之后 SmartDNS 和 nft 的出口一起换。
-- [ ] 实机：在出口上跑 `meridian-unlock-probe.sh`。没有 Docker 或没有 regioncheck 镜像时，脚本只写下说明，不编造成功。
+- [ ] 实机：在出口上跑 `meridian-unlock-probe.sh`。没有 Docker 或本地没有 `lmc999/regioncheck` 镜像时，脚本只写下说明，不编造成功，也不会停在区域菜单上。
+- [ ] 报告里的 `Region:` 和出口地区不一致时，记为失败，不把这条自动规则留在「已解锁」上。
 
 ## 纯 IPv6、v6 入 v4 出、NAT64
 

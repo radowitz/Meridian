@@ -120,6 +120,29 @@ func TestMeshOnlyAfterEveryWGMemberIsDown(t *testing.T) {
 	}
 }
 
+func TestCooldownDoesNotKeepADeadBackup(t *testing.T) {
+	rt := Runtime{}
+	now := at(0)
+	for i := 0; i < FailsNeed; i++ {
+		now = now.Add(5 * time.Second)
+		rt = Step(rt, []string{"hk-ix", "hk-2"}, map[string]bool{"hk-ix": false, "hk-2": true}, true, now)
+	}
+	if rt.Active != "hk-2" {
+		t.Fatalf("active = %s, want hk-2", rt.Active)
+	}
+	switched := rt.LastSwitch
+	for i := 0; i < FailsNeed; i++ {
+		now = now.Add(5 * time.Second)
+		rt = Step(rt, []string{"hk-ix", "hk-2"}, map[string]bool{"hk-ix": false, "hk-2": false}, true, now)
+	}
+	if !now.Before(switched.Add(Cooldown)) {
+		t.Fatal("probe sequence left the cooldown window")
+	}
+	if rt.Active != MeshHop {
+		t.Fatalf("active = %s, a dead backup must not stay selected just because the return cooldown has not elapsed", rt.Active)
+	}
+}
+
 func TestMeshIsNotUsedWhileAMemberIsUp(t *testing.T) {
 	rt := Runtime{}
 	now := at(0)

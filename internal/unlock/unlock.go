@@ -35,12 +35,16 @@ const (
 
 // State is one automatic rule's unlock decision.
 type State struct {
-	Pool          string          `json:"pool"`
-	Preferred     string          `json:"preferred"`
-	Active        string          `json:"active"`
-	SchedFails    int             `json:"sched_fails"`
-	Demoted       bool            `json:"demoted"`
-	Unavailable   bool            `json:"unavailable"`
+	Pool        string `json:"pool"`
+	Preferred   string `json:"preferred"`
+	Active      string `json:"active"`
+	SchedFails  int    `json:"sched_fails"`
+	Demoted     bool   `json:"demoted"`
+	Unavailable bool   `json:"unavailable"`
+	// ActiveFails counts scheduled failures of the member currently carrying
+	// the service, once it is no longer the preferred member. Two are
+	// required before trying another member of the same pool.
+	ActiveFails   int             `json:"active_fails,omitempty"`
 	Known         map[string]bool `json:"known,omitempty"`
 	BackupOKAt    time.Time       `json:"backup_ok_at,omitempty"`
 	PreferredOKAt time.Time       `json:"preferred_ok_at,omitempty"`
@@ -90,6 +94,7 @@ func Advance(s State, ev Event, members []string) State {
 		if alt := pickBackup(s, members); alt != "" {
 			s.Active = alt
 			s.Demoted = true
+			s.ActiveFails = 0
 			s.Unavailable = false
 			s.BackupOKAt = time.Time{}
 			s.PreferredOKAt = time.Time{}
@@ -101,6 +106,35 @@ func Advance(s State, ev Event, members []string) State {
 		} else if ev.Kind == KindScheduled && ev.ExitID == s.Preferred && !ev.OK {
 			s.Unavailable = true
 			s.Active = s.Preferred
+		}
+	}
+	// A backup that itself fails two scheduled probes is not left in place,
+	// and it is not replaced with an exit from another pool. The next
+	// known-good member of this pool is tried; if there is none, the service
+	// is marked unavailable and put back on the preferred member.
+	if s.Demoted && ev.Kind == KindScheduled && ev.ExitID == s.Active && ev.ExitID != s.Preferred {
+		if ev.OK {
+			s.ActiveFails = 0
+		} else {
+			s.ActiveFails++
+			if s.ActiveFails >= SchedFailsNeed {
+				s.ActiveFails = 0
+				if alt := pickBackup(s, members); alt != "" && alt != s.Active {
+					s.Active = alt
+					s.Unavailable = false
+					s.BackupOKAt = time.Time{}
+					if good, seen := s.Known[alt]; seen && good {
+						s.BackupOKAt = ev.At
+					}
+				} else {
+					s.Unavailable = true
+					s.Active = s.Preferred
+					s.Demoted = false
+					s.SchedFails = 0
+					s.BackupOKAt = time.Time{}
+					s.PreferredOKAt = time.Time{}
+				}
+			}
 		}
 	}
 	if s.Demoted && s.canReturn(ev.At) {
@@ -250,6 +284,13 @@ func Apply(snap *Snapshot, ev Event, members []string, note string) {
 // is not mentioned is left unset, so a format change cannot look like a
 // failure and move a route. The container is not linked into this binary.
 func ParseRegionCheck(raw string) map[string]bool {
+	return ParseRegionCheckFor(raw, "")
+}
+
+// ParseRegionCheckFor is ParseRegionCheck plus the exit's region. A Yes that
+// names a different catalog (Region: US on a Hong Kong exit) is a failure
+// for that exit, not a success. A Yes with no region is unchanged.
+func ParseRegionCheckFor(raw, exitRegion string) map[string]bool {
 	out := map[string]bool{}
 	sc := bufio.NewScanner(strings.NewReader(raw))
 	for sc.Scan() {
@@ -261,29 +302,81 @@ func ParseRegionCheck(raw string) map[string]bool {
 		if !ok {
 			continue
 		}
-		if v, known := yesNo(line); known {
-			// A later "No" on the same service (for example IPv6) does not
-			// erase an earlier Yes. Either family unlocking is enough to
-			// keep the member; both failing marks it down.
-			if prev, seen := out[rule]; seen {
-				out[rule] = prev || v
-			} else {
-				out[rule] = v
-			}
+		v, known := yesNo(line)
+		if !known {
+			continue
+		}
+		if v && !RegionsMatch(exitRegion, lineRegion(line)) {
+			v = false
+		}
+		// A later "No" on the same service (for example IPv6) does not
+		// erase an earlier acceptable Yes. Either family unlocking in the
+		// exit's own region is enough to keep the member.
+		if prev, seen := out[rule]; seen {
+			out[rule] = prev || v
+		} else {
+			out[rule] = v
 		}
 	}
 	return out
 }
 
+var (
+	yesNoFail = regexp.MustCompile(`\b(no|failed|not available)\b`)
+	yesNoPass = regexp.MustCompile(`\byes\b`)
+	regionRe  = regexp.MustCompile(`(?i)region:\s*([a-z]{2,12})`)
+)
+
 func yesNo(line string) (bool, bool) {
 	l := strings.ToLower(line)
-	if regexp.MustCompile(`\b(no|failed|not available)\b`).MatchString(l) && !regexp.MustCompile(`\byes\b`).MatchString(l) {
+	if yesNoFail.MatchString(l) && !yesNoPass.MatchString(l) {
 		return false, true
 	}
-	if regexp.MustCompile(`\byes\b`).MatchString(l) {
+	if yesNoPass.MatchString(l) {
 		return true, true
 	}
 	return false, false
+}
+
+// lineRegion is the catalog region a streaming probe reported, or empty
+// when the line does not name one. "Yes" with no region is not a country.
+func lineRegion(line string) string {
+	m := regionRe.FindStringSubmatch(line)
+	if m == nil {
+		return ""
+	}
+	return strings.ToLower(m[1])
+}
+
+// RegionsMatch reports whether a probe result may count for an exit in
+// exitRegion. A result that names a different catalog region does not:
+// Netflix unlocked as US must not keep a Hong Kong residential rule.
+// An empty reported region (plain Yes/No) is left to yesNo.
+func RegionsMatch(exitRegion, reported string) bool {
+	if strings.TrimSpace(exitRegion) == "" || reported == "" {
+		return true
+	}
+	return normRegion(exitRegion) == normRegion(reported)
+}
+
+func normRegion(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ReplaceAll(s, "-", "")
+	switch s {
+	case "hongkong", "hk":
+		return "hk"
+	case "taiwan", "tw":
+		return "tw"
+	case "japan", "jp":
+		return "jp"
+	case "singapore", "sg":
+		return "sg"
+	case "unitedstates", "usa", "us":
+		return "us"
+	default:
+		return s
+	}
 }
 
 func ruleAlias(line string) (string, bool) {

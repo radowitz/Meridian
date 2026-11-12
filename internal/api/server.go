@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/radowitz/meridian/internal/apply"
 	"github.com/radowitz/meridian/internal/compile"
@@ -31,6 +32,8 @@ type Server struct {
 	// Token is required on /api except /api/health. An empty token disables
 	// the check so unit tests can call the handler directly. main always sets one.
 	Token string
+	// mu covers read-modify-write of the unlock and pool documents.
+	mu sync.Mutex
 }
 
 func (s *Server) Handler() http.Handler {

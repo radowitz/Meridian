@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/verify"
 )
 
@@ -65,8 +66,48 @@ func TestPhase2And3Bundle(t *testing.T) {
 	if !strings.Contains(hubRoutes, "pure-v6 v6-exit via dualstack ds-relay") || !strings.Contains(hubRoutes, "fd66:0:0:70::2/128") {
 		t.Fatalf("hub does not forward the pure-v6 exit via the relay:\n%s", hubRoutes)
 	}
-	if !strings.Contains(hubRoutes, "dev mmesh") {
-		t.Fatal("mesh exit has no hub next hop")
+	if !strings.Contains(hubRoutes, "dev mmesh") || !strings.Contains(hubRoutes, "mesh-sealed") {
+		t.Fatal("mesh exit must be gated on the sidecar seal")
+	}
+	if strings.Contains(gwFail, "meridian-mesh-up.sh") {
+		t.Fatal("gateway failover must not start the mesh sidecar")
+	}
+	up := b.File("nodes/hk-hub/usr/local/sbin/meridian-up.sh")
+	meshAt := strings.Index(up, "meridian-mesh-up.sh")
+	routeAt := strings.Index(up, "meridian-routes.sh")
+	if meshAt < 0 || routeAt < 0 || meshAt > routeAt {
+		t.Fatal("hub must seal mesh before installing policy routes")
+	}
+	if strings.Contains(b.File("nodes/gw/usr/local/sbin/meridian-up.sh"), "meridian-mesh-up.sh") {
+		t.Fatal("gateway up script starts mesh")
+	}
+	meshUp := b.File("nodes/hk-hub/usr/local/sbin/meridian-mesh-up.sh")
+	for _, needle := range []string{
+		"169.254.66.1/30",
+		"unreachable default",
+		"iif mmesh-c lookup 170 priority 17000",
+		"mesh-sealed",
+		"refusing to start mesh on the home gateway",
+		"oifname !=",
+	} {
+		if !strings.Contains(meshUp, needle) {
+			t.Errorf("mesh-up missing %q", needle)
+		}
+	}
+	if strings.Contains(meshUp, "10.66.254.") || strings.Contains(meshUp, "flush ruleset") || strings.Contains(meshUp, "network_mode") {
+		t.Fatal("mesh-up uses the tunnel aggregate, flushes nft, or joins the host netns")
+	}
+	probe := b.File("nodes/us/usr/local/sbin/meridian-unlock-probe.sh")
+	for _, needle := range []string{"--entrypoint /check.sh", "-R 66", "-M \"$family\"", "lmc999/regioncheck:latest", "http://192.168.100.88:8787"} {
+		if !strings.Contains(probe, needle) {
+			t.Errorf("unlock probe missing %q\n%s", needle, probe)
+		}
+	}
+	if strings.Contains(probe, "MERIDIAN_PANEL_TOKEN=") && strings.Contains(probe, "eyJ") {
+		t.Fatal("probe embeds a token")
+	}
+	if !strings.Contains(b.File("nodes/us/etc/systemd/system/meridian-unlock.service"), "TimeoutStartSec=55min") {
+		t.Fatal("unlock oneshot can hang the 6-hour timer")
 	}
 	for _, line := range strings.Split(hubRoutes, "\n") {
 		if strings.Contains(line, "fd66") && strings.Contains(line, "192.168.100.1") && !strings.HasPrefix(strings.TrimSpace(line), "#") {
@@ -115,6 +156,30 @@ func TestPhase2And3Bundle(t *testing.T) {
 		if it.Status == verify.Fail {
 			t.Errorf("checklist %s: %s", it.ID, it.Detail)
 		}
+	}
+}
+
+func TestHubDoesNotDialPureV6(t *testing.T) {
+	topo := defaults.Example()
+	topo.Links = append(topo.Links, model.Link{
+		ID: "hub-v6-direct", From: "hk-hub", To: "v6-exit",
+		Transport: model.TransportDirectWG, Enabled: true,
+		MTU: 1420, WGPort: 51871,
+		FromV4: "10.66.71.1", ToV4: "10.66.71.2",
+		FromULA: "fd66:0:0:71::1", ToULA: "fd66:0:0:71::2",
+	})
+	b, err := Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range b.Files {
+		if strings.Contains(path, "nodes/hk-hub/etc/wireguard/") && strings.Contains(body, "2001:db8::70") {
+			t.Fatalf("hub wireguard dials a pure-v6 endpoint: %s\n%s", path, body)
+		}
+	}
+	relay := fileContaining(b, "nodes/ds-relay/etc/wireguard/", "[2001:db8::70]:")
+	if !strings.Contains(relay, "[2001:db8::70]:") {
+		t.Fatal("dual-stack relay lost the v6 dial")
 	}
 }
 

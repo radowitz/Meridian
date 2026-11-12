@@ -204,10 +204,10 @@ func checkSettings(t model.Topology) []Issue {
 			Message: "解锁测试间隔小于 1 小时。定时失败要连续两次才换同池备选，间隔太短会把滞回提前用完。",
 		})
 	}
-	if t.Settings.NAT64.Enabled {
+	if t.Settings.NAT64.Prefix != "" {
 		p, err := netip.ParsePrefix(t.Settings.NAT64.Prefix)
-		if err != nil || !p.Addr().Is6() {
-			out = append(out, Issue{Code: "nat64_prefix", Severity: SeverityError, Message: "NAT64 已启用，但前缀不是合法的 IPv6 前缀。"})
+		if err != nil || !p.Addr().Is6() || strings.ContainsAny(t.Settings.NAT64.Prefix, " \t\r\n'\"\\") {
+			out = append(out, Issue{Code: "nat64_prefix", Severity: SeverityError, Message: "NAT64 前缀必须是一行合法的 IPv6 前缀，不能夹带别的路由命令。"})
 		} else {
 			ula, _ := netip.ParsePrefix(or(t.Settings.ULAPrefix, "fd66::/48"))
 			if ula.IsValid() && p.Overlaps(ula) {
@@ -219,10 +219,21 @@ func checkSettings(t model.Topology) []Issue {
 				}
 			}
 		}
+	}
+	if t.Settings.NAT64.Enabled {
+		if strings.TrimSpace(t.Settings.NAT64.Prefix) == "" {
+			out = append(out, Issue{Code: "nat64_prefix", Severity: SeverityError, Message: "NAT64 已启用，但前缀不是合法的 IPv6 前缀。"})
+		}
 		out = append(out, Issue{
 			Code: "nat64_not_installed", Severity: SeverityWarning,
 			Message: "NAT64 只是预留。即使标成启用，这一期也不会把前缀装进路由表，现有 IPv4 路径保持原样。",
 		})
+	}
+	if iss := checkImageRef(t.Settings.MeshImage, "mesh_image"); iss != nil {
+		out = append(out, *iss)
+	}
+	if iss := checkImageRef(t.Settings.RegioncheckImage, "regioncheck_image"); iss != nil {
+		out = append(out, *iss)
 	}
 	for _, n := range t.Nodes {
 		if n.DualstackRelay && (!n.PathV4 || !n.PathV6) {
@@ -756,6 +767,12 @@ func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {
 				}
 			}
 		}
+		if exit != nil && pureV6(*exit) && exit.V6Workaround == model.WorkaroundMesh {
+			out = append(out, Issue{
+				Code: "mesh_exit_no_dns", Severity: SeverityWarning, RuleID: r.ID, ExitID: exit.ID,
+				Message: fmt.Sprintf("规则「%s」的出口 %s 只有 Mesh、没有隧道内解析器。这个域名会返回 SOA，不会改去问另一个国家的 DNS。", r.Name, exit.Name),
+			})
+		}
 		if exit != nil && exit.Residential && r.TargetPool == "hk" {
 			out = append(out, Issue{
 				Code: "residential_in_default_pool", Severity: SeverityWarning, RuleID: r.ID,
@@ -1078,11 +1095,25 @@ func orInt(a, b int) int {
 }
 
 var (
-	idRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
-	ifaceRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:-]{0,14}$`)
-	macRe   = regexp.MustCompile(`(?i)^([0-9a-f]{2}:){5}[0-9a-f]{2}$`)
-	wssRe   = regexp.MustCompile(`^[A-Za-z0-9._~/-]{1,64}$`)
+	idRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
+	ifaceRe  = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:-]{0,14}$`)
+	macRe    = regexp.MustCompile(`(?i)^([0-9a-f]{2}:){5}[0-9a-f]{2}$`)
+	wssRe    = regexp.MustCompile(`^[A-Za-z0-9._~/-]{1,64}$`)
+	imageRef = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,180}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$`)
 )
+
+func checkImageRef(ref, field string) *Issue {
+	if ref == "" {
+		return nil
+	}
+	if strings.Contains(ref, "..") || !imageRef.MatchString(ref) {
+		return &Issue{
+			Code: "bad_image", Severity: SeverityError,
+			Message: field + " 不是可用的镜像引用。官方默认是 cloudflare/mesh:latest 和 lmc999/regioncheck:latest，只能改成同样形式的名字、标签或 sha256。",
+		}
+	}
+	return nil
+}
 
 func checkSafe(t model.Topology) []Issue {
 	var out []Issue

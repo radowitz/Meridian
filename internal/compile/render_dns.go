@@ -84,6 +84,31 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, decisions map[string]s
 			flag = " -address #6"
 		}
 		sb.WriteString(fmt.Sprintf("# rule %s -> %s manual=%v\n", rp.Rule.ID, rp.Exit.Node.ID, rp.Rule.Manual))
+		// No tunnel resolver (Mesh-only exit): return SOA. Falling through
+		// would ask another country's DNS, or the default group.
+		if rp.Exit.DNSULA == "" {
+			sb.WriteString("# no in-tunnel resolver; SOA so the query does not leave via another exit\n")
+			switch rp.Rule.MatchType {
+			case model.MatchGeosite:
+				if rp.Rule.Geosite != "" {
+					fmt.Fprintf(&sb, "domain-set -name gs_%s -file /var/lib/meridian/geosite/%s.txt\n", sanitize(rp.Rule.Geosite), sanitize(rp.Rule.Geosite))
+					fmt.Fprintf(&sb, "domain-rules /domain-set:gs_%s/ -address #\n", sanitize(rp.Rule.Geosite))
+				}
+			case model.MatchKeyword:
+				fmt.Fprintf(&sb, "domain-set -name kw_%s -file /var/lib/meridian/keywords/%s.txt\n", sanitize(rp.Rule.ID), sanitize(rp.Rule.ID))
+				fmt.Fprintf(&sb, "domain-rules /domain-set:kw_%s/ -address #\n", sanitize(rp.Rule.ID))
+			case model.MatchCIDR, model.MatchGeoIP, model.MatchASN:
+				fmt.Fprintf(&sb, "# %s %s is installed in nft set %s, not in SmartDNS\n", rp.Rule.MatchType, rp.Rule.MatchValue, rp.Set4)
+			}
+			for _, d := range rp.Rule.Domains {
+				d = strings.TrimPrefix(d, ".")
+				fmt.Fprintf(&sb, "address /%s/#\n", d)
+			}
+			if len(rp.Rule.Domains) == 0 && (rp.Rule.MatchType == model.MatchDomain || rp.Rule.MatchType == model.MatchSuffix) && rp.Rule.MatchValue != "" {
+				fmt.Fprintf(&sb, "address /%s/#\n", strings.TrimPrefix(rp.Rule.MatchValue, "."))
+			}
+			continue
+		}
 		switch rp.Rule.MatchType {
 		case model.MatchGeosite:
 			if rp.Rule.Geosite != "" {

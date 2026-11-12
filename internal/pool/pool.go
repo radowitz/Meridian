@@ -78,6 +78,8 @@ type Runtime struct {
 // Step updates health from one sample per member and maybe changes Active.
 // members is in preference order. mesh is true when a hub→member Mesh link
 // exists. now is the probe time. A zero LastSwitch allows the first change.
+// Cooldown delays only the return to a preferred member that is up again.
+// It must not keep the table on a member that has already been marked down.
 func Step(rt Runtime, members []string, up map[string]bool, mesh bool, now time.Time) Runtime {
 	if rt.Members == nil {
 		rt.Members = map[string]MemberHealth{}
@@ -117,7 +119,8 @@ func Step(rt Runtime, members []string, up map[string]bool, mesh bool, now time.
 	if want == rt.Active {
 		return rt
 	}
-	if !rt.LastSwitch.IsZero() && now.Sub(rt.LastSwitch) < Cooldown {
+	returning := want == pref && rt.Active != pref && prefUp
+	if returning && !rt.LastSwitch.IsZero() && now.Sub(rt.LastSwitch) < Cooldown {
 		return rt
 	}
 	rt.Active = want

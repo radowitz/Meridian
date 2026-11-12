@@ -206,6 +206,14 @@ fi
 	sb.WriteString("if [ -f /etc/nftables.d/meridian.nft ]; then\n")
 	sb.WriteString("  nft -c -f /etc/nftables.d/meridian.nft\n")
 	sb.WriteString("fi\n")
+	// Seal the Mesh sidecar before policy routes, so a mesh exit table can
+	// point at mmesh on the first boot. A mesh failure must not skip routes:
+	// the foreign path still has to install its blackhole.
+	if n.Role != model.RoleGateway {
+		sb.WriteString("if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then\n")
+		sb.WriteString("  /usr/local/sbin/meridian-mesh-up.sh || echo \"mesh sidecar skipped\" >&2\n")
+		sb.WriteString("fi\n")
+	}
 	sb.WriteString("/usr/local/sbin/meridian-routes.sh\n")
 	sb.WriteString("if [ -f /etc/nftables.d/meridian.nft ]; then\n")
 	sb.WriteString("  nft delete table inet meridian >/dev/null 2>&1 || true\n")
@@ -238,11 +246,6 @@ fi
 	}
 	if n.Role == model.RoleExit {
 		sb.WriteString("enable_unit meridian-unlock.timer\n")
-	}
-	if n.Role != model.RoleGateway {
-		sb.WriteString("if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then\n")
-		sb.WriteString("  /usr/local/sbin/meridian-mesh-up.sh || echo \"mesh sidecar skipped\" >&2\n")
-		sb.WriteString("fi\n")
 	}
 	sb.WriteString("echo meridian-up-complete\n")
 	return sb.String()

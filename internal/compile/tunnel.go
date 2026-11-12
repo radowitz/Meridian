@@ -115,7 +115,11 @@ func buildTunnels(t model.Topology) ([]Tunnel, error) {
 				}
 				tun.ClientUDP = 52000 + i
 			}
-			if !tun.East.PathV4 && tun.East.PathV6 && tun.East.EndpointV6 != "" {
+			// The Hong Kong hub has no IPv6. A pure-v6 Endpoint is dialed only
+			// by a node that itself has v6 and is not the hub (the dual-stack
+			// relay, already reached over v4 from the hub).
+			if !tun.East.PathV4 && tun.East.PathV6 && tun.East.EndpointV6 != "" &&
+				tun.West.Role != model.RoleHub && tun.West.PathV6 {
 				tun.OuterV6 = true
 			}
 			if tun.WestV4 == "" || tun.EastV4 == "" || tun.WestULA == "" || tun.EastULA == "" {

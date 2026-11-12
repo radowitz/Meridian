@@ -99,6 +99,37 @@ func TestPinIsNotADecision(t *testing.T) {
 	}
 }
 
+func TestBackupFailureDoesNotLeaveThePool(t *testing.T) {
+	s := State{Pool: "us", Preferred: "us", Active: "us", Known: map[string]bool{"us-2": true}}
+	s = Advance(s, Event{ExitID: "us", OK: false, Kind: KindScheduled, At: at(0)}, members())
+	s = Advance(s, Event{ExitID: "us", OK: false, Kind: KindScheduled, At: at(1)}, members())
+	if s.Active != "us-2" || !s.Demoted {
+		t.Fatalf("did not demote: %+v", s)
+	}
+	s = Advance(s, Event{ExitID: "us-2", OK: false, Kind: KindScheduled, At: at(2)}, members())
+	if s.Active != "us-2" || !s.Demoted || s.ActiveFails != 1 {
+		t.Fatalf("one backup failure moved the route: %+v", s)
+	}
+	s = Advance(s, Event{ExitID: "us-2", OK: false, Kind: KindScheduled, At: at(3)}, members())
+	if s.Active != "us" || !s.Unavailable || s.Demoted {
+		t.Fatalf("backup exhaustion should alarm inside the US pool: %+v", s)
+	}
+}
+
+func TestRegionMismatchIsNotSuccess(t *testing.T) {
+	raw := "Netflix: Yes (Region: US)\nDisney+: Yes (Region: HK)\nBahamut: Yes\n"
+	got := ParseRegionCheckFor(raw, "hk")
+	if got["auto-netflix"] {
+		t.Fatal("a US catalog counted as a Hong Kong unlock")
+	}
+	if !got["auto-disney"] || !got["auto-bahamut"] {
+		t.Fatalf("%v", got)
+	}
+	if !ParseRegionCheck(raw)["auto-netflix"] {
+		t.Fatal("a Yes with no exit region must stay a Yes")
+	}
+}
+
 func TestParseRegionCheckDoesNotInventFailures(t *testing.T) {
 	raw := "" +
 		"Netflix: Yes (Region: HK)\n" +

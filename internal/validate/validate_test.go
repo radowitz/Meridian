@@ -219,6 +219,20 @@ func TestAAAAFilterIsWarningNotACountryChange(t *testing.T) {
 	}
 }
 
+func TestImageAndNAT64Prefix(t *testing.T) {
+	topo := defaults.Example()
+	topo.Settings.MeshImage = "cloudflare/mesh:latest"
+	topo.Settings.RegioncheckImage = "lmc999/regioncheck:2024.1"
+	if Run(topo).HasErrors() {
+		t.Fatal(Run(topo).Issues)
+	}
+	topo.Settings.MeshImage = "cloudflare/mesh:latest;rm"
+	assertError(t, Run(topo), "bad_image")
+	topo = defaults.Example()
+	topo.Settings.NAT64.Prefix = "64:ff9b::/96\nip route replace default via 192.168.100.1"
+	assertError(t, Run(topo), "nat64_prefix")
+}
+
 func assertError(t *testing.T, res Result, code string) {
 	t.Helper()
 	for _, iss := range res.Issues {

@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	"github.com/radowitz/meridian/internal/unlock"
 	"github.com/radowitz/meridian/internal/verify"
 )
+
+var errUnlockExecUnset = errors.New("unset")
 
 const (
 	unlockKey = "unlock"
@@ -74,6 +78,8 @@ func (s *Server) saveUnlock(snap unlock.Snapshot) error {
 }
 
 func (s *Server) clearUnlockPending() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	snap := s.loadUnlock()
 	if !snap.PendingApply {
 		return
@@ -107,6 +113,8 @@ func (s *Server) savePools(doc poolDoc) error {
 }
 
 func (s *Server) getPools(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	t, err := s.topology()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -158,6 +166,8 @@ type healthBody struct {
 }
 
 func (s *Server) postPoolHealth(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	body, err := readLimited(r, 1<<20)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -222,6 +232,8 @@ func (s *Server) postPoolHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getUnlock(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	t, err := s.topology()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -253,6 +265,8 @@ type reportBody struct {
 }
 
 func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	body, err := readLimited(r, 256<<10)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -280,14 +294,18 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("kind 只能是 scheduled、manual 或 health"))
 		return
 	}
-	when := time.Now().UTC()
+	// Hysteresis uses the server clock. A client-supplied at can otherwise
+	// backdate the 30-minute return cooldown and move a route immediately.
 	if in.At != "" {
-		parsed, err := time.Parse(time.RFC3339, in.At)
-		if err != nil {
+		if _, err := time.Parse(time.RFC3339, in.At); err != nil {
 			writeErr(w, http.StatusBadRequest, errors.New("at 需要 RFC3339 时间"))
 			return
 		}
-		when = parsed
+	}
+	when := time.Now().UTC()
+	if len(in.Services) > 64 {
+		writeErr(w, http.StatusBadRequest, errors.New("services 过多"))
+		return
 	}
 	results := map[string]bool{}
 	for k, v := range in.Services {
@@ -295,7 +313,7 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 			results[id] = v
 		}
 	}
-	for k, v := range unlock.ParseRegionCheck(in.Raw) {
+	for k, v := range unlock.ParseRegionCheckFor(in.Raw, exit.Region) {
 		results[k] = v
 	}
 	for k, v := range unlock.ParseAICodes(in.AI) {
@@ -377,14 +395,20 @@ func canonicalService(name string) (string, bool) {
 }
 
 func (s *Server) postUnlockRun(w http.ResponseWriter, r *http.Request) {
-	cmd := strings.TrimSpace(os.Getenv("MERIDIAN_UNLOCK_EXEC"))
-	if cmd == "" {
+	path, err := resolveUnlockExec()
+	if errors.Is(err, errUnlockExecUnset) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "没有配置 MERIDIAN_UNLOCK_EXEC。在出口上运行 regioncheck 容器，再把 JSON 结果 POST 到 /api/unlock/report。面板不会编造探测结果。",
 		})
 		return
 	}
-	out, err := exec.Command(cmd).CombinedOutput()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
+	defer cancel()
+	out, err := runUnlockExec(ctx, path)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, errors.New("解锁探测命令失败"))
 		return
@@ -405,6 +429,44 @@ func (s *Server) postUnlockRun(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(rr.code)
 	_, _ = w.Write(rr.body)
+}
+
+// resolveUnlockExec accepts only an absolute path to a regular executable.
+// The value is not passed to a shell, and it cannot smuggle arguments.
+func resolveUnlockExec() (string, error) {
+	raw := strings.TrimSpace(os.Getenv("MERIDIAN_UNLOCK_EXEC"))
+	if raw == "" {
+		return "", errUnlockExecUnset
+	}
+	if !filepath.IsAbs(raw) || strings.ContainsAny(raw, " \t\r\n\"'`$|&;<>*?[]{}\\") {
+		return "", errors.New("MERIDIAN_UNLOCK_EXEC 必须是不带参数的绝对路径，不能交给 shell")
+	}
+	fi, err := os.Stat(raw)
+	if err != nil || !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
+		return "", errors.New("MERIDIAN_UNLOCK_EXEC 不是可执行文件")
+	}
+	if fi.Mode()&0o002 != 0 {
+		return "", errors.New("MERIDIAN_UNLOCK_EXEC 不能是全局可写")
+	}
+	return raw, nil
+}
+
+func runUnlockExec(ctx context.Context, path string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, path)
+	cmd.Env = stripSecretEnv(os.Environ())
+	cmd.Stdin = nil
+	return cmd.CombinedOutput()
+}
+
+func stripSecretEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, "MERIDIAN_TOKEN=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func (s *Server) getLeakcheck(w http.ResponseWriter, r *http.Request) {
@@ -434,38 +496,56 @@ func (s *Server) StartUnlockScheduler() {
 }
 
 func (s *Server) tickUnlock() {
+	s.mu.Lock()
 	t, err := s.topology()
 	if err != nil {
+		s.mu.Unlock()
 		return
 	}
 	snap := s.loadUnlock()
 	now := time.Now().UTC()
+	interval := unlock.Interval(t.Settings.UnlockIntervalSec)
 	if snap.NextRun.IsZero() {
-		snap.NextRun = now.Add(unlock.Interval(t.Settings.UnlockIntervalSec))
+		snap.NextRun = now.Add(interval)
 		_ = s.saveUnlock(snap)
+		s.mu.Unlock()
 		return
 	}
 	if now.Before(snap.NextRun) {
+		s.mu.Unlock()
 		return
 	}
-	if strings.TrimSpace(os.Getenv("MERIDIAN_UNLOCK_EXEC")) == "" {
+	path, err := resolveUnlockExec()
+	if err != nil {
+		note := "到达 6 小时定时，但没有配置探测命令，路由保持不变。"
+		if !errors.Is(err, errUnlockExecUnset) {
+			note = "定时探测命令被拒绝（必须是绝对路径的可执行文件，不能是 shell 命令），路由保持不变。"
+		}
 		snap.History = append(snap.History, unlock.HistoryEntry{
-			At: now, Kind: unlock.KindScheduled, Note: "到达 6 小时定时，但没有配置探测命令，路由保持不变。",
+			At: now, Kind: unlock.KindScheduled, Note: note,
 		})
-		snap.NextRun = now.Add(unlock.Interval(t.Settings.UnlockIntervalSec))
+		snap.NextRun = now.Add(interval)
 		_ = s.saveUnlock(snap)
+		s.mu.Unlock()
 		return
 	}
-	// The command posts its own report. Only the timestamp moves here if
-	// the command is present; the report handler records the results.
-	cmd := os.Getenv("MERIDIAN_UNLOCK_EXEC")
-	if _, err := exec.Command(cmd).CombinedOutput(); err != nil {
-		snap.History = append(snap.History, unlock.HistoryEntry{
-			At: now, Kind: unlock.KindScheduled, Note: "定时探测命令失败，路由保持不变。",
-		})
-	}
-	snap.NextRun = now.Add(unlock.Interval(t.Settings.UnlockIntervalSec))
+	// Advance the schedule before running the command. The command may POST
+	// /api/unlock/report, which takes the same lock.
+	snap.NextRun = now.Add(interval)
 	_ = s.saveUnlock(snap)
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	if _, err := runUnlockExec(ctx, path); err != nil {
+		s.mu.Lock()
+		snap := s.loadUnlock()
+		snap.History = append(snap.History, unlock.HistoryEntry{
+			At: time.Now().UTC(), Kind: unlock.KindScheduled, Note: "定时探测命令失败，路由保持不变。",
+		})
+		_ = s.saveUnlock(snap)
+		s.mu.Unlock()
+	}
 }
 
 func readLimited(r *http.Request, n int64) ([]byte, error) {

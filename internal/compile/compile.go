@@ -136,7 +136,8 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			add(prefix+"usr/local/sbin/meridian-verify.sh", renderVerifyScript(t))
 		}
 		if n.Role == model.RoleExit {
-			add(prefix+"usr/local/sbin/meridian-unlock-probe.sh", renderUnlockProbe(n))
+			add(prefix+"usr/local/sbin/meridian-unlock-probe.sh", renderUnlockProbe(t, n))
+			add(prefix+"etc/meridian/unlock-report.env.example", renderUnlockReportEnv())
 			add(prefix+"etc/systemd/system/meridian-unlock.service", renderUnlockService())
 			add(prefix+"etc/systemd/system/meridian-unlock.timer", renderUnlockTimer(t))
 		}
@@ -144,7 +145,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			add(prefix+"etc/meridian/nat64.reserved.conf", renderNAT64(t))
 		}
 		if n.Role != model.RoleGateway && meshPeer(t, n.ID) {
-			add(prefix+"etc/meridian/mesh-sidecar.compose.yml", renderMeshCompose())
+			add(prefix+"etc/meridian/mesh-sidecar.compose.yml", renderMeshCompose(t))
 			add(prefix+"etc/meridian/mesh.env.example", renderMeshEnvExample())
 			add(prefix+"usr/local/sbin/meridian-mesh-up.sh", renderMeshUp())
 		}

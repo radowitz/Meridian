@@ -201,6 +201,14 @@ type Settings struct {
 	// translator is actually deployed; the compiler will not install a
 	// NAT64 route, so current v4 paths keep working.
 	NAT64 NAT64 `json:"nat64"`
+
+	// MeshImage is the OCI image for the hub/exit sidecar. Empty means
+	// the official Cloudflare Mesh node, cloudflare/mesh:latest.
+	// Pin a tag or digest here; do not invent a name.
+	MeshImage string `json:"mesh_image,omitempty"`
+	// RegioncheckImage is the OCI image for the exit unlock probe.
+	// Empty means lmc999/regioncheck:latest. It stays a separate container.
+	RegioncheckImage string `json:"regioncheck_image,omitempty"`
 }
 
 // NAT64 is the placeholder for a future translator in front of a pure-v6

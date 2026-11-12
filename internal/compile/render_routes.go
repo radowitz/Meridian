@@ -231,13 +231,15 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 		}
 		if e.Mesh {
 			fmt.Fprintf(sb, "# pure-v6 %s mesh hop only; never the IX west path\n", e.Node.ID)
-			fmt.Fprintf(sb, "if ip link show mmesh >/dev/null 2>&1; then\n")
+			fmt.Fprintf(sb, "# mmesh is used only after meridian-mesh-up.sh has sealed the sidecar.\n")
+			fmt.Fprintf(sb, "# Without that seal, packets would follow the container default route onto this host's WAN.\n")
+			fmt.Fprintf(sb, "if ip link show mmesh >/dev/null 2>&1 && [ -f /run/meridian/mesh-sealed ]; then\n")
 			fmt.Fprintf(sb, "  ip route replace default dev mmesh table %d\n", e.Table)
 			fmt.Fprintf(sb, "  ip -6 route replace default dev mmesh table %d\n", e.Table)
 			fmt.Fprintf(sb, "else\n")
 			fmt.Fprintf(sb, "  ip route replace blackhole default table %d\n", e.Table)
 			fmt.Fprintf(sb, "  ip -6 route replace blackhole default table %d\n", e.Table)
-			fmt.Fprintf(sb, "  echo \"mmesh is down; exit %s stays blackholed\" >&2\n", e.Node.ID)
+			fmt.Fprintf(sb, "  echo \"mmesh is not sealed; exit %s stays blackholed\" >&2\n", e.Node.ID)
 			fmt.Fprintf(sb, "fi\n")
 		}
 		fmt.Fprintf(sb, "# exit %s mark %#x transit %s dev %s\n", e.Node.ID, e.Mark, e.TransitV4, e.HubIface)
@@ -756,9 +758,18 @@ pool_step() {
     fi
   fi
   now=$(date +%s)
-  [ -f "$dir/switched" ] && last=$(cat "$dir/switched")
+  last=0
+  if [ -f "$dir/switched" ]; then
+    last=$(cat "$dir/switched" 2>/dev/null || echo 0)
+  fi
+  case "$last" in
+    ''|*[!0-9]*) last=0 ;;
+  esac
   if [ "$want" != "$active" ]; then
-    if [ "$last" -ne 0 ] && [ $((now-last)) -lt "$COOLDOWN" ]; then
+    # 120s only delays the return to a preferred member that is up again.
+    # A member already marked down must be left immediately, or this table
+    # keeps handing packets to a dead tunnel.
+    if [ "$want" = "$pref" ] && [ "$up_pref" -eq 1 ] && [ "$last" -ne 0 ] && [ $((now-last)) -lt "$COOLDOWN" ]; then
       return 0
     fi
     apply_pool_hop "$table" "$want" || return 0
@@ -776,9 +787,10 @@ apply_pool_hop() {
   esac
   if [ "$want" = "mmesh" ]; then
     dev="mmesh"
-    if ! ip link show mmesh >/dev/null 2>&1; then
+    if ! ip link show mmesh >/dev/null 2>&1 || [ ! -f /run/meridian/mesh-sealed ]; then
       ip route replace blackhole default table "$table"
       ip -6 route replace blackhole default table "$table"
+      echo "mmesh is not sealed; pool $pool stays blackholed" >&2
       return 0
     fi
   else
@@ -829,6 +841,9 @@ choose() {
 cur=""
 bad=0
 while true; do
+  if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then
+    /usr/local/sbin/meridian-mesh-up.sh --seal-only || rm -f /run/meridian/mesh-sealed
+  fi
   want=$(choose)
   if [ "$want" != "$cur" ]; then
     bad=$((bad+1))
