@@ -2,7 +2,9 @@ package compile
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"github.com/radowitz/meridian/internal/model"
@@ -84,29 +86,43 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
 	}
 
 	sb.WriteString("  chain classify {\n")
-	sb.WriteString("    ip daddr @underlay4 meta mark set 0x64 return\n")
-	sb.WriteString("    ip daddr { 10.0.0.0/8, 127.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } return\n")
-	sb.WriteString("    ip6 daddr { fe80::/10, ::1 } return\n")
+	sb.WriteString("    ip daddr @underlay4 drop comment \"clients cannot bypass the tunnel by talking to an endpoint\"\n")
+	sb.WriteString("    ip daddr 10.66.0.0/16 drop comment \"tunnel v4 is not a LAN destination\"\n")
+	sb.WriteString("    ip6 daddr fc00::/7 drop comment \"ULA, including fd66, never goes to ROS\"\n")
+	// Link-local and multicast must not be dropped here: RA and ND arrive
+	// on this interface and are delivered locally. Forwarded copies are
+	// unmarked so they follow the main table instead of an exit.
+	sb.WriteString("    ip6 daddr { fe80::/10, ff00::/8, ::1 } return\n")
+	sb.WriteString("    ip daddr { 224.0.0.0/4, 255.255.255.255 } return\n")
 	for _, rp := range rules {
-		pred := sourcePred(rp.Rule)
-		fmt.Fprintf(&sb, "    %sip daddr @%s meta mark set %#x return\n", pred, rp.Set4, rp.Exit.Mark)
-		if !rp.FilterAAAA {
-			fmt.Fprintf(&sb, "    %sip6 daddr @%s meta mark set %#x return\n", pred, rp.Set6, rp.Exit.Mark)
+		for _, pred := range sourcePreds(rp.Rule) {
+			fmt.Fprintf(&sb, "    %sip daddr @%s meta mark set %#x return\n", pred, rp.Set4, rp.Exit.Mark)
+			if !rp.FilterAAAA {
+				fmt.Fprintf(&sb, "    %sip6 daddr @%s meta mark set %#x return\n", pred, rp.Set6, rp.Exit.Mark)
+			}
 		}
 	}
-	sb.WriteString("    ip daddr @direct4 meta mark set 0x64 return\n")
-	sb.WriteString("    ip6 daddr @direct6 meta mark set 0x64 return\n")
-	sb.WriteString("    ip daddr @chnroute meta mark set 0x64 return\n")
-	sb.WriteString("    ip6 daddr @chnroute6 meta mark set 0x64 return\n")
+	fmt.Fprintf(&sb, "    ip daddr @direct4 meta mark set %#x return\n", markDomestic)
+	fmt.Fprintf(&sb, "    ip6 daddr @direct6 meta mark set %#x return\n", markDomestic)
+	fmt.Fprintf(&sb, "    ip daddr @chnroute meta mark set %#x return\n", markDomestic)
+	fmt.Fprintf(&sb, "    ip6 daddr @chnroute6 meta mark set %#x return\n", markDomestic)
+	// Private ranges are domestic. Leaving them unmarked made them follow
+	// the main default, and the catch-all below would otherwise stuff them
+	// into the foreign tunnel.
+	fmt.Fprintf(&sb, "    ip daddr { 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } meta mark set %#x return\n", markDomestic)
+	if t.Settings.LANIPv6Prefix != "" {
+		fmt.Fprintf(&sb, "    ip6 daddr %s meta mark set %#x return\n", t.Settings.LANIPv6Prefix, markDomestic)
+	}
 	sb.WriteString("    ip daddr @default4 meta mark set " + fmt.Sprintf("%#x", def.Mark) + " return\n")
 	sb.WriteString("    ip6 daddr @default6 meta mark set " + fmt.Sprintf("%#x", def.Mark) + " return\n")
 	fmt.Fprintf(&sb, "    meta nfproto ipv4 meta mark set %#x return\n", def.Mark)
 	fmt.Fprintf(&sb, "    meta nfproto ipv6 meta mark set %#x return\n", def.Mark)
 	sb.WriteString("  }\n\n")
 
-	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname \"%s\" ip6 daddr fd66::/48 drop comment \"ULA never enters the LAN or ROS\"\n    iifname \"%s\" jump classify\n  }\n\n", lan, lan)
+	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname \"%s\" jump classify\n  }\n\n", lan)
 
-	fmt.Fprintf(&sb, "  chain mss {\n    type filter hook forward priority mangle; policy accept;\n    tcp flags syn meta nfproto ipv4 tcp option maxseg size set %d\n    tcp flags syn meta nfproto ipv6 tcp option maxseg size set %d\n  }\n\n", mss4, mss6)
+	// Only lower an advertised MSS. Raising a small MSS black-holes TCP.
+	fmt.Fprintf(&sb, "  chain mss {\n    type filter hook forward priority mangle; policy accept;\n    tcp flags syn meta nfproto ipv4 tcp option maxseg size > %d tcp option maxseg size set %d\n    tcp flags syn meta nfproto ipv6 tcp option maxseg size > %d tcp option maxseg size set %d\n  }\n\n", mss4, mss4, mss6, mss6)
 
 	fmt.Fprintf(&sb, `  chain doh {
     type filter hook forward priority filter; policy accept;
@@ -116,17 +132,34 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
 
 `, lan, lan)
 
+	v6src := "fe80::/10"
+	if t.Settings.LANIPv6Prefix != "" {
+		v6src = "fe80::/10, " + t.Settings.LANIPv6Prefix
+	}
 	fmt.Fprintf(&sb, `  chain dns_hijack {
     type nat hook prerouting priority dstnat; policy accept;
-    iifname "%s" meta nfproto ipv4 udp dport 53 redirect to :53
+    iifname "%s" meta nfproto ipv4 udp dport { 53, 853 } redirect to :53
     iifname "%s" meta nfproto ipv4 tcp dport 53 redirect to :53
     iifname "%s" meta nfproto ipv4 tcp dport 853 redirect to :853
-    iifname "%s" meta nfproto ipv6 udp dport 53 redirect to :53
+    iifname "%s" meta nfproto ipv6 udp dport { 53, 853 } redirect to :53
     iifname "%s" meta nfproto ipv6 tcp dport 53 redirect to :53
     iifname "%s" meta nfproto ipv6 tcp dport 853 redirect to :853
   }
 
 `, lan, lan, lan, lan, lan, lan)
+	// UDP/853 (DoQ) is redirected at port 53 above: nothing here speaks DoQ,
+	// and leaving it forwarded would bypass SmartDNS.
+	fmt.Fprintf(&sb, `  chain input {
+    type filter hook input priority filter; policy accept;
+    tcp dport { 53, 853 } ip saddr != %s drop comment "DNS only from the LAN"
+    udp dport { 53, 853 } ip saddr != %s drop
+    tcp dport { 53, 853 } ip6 saddr != { %s } drop
+    udp dport { 53, 853 } ip6 saddr != { %s } drop
+    tcp dport %d ip saddr != %s drop comment "panel stays on the LAN"
+    tcp dport %d meta nfproto ipv6 drop
+  }
+
+`, lanNet(t), lanNet(t), v6src, v6src, panelPort(t), lanNet(t), panelPort(t))
 
 	sb.WriteString("  chain transit_snat {\n    type nat hook postrouting priority srcnat; policy accept;\n")
 	for _, e := range exits {
@@ -207,19 +240,43 @@ func writeSet(sb *strings.Builder, name, typ string, timeout bool, elements []st
 	sb.WriteString("  }\n")
 }
 
-func sourcePred(r model.Rule) string {
-	var parts []string
+// sourcePreds builds nft match prefixes. A packet is one address family, so
+// a v4 source and a v6 source are alternatives, while a MAC is combined
+// with each of them.
+func sourcePreds(r model.Rule) []string {
+	mac := ""
 	if r.SourceMAC != "" {
-		parts = append(parts, "ether saddr "+r.SourceMAC)
+		mac = "ether saddr " + r.SourceMAC + " "
 	}
+	var v4, v6 string
 	if r.SourceIPv4 != "" {
-		parts = append(parts, "ip saddr "+r.SourceIPv4)
+		v4 = "ip saddr " + r.SourceIPv4 + " "
 	}
 	if r.SourceIPv6 != "" {
-		parts = append(parts, "ip6 saddr "+r.SourceIPv6)
+		v6 = "ip6 saddr " + r.SourceIPv6 + " "
 	}
-	if len(parts) == 0 {
-		return ""
+	switch {
+	case v4 != "" && v6 != "":
+		return []string{mac + v4, mac + v6}
+	case v4 != "" || v6 != "":
+		return []string{mac + v4 + v6}
+	default:
+		return []string{mac}
 	}
-	return strings.Join(parts, " ") + " "
+}
+
+func panelPort(t model.Topology) int {
+	const fallback = 8787
+	if t.Settings.PanelBind == "" {
+		return fallback
+	}
+	_, p, err := net.SplitHostPort(t.Settings.PanelBind)
+	if err != nil {
+		return fallback
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n <= 0 || n > 65535 || n == 22 {
+		return fallback
+	}
+	return n
 }

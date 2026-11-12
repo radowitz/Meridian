@@ -21,10 +21,16 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan) string {
 	sb.WriteString("rr-ttl-min 60\n")
 	fmt.Fprintf(&sb, "bind %s:53\n", lanHost(t))
 	fmt.Fprintf(&sb, "bind-tcp %s:53\n", lanHost(t))
+	// [::] is required so hijacked IPv6 queries, which nft redirect delivers
+	// to this host's GUA, have a listener. The nft input chain drops
+	// port 53/853 from sources outside the LAN, so this is not an open resolver.
+	sb.WriteString("bind [::]:53\n")
+	sb.WriteString("bind-tcp [::]:53\n")
 	sb.WriteString("bind 127.0.0.1:53\n")
 	sb.WriteString("bind-tcp 127.0.0.1:53\n")
 	sb.WriteString("# DoT certificate will not match the name the client dialed. Strict clients fail closed and fall back to port 53.\n")
 	fmt.Fprintf(&sb, "bind-tls %s:853 -cert-file /etc/meridian/dns/cert.pem -key-file /etc/meridian/dns/key.pem\n", lanHost(t))
+	sb.WriteString("bind-tls [::]:853 -cert-file /etc/meridian/dns/cert.pem -key-file /etc/meridian/dns/key.pem\n")
 	sb.WriteString("\n")
 
 	dots := t.Settings.DomesticDoT
@@ -45,10 +51,9 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan) string {
 		if e.Node.ID == def.Node.ID {
 			excl = ""
 		}
+		// ULA only. The tunnel v4 address is not routed past the first hop,
+		// so a v4 query would follow the relay's public default route.
 		fmt.Fprintf(&sb, "server %s -group %s%s\n", e.DNSULA, e.Group, excl)
-		if e.DNSV4 != "" {
-			fmt.Fprintf(&sb, "server %s -group %s%s\n", e.DNSV4, e.Group, excl)
-		}
 	}
 	sb.WriteString("\n")
 	sb.WriteString("nftset #4:inet#meridian#default4\n")
@@ -162,6 +167,7 @@ func renderGeositeScript(t model.Topology) string {
 	sb.WriteString("# Pull v2fly/domain-list-community category files (MIT) and strip them for SmartDNS.\n")
 	sb.WriteString("# GPL rule packs are not vendored. A missing category is skipped, not fatal.\n")
 	sb.WriteString("set -u\n")
+	sb.WriteString("shopt -s nullglob\n")
 	sb.WriteString("dir=/var/lib/meridian\nmkdir -p \"$dir/geosite\" \"$dir/raw\" \"$dir/keywords\"\n")
 	sb.WriteString("base=https://raw.githubusercontent.com/v2fly/domain-list-community/master/data\n")
 	sb.WriteString("fetch() {\n")
@@ -181,7 +187,53 @@ func renderGeositeScript(t model.Topology) string {
 	for _, name := range list {
 		fmt.Fprintf(&sb, "fetch %s\n", name)
 	}
+	sb.WriteString("keyword_rule() {\n")
+	sb.WriteString("  id=\"$1\"\n")
+	sb.WriteString("  kw=\"$2\"\n")
+	sb.WriteString("  out=\"$dir/keywords/${id}.txt\"\n")
+	sb.WriteString("  : > \"$out\"\n")
+	sb.WriteString("  files=(\"$dir\"/geosite/*.txt)\n")
+	sb.WriteString("  if [ ${#files[@]} -gt 0 ]; then\n")
+	sb.WriteString("    grep -F -i -h -e \"$kw\" \"${files[@]}\" | sort -u > \"$out\" || true\n")
+	sb.WriteString("  fi\n")
+	sb.WriteString("}\n")
+	for _, r := range t.Rules {
+		if !r.Enabled || r.MatchType != model.MatchKeyword || strings.TrimSpace(r.MatchValue) == "" {
+			continue
+		}
+		fmt.Fprintf(&sb, "keyword_rule %s %s\n", shQuote(sanitize(r.ID)), shQuote(r.MatchValue))
+	}
 	sb.WriteString("echo geosite-updated\n")
+	return sb.String()
+}
+
+// dnsSeedCommands creates the files SmartDNS refuses to start without.
+// Names are sanitized and sorted so the rendered script is stable.
+func dnsSeedCommands(t model.Topology) string {
+	names := map[string]bool{"cn": true, "apple": true}
+	var keywords []string
+	for _, r := range t.Rules {
+		if r.Geosite != "" {
+			names[sanitize(r.Geosite)] = true
+		}
+		if r.Enabled && r.MatchType == model.MatchKeyword && r.ID != "" {
+			keywords = append(keywords, sanitize(r.ID))
+		}
+	}
+	var geos []string
+	for name := range names {
+		geos = append(geos, name)
+	}
+	sortStrings(geos)
+	sortStrings(keywords)
+	var sb strings.Builder
+	sb.WriteString("install -d /var/lib/meridian/geosite /var/lib/meridian/keywords /etc/meridian/dns\n")
+	for _, name := range geos {
+		fmt.Fprintf(&sb, "[ -f /var/lib/meridian/geosite/%s.txt ] || : > /var/lib/meridian/geosite/%s.txt\n", name, name)
+	}
+	for _, id := range keywords {
+		fmt.Fprintf(&sb, "[ -f /var/lib/meridian/keywords/%s.txt ] || : > /var/lib/meridian/keywords/%s.txt\n", id, id)
+	}
 	return sb.String()
 }
 

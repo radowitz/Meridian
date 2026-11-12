@@ -37,7 +37,7 @@ func planExits(t model.Topology, tunnels []Tunnel) []ExitPlan {
 		p := ExitPlan{
 			Node:      n,
 			Index:     i,
-			Mark:      uint32(0x101 + i),
+			Mark:      exitMark(i),
 			Table:     201 + i,
 			TransitV4: fmt.Sprintf("10.66.200.%d", 10+i),
 			TransitV6: fmt.Sprintf("fd66:0:0:ff::%x", 10+i),

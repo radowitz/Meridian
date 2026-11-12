@@ -100,11 +100,14 @@ func buildTunnels(t model.Topology) ([]Tunnel, error) {
 				}
 				tun.WGPort = orInt(l.WGPort, 51820+i)
 			} else {
-				tun.MTU = orInt(l.WSSMTU, orInt(l.MTU, 1360))
+				// On udp+wss failover, Link.MTU is the UDP leg. Do not copy it
+				// onto the WSS leg: 1412 does not fit a WSS session on PPPoE 1492.
 				if l.Transport == model.TransportUDPWSSFailover {
+					tun.MTU = orInt(l.WSSMTU, 1360)
 					tun.WGPort = orInt(l.WGPort, 51820+i) + 1
 					tun.WestV4, tun.EastV4, tun.WestULA, tun.EastULA = companionAddrs(i)
 				} else {
+					tun.MTU = orInt(l.WSSMTU, orInt(l.MTU, 1360))
 					tun.WGPort = orInt(l.WGPort, 51820+i)
 				}
 				tun.ClientUDP = 52000 + i

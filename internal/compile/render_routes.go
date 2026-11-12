@@ -16,6 +16,7 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 	sb.WriteString("del_rule() {\n")
 	sb.WriteString("  while \"$@\" >/dev/null 2>&1; do :; done || true\n")
 	sb.WriteString("}\n")
+	writeHarden(&sb)
 
 	switch n.Role {
 	case model.RoleGateway:
@@ -46,8 +47,15 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	if udp.LinkID == "" {
 		udp = wss
 	}
+	lanQ, rosQ, llaQ := shQuote(lan), shQuote(ros), shQuote(lla)
+	westQ := shQuote(udp.Iface())
 	fmt.Fprintf(sb, "# meridian-west-preferred: udp %s\n", udp.Iface())
-	// Pin underlay endpoints so the outer UDP/WSS packets cannot enter the tunnel.
+	// Ciphertext is marked and pinned to the main table, ahead of every
+	// exit rule, so the outer packet cannot re-enter the tunnel.
+	fmt.Fprintf(sb, "del_rule ip rule del fwmark %#x lookup main\n", markUnderlay)
+	fmt.Fprintf(sb, "ip rule add fwmark %#x lookup main priority %d\n", markUnderlay, prioUnderlay)
+	fmt.Fprintf(sb, "del_rule ip -6 rule del fwmark %#x lookup main\n", markUnderlay)
+	fmt.Fprintf(sb, "ip -6 rule add fwmark %#x lookup main priority %d\n", markUnderlay, prioUnderlay)
 	seen := map[string]bool{}
 	for _, tun := range tunnels {
 		if tun.West.Role != model.RoleGateway {
@@ -58,30 +66,81 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 			continue
 		}
 		seen[ep] = true
-		fmt.Fprintf(sb, "ip route replace %s/32 via %s dev %s\n", ep, ros, lan)
+		fmt.Fprintf(sb, "ip route replace %s via %s dev %s\n", shQuote(ep+"/32"), rosQ, lanQ)
 	}
-	fmt.Fprintf(sb, "ip route replace default via %s dev %s table 100\n", ros, lan)
+	lanNetQ := shQuote(lanNet(t))
+	fmt.Fprintf(sb, "ip route replace %s dev %s table 100\n", lanNetQ, lanQ)
+	fmt.Fprintf(sb, "ip route replace default via %s dev %s table 100\n", rosQ, lanQ)
+	sb.WriteString("ip route replace blackhole default metric 32767 table 100\n")
 	if t.Settings.LANIPv6Prefix != "" {
-		fmt.Fprintf(sb, "ip -6 route replace default via %s dev %s table 100\n", lla, lan)
+		lan6 := shQuote(t.Settings.LANIPv6Prefix)
+		fmt.Fprintf(sb, "ip -6 route replace %s dev %s table 100\n", lan6, lanQ)
+		fmt.Fprintf(sb, "ip -6 route replace default via %s dev %s table 100\n", llaQ, lanQ)
+		sb.WriteString("ip -6 route replace blackhole default metric 32767 table 100\n")
+		fmt.Fprintf(sb, "ip -6 route replace %s dev %s table 102\n", lan6, lanQ)
 	}
-	fmt.Fprintf(sb, "ip route replace default dev %s table 102\n", udp.Iface())
-	fmt.Fprintf(sb, "ip -6 route replace default dev %s table 102\n", udp.Iface())
-	fmt.Fprintf(sb, "ip route replace 10.66.0.0/16 dev %s\n", udp.Iface())
-	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", udp.Iface())
+	// Table 102 is the foreign path. LAN destinations stay on the LAN NIC.
+	// The blackhole default is what remains if the WireGuard device route
+	// disappears, so the lookup cannot fall through to ROS.
+	fmt.Fprintf(sb, "ip route replace %s dev %s table 102\n", lanNetQ, lanQ)
+	fmt.Fprintf(sb, "ip route replace default dev %s table 102\n", westQ)
+	sb.WriteString("ip route replace blackhole default metric 32767 table 102\n")
+	fmt.Fprintf(sb, "ip -6 route replace default dev %s table 102\n", westQ)
+	sb.WriteString("ip -6 route replace blackhole default metric 32767 table 102\n")
+	fmt.Fprintf(sb, "ip route replace 10.66.0.0/16 dev %s\n", westQ)
+	sb.WriteString("ip route replace blackhole 10.66.0.0/16 metric 32767\n")
+	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", westQ)
+	sb.WriteString("ip -6 route replace blackhole fd66::/48 metric 32767\n")
 
+	// Selectors only. This does not delete another program's rules, but it
+	// does drop marks for exits that were removed from the topology.
+	sb.WriteString("for n in $(seq 0 63); do\n")
+	sb.WriteString("  m=$(printf '0x%x' $((0x101 + n)))\n")
+	sb.WriteString("  del_rule ip rule del fwmark \"$m\" lookup 102\n")
+	sb.WriteString("  del_rule ip rule del fwmark \"$m\" unreachable\n")
+	sb.WriteString("  del_rule ip -6 rule del fwmark \"$m\" lookup 102\n")
+	sb.WriteString("  del_rule ip -6 rule del fwmark \"$m\" unreachable\n")
+	sb.WriteString("done\n")
 	for _, e := range exits {
 		fmt.Fprintf(sb, "ip addr replace %s/32 dev lo\n", e.TransitV4)
 		fmt.Fprintf(sb, "ip -6 addr replace %s/128 dev lo\n", e.TransitV6)
-		fmt.Fprintf(sb, "del_rule ip rule del fwmark %#x lookup 102\n", e.Mark)
-		fmt.Fprintf(sb, "ip rule add fwmark %#x lookup 102 priority %d\n", e.Mark, 110+e.Index)
-		fmt.Fprintf(sb, "del_rule ip -6 rule del fwmark %#x lookup 102\n", e.Mark)
-		fmt.Fprintf(sb, "ip -6 rule add fwmark %#x lookup 102 priority %d\n", e.Mark, 110+e.Index)
+		fmt.Fprintf(sb, "ip rule add fwmark %#x lookup 102 priority %d\n", e.Mark, prioExitBase+e.Index)
+		fmt.Fprintf(sb, "ip rule add fwmark %#x unreachable priority %d\n", e.Mark, prioExitDrop+e.Index)
+		fmt.Fprintf(sb, "ip -6 rule add fwmark %#x lookup 102 priority %d\n", e.Mark, prioExitBase+e.Index)
+		fmt.Fprintf(sb, "ip -6 rule add fwmark %#x unreachable priority %d\n", e.Mark, prioExitDrop+e.Index)
 	}
-	sb.WriteString("del_rule ip rule del fwmark 0x64 lookup 100\n")
-	sb.WriteString("ip rule add fwmark 0x64 lookup 100 priority 100\n")
-	sb.WriteString("del_rule ip -6 rule del fwmark 0x64 lookup 100\n")
-	sb.WriteString("ip -6 rule add fwmark 0x64 lookup 100 priority 100\n")
+	fmt.Fprintf(sb, "del_rule ip rule del fwmark %#x lookup 100\n", markDomestic)
+	fmt.Fprintf(sb, "ip rule add fwmark %#x lookup 100 priority %d\n", markDomestic, prioDomestic)
+	fmt.Fprintf(sb, "del_rule ip -6 rule del fwmark %#x lookup 100\n", markDomestic)
+	fmt.Fprintf(sb, "ip -6 rule add fwmark %#x lookup 100 priority %d\n", markDomestic, prioDomestic)
+	// IPv4 only. An IPv6 interface blackhole would also have to be proven
+	// not to eat RA or ND; foreign IPv6 is covered by the fwmark unreachable
+	// rule once nftables has classified it. SSH to this host is in the local
+	// table (priority 0) and is not matched by this rule.
+	fmt.Fprintf(sb, "del_rule ip rule del iif %s unreachable\n", lanQ)
+	fmt.Fprintf(sb, "ip rule add iif %s unreachable priority %d\n", lanQ, prioLANDrop)
 	fmt.Fprintf(sb, "# failover companions: udp=%s wss=%s direct_wss=%s\n", ifaceOrDash(udp), ifaceOrDash(wss), ifaceOrDash(direct))
+}
+
+func writeHarden(sb *strings.Builder) {
+	sb.WriteString(`# Per-interface values win over "all" for redirects (the kernel ORs them)
+# and rp_filter uses the max of all and the device. Set every device.
+harden_sysctl() {
+  local d i
+  for d in /proc/sys/net/ipv4/conf/*; do
+    i=$(basename "$d")
+    sysctl -w "net.ipv4.conf.${i}.rp_filter=2" >/dev/null 2>&1 || true
+    sysctl -w "net.ipv4.conf.${i}.send_redirects=0" >/dev/null 2>&1 || true
+    sysctl -w "net.ipv4.conf.${i}.accept_redirects=0" >/dev/null 2>&1 || true
+  done
+  for d in /proc/sys/net/ipv6/conf/*; do
+    i=$(basename "$d")
+    sysctl -w "net.ipv6.conf.${i}.send_redirects=0" >/dev/null 2>&1 || true
+    sysctl -w "net.ipv6.conf.${i}.accept_redirects=0" >/dev/null 2>&1 || true
+  done
+}
+harden_sysctl
+`)
 }
 
 func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) {
@@ -105,6 +164,7 @@ func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) 
 	}
 	fmt.Fprintf(sb, "ip -6 route replace %s dev %s\n", transitV6Net(), west.Iface())
 	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", preferred.Iface())
+	writePrefixBlackholes(sb, t)
 
 	fmt.Fprintf(sb, "ip route replace default dev %s table 150\n", preferred.Iface())
 	fmt.Fprintf(sb, "ip route replace %s dev %s table 150\n", lanNet(t), west.Iface())
@@ -114,17 +174,19 @@ func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) 
 		fmt.Fprintf(sb, "ip -6 route replace %s dev %s table 150\n", t.Settings.LANIPv6Prefix, west.Iface())
 	}
 	fmt.Fprintf(sb, "ip -6 route replace %s dev %s table 150\n", transitV6Net(), west.Iface())
+	sb.WriteString("ip route replace blackhole default metric 32767 table 150\n")
+	sb.WriteString("ip -6 route replace blackhole default metric 32767 table 150\n")
 
 	sb.WriteString("del_rule ip rule del from " + lanNet(t) + " lookup 150\n")
-	fmt.Fprintf(sb, "ip rule add from %s lookup 150 priority 100\n", lanNet(t))
+	fmt.Fprintf(sb, "ip rule add from %s lookup 150 priority %d\n", lanNet(t), prioRelayFrom)
 	sb.WriteString("del_rule ip rule del from " + transitV4Net() + " lookup 150\n")
-	fmt.Fprintf(sb, "ip rule add from %s lookup 150 priority 101\n", transitV4Net())
+	fmt.Fprintf(sb, "ip rule add from %s lookup 150 priority %d\n", transitV4Net(), prioRelayFrom+1)
 	if t.Settings.LANIPv6Prefix != "" {
 		fmt.Fprintf(sb, "del_rule ip -6 rule del from %s lookup 150\n", t.Settings.LANIPv6Prefix)
-		fmt.Fprintf(sb, "ip -6 rule add from %s lookup 150 priority 100\n", t.Settings.LANIPv6Prefix)
+		fmt.Fprintf(sb, "ip -6 rule add from %s lookup 150 priority %d\n", t.Settings.LANIPv6Prefix, prioRelayFrom)
 	}
 	fmt.Fprintf(sb, "del_rule ip -6 rule del from %s lookup 150\n", transitV6Net())
-	fmt.Fprintf(sb, "ip -6 rule add from %s lookup 150 priority 101\n", transitV6Net())
+	fmt.Fprintf(sb, "ip -6 rule add from %s lookup 150 priority %d\n", transitV6Net(), prioRelayFrom+1)
 	fmt.Fprintf(sb, "# companions west_udp=%s west_wss=%s east_ix=%s east_wss=%s\n",
 		ifaceOrDash(westUDP), ifaceOrDash(westWSS), ifaceOrDash(eastIX), ifaceOrDash(eastWSS))
 }
@@ -145,6 +207,7 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 	fmt.Fprintf(sb, "ip -6 route replace %s dev %s\n", transitV6Net(), west)
 	fmt.Fprintf(sb, "ip route replace 10.66.0.0/16 dev %s\n", west)
 	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", west)
+	writePrefixBlackholes(sb, t)
 	for _, e := range exits {
 		if e.HubIface == "" {
 			fmt.Fprintf(sb, "# exit %s has no hub iface\n", e.Node.ID)
@@ -159,10 +222,12 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 			fmt.Fprintf(sb, "ip -6 route replace %s dev %s table %d\n", t.Settings.LANIPv6Prefix, west, e.Table)
 		}
 		fmt.Fprintf(sb, "ip -6 route replace %s dev %s table %d\n", transitV6Net(), west, e.Table)
+		fmt.Fprintf(sb, "ip route replace blackhole default metric 32767 table %d\n", e.Table)
+		fmt.Fprintf(sb, "ip -6 route replace blackhole default metric 32767 table %d\n", e.Table)
 		fmt.Fprintf(sb, "del_rule ip rule del from %s/32 lookup %d\n", e.TransitV4, e.Table)
-		fmt.Fprintf(sb, "ip rule add from %s/32 lookup %d priority %d\n", e.TransitV4, e.Table, 100+e.Index)
+		fmt.Fprintf(sb, "ip rule add from %s/32 lookup %d priority %d\n", e.TransitV4, e.Table, prioHubExitFrom+e.Index)
 		fmt.Fprintf(sb, "del_rule ip -6 rule del from %s/128 lookup %d\n", e.TransitV6, e.Table)
-		fmt.Fprintf(sb, "ip -6 rule add from %s/128 lookup %d priority %d\n", e.TransitV6, e.Table, 100+e.Index)
+		fmt.Fprintf(sb, "ip -6 rule add from %s/128 lookup %d priority %d\n", e.TransitV6, e.Table, prioHubExitFrom+e.Index)
 	}
 }
 
@@ -185,6 +250,7 @@ func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunne
 	}
 	fmt.Fprintf(sb, "ip -6 route replace %s dev %s\n", transitV6Net(), tun.Iface())
 	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", tun.Iface())
+	writePrefixBlackholes(sb, t)
 	if n.NatDialOut {
 		sb.WriteString("# NAT dial-out: keep the mapping warm. Updates must use wg syncconf, not wg-quick down.\n")
 	}
@@ -260,9 +326,13 @@ apply_choice() {
   esac
   [ -n "$iface" ] || return 0
   ip route replace default dev "$iface" table 102
+  ip route replace blackhole default metric 32767 table 102
   ip -6 route replace default dev "$iface" table 102
+  ip -6 route replace blackhole default metric 32767 table 102
   ip route replace 10.66.0.0/16 dev "$iface"
+  ip route replace blackhole 10.66.0.0/16 metric 32767
   ip -6 route replace fd66::/48 dev "$iface"
+  ip -6 route replace blackhole fd66::/48 metric 32767
 }
 cur=udp
 bad=0
@@ -298,8 +368,11 @@ apply_east() {
   local iface="$1"
   [ -n "$iface" ] || return 0
   ip route replace default dev "$iface" table 150
+  ip route replace blackhole default metric 32767 table 150
   ip -6 route replace default dev "$iface" table 150
+  ip -6 route replace blackhole default metric 32767 table 150
   ip -6 route replace fd66::/48 dev "$iface"
+  ip -6 route replace blackhole fd66::/48 metric 32767
 }
 apply_west() {
   local iface="$1"
@@ -314,6 +387,14 @@ apply_west() {
   fi
   ip -6 route replace "$TRANSIT6" dev "$iface"
   ip -6 route replace "$TRANSIT6" dev "$iface" table 150
+  ip route replace blackhole "$LAN" metric 32767
+  ip route replace blackhole "$TRANSIT4" metric 32767
+  ip route replace blackhole 10.66.0.0/16 metric 32767
+  ip -6 route replace blackhole "$TRANSIT6" metric 32767
+  ip -6 route replace blackhole fd66::/48 metric 32767
+  if [ -n "$LAN6" ]; then
+    ip -6 route replace blackhole "$LAN6" metric 32767
+  fi
 }
 east_pref="$EAST_IX"
 [ "$IX_MODE" = "1" ] && east_pref="$EAST_WSS"
@@ -466,11 +547,17 @@ apply_west() {
   [ -n "$iface" ] || return 0
   ip route replace "$LAN" dev "$iface"
   ip route replace "$TRANSIT4" dev "$iface"
+  ip route replace blackhole "$LAN" metric 32767
+  ip route replace blackhole "$TRANSIT4" metric 32767
   ip route replace 10.66.0.0/16 dev "$iface"
+  ip route replace blackhole 10.66.0.0/16 metric 32767
   ip -6 route replace "$TRANSIT6" dev "$iface"
+  ip -6 route replace blackhole "$TRANSIT6" metric 32767
   ip -6 route replace fd66::/48 dev "$iface"
+  ip -6 route replace blackhole fd66::/48 metric 32767
   if [ -n "$LAN6" ]; then
     ip -6 route replace "$LAN6" dev "$iface"
+    ip -6 route replace blackhole "$LAN6" metric 32767
   fi
 }
 choose() {
@@ -500,6 +587,20 @@ while true; do
   sleep 5
 done
 `
+
+// writePrefixBlackholes keeps tunnel and LAN prefixes from following a VPS
+// default route when the WireGuard device route is deleted. The live route
+// uses metric 0; this one stays at 32767.
+func writePrefixBlackholes(sb *strings.Builder, t model.Topology) {
+	fmt.Fprintf(sb, "ip route replace blackhole %s metric 32767\n", lanNet(t))
+	fmt.Fprintf(sb, "ip route replace blackhole %s metric 32767\n", transitV4Net())
+	sb.WriteString("ip route replace blackhole 10.66.0.0/16 metric 32767\n")
+	sb.WriteString("ip -6 route replace blackhole fd66::/48 metric 32767\n")
+	fmt.Fprintf(sb, "ip -6 route replace blackhole %s metric 32767\n", transitV6Net())
+	if t.Settings.LANIPv6Prefix != "" {
+		fmt.Fprintf(sb, "ip -6 route replace blackhole %s metric 32767\n", t.Settings.LANIPv6Prefix)
+	}
+}
 
 func ifaceOrDash(t Tunnel) string {
 	if t.Iface() == "" || t.LinkID == "" {

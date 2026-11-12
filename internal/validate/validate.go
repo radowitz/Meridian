@@ -4,6 +4,7 @@ package validate
 import (
 	"fmt"
 	"net/netip"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -106,6 +107,7 @@ func Run(t model.Topology) Result {
 	out.Issues = append(out.Issues, checkIXReplacement(t, nodes)...)
 	out.Issues = append(out.Issues, checkSubnets(t)...)
 	out.Issues = append(out.Issues, checkRules(t, nodes)...)
+	out.Issues = append(out.Issues, checkSafe(t)...)
 	if _, ok := SelectExit(t, "hk"); !ok {
 		out.Issues = append(out.Issues, Issue{
 			Code: "no_default_exit", Severity: SeverityError,
@@ -177,6 +179,22 @@ func checkSettings(t model.Topology) []Issue {
 	}
 	if t.Settings.ROSIPv4 == "" {
 		out = append(out, Issue{Code: "missing_ros", Severity: SeverityError, Message: "需要 ROS 的 IPv4 地址（192.168.100.1），国内流量下一跳指向它。"})
+	} else if _, err := netip.ParseAddr(t.Settings.ROSIPv4); err != nil {
+		out = append(out, Issue{Code: "bad_address", Severity: SeverityError, Message: "ROS IPv4 地址无法解析。"})
+	}
+	if t.Settings.LANIPv6Prefix != "" && (t.Settings.ROSv6LLA == "" || t.Settings.ROSv6LLA == "fe80::1") {
+		out = append(out, Issue{
+			Code: "ros_lla_placeholder", Severity: SeverityWarning,
+			Message: "ROS 的 IPv6 链路本地地址还是占位 fe80::1。国内 IPv6 下一跳会走错，请改成 bridge 上的真实 fe80::。",
+		})
+	}
+	if t.Settings.ROSv6LLA != "" {
+		if ip, err := netip.ParseAddr(t.Settings.ROSv6LLA); err != nil || !ip.Is6() || !ip.IsLinkLocalUnicast() {
+			out = append(out, Issue{Code: "bad_address", Severity: SeverityError, Message: "ROS 的 IPv6 下一跳必须是 fe80:: 链路本地地址。"})
+		}
+	}
+	if iss := checkIface(t.Settings.LANInterface, "局域网接口"); iss != nil {
+		out = append(out, *iss)
 	}
 	return out
 }
@@ -434,6 +452,13 @@ func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {
 	for _, r := range t.Rules {
 		if !r.Enabled {
 			continue
+		}
+		out = append(out, checkRuleShape(r)...)
+		if r.MatchType == model.MatchGeoIP || r.MatchType == model.MatchASN {
+			out = append(out, Issue{
+				Code: "match_not_enforced", Severity: SeverityWarning, RuleID: r.ID,
+				Message: fmt.Sprintf("规则「%s」的 %s 匹配在这一期不会写入数据面。它不会按归属地分流，流量会落到后面的策略。", r.Name, r.MatchType),
+			})
 		}
 		exit, poolMembers, errIss := resolveRuleTarget(t, r)
 		if errIss != nil {
@@ -821,4 +846,119 @@ func orInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+var (
+	idRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
+	ifaceRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.:-]{0,14}$`)
+	macRe   = regexp.MustCompile(`(?i)^([0-9a-f]{2}:){5}[0-9a-f]{2}$`)
+	wssRe   = regexp.MustCompile(`^[A-Za-z0-9._~/-]{1,64}$`)
+)
+
+func checkSafe(t model.Topology) []Issue {
+	var out []Issue
+	for _, n := range t.Nodes {
+		if n.ID != "" && !idRe.MatchString(n.ID) {
+			out = append(out, Issue{Code: "bad_id", Severity: SeverityError, NodeID: n.ID, Message: "节点 ID 只能是小写字母、数字和短横线。"})
+		}
+		if iss := checkIface(n.LANInterface, "节点 "+n.Name+" 的局域网接口"); iss != nil {
+			iss.NodeID = n.ID
+			out = append(out, *iss)
+		}
+		if iss := checkIface(n.WANInterface, "节点 "+n.Name+" 的 WAN 接口"); iss != nil {
+			iss.NodeID = n.ID
+			out = append(out, *iss)
+		}
+		if n.EndpointV4 != "" {
+			if ip, err := netip.ParseAddr(n.EndpointV4); err != nil || !ip.Is4() {
+				out = append(out, Issue{Code: "bad_address", Severity: SeverityError, NodeID: n.ID, Message: "Endpoint 必须是 IPv4 地址。"})
+			}
+		}
+		if n.WSSPathPrefix != "" && (!wssRe.MatchString(n.WSSPathPrefix) || strings.Contains(n.WSSPathPrefix, "..") || strings.Contains(n.WSSPathPrefix, "%")) {
+			out = append(out, Issue{Code: "bad_wss_prefix", Severity: SeverityError, NodeID: n.ID, Message: "WSS 路径前缀含有不能写入 systemd 单元的字符。"})
+		}
+	}
+	for _, l := range t.Links {
+		if l.ID != "" && !idRe.MatchString(l.ID) {
+			out = append(out, Issue{Code: "bad_id", Severity: SeverityError, LinkID: l.ID, Message: "链路 ID 只能是小写字母、数字和短横线。"})
+		}
+	}
+	for _, r := range t.Rules {
+		if r.ID != "" && !idRe.MatchString(r.ID) {
+			out = append(out, Issue{Code: "bad_id", Severity: SeverityError, RuleID: r.ID, Message: "规则 ID 只能是小写字母、数字和短横线。"})
+		}
+	}
+	return out
+}
+
+func checkIface(name, what string) *Issue {
+	if name == "" {
+		return nil
+	}
+	if name == "all" || name == "default" || name == "lo" || !ifaceRe.MatchString(name) {
+		return &Issue{Code: "bad_interface", Severity: SeverityError, Message: what + " 不能用于生成命令：" + name}
+	}
+	return nil
+}
+
+func checkRuleShape(r model.Rule) []Issue {
+	var out []Issue
+	checkName := func(s string) {
+		if s != "" && !safeDNS(s) {
+			out = append(out, Issue{Code: "bad_domain", Severity: SeverityError, RuleID: r.ID, Message: "域名含有不能写入 SmartDNS 的字符：" + s})
+		}
+	}
+	switch r.MatchType {
+	case model.MatchDomain, model.MatchSuffix:
+		checkName(r.MatchValue)
+	case model.MatchKeyword:
+		if !regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`).MatchString(r.MatchValue) {
+			out = append(out, Issue{Code: "bad_keyword", Severity: SeverityError, RuleID: r.ID, Message: "关键词只能是字母、数字、点、下划线和短横线。"})
+		}
+	case model.MatchGeosite:
+		if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(r.Geosite) && r.Geosite != "" {
+			out = append(out, Issue{Code: "bad_domain", Severity: SeverityError, RuleID: r.ID, Message: "geosite 名称不合法。"})
+		}
+	case model.MatchCIDR:
+		if _, err := netip.ParsePrefix(r.MatchValue); err != nil {
+			if _, err2 := netip.ParseAddr(r.MatchValue); err2 != nil {
+				out = append(out, Issue{Code: "bad_address", Severity: SeverityError, RuleID: r.ID, Message: "CIDR 无法解析：" + r.MatchValue})
+			}
+		}
+	}
+	for _, d := range r.Domains {
+		checkName(d)
+	}
+	if r.SourceMAC != "" && !macRe.MatchString(r.SourceMAC) {
+		out = append(out, Issue{Code: "bad_address", Severity: SeverityError, RuleID: r.ID, Message: "源 MAC 格式不正确。"})
+	}
+	if r.SourceIPv4 != "" {
+		if ip, err := netip.ParseAddr(r.SourceIPv4); err != nil || !ip.Is4() {
+			if _, err2 := netip.ParsePrefix(r.SourceIPv4); err2 != nil {
+				out = append(out, Issue{Code: "bad_address", Severity: SeverityError, RuleID: r.ID, Message: "源 IPv4 无法解析。"})
+			}
+		}
+	}
+	if r.SourceIPv6 != "" {
+		if ip, err := netip.ParseAddr(r.SourceIPv6); err != nil || !ip.Is6() {
+			if _, err2 := netip.ParsePrefix(r.SourceIPv6); err2 != nil {
+				out = append(out, Issue{Code: "bad_address", Severity: SeverityError, RuleID: r.ID, Message: "源 IPv6 无法解析。"})
+			}
+		}
+	}
+	return out
+}
+
+func safeDNS(s string) bool {
+	s = strings.TrimPrefix(s, ".")
+	if s == "" || strings.Contains(s, "..") || strings.ContainsAny(s, " \t\r\n'\"\\/$`;|&") {
+		return false
+	}
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }

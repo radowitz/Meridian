@@ -101,7 +101,7 @@ func Compile(t model.Topology) (*Bundle, error) {
 		add(prefix+"etc/sysctl.d/99-meridian.conf", renderSysctl(t, n))
 		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, exits))
 		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, exits))
-		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(n, nodeTunnels))
+		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels))
 		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, mss4, mss6))
 		if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
 			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels))

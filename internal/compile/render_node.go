@@ -40,8 +40,11 @@ func renderSysctl(t model.Topology, n model.Node) string {
 	fmt.Fprintf(&sb, "net.ipv4.conf.%s.send_redirects=0\n", ifName)
 	sb.WriteString("net.ipv6.conf.all.send_redirects=0\n")
 	sb.WriteString("net.ipv6.conf.default.send_redirects=0\n")
+	fmt.Fprintf(&sb, "net.ipv6.conf.%s.send_redirects=0\n", ifName)
+	fmt.Fprintf(&sb, "net.ipv6.conf.%s.accept_redirects=0\n", ifName)
 	sb.WriteString("net.ipv4.conf.all.accept_redirects=0\n")
 	sb.WriteString("net.ipv6.conf.all.accept_redirects=0\n")
+	sb.WriteString("net.ipv6.conf.default.accept_redirects=0\n")
 	if n.Role == model.RoleGateway {
 		// forwarding=1 ignores accept_ra unless it is 2. This host is a
 		// SLAAC client of ROS and must not advertise its own prefix.
@@ -94,6 +97,11 @@ func renderWG(t model.Topology, tun Tunnel, self model.Node) string {
 	fmt.Fprintf(&sb, "Address = %s, %s/64\n", localCIDR, selfULA)
 	fmt.Fprintf(&sb, "MTU = %d\n", tun.MTU)
 	sb.WriteString("Table = off\n")
+	if self.Role == model.RoleGateway {
+		// Outer packets are looked up with this mark. The gateway's policy
+		// rules send it to the main table before any exit mark is considered.
+		fmt.Fprintf(&sb, "FwMark = %#x\n", markUnderlay)
+	}
 	listens := (!tun.DialOut && !west) || (tun.DialOut && west)
 	if listens {
 		fmt.Fprintf(&sb, "ListenPort = %d\n", tun.WGPort)
@@ -150,13 +158,30 @@ func allowedIPs(t model.Topology, tun Tunnel, west bool) string {
 	return strings.Join(parts, ", ")
 }
 
-func renderUp(n model.Node, tunnels []Tunnel) string {
+func renderUp(t model.Topology, n model.Node, tunnels []Tunnel) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("# Bring up Meridian on this host without flushing the rest of nftables.\n")
+	sb.WriteString("# A bad line in sysctl is skipped so a wrong interface name cannot abort SSH.\n")
 	sb.WriteString("set -euo pipefail\n")
 	sb.WriteString("sysctl --system >/dev/null 2>&1 || true\n")
-	sb.WriteString("sysctl -p /etc/sysctl.d/99-meridian.conf\n")
+	sb.WriteString("if [ -f /etc/sysctl.d/99-meridian.conf ]; then\n")
+	sb.WriteString("  while IFS= read -r line; do\n")
+	sb.WriteString("    case \"$line\" in ''|'#'*) continue ;; esac\n")
+	sb.WriteString("    sysctl -w \"$line\" >/dev/null 2>&1 || echo \"skip sysctl: $line\" >&2\n")
+	sb.WriteString("  done < /etc/sysctl.d/99-meridian.conf\n")
+	sb.WriteString("fi\n")
+	if n.Role == model.RoleGateway {
+		sb.WriteString(dnsSeedCommands(t))
+		sb.WriteString(`if [ ! -s /etc/meridian/dns/cert.pem ] && command -v openssl >/dev/null 2>&1; then
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout /etc/meridian/dns/key.pem \
+    -out /etc/meridian/dns/cert.pem \
+    -days 3650 -subj "/CN=meridian.lan" >/dev/null 2>&1
+  chmod 600 /etc/meridian/dns/key.pem /etc/meridian/dns/cert.pem || true
+fi
+`)
+	}
 	sb.WriteString("shopt -s nullglob\n")
 	sb.WriteString("for conf in /etc/wireguard/m*.conf; do\n")
 	sb.WriteString("  iface=$(basename \"$conf\" .conf)\n")
@@ -166,9 +191,19 @@ func renderUp(n model.Node, tunnels []Tunnel) string {
 	sb.WriteString("    wg-quick up \"$conf\"\n")
 	sb.WriteString("  fi\n")
 	sb.WriteString("done\n")
+	sb.WriteString("if [ -f /etc/nftables.d/meridian.nft ]; then\n")
+	sb.WriteString("  nft -c -f /etc/nftables.d/meridian.nft\n")
+	sb.WriteString("fi\n")
 	sb.WriteString("/usr/local/sbin/meridian-routes.sh\n")
-	sb.WriteString("nft delete table inet meridian >/dev/null 2>&1 || true\n")
-	sb.WriteString("nft -f /etc/nftables.d/meridian.nft\n")
+	sb.WriteString("if [ -f /etc/nftables.d/meridian.nft ]; then\n")
+	sb.WriteString("  nft delete table inet meridian >/dev/null 2>&1 || true\n")
+	sb.WriteString("  nft -f /etc/nftables.d/meridian.nft\n")
+	sb.WriteString("fi\n")
+	sb.WriteString("enable_unit() {\n")
+	sb.WriteString("  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then\n")
+	sb.WriteString("    systemctl enable --now \"$1\"\n")
+	sb.WriteString("  fi\n")
+	sb.WriteString("}\n")
 	seen := map[string]bool{}
 	for _, tun := range tunnels {
 		if tun.Mode != "wss" {
@@ -184,10 +219,10 @@ func renderUp(n model.Node, tunnels []Tunnel) string {
 			continue
 		}
 		seen[unit] = true
-		fmt.Fprintf(&sb, "systemctl enable --now %s\n", unit)
+		fmt.Fprintf(&sb, "enable_unit %s\n", shQuote(unit))
 	}
 	if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
-		sb.WriteString("systemctl enable --now meridian-failover.service\n")
+		sb.WriteString("enable_unit meridian-failover.service\n")
 	}
 	sb.WriteString("echo meridian-up-complete\n")
 	return sb.String()
