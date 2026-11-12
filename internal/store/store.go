@@ -32,6 +32,24 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+func (s *Store) Get(key string) (string, bool, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT value FROM kv WHERE key = ?`, key).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return raw, true, nil
+}
+
+func (s *Store) Put(key, value string) error {
+	_, err := s.db.Exec(`INSERT INTO kv(key, value) VALUES(?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
 func (s *Store) Load() (model.Topology, bool, error) {
 	var raw string
 	err := s.db.QueryRow(`SELECT value FROM kv WHERE key = 'topology'`).Scan(&raw)

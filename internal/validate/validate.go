@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/pool"
 )
 
 const (
@@ -68,7 +69,7 @@ func Run(t model.Topology) Result {
 		if gw.ID == "" {
 			break
 		}
-		path, links, ok := findPrimaryPath(t, nodes, gw.ID, exit.ID)
+		path, links, ok := findExitPath(t, nodes, gw.ID, exit)
 		if !ok {
 			any, _, anyOK := findAnyPath(t, gw.ID, exit.ID)
 			if !anyOK {
@@ -79,9 +80,11 @@ func Run(t model.Topology) Result {
 			} else {
 				out.Issues = append(out.Issues, checkPathRoles(t, nodes, any, exit)...)
 			}
+			out.Issues = append(out.Issues, checkPureV6(t, nodes, exit)...)
 			continue
 		}
 		out.Issues = append(out.Issues, checkPathRoles(t, nodes, path, exit)...)
+		out.Issues = append(out.Issues, checkPureV6(t, nodes, exit)...)
 		mtu := pathMTU(t, links)
 		repl := replacementMTU(t)
 		if repl > 0 && repl < mtu {
@@ -101,7 +104,6 @@ func Run(t model.Topology) Result {
 			report.Links = append(report.Links, l.ID)
 		}
 		out.Paths = append(out.Paths, report)
-		out.Issues = append(out.Issues, checkPureV6(t, nodes, exit)...)
 	}
 
 	out.Issues = append(out.Issues, checkIXReplacement(t, nodes)...)
@@ -195,6 +197,40 @@ func checkSettings(t model.Topology) []Issue {
 	}
 	if iss := checkIface(t.Settings.LANInterface, "局域网接口"); iss != nil {
 		out = append(out, *iss)
+	}
+	if t.Settings.UnlockIntervalSec > 0 && t.Settings.UnlockIntervalSec < 3600 {
+		out = append(out, Issue{
+			Code: "unlock_interval_short", Severity: SeverityWarning,
+			Message: "解锁测试间隔小于 1 小时。定时失败要连续两次才换同池备选，间隔太短会把滞回提前用完。",
+		})
+	}
+	if t.Settings.NAT64.Enabled {
+		p, err := netip.ParsePrefix(t.Settings.NAT64.Prefix)
+		if err != nil || !p.Addr().Is6() {
+			out = append(out, Issue{Code: "nat64_prefix", Severity: SeverityError, Message: "NAT64 已启用，但前缀不是合法的 IPv6 前缀。"})
+		} else {
+			ula, _ := netip.ParsePrefix(or(t.Settings.ULAPrefix, "fd66::/48"))
+			if ula.IsValid() && p.Overlaps(ula) {
+				out = append(out, Issue{Code: "nat64_prefix", Severity: SeverityError, Message: "NAT64 前缀不能和 fd66 ULA 重叠。"})
+			}
+			if t.Settings.LANIPv6Prefix != "" {
+				if lan, err := netip.ParsePrefix(t.Settings.LANIPv6Prefix); err == nil && p.Overlaps(lan) {
+					out = append(out, Issue{Code: "nat64_prefix", Severity: SeverityError, Message: "NAT64 前缀不能和局域网 IPv6 重叠。"})
+				}
+			}
+		}
+		out = append(out, Issue{
+			Code: "nat64_not_installed", Severity: SeverityWarning,
+			Message: "NAT64 只是预留。即使标成启用，这一期也不会把前缀装进路由表，现有 IPv4 路径保持原样。",
+		})
+	}
+	for _, n := range t.Nodes {
+		if n.DualstackRelay && (!n.PathV4 || !n.PathV6) {
+			out = append(out, Issue{
+				Code: "relay_not_dualstack", Severity: SeverityError, NodeID: n.ID,
+				Message: fmt.Sprintf("%s 标成了双栈中继，但 path_v4 或 path_v6 没有打开。枢纽用 v4 连它，纯 v6 出口用 v6 连它。", n.Name),
+			})
+		}
 	}
 	return out
 }
@@ -371,8 +407,10 @@ func checkPathRoles(t model.Topology, nodes map[string]model.Node, path []string
 	return out
 }
 
+func pureV6(exit model.Node) bool { return !exit.PathV4 && exit.PathV6 }
+
 func checkPureV6(t model.Topology, nodes map[string]model.Node, exit model.Node) []Issue {
-	if exit.PathV4 || !exit.PathV6 {
+	if !pureV6(exit) {
 		return nil
 	}
 	hub := firstRole(t, model.RoleHub)
@@ -382,7 +420,216 @@ func checkPureV6(t model.Topology, nodes map[string]model.Node, exit model.Node)
 			Message: fmt.Sprintf("%s 是纯 IPv6 出口，而香港枢纽 path_v6=%v。枢纽没有 IPv6，必须先选择绕行（双栈中继、Mesh 或 v4 可达前置），否则拒绝保存。", exit.Name, hub.PathV6),
 		}}
 	}
-	return nil
+	var out []Issue
+	switch exit.V6Workaround {
+	case model.WorkaroundDualstackRelay:
+		if !wiredDualstack(t, exit) {
+			out = append(out, Issue{
+				Code: "workaround_not_wired", Severity: SeverityError, NodeID: exit.ID, ExitID: exit.ID,
+				Message: fmt.Sprintf("%s 选择了双栈中继，但还没有接上。需要一台 IX 之后的双栈节点（path_v4 与 path_v6），枢纽用 v4 WireGuard 连它，它再用 v6 WireGuard 连这个出口。出口要有文档用的 EndpointV6。", exit.Name),
+			})
+		}
+	case model.WorkaroundMesh:
+		if !wiredMesh(t, exit) {
+			out = append(out, Issue{
+				Code: "workaround_not_wired", Severity: SeverityError, NodeID: exit.ID, ExitID: exit.ID,
+				Message: fmt.Sprintf("%s 选择了 Mesh 绕行，但没有一条待命的枢纽 → 该出口 Mesh 边。Mesh 只替代这一跳，不能绕过 IX。", exit.Name),
+			})
+		}
+	case model.WorkaroundV4Front:
+		if !wiredV4Front(t, exit) {
+			out = append(out, Issue{
+				Code: "workaround_not_wired", Severity: SeverityError, NodeID: exit.ID, ExitID: exit.ID,
+				Message: fmt.Sprintf("%s 选择了 v4 前置，但没有前置的 IPv4 端点，或没有一条枢纽到它的直连 WireGuard。前置地址用文档前缀，不要写成枢纽的地址。", exit.Name),
+			})
+		}
+	default:
+		out = append(out, Issue{
+			Code: "workaround_not_wired", Severity: SeverityError, NodeID: exit.ID, ExitID: exit.ID,
+			Message: "未知的 v6 绕行方式。",
+		})
+	}
+	if hasDirectHubWG(t, exit) && exit.V6Workaround != model.WorkaroundV4Front {
+		out = append(out, Issue{
+			Code: "pure_v6_direct_ignored", Severity: SeverityWarning, NodeID: exit.ID, ExitID: exit.ID,
+			Message: fmt.Sprintf("枢纽没有 IPv6，到 %s 的直连 WireGuard 不会当主路径。流量走已选的绕行。", exit.Name),
+		})
+	}
+	_ = nodes
+	return out
+}
+
+func wiredDualstack(t model.Topology, exit model.Node) bool {
+	if ip, err := netip.ParseAddr(exit.EndpointV6); err != nil || !ip.Is6() {
+		return false
+	}
+	hub := firstRole(t, model.RoleHub)
+	var relay model.Node
+	found := false
+	for _, n := range t.Nodes {
+		if n.DualstackRelay && n.PathV4 && n.PathV6 && n.ID != exit.ID {
+			if linkedPrimary(t, hub.ID, n.ID) && linkedPrimary(t, n.ID, exit.ID) {
+				relay = n
+				found = true
+				break
+			}
+		}
+	}
+	return found && relay.ID != ""
+}
+
+func wiredMesh(t model.Topology, exit model.Node) bool {
+	hub := firstRole(t, model.RoleHub)
+	for _, l := range t.Links {
+		if l.Transport != model.TransportCFMesh || !l.Enabled || !l.Standby {
+			continue
+		}
+		if (l.From == hub.ID && l.To == exit.ID) || (l.To == hub.ID && l.From == exit.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+func wiredV4Front(t model.Topology, exit model.Node) bool {
+	ip, err := netip.ParseAddr(exit.EndpointV4)
+	if err != nil || !ip.Is4() {
+		return false
+	}
+	hub := firstRole(t, model.RoleHub)
+	return linkedPrimary(t, hub.ID, exit.ID)
+}
+
+func linkedPrimary(t model.Topology, a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	for _, l := range t.Links {
+		if !l.Enabled || l.Standby {
+			continue
+		}
+		if l.Transport == model.TransportCFMesh || l.Transport == model.TransportIXReplacementWSS {
+			continue
+		}
+		if (l.From == a && l.To == b) || (l.From == b && l.To == a) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirectHubWG(t model.Topology, exit model.Node) bool {
+	hub := firstRole(t, model.RoleHub)
+	for _, l := range t.Links {
+		if !l.Enabled || l.Transport != model.TransportDirectWG {
+			continue
+		}
+		if (l.From == hub.ID && l.To == exit.ID) || (l.To == hub.ID && l.From == exit.ID) {
+			return true
+		}
+	}
+	return false
+}
+
+func findExitPath(t model.Topology, nodes map[string]model.Node, gw string, exit model.Node) ([]string, []model.Link, bool) {
+	if pureV6(exit) && exit.V6Workaround == model.WorkaroundMesh {
+		if path, links, ok := meshPath(t, nodes, gw, exit.ID); ok {
+			return path, links, true
+		}
+	}
+	if pureV6(exit) && exit.V6Workaround == model.WorkaroundDualstackRelay {
+		if path, links, ok := pathViaRelay(t, nodes, gw, exit.ID); ok {
+			return path, links, true
+		}
+	}
+	return findPrimaryPath(t, nodes, gw, exit.ID)
+}
+
+func meshPath(t model.Topology, nodes map[string]model.Node, gw, exit string) ([]string, []model.Link, bool) {
+	hub := firstRole(t, model.RoleHub)
+	path, links, ok := findAnyPath(t, gw, hub.ID)
+	if !ok {
+		return nil, nil, false
+	}
+	var roles []model.Role
+	for _, id := range path {
+		roles = append(roles, nodes[id].Role)
+	}
+	if !ordered(roles, model.RoleRelay, model.RoleIX) || !ordered(roles, model.RoleIX, model.RoleHub) {
+		return nil, nil, false
+	}
+	var mesh model.Link
+	for _, l := range t.Links {
+		if l.Transport != model.TransportCFMesh || !l.Enabled || !l.Standby {
+			continue
+		}
+		if (l.From == hub.ID && l.To == exit) || (l.To == hub.ID && l.From == exit) {
+			mesh = l
+			break
+		}
+	}
+	if mesh.ID == "" {
+		return nil, nil, false
+	}
+	return append(path, exit), append(links, mesh), true
+}
+
+func pathViaRelay(t model.Topology, nodes map[string]model.Node, from, to string) ([]string, []model.Link, bool) {
+	type edge struct {
+		to   string
+		link model.Link
+	}
+	adj := map[string][]edge{}
+	for _, l := range t.Links {
+		if !primaryLink(l) {
+			continue
+		}
+		adj[l.From] = append(adj[l.From], edge{l.To, l})
+		adj[l.To] = append(adj[l.To], edge{l.From, l})
+	}
+	type state struct {
+		id    string
+		path  []string
+		links []model.Link
+	}
+	var best []string
+	var bestLinks []model.Link
+	stack := []state{{id: from, path: []string{from}}}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur.id == to && pathHasRelay(t, cur.path) && pathSatisfies(nodes, cur.path) {
+			if best == nil || len(cur.path) < len(best) {
+				best = append([]string(nil), cur.path...)
+				bestLinks = append([]model.Link(nil), cur.links...)
+			}
+			continue
+		}
+		if len(cur.path) > 8 {
+			continue
+		}
+		for _, e := range adj[cur.id] {
+			if containsStr(cur.path, e.to) {
+				continue
+			}
+			stack = append(stack, state{
+				id:    e.to,
+				path:  append(append([]string(nil), cur.path...), e.to),
+				links: append(append([]model.Link(nil), cur.links...), e.link),
+			})
+		}
+	}
+	return best, bestLinks, best != nil
+}
+
+func pathHasRelay(t model.Topology, path []string) bool {
+	for _, id := range path {
+		n, ok := t.NodeByID(id)
+		if ok && n.DualstackRelay {
+			return true
+		}
+	}
+	return false
 }
 
 func checkIXReplacement(t model.Topology, nodes map[string]model.Node) []Issue {
@@ -559,29 +806,11 @@ func resolveRuleTarget(t model.Topology, r model.Rule) (*model.Node, []model.Nod
 	return &chosen, members, nil
 }
 
-// SelectExit picks the Phase-1 member of a pool: IX-bound first, residential
-// excluded from the default hk pool, then the lowest ID.
-func SelectExit(t model.Topology, pool string) (model.Node, bool) {
-	var members []model.Node
-	for _, n := range t.Nodes {
-		if n.Role != model.RoleExit || n.Pool != pool {
-			continue
-		}
-		if pool == "hk" && n.Residential {
-			continue
-		}
-		members = append(members, n)
-	}
-	if len(members) == 0 {
-		return model.Node{}, false
-	}
-	sort.Slice(members, func(i, j int) bool {
-		if members[i].IXBound != members[j].IXBound {
-			return members[i].IXBound
-		}
-		return members[i].ID < members[j].ID
-	})
-	return members[0], true
+// SelectExit picks the pool member installed until health says otherwise:
+// IX-bound first, then PoolPriority, then the lowest ID. Residential exits
+// are not members of the default hk pool.
+func SelectExit(t model.Topology, poolName string) (model.Node, bool) {
+	return pool.Preferred(pool.Members(t, poolName))
 }
 
 func findAnyPath(t model.Topology, from, to string) ([]string, []model.Link, bool) {
@@ -872,6 +1101,11 @@ func checkSafe(t model.Topology) []Issue {
 		if n.EndpointV4 != "" {
 			if ip, err := netip.ParseAddr(n.EndpointV4); err != nil || !ip.Is4() {
 				out = append(out, Issue{Code: "bad_address", Severity: SeverityError, NodeID: n.ID, Message: "Endpoint 必须是 IPv4 地址。"})
+			}
+		}
+		if n.EndpointV6 != "" {
+			if ip, err := netip.ParseAddr(n.EndpointV6); err != nil || !ip.Is6() {
+				out = append(out, Issue{Code: "bad_address", Severity: SeverityError, NodeID: n.ID, Message: "EndpointV6 必须是 IPv6 地址。"})
 			}
 		}
 		if n.WSSPathPrefix != "" && (!wssRe.MatchString(n.WSSPathPrefix) || strings.Contains(n.WSSPathPrefix, "..") || strings.Contains(n.WSSPathPrefix, "%")) {

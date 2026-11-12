@@ -29,6 +29,9 @@ type Tunnel struct {
 	EastV4  string
 	WestULA string
 	EastULA string
+	// OuterV6 means the listener is dialed on IPv6. The hub never does this;
+	// only a dual-stack relay, which itself was reached over v4, dials it.
+	OuterV6 bool
 }
 
 func (t Tunnel) Iface() string {
@@ -111,6 +114,9 @@ func buildTunnels(t model.Topology) ([]Tunnel, error) {
 					tun.WGPort = orInt(l.WGPort, 51820+i)
 				}
 				tun.ClientUDP = 52000 + i
+			}
+			if !tun.East.PathV4 && tun.East.PathV6 && tun.East.EndpointV6 != "" {
+				tun.OuterV6 = true
 			}
 			if tun.WestV4 == "" || tun.EastV4 == "" || tun.WestULA == "" || tun.EastULA == "" {
 				w4, e4, w6, e6 := allocatedAddrs(i)

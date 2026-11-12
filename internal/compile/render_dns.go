@@ -7,9 +7,9 @@ import (
 	"github.com/radowitz/meridian/internal/model"
 )
 
-func renderGatewayDNS(t model.Topology, exits []ExitPlan) string {
+func renderGatewayDNS(t model.Topology, exits []ExitPlan, decisions map[string]string) string {
 	def, _ := defaultExit(t, exits)
-	rules := planRules(t, exits)
+	rules := planRules(t, exits, decisions)
 	var sb strings.Builder
 	sb.WriteString("# Meridian SmartDNS. Real answers, no fake-ip.\n")
 	sb.WriteString("# ECS is intentionally unset so the family prefix is not attached to queries.\n")
@@ -109,13 +109,7 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan) string {
 }
 
 func renderExitDNS(n model.Node, tunnels []Tunnel) string {
-	var tun Tunnel
-	for _, c := range tunnels {
-		if c.East.ID == n.ID && c.West.Role == model.RoleHub && c.Mode != "wss" {
-			tun = c
-			break
-		}
-	}
+	tun := exitIngress(n, tunnels)
 	var sb strings.Builder
 	sb.WriteString("# Resolver bound to the tunnel. Upstream queries use this host's WAN, not the tunnel.\n")
 	sb.WriteString("speed-check-mode none\n")

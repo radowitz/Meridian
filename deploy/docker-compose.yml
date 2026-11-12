@@ -1,6 +1,7 @@
 # Host networking is required so the controller can install WireGuard and nftables
 # into the Debian host. The process still binds only MERIDIAN_BIND (LAN address).
-# Mesh is intentionally not defined here; it does not run on the home gateway.
+# Mesh is intentionally not defined here. It does not run on the home gateway.
+# The hub's generated bundle has etc/meridian/mesh-sidecar.compose.yml instead.
 services:
   meridian:
     build:

@@ -5,6 +5,9 @@ import type { Issue, Topology } from "./types";
 import * as api from "./api";
 import TopologyEditor from "./TopologyEditor";
 import RulesPanel from "./RulesPanel";
+import PoolsPanel from "./PoolsPanel";
+import UnlockPanel from "./UnlockPanel";
+import LeakPanel from "./LeakPanel";
 import DeployPanel from "./DeployPanel";
 
 export default function App() {
@@ -119,6 +122,21 @@ export default function App() {
             key: "rules",
             label: "规则",
             children: <RulesPanel topo={topo} onChange={setTopo} />,
+          },
+          {
+            key: "pools",
+            label: "出口池",
+            children: <PoolsPanel topo={topo} onChange={setTopo} />,
+          },
+          {
+            key: "unlock",
+            label: "解锁",
+            children: <UnlockPanel />,
+          },
+          {
+            key: "leak",
+            label: "防泄露",
+            children: <LeakPanel topo={topo} onChange={setTopo} />,
           },
           {
             key: "deploy",

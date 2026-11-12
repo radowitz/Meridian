@@ -78,6 +78,59 @@ export function rollback() {
   );
 }
 
+export interface PoolView {
+  id: string;
+  preferred: string;
+  residential: boolean;
+  mesh_backup: boolean;
+  fails_need: number;
+  recovers_need: number;
+  cooldown_sec: number;
+  active?: string;
+  members: { id: string; name: string; ix_bound: boolean; residential: boolean; priority: number; preferred: boolean; up?: boolean }[];
+}
+
+export function getPools() {
+  return fetch("/api/pools", { headers: headers(false) }).then((r) => parse<{ pools: PoolView[] }>(r));
+}
+
+export interface UnlockView {
+  services: { rule_id: string; name: string; pool: string; preferred: string; members: string[]; pin: boolean }[];
+  states: Record<string, { active?: string; sched_fails?: number; demoted?: boolean; unavailable?: boolean; preferred?: string }>;
+  history: { at: string; kind: string; service: string; exit_id: string; ok: boolean; note?: string }[];
+  next_run: string;
+  interval_sec: number;
+  pending_apply: boolean;
+  decisions: Record<string, string>;
+}
+
+export function getUnlock() {
+  return fetch("/api/unlock", { headers: headers(false) }).then((r) => parse<UnlockView>(r));
+}
+
+export function reportUnlock(body: unknown) {
+  return fetch("/api/unlock/report", { method: "POST", headers: headers(true), body: JSON.stringify(body) }).then((r) =>
+    parse<{ pending_apply: boolean; decisions: Record<string, string> }>(r),
+  );
+}
+
+export function runUnlock() {
+  return fetch("/api/unlock/run", { method: "POST", headers: headers(true), body: "{}" }).then((r) =>
+    parse<Record<string, unknown>>(r),
+  );
+}
+
+export interface LeakItem {
+  id: string;
+  status: string;
+  title: string;
+  detail: string;
+}
+
+export function getLeakcheck() {
+  return fetch("/api/leakcheck", { headers: headers(false) }).then((r) => parse<{ items: LeakItem[] }>(r));
+}
+
 export function provision(nodeId: string) {
   return fetch("/api/provision", {
     method: "POST",

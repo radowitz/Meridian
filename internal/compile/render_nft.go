@@ -10,10 +10,16 @@ import (
 	"github.com/radowitz/meridian/internal/model"
 )
 
-func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, mss4, mss6 int) string {
+type mssClamp struct {
+	Mark uint32
+	MSS4 int
+	MSS6 int
+}
+
+func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, mss4, mss6 int, decisions map[string]string, clamps []mssClamp) string {
 	switch n.Role {
 	case model.RoleGateway:
-		return renderGatewayNFT(t, tunnels, exits, mss4, mss6)
+		return renderGatewayNFT(t, tunnels, exits, mss4, mss6, decisions, clamps)
 	case model.RoleExit:
 		return renderExitNFT(t, n)
 	default:
@@ -21,13 +27,13 @@ func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPla
 	}
 }
 
-func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4, mss6 int) string {
+func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4, mss6 int, decisions map[string]string, clamps []mssClamp) string {
 	lan := t.Settings.LANInterface
 	if lan == "" {
 		lan = "eth0"
 	}
 	def, _ := defaultExit(t, exits)
-	rules := planRules(t, exits)
+	rules := planRules(t, exits, decisions)
 	var sb strings.Builder
 	sb.WriteString("#!/usr/sbin/nft -f\n")
 	sb.WriteString("# Meridian gateway policy. Reloading this file deletes only table inet meridian.\n")
@@ -122,7 +128,16 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, mss4
 	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname \"%s\" jump classify\n  }\n\n", lan)
 
 	// Only lower an advertised MSS. Raising a small MSS black-holes TCP.
-	fmt.Fprintf(&sb, "  chain mss {\n    type filter hook forward priority mangle; policy accept;\n    tcp flags syn meta nfproto ipv4 tcp option maxseg size > %d tcp option maxseg size set %d\n    tcp flags syn meta nfproto ipv6 tcp option maxseg size > %d tcp option maxseg size set %d\n  }\n\n", mss4, mss4, mss6, mss6)
+	sb.WriteString("  chain mss {\n    type filter hook forward priority mangle; policy accept;\n")
+	for _, c := range clamps {
+		if c.MSS4 > 0 {
+			fmt.Fprintf(&sb, "    tcp flags syn meta mark %#x meta nfproto ipv4 tcp option maxseg size > %d tcp option maxseg size set %d\n", c.Mark, c.MSS4, c.MSS4)
+		}
+		if c.MSS6 > 0 {
+			fmt.Fprintf(&sb, "    tcp flags syn meta mark %#x meta nfproto ipv6 tcp option maxseg size > %d tcp option maxseg size set %d\n", c.Mark, c.MSS6, c.MSS6)
+		}
+	}
+	fmt.Fprintf(&sb, "    tcp flags syn meta nfproto ipv4 tcp option maxseg size > %d tcp option maxseg size set %d\n    tcp flags syn meta nfproto ipv6 tcp option maxseg size > %d tcp option maxseg size set %d\n  }\n\n", mss4, mss4, mss6, mss6)
 
 	fmt.Fprintf(&sb, `  chain doh {
     type filter hook forward priority filter; policy accept;

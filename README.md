@@ -28,7 +28,7 @@ flowchart LR
   tw --> inet
 ```
 
-实线是主路。虚线是预先配好、默认不进路由表的 IX 替换隧道。Mesh 只允许作为「枢纽 → 出口」的备路，不能绕过 IX，这一期只做校验，不把流量送进去。
+实线是主路。虚线是预先配好、默认不进路由表的 IX 替换隧道。Mesh 只允许作为「枢纽 → 出口」的备路，跑在枢纽和出口上的独立网络命名空间里，不能绕过 IX，也不装在这台家宽网关上。
 
 ## 这一期有什么
 
@@ -40,16 +40,18 @@ flowchart LR
 - DNS 劫持 53/853，并按已知清单拦截 DoH。清单不能覆盖所有 DoH，文档里写明了这个边界。
 - 面板可以加节点、拉线选择传输、校验必经 IX、编译配置、看差分、下发和回滚，并带手动规则和 geosite 默认表。
 - SSH 装机脚本用 `wg syncconf` 更新，避免拆掉 NAT 映射。演练模式不连接远端。
+- 二期：同一池里可以有多台香港出口和多条家宽。健康检查在枢纽上做，连续失败才换下一跳，并带回滞。Mesh 以 sidecar 跑在枢纽和出口上。
+- 三期：纯 IPv6 出口经双栈中继或 Mesh 到达；NAT64 只生成占位文件；面板有防泄露清单，并写明 WebRTC host 候选的 GUA 限制。
 
 ## 路线图
 
 | 阶段 | 内容 |
 | --- | --- |
-| 一期（本仓库） | 必经 IX 的 WG、UDP/WSS、预置替换隧道、香港池、ULA、默认规则和手动规则、台湾拨出、家宽属性 |
-| 二期 | 多出口池化、Mesh sidecar、每 6 小时解锁测试和滞回、同网段 rp_filter / 重定向验收 |
-| 三期 | 纯 IPv6 出口的双栈中继或 Mesh 绕行；WebRTC host 候选里的运营商 GUA 限制 |
+| 一期 | 必经 IX 的 WG、UDP/WSS、预置替换隧道、香港池、ULA、默认规则和手动规则、台湾拨出、家宽属性 |
+| 二期（本仓库） | 多港机与多家宽池化、按成员做健康检查和滞回、Mesh sidecar、每 6 小时解锁测试、同网段 rp_filter / 重定向验收 |
+| 三期（本仓库） | 纯 IPv6 与「v6 入 v4 出」走双栈中继或 Mesh；NAT64 只预留、不进路由表；防泄露清单，含 WebRTC host 候选的 GUA 限制 |
 
-纯 IPv6 出口在枢纽 `path_v6=false` 且没有选择绕行时，面板会拒绝保存。绕行本身留到三期。
+纯 IPv6 出口在枢纽没有 IPv6、又没有把绕行真正接上时，面板会拒绝保存。家宽网关不运行 Mesh。NAT64 即使在面板里标成启用，也不会改写现有 IPv4 路由。
 
 ## 快速开始
 
@@ -81,4 +83,4 @@ MERIDIAN_BIND=127.0.0.1:8787 MERIDIAN_DATA=/tmp/meridian MERIDIAN_WEB_DIR=web/di
 
 Meridian is a LAN policy-routing gateway. Test clients use `192.168.100.88` as their IPv4 gateway and DNS. China prefixes go straight out via RouterOS `192.168.100.1`. Everything else must cross Aliyun Shanghai, the Shenzhen–Hong Kong IX, and the Hong Kong hub before it reaches an exit. The existing mihomo host and RouterOS stay untouched.
 
-Phase 1 ships the config compiler, path checks (including the IX rule), nftables/WireGuard/SmartDNS rendering, diff/apply/rollback, a LAN-only API, and a React Flow editor. Mesh failover, unlock probes, and pure-IPv6 workarounds are later phases. Documentation addresses only; do not commit real endpoints or keys.
+The compiler covers the IX path, pool failover, a Mesh sidecar that cannot bypass the IX, six-hour unlock hysteresis, and pure-IPv6 reachability through a dual-stack relay or Mesh. NAT64 is reserved and is not installed into the routing table. Documentation addresses only; do not commit real endpoints or keys.

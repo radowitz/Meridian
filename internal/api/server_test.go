@@ -154,6 +154,44 @@ func TestTokenRequired(t *testing.T) {
 	}
 }
 
+func TestPoolsUnlockAndLeakcheck(t *testing.T) {
+	s := newTest(t)
+	do(s, http.MethodGet, "/api/topology", nil)
+	rr := do(s, http.MethodGet, "/api/pools", nil)
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"id":"hk"`) || !strings.Contains(rr.Body.String(), "hk-ix") {
+		t.Fatal(rr.Body.String())
+	}
+	rr = do(s, http.MethodPost, "/api/pools/health", []byte(`{"observations":[{"id":"hk-ix","up":false},{"id":"hk-2","up":true}]}`))
+	if rr.Code != 200 || strings.Contains(rr.Body.String(), `"active":"hk-2"`) {
+		t.Fatalf("one failure must not move the pool: %s", rr.Body.String())
+	}
+	for i := 0; i < 3; i++ {
+		rr = do(s, http.MethodPost, "/api/pools/health", []byte(`{"observations":[{"id":"hk-ix","up":false},{"id":"hk-2","up":true}]}`))
+	}
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"active":"hk-2"`) {
+		t.Fatalf("pool did not fail over: %s", rr.Body.String())
+	}
+	rr = do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us","kind":"scheduled","raw":"Netflix: No\n","ai":"openai 000\n"}`))
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"auto-openai":"jp"`) || strings.Contains(rr.Body.String(), `"active":"jp"`) {
+		t.Fatal("unlock left the pool")
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "不在该服务的池里") && !strings.Contains(body, "auto-netflix") {
+		t.Fatalf("netflix probe from US should be recorded as out of pool: %s", body)
+	}
+	rr = do(s, http.MethodPost, "/api/unlock/run", []byte(`{}`))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing probe command: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = do(s, http.MethodGet, "/api/leakcheck", nil)
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "webrtc_host_gua") || !strings.Contains(rr.Body.String(), "known_limitation") {
+		t.Fatal(rr.Body.String())
+	}
+}
+
 func TestBindGuard(t *testing.T) {
 	if err := CheckBind("0.0.0.0:8787"); err == nil {
 		t.Fatal("wildcard bind should be refused")

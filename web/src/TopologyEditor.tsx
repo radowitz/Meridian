@@ -236,8 +236,32 @@ export default function TopologyEditor({
                   onChange={(e) => patchNode({ endpoint_v4: e.target.value })}
                 />
               </Form.Item>
+              <Form.Item label="公网 IPv6（纯 v6 出口，文档前缀）">
+                <Input
+                  value={currentNode.endpoint_v6 || ""}
+                  onChange={(e) => patchNode({ endpoint_v6: e.target.value })}
+                />
+              </Form.Item>
               <Form.Item label="出口池">
                 <Input value={currentNode.pool || ""} onChange={(e) => patchNode({ pool: e.target.value })} />
+              </Form.Item>
+              <Form.Item label="池内优先级（越小越优先，IX 绑定仍然最先）">
+                <InputNumber value={currentNode.pool_priority || 0} onChange={(v) => patchNode({ pool_priority: v ?? 0 })} />
+              </Form.Item>
+              <Form.Item label="纯 v6 绕行">
+                <Select
+                  allowClear
+                  value={currentNode.v6_workaround || undefined}
+                  options={[
+                    { value: "dualstack_relay", label: "双栈中继" },
+                    { value: "mesh", label: "Mesh" },
+                    { value: "v4_front", label: "v4 前置" },
+                  ]}
+                  onChange={(v6_workaround) => patchNode({ v6_workaround: v6_workaround || "" })}
+                />
+              </Form.Item>
+              <Form.Item label="双栈中继">
+                <Switch checked={!!currentNode.dualstack_relay} onChange={(dualstack_relay) => patchNode({ dualstack_relay })} />
               </Form.Item>
               <Form.Item label="SSH 主机（不写入示例密钥）">
                 <Input value={currentNode.ssh_host || ""} onChange={(e) => patchNode({ ssh_host: e.target.value })} />

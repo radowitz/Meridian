@@ -34,6 +34,7 @@ func main() {
 		WebDir:  os.Getenv("MERIDIAN_WEB_DIR"),
 		Token:   token,
 	}
+	srv.StartUnlockScheduler()
 	log.Printf("meridian panel listening on %s (LAN only). token file: %s", bind, filepath.Join(data, "panel.token"))
 	if err := http.ListenAndServe(bind, srv.Handler()); err != nil {
 		log.Fatal(err)

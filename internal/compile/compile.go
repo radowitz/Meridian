@@ -67,8 +67,20 @@ func (e *ValidationError) Error() string {
 }
 
 // Compile validates and renders. A draft flag does not bypass errors:
-// apply must refuse an invalid path.
+// apply must refuse an invalid path. Unlock decisions are not applied;
+// use CompileWithDecisions when the stored unlock map should move automatic
+// rules inside their pool.
 func Compile(t model.Topology) (*Bundle, error) {
+	return compile(t, nil)
+}
+
+// CompileWithDecisions is Compile plus the unlock map. Keys are rule IDs,
+// values are exit IDs in the same pool. Pinned rules ignore the map.
+func CompileWithDecisions(t model.Topology, decisions map[string]string) (*Bundle, error) {
+	return compile(t, decisions)
+}
+
+func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 	res := validate.Run(t)
 	if res.HasErrors() {
 		return &Bundle{Issues: res.Issues, Paths: res.Paths}, &ValidationError{Result: res}
@@ -84,7 +96,20 @@ func Compile(t model.Topology) (*Bundle, error) {
 		Issues: res.Issues,
 		Paths:  res.Paths,
 	}
-	mss4, mss6 := mssFloor(res.Paths)
+	mss4, mss6 := mssFloor(res.Paths, meshExitIDs(t))
+	var clamps []mssClamp
+	for _, p := range res.Paths {
+		if !meshExitIDs(t)[p.ExitID] {
+			continue
+		}
+		e, ok := exitByID(exits, p.ExitID)
+		if !ok || p.MSS4 <= 0 {
+			continue
+		}
+		if p.MSS4 < mss4 || p.MSS6 < mss6 {
+			clamps = append(clamps, mssClamp{Mark: e.Mark, MSS4: p.MSS4, MSS6: p.MSS6})
+		}
+	}
 	add := func(path, content string) {
 		b.Files[path] = strings.TrimRight(content, "\n") + "\n"
 	}
@@ -102,10 +127,26 @@ func Compile(t model.Topology) (*Bundle, error) {
 		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, exits))
 		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, exits))
 		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels))
-		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, mss4, mss6))
+		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, mss4, mss6, decisions, clamps))
 		if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
-			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels))
+			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels, exits))
 			add(prefix+"etc/systemd/system/meridian-failover.service", renderFailoverUnit())
+		}
+		if n.Role == model.RoleGateway {
+			add(prefix+"usr/local/sbin/meridian-verify.sh", renderVerifyScript(t))
+		}
+		if n.Role == model.RoleExit {
+			add(prefix+"usr/local/sbin/meridian-unlock-probe.sh", renderUnlockProbe(n))
+			add(prefix+"etc/systemd/system/meridian-unlock.service", renderUnlockService())
+			add(prefix+"etc/systemd/system/meridian-unlock.timer", renderUnlockTimer(t))
+		}
+		if n.Role == model.RoleHub {
+			add(prefix+"etc/meridian/nat64.reserved.conf", renderNAT64(t))
+		}
+		if n.Role != model.RoleGateway && meshPeer(t, n.ID) {
+			add(prefix+"etc/meridian/mesh-sidecar.compose.yml", renderMeshCompose())
+			add(prefix+"etc/meridian/mesh.env.example", renderMeshEnvExample())
+			add(prefix+"usr/local/sbin/meridian-mesh-up.sh", renderMeshUp())
 		}
 		if srv := renderWstunnelServer(n, tunnels); srv != "" {
 			add(prefix+"etc/systemd/system/wstunnel-meridian.service", srv)
@@ -118,7 +159,7 @@ func Compile(t model.Topology) (*Bundle, error) {
 		}
 		switch n.Role {
 		case model.RoleGateway:
-			add(prefix+"etc/smartdns/smartdns.conf", renderGatewayDNS(t, exits))
+			add(prefix+"etc/smartdns/smartdns.conf", renderGatewayDNS(t, exits, decisions))
 			add(prefix+"usr/local/sbin/meridian-update-chnroute.sh", renderChnrouteScript())
 			add(prefix+"usr/local/sbin/meridian-update-geosite.sh", renderGeositeScript(t))
 		case model.RoleExit:
@@ -128,9 +169,12 @@ func Compile(t model.Topology) (*Bundle, error) {
 	return b, nil
 }
 
-func mssFloor(paths []validate.PathReport) (mss4, mss6 int) {
+func mssFloor(paths []validate.PathReport, skip map[string]bool) (mss4, mss6 int) {
 	mss4, mss6 = 1380, 1360
 	for _, p := range paths {
+		if skip[p.ExitID] {
+			continue
+		}
 		if p.MSS4 > 0 && p.MSS4 < mss4 {
 			mss4 = p.MSS4
 		}
@@ -139,6 +183,16 @@ func mssFloor(paths []validate.PathReport) (mss4, mss6 int) {
 		}
 	}
 	return mss4, mss6
+}
+
+func meshExitIDs(t model.Topology) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range t.Nodes {
+		if n.Role == model.RoleExit && !n.PathV4 && n.PathV6 && n.V6Workaround == model.WorkaroundMesh {
+			out[n.ID] = true
+		}
+	}
+	return out
 }
 
 func managedNodes(t model.Topology) []model.Node {

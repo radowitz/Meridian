@@ -85,7 +85,17 @@ sudo docker compose -f deploy/docker-compose.yml --profile dns up -d
 
 上线前把 `pymumu/smartdns:latest` 钉成你核对过的摘要。然后按 [测试设备](test-device.md) 把一台电脑指过来，用 [验收清单](verification.md) 检查泄漏。
 
-## 6. 和 ROS 同网段时
+## 6. 二期和三期要手工做的事
+
+这些不会从仓库自动变成可用的线上隧道：
+
+- **Mesh 令牌。** 在枢纽和需要 Mesh 的出口上，把 `/etc/meridian/mesh.env.example` 复制成 `/etc/meridian/mesh.env`，权限 `0600`，写入 `MESH_NODE_TOKEN`。不要把这个文件提交进 git。家宽网关不要放这个文件，Compose 里也没有 Mesh 服务。令牌为空时 sidecar 不启动。
+- **解锁容器。** 在出口上安装 Docker，并准备 `lmc999/regioncheck`。面板不下载、不内置这个 AGPL 程序。探测脚本是 `/usr/local/sbin/meridian-unlock-probe.sh`，结果要由你用面板口令 POST 到 `/api/unlock/report`。没有 `MERIDIAN_UNLOCK_EXEC` 时，面板不会编造探测结果，路由保持不动。
+- **纯 IPv6 端点。** 把示例里的 `2001:db8::60`、`2001:db8::70` 换成真实地址之前，不要下发。枢纽仍然没有 IPv6，不要把纯 v6 出口的端点写到枢纽上。
+- **NAT64。** 占位文件在枢纽的 `/etc/meridian/nat64.reserved.conf`。这一期不要手写一条 NAT64 路由来「补上」，除非你知道它不会盖住现有 v4 路径。
+- **同网段验收。** 下发后在网关执行 `sudo /usr/local/sbin/meridian-verify.sh`。ROS 上的 fd00 黑洞只查看、不修改。
+
+## 7. 和 ROS 同网段时
 
 - `rp_filter` 必须是 loose（2）。国内回程可能由 ROS 直接交给客户端。
 - 关闭本机发送 ICMP 重定向。ROS 自己仍可能对客户端发重定向，这不在这台机器的控制范围内。
