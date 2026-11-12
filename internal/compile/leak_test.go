@@ -65,14 +65,10 @@ func TestGatewayFailClosed(t *testing.T) {
 		t.Fatal("gateway wireguard has no outer fwmark")
 	}
 	if nftBin, err := exec.LookPath("nft"); err == nil {
-		for _, path := range []string{
-			"nodes/gw/etc/nftables.d/meridian.nft",
-			"nodes/ali/etc/nftables.d/meridian.nft",
-			"nodes/hk-hub/etc/nftables.d/meridian.nft",
-			"nodes/hk-ix/etc/nftables.d/meridian.nft",
-			"nodes/sg/etc/nftables.d/meridian.nft",
-			"nodes/tw/etc/nftables.d/meridian.nft",
-		} {
+		for path := range b.Files {
+			if !strings.HasSuffix(path, ".nft") {
+				continue
+			}
 			cmd := exec.Command(nftBin, "-c", "-f", "-")
 			cmd.Stdin = strings.NewReader(b.File(path))
 			out, err := cmd.CombinedOutput()

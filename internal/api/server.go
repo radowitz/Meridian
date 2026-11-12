@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/radowitz/meridian/internal/apply"
 	"github.com/radowitz/meridian/internal/compile"
@@ -31,6 +32,8 @@ type Server struct {
 	// Token is required on /api except /api/health. An empty token disables
 	// the check so unit tests can call the handler directly. main always sets one.
 	Token string
+	// mu covers read-modify-write of the unlock and pool documents.
+	mu sync.Mutex
 }
 
 func (s *Server) Handler() http.Handler {
@@ -45,6 +48,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/apply", s.postApply)
 	mux.HandleFunc("POST /api/rollback", s.postRollback)
 	mux.HandleFunc("POST /api/provision", s.postProvision)
+	mux.HandleFunc("GET /api/pools", s.getPools)
+	mux.HandleFunc("POST /api/pools/health", s.postPoolHealth)
+	mux.HandleFunc("GET /api/unlock", s.getUnlock)
+	mux.HandleFunc("POST /api/unlock/report", s.postUnlockReport)
+	mux.HandleFunc("POST /api/unlock/run", s.postUnlockRun)
+	mux.HandleFunc("GET /api/leakcheck", s.getLeakcheck)
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
 	}
@@ -120,12 +129,14 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 		"roles":       []string{"gateway", "relay", "ix", "hub", "exit"},
 		"match_types": []string{"domain", "suffix", "keyword", "geosite", "cidr", "geoip", "asn"},
 		"modes":       []string{"pin", "auto"},
-		"phase":       1,
-		"deferred": []string{
-			"Cloudflare Mesh sidecar and failover (phase 2); illegal mesh edges are rejected",
-			"6-hour unlock tests and hysteresis (phase 2)",
-			"pool member failover beyond the preferred exit (phase 2)",
-			"pure IPv6 workaround data plane (phase 3); saving an unconfigured pure-v6 exit is rejected",
+		"phase":       3,
+		"features": []string{
+			"pools",
+			"mesh-sidecar",
+			"unlock-hysteresis",
+			"pure-v6",
+			"nat64-reserved",
+			"leak-checklist",
 		},
 	})
 }
@@ -197,7 +208,7 @@ func (s *Server) postCompile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	b, err := compile.Compile(t)
+	b, err := s.compileTopo(t)
 	if err != nil {
 		var ve *compile.ValidationError
 		if errors.As(err, &ve) {
@@ -225,7 +236,7 @@ func (s *Server) postDiff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	b, err := compile.Compile(t)
+	b, err := s.compileTopo(t)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
@@ -254,7 +265,7 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	b, err := compile.Compile(t)
+	b, err := s.compileTopo(t)
 	if err != nil {
 		var ve *compile.ValidationError
 		if errors.As(err, &ve) {
@@ -268,6 +279,9 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	if !body.DryRun {
+		s.clearUnlockPending()
 	}
 	writeJSON(w, http.StatusOK, res)
 }
@@ -313,7 +327,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("该节点不需要装机（例如 IX 专线）"))
 		return
 	}
-	b, err := compile.Compile(t)
+	b, err := s.compileTopo(t)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return

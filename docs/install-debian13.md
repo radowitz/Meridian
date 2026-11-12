@@ -85,7 +85,17 @@ sudo docker compose -f deploy/docker-compose.yml --profile dns up -d
 
 上线前把 `pymumu/smartdns:latest` 钉成你核对过的摘要。然后按 [测试设备](test-device.md) 把一台电脑指过来，用 [验收清单](verification.md) 检查泄漏。
 
-## 6. 和 ROS 同网段时
+## 6. 二期和三期要手工做的事
+
+这些不会从仓库自动变成可用的线上隧道：
+
+- **Mesh 令牌。** 在枢纽和需要 Mesh 的出口上，把 `/etc/meridian/mesh.env.example` 复制成 `/etc/meridian/mesh.env`，权限 `0600`，写入 `MESH_NODE_TOKEN`。不要把这个文件提交进 git。家宽网关不要放这个文件，Compose 里也没有 Mesh 服务。令牌为空时 sidecar 不启动。镜像是官方的 `cloudflare/mesh:latest`；要钉住摘要，在拓扑的 `mesh_image` 里写，不要换成别的仓库名。Cloudflare 里还要给「枢纽 → 该出口」发布路由，否则 sidecar 会把这一跳留在黑洞，不会改从 VPS 的默认路由出去。
+- **解锁容器。** 在出口上安装 Docker，并 `docker pull lmc999/regioncheck:latest`（或你写进 `regioncheck_image` 的那个标签）。面板不下载、不内置这个 AGPL 程序。探测脚本是 `/usr/local/sbin/meridian-unlock-probe.sh`，它会覆盖镜像入口并带上 `-R 66 -M 4` 和 `-M 6`。要自动把结果送回面板，把 `/etc/meridian/unlock-report.env.example` 复制成同目录的 `unlock-report.env`，权限 `0600`，只填 `MERIDIAN_PANEL_TOKEN`。没有这个文件、也没有合法的 `MERIDIAN_UNLOCK_EXEC` 时，面板不会编造探测结果，路由保持不动。`MERIDIAN_UNLOCK_EXEC` 必须是绝对路径上的一个可执行文件，不能写成 `sh -c ...`。
+- **纯 IPv6 端点。** 把示例里的 `2001:db8::60`、`2001:db8::70` 换成真实地址之前，不要下发。枢纽仍然没有 IPv6，不要把纯 v6 出口的端点写到枢纽上。
+- **NAT64。** 占位文件在枢纽的 `/etc/meridian/nat64.reserved.conf`。这一期不要手写一条 NAT64 路由来「补上」，除非你知道它不会盖住现有 v4 路径。
+- **同网段验收。** 下发后在网关执行 `sudo /usr/local/sbin/meridian-verify.sh`。ROS 上的 fd00 黑洞只查看、不修改。
+
+## 7. 和 ROS 同网段时
 
 - `rp_filter` 必须是 loose（2）。国内回程可能由 ROS 直接交给客户端。
 - 关闭本机发送 ICMP 重定向。ROS 自己仍可能对客户端发重定向，这不在这台机器的控制范围内。

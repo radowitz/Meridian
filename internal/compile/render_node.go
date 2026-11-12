@@ -89,6 +89,12 @@ func renderWG(t model.Topology, tun Tunnel, self model.Node) string {
 	if tun.Standby {
 		sb.WriteString("# STANDBY: bring the interface up, but do not install it as the default route.\n")
 	}
+	if tun.OuterV6 {
+		sb.WriteString("# outer v6: the Hong Kong hub has no IPv6. This leg is past the dual-stack relay.\n")
+	}
+	if self.V6Workaround == model.WorkaroundV4Front && self.Role == model.RoleExit {
+		sb.WriteString("# v4 front: Endpoint is a v4 address in front of this v6-only host, not the hub.\n")
+	}
 	if tun.DialOut && peer.Role == model.RoleHub && !west {
 		sb.WriteString("# NAT dial-out: this node dials the hub. The hub has no Endpoint for us.\n")
 	}
@@ -134,6 +140,12 @@ func peerEndpoint(tun Tunnel, self model.Node) string {
 		return ""
 	}
 	srv := tun.Listener()
+	if tun.OuterV6 {
+		if srv.EndpointV6 == "" {
+			return ""
+		}
+		return fmt.Sprintf("[%s]:%d", srv.EndpointV6, tun.WGPort)
+	}
 	if srv.EndpointV4 == "" {
 		return ""
 	}
@@ -194,6 +206,14 @@ fi
 	sb.WriteString("if [ -f /etc/nftables.d/meridian.nft ]; then\n")
 	sb.WriteString("  nft -c -f /etc/nftables.d/meridian.nft\n")
 	sb.WriteString("fi\n")
+	// Seal the Mesh sidecar before policy routes, so a mesh exit table can
+	// point at mmesh on the first boot. A mesh failure must not skip routes:
+	// the foreign path still has to install its blackhole.
+	if n.Role != model.RoleGateway {
+		sb.WriteString("if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then\n")
+		sb.WriteString("  /usr/local/sbin/meridian-mesh-up.sh || echo \"mesh sidecar skipped\" >&2\n")
+		sb.WriteString("fi\n")
+	}
 	sb.WriteString("/usr/local/sbin/meridian-routes.sh\n")
 	sb.WriteString("if [ -f /etc/nftables.d/meridian.nft ]; then\n")
 	sb.WriteString("  nft delete table inet meridian >/dev/null 2>&1 || true\n")
@@ -223,6 +243,9 @@ fi
 	}
 	if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
 		sb.WriteString("enable_unit meridian-failover.service\n")
+	}
+	if n.Role == model.RoleExit {
+		sb.WriteString("enable_unit meridian-unlock.timer\n")
 	}
 	sb.WriteString("echo meridian-up-complete\n")
 	return sb.String()

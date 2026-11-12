@@ -29,10 +29,13 @@ export interface Node {
   residential: boolean;
   ix_bound: boolean;
   v6_workaround?: string;
+  dualstack_relay?: boolean;
   pool?: string;
+  pool_priority?: number;
   public_key?: string;
   private_key?: string;
   endpoint_v4?: string;
+  endpoint_v6?: string;
   listen_port?: number;
   ssh_host?: string;
   ssh_port?: number;
@@ -96,6 +99,8 @@ export interface Settings {
   domestic_dot: string[];
   transit_v4_prefix: string;
   transit_v6_prefix: string;
+  unlock_interval_sec?: number;
+  nat64?: { reserved: boolean; enabled: boolean; prefix?: string };
 }
 
 export interface Topology {

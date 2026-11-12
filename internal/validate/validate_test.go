@@ -19,8 +19,14 @@ func TestExampleTopologyHasNoErrors(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatalf("example topology has errors: %+v", errs)
 	}
-	if len(res.Paths) != 6 {
-		t.Fatalf("paths = %d, want 6 (one per exit)", len(res.Paths))
+	exits := 0
+	for _, n := range defaults.Example().Nodes {
+		if n.Role == model.RoleExit {
+			exits++
+		}
+	}
+	if len(res.Paths) != exits {
+		t.Fatalf("paths = %d, want %d (one per exit)", len(res.Paths), exits)
 	}
 	for _, p := range res.Paths {
 		joined := strings.Join(p.Nodes, ",")
@@ -32,8 +38,12 @@ func TestExampleTopologyHasNoErrors(t *testing.T) {
 		if p.MTU < 1280 {
 			t.Fatalf("mtu %d", p.MTU)
 		}
-		if p.MTU != 1360 {
-			t.Fatalf("path mtu = %d, want 1360 (PPPoE WSS leg is the bottleneck)", p.MTU)
+		want := 1360
+		if p.ExitID == "v6-v4out" {
+			want = 1280
+		}
+		if p.MTU != want {
+			t.Fatalf("path %s mtu = %d, want %d", p.ExitID, p.MTU, want)
 		}
 	}
 	hk, ok := SelectExit(defaults.Example(), "hk")
@@ -157,8 +167,12 @@ func TestPureV6ExitNeedsWorkaround(t *testing.T) {
 			topo.Nodes[i].V6Workaround = model.WorkaroundDualstackRelay
 		}
 	}
-	if hasCode(Run(topo), "pure_v6_unreachable") {
-		t.Fatal("workaround should clear pure_v6_unreachable")
+	res := Run(topo)
+	if hasCode(res, "pure_v6_unreachable") {
+		t.Fatal("selecting a workaround should clear pure_v6_unreachable")
+	}
+	if !hasCode(res, "workaround_not_wired") {
+		t.Fatal("an unwired dual-stack relay must still be rejected")
 	}
 }
 
@@ -203,6 +217,20 @@ func TestAAAAFilterIsWarningNotACountryChange(t *testing.T) {
 	if !found {
 		t.Fatal("expected aaaa_filtered warning for the v4-only TW/SG exits")
 	}
+}
+
+func TestImageAndNAT64Prefix(t *testing.T) {
+	topo := defaults.Example()
+	topo.Settings.MeshImage = "cloudflare/mesh:latest"
+	topo.Settings.RegioncheckImage = "lmc999/regioncheck:2024.1"
+	if Run(topo).HasErrors() {
+		t.Fatal(Run(topo).Issues)
+	}
+	topo.Settings.MeshImage = "cloudflare/mesh:latest;rm"
+	assertError(t, Run(topo), "bad_image")
+	topo = defaults.Example()
+	topo.Settings.NAT64.Prefix = "64:ff9b::/96\nip route replace default via 192.168.100.1"
+	assertError(t, Run(topo), "nat64_prefix")
 }
 
 func assertError(t *testing.T, res Result, code string) {

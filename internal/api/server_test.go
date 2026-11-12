@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/store"
@@ -151,6 +153,127 @@ func TestTokenRequired(t *testing.T) {
 	}
 	if _, err := LoadOrCreateToken("bad\ntoken", dir+"/other"); err == nil {
 		t.Fatal("newline token should be rejected")
+	}
+}
+
+func TestPoolsUnlockAndLeakcheck(t *testing.T) {
+	s := newTest(t)
+	do(s, http.MethodGet, "/api/topology", nil)
+	rr := do(s, http.MethodGet, "/api/pools", nil)
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"id":"hk"`) || !strings.Contains(rr.Body.String(), "hk-ix") {
+		t.Fatal(rr.Body.String())
+	}
+	rr = do(s, http.MethodPost, "/api/pools/health", []byte(`{"observations":[{"id":"hk-ix","up":false},{"id":"hk-2","up":true}]}`))
+	if rr.Code != 200 || strings.Contains(rr.Body.String(), `"active":"hk-2"`) {
+		t.Fatalf("one failure must not move the pool: %s", rr.Body.String())
+	}
+	for i := 0; i < 3; i++ {
+		rr = do(s, http.MethodPost, "/api/pools/health", []byte(`{"observations":[{"id":"hk-ix","up":false},{"id":"hk-2","up":true}]}`))
+	}
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"active":"hk-2"`) {
+		t.Fatalf("pool did not fail over: %s", rr.Body.String())
+	}
+	rr = do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us","kind":"scheduled","raw":"Netflix: No\n","ai":"openai 000\n"}`))
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `"auto-openai":"jp"`) || strings.Contains(rr.Body.String(), `"active":"jp"`) {
+		t.Fatal("unlock left the pool")
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "不在该服务的池里") && !strings.Contains(body, "auto-netflix") {
+		t.Fatalf("netflix probe from US should be recorded as out of pool: %s", body)
+	}
+	rr = do(s, http.MethodPost, "/api/unlock/run", []byte(`{}`))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing probe command: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = do(s, http.MethodGet, "/api/leakcheck", nil)
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "webrtc_host_gua") || !strings.Contains(rr.Body.String(), "known_limitation") {
+		t.Fatal(rr.Body.String())
+	}
+}
+
+func TestPhase23RequiresToken(t *testing.T) {
+	s := newTest(t)
+	s.Token = "test-token"
+	calls := []struct {
+		method, path, body string
+	}{
+		{http.MethodPost, "/api/unlock/report", `{"exit_id":"us","kind":"scheduled","ai":"openai 200"}`},
+		{http.MethodPost, "/api/pools/health", `{"observations":[{"id":"hk-ix","up":false}]}`},
+		{http.MethodPost, "/api/unlock/run", `{}`},
+		{http.MethodGet, "/api/unlock", ""},
+		{http.MethodGet, "/api/pools", ""},
+		{http.MethodGet, "/api/leakcheck", ""},
+	}
+	for _, c := range calls {
+		var body []byte
+		if c.body != "" {
+			body = []byte(c.body)
+		}
+		rr := do(s, c.method, c.path, body)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without token: %d %s", c.method, c.path, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestUnlockReportClockAndExec(t *testing.T) {
+	s := newTest(t)
+	do(s, http.MethodGet, "/api/topology", nil)
+	fail := `{"exit_id":"us","kind":"scheduled","ai":"openai 000"}`
+	for i := 0; i < 2; i++ {
+		rr := do(s, http.MethodPost, "/api/unlock/report", []byte(fail))
+		if rr.Code != 200 {
+			t.Fatal(rr.Body.String())
+		}
+	}
+	past := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	older := time.Now().UTC().Add(-90 * time.Minute).Format(time.RFC3339)
+	rr := do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us-2","kind":"scheduled","at":"`+past+`","ai":"openai 200"}`))
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	rr = do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"us","kind":"scheduled","at":"`+older+`","ai":"openai 200"}`))
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"auto-openai":"us-2"`) {
+		t.Fatalf("backdated timestamps skipped the return cooldown: %s", rr.Body.String())
+	}
+	rr = do(s, http.MethodPost, "/api/unlock/report", []byte(`{"exit_id":"hk-resi","kind":"scheduled","raw":"Netflix: Yes (Region: US)\n"}`))
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"sched_fails":1`) {
+		t.Fatalf("US Netflix catalog was treated as a Hong Kong success: %s", body)
+	}
+	if strings.Contains(body, `"auto-netflix":"jp"`) || strings.Contains(body, `"active":"jp"`) {
+		t.Fatal(body)
+	}
+
+	t.Setenv("MERIDIAN_UNLOCK_EXEC", "/bin/echo hello")
+	rr = do(s, http.MethodPost, "/api/unlock/run", []byte(`{}`))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("shell-shaped exec: %d %s", rr.Code, rr.Body.String())
+	}
+	t.Setenv("MERIDIAN_UNLOCK_EXEC", "/bin/echo")
+	rr = do(s, http.MethodPost, "/api/unlock/run", []byte(`{}`))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("echo should not be parsed as a probe result: %d %s", rr.Code, rr.Body.String())
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "probe")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ -n \"$MERIDIAN_TOKEN\" ]; then exit 1; fi\nprintf '%s\\n' '{\"exit_id\":\"us\",\"kind\":\"manual\",\"ai\":\"openai 200\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MERIDIAN_UNLOCK_EXEC", script)
+	t.Setenv("MERIDIAN_TOKEN", "super-secret-panel-token")
+	rr = do(s, http.MethodPost, "/api/unlock/run", []byte(`{}`))
+	if rr.Code != 200 {
+		t.Fatalf("script probe: %d %s", rr.Code, rr.Body.String())
 	}
 }
 

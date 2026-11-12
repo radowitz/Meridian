@@ -3,8 +3,10 @@ package compile
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/pool"
 )
 
 func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan) string {
@@ -27,6 +29,9 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 		renderHubRoutes(&sb, t, tunnels, exits)
 	case model.RoleExit:
 		renderExitRoutes(&sb, t, n, tunnels)
+		if n.DualstackRelay {
+			renderDualstackForward(&sb, t, n, tunnels, exits)
+		}
 	default:
 		sb.WriteString("echo \"no routes for role " + string(n.Role) + "\"\n")
 	}
@@ -213,11 +218,41 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 			fmt.Fprintf(sb, "# exit %s has no hub iface\n", e.Node.ID)
 			continue
 		}
+		if e.ViaRelay != "" {
+			fmt.Fprintf(sb, "# pure-v6 %s via dualstack %s dev %s\n", e.Node.ID, e.ViaRelay, e.HubIface)
+			if e.PeerV4 != "" {
+				fmt.Fprintf(sb, "ip route replace %s/32 dev %s\n", e.PeerV4, e.HubIface)
+				fmt.Fprintf(sb, "ip route replace blackhole %s/32 metric 32767\n", e.PeerV4)
+			}
+			if e.PeerULA != "" {
+				fmt.Fprintf(sb, "ip -6 route replace %s/128 dev %s\n", e.PeerULA, e.HubIface)
+				fmt.Fprintf(sb, "ip -6 route replace blackhole %s/128 metric 32767\n", e.PeerULA)
+			}
+		}
+		if e.Mesh {
+			fmt.Fprintf(sb, "# pure-v6 %s mesh hop only; never the IX west path\n", e.Node.ID)
+			fmt.Fprintf(sb, "# mmesh is used only after meridian-mesh-up.sh has sealed the sidecar.\n")
+			fmt.Fprintf(sb, "# Without that seal, packets would follow the container default route onto this host's WAN.\n")
+			fmt.Fprintf(sb, "if ip link show mmesh >/dev/null 2>&1 && [ -f /run/meridian/mesh-sealed ]; then\n")
+			fmt.Fprintf(sb, "  ip route replace default dev mmesh table %d\n", e.Table)
+			fmt.Fprintf(sb, "  ip -6 route replace default dev mmesh table %d\n", e.Table)
+			fmt.Fprintf(sb, "else\n")
+			fmt.Fprintf(sb, "  ip route replace blackhole default table %d\n", e.Table)
+			fmt.Fprintf(sb, "  ip -6 route replace blackhole default table %d\n", e.Table)
+			fmt.Fprintf(sb, "  echo \"mmesh is not sealed; exit %s stays blackholed\" >&2\n", e.Node.ID)
+			fmt.Fprintf(sb, "fi\n")
+		}
 		fmt.Fprintf(sb, "# exit %s mark %#x transit %s dev %s\n", e.Node.ID, e.Mark, e.TransitV4, e.HubIface)
-		fmt.Fprintf(sb, "ip route replace default dev %s table %d\n", e.HubIface, e.Table)
+		if e.Mesh {
+			fmt.Fprintf(sb, "# default via mmesh is installed above when the sidecar exists\n")
+		} else {
+			fmt.Fprintf(sb, "ip route replace default dev %s table %d\n", e.HubIface, e.Table)
+		}
 		fmt.Fprintf(sb, "ip route replace %s dev %s table %d\n", lanNet(t), west, e.Table)
 		fmt.Fprintf(sb, "ip route replace %s dev %s table %d\n", transitV4Net(), west, e.Table)
-		fmt.Fprintf(sb, "ip -6 route replace default dev %s table %d\n", e.HubIface, e.Table)
+		if !e.Mesh {
+			fmt.Fprintf(sb, "ip -6 route replace default dev %s table %d\n", e.HubIface, e.Table)
+		}
 		if t.Settings.LANIPv6Prefix != "" {
 			fmt.Fprintf(sb, "ip -6 route replace %s dev %s table %d\n", t.Settings.LANIPv6Prefix, west, e.Table)
 		}
@@ -232,14 +267,14 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 }
 
 func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel) {
-	var tun Tunnel
-	for _, c := range tunnels {
-		if c.East.ID == n.ID && c.West.Role == model.RoleHub && c.Mode != "wss" {
-			tun = c
-			break
-		}
-	}
+	tun := exitIngress(n, tunnels)
 	if tun.Iface() == "" {
+		if !n.PathV4 && n.PathV6 && n.V6Workaround == model.WorkaroundMesh {
+			sb.WriteString("# reached via the Mesh sidecar after the hub. No direct WireGuard from the hub.\n")
+			sb.WriteString("# Return traffic follows the Mesh session. Do not point fd66 at ROS.\n")
+			writePrefixBlackholes(sb, t)
+			return
+		}
 		sb.WriteString("echo \"exit has no hub tunnel\" >&2\nexit 1\n")
 		return
 	}
@@ -256,12 +291,12 @@ func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunne
 	}
 }
 
-func renderFailover(t model.Topology, n model.Node, tunnels []Tunnel) string {
+func renderFailover(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan) string {
 	switch n.Role {
 	case model.RoleGateway:
 		return renderGatewayFailover(t, tunnels)
 	case model.RoleHub:
-		return renderHubFailover(t, tunnels)
+		return renderHubFailover(t, tunnels, exits)
 	default:
 		return renderRelayFailover(t, tunnels)
 	}
@@ -504,7 +539,45 @@ func hubWestTunnel(tunnels []Tunnel, replacement bool) Tunnel {
 	return wss
 }
 
-func renderHubFailover(t model.Topology, tunnels []Tunnel) string {
+func renderDualstackForward(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan) {
+	var west Tunnel
+	for _, tun := range tunnels {
+		if tun.East.ID == n.ID && tun.West.Role == model.RoleHub && !tun.Standby && tun.Mode != "wss" {
+			west = tun
+			break
+		}
+	}
+	sb.WriteString("# dualstack relay: v4 from the hub, v6 toward a pure-v6 exit. This is still after the IX.\n")
+	if west.Iface() == "" {
+		sb.WriteString("# dualstack relay has no v4 tunnel back to the hub\n")
+		return
+	}
+	fmt.Fprintf(sb, "# relay west %s\n", west.Iface())
+	for _, e := range exits {
+		if e.ViaRelay != n.ID {
+			continue
+		}
+		down := exitIngress(e.Node, tunnels)
+		if down.Iface() == "" {
+			fmt.Fprintf(sb, "# pure-v6 %s has no relay tunnel\n", e.Node.ID)
+			continue
+		}
+		fmt.Fprintf(sb, "ip route replace default dev %s table %d\n", down.Iface(), e.Table)
+		fmt.Fprintf(sb, "ip route replace %s dev %s table %d\n", lanNet(t), west.Iface(), e.Table)
+		fmt.Fprintf(sb, "ip route replace %s dev %s table %d\n", transitV4Net(), west.Iface(), e.Table)
+		fmt.Fprintf(sb, "ip -6 route replace default dev %s table %d\n", down.Iface(), e.Table)
+		fmt.Fprintf(sb, "ip -6 route replace %s dev %s table %d\n", transitV6Net(), west.Iface(), e.Table)
+		fmt.Fprintf(sb, "ip route replace blackhole default metric 32767 table %d\n", e.Table)
+		fmt.Fprintf(sb, "ip -6 route replace blackhole default metric 32767 table %d\n", e.Table)
+		fmt.Fprintf(sb, "del_rule ip rule del from %s/32 lookup %d\n", e.TransitV4, e.Table)
+		fmt.Fprintf(sb, "ip rule add from %s/32 lookup %d priority %d\n", e.TransitV4, e.Table, prioHubExitFrom+e.Index)
+		fmt.Fprintf(sb, "del_rule ip -6 rule del from %s/128 lookup %d\n", e.TransitV6, e.Table)
+		fmt.Fprintf(sb, "ip -6 rule add from %s/128 lookup %d priority %d\n", e.TransitV6, e.Table, prioHubExitFrom+e.Index)
+	}
+	_ = t
+}
+
+func renderHubFailover(t model.Topology, tunnels []Tunnel, exits []ExitPlan) string {
 	var ix, aliWSS, home Tunnel
 	for _, tun := range tunnels {
 		if tun.East.Role != model.RoleHub {
@@ -531,10 +604,205 @@ func renderHubFailover(t model.Topology, tunnels []Tunnel) string {
 	fmt.Fprintf(&sb, "IX=%q\nALI_WSS=%q\nHOME_WSS=%q\n", ix.Iface(), aliWSS.Iface(), home.Iface())
 	fmt.Fprintf(&sb, "IX_PEER=%q\nALI_PEER=%q\nHOME_PEER=%q\n", ix.WestV4, aliWSS.WestV4, home.WestV4)
 	fmt.Fprintf(&sb, "LAN=%q\nTRANSIT4=%q\nTRANSIT6=%q\nLAN6=%q\n", lanNet(t), transitV4Net(), transitV6Net(), t.Settings.LANIPv6Prefix)
-	sb.WriteString("FAILS_NEED=3\n")
+	fmt.Fprintf(&sb, "FAILS_NEED=%d\nRECOVERS_NEED=%d\nCOOLDOWN=%d\n", pool.FailsNeed, pool.RecoversNeed, int(pool.Cooldown/time.Second))
+	sb.WriteString(renderPoolChecks(t, exits))
 	sb.WriteString(failoverLoopHub)
 	return sb.String()
 }
+
+// renderPoolChecks writes the hub-side pool next-hop switch. It only changes
+// the preferred member's table. Mesh is used after every WireGuard member
+// of that pool is down, and the helper refuses tables 100, 102 and 150.
+func renderPoolChecks(t model.Topology, exits []ExitPlan) string {
+	byPool := map[string][]ExitPlan{}
+	var names []string
+	seen := map[string]bool{}
+	for _, e := range exits {
+		poolName := e.Node.Pool
+		if poolName == "" || e.Mesh {
+			continue
+		}
+		if e.HubIface == "" || e.HubIface == "mmesh" || e.PeerV4 == "" {
+			continue
+		}
+		if e.ViaRelay != "" {
+			continue
+		}
+		byPool[poolName] = append(byPool[poolName], e)
+		if !seen[poolName] {
+			seen[poolName] = true
+			names = append(names, poolName)
+		}
+	}
+	sortStrings(names)
+	var sb strings.Builder
+	sb.WriteString(poolStepShell)
+	sb.WriteString("check_pools() {\n")
+	for _, name := range names {
+		members := pool.Members(t, name)
+		if len(members) == 0 {
+			continue
+		}
+		pref, _ := pool.Preferred(members)
+		prefPlan, ok := exitByID(exits, pref.ID)
+		if !ok || prefPlan.Mesh || prefPlan.HubIface == "" || prefPlan.HubIface == "mmesh" {
+			continue
+		}
+		mesh := poolHasMesh(t, name)
+		fmt.Fprintf(&sb, "  pool_step %s %d %s %d", shQuote(name), prefPlan.Table, shQuote(pref.ID), boolNum(mesh))
+		for _, m := range members {
+			ep, ok := exitByID(exits, m.ID)
+			if !ok || ep.Mesh || ep.HubIface == "" || ep.HubIface == "mmesh" || ep.PeerV4 == "" || ep.ViaRelay != "" {
+				continue
+			}
+			fmt.Fprintf(&sb, " %s %s %s", shQuote(m.ID), shQuote(ep.HubIface), shQuote(ep.PeerV4))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+func poolHasMesh(t model.Topology, poolName string) bool {
+	members := map[string]bool{}
+	for _, n := range pool.Members(t, poolName) {
+		members[n.ID] = true
+	}
+	hub := ""
+	for _, n := range t.Nodes {
+		if n.Role == model.RoleHub {
+			hub = n.ID
+			break
+		}
+	}
+	for _, l := range t.Links {
+		if l.Transport != model.TransportCFMesh || !l.Enabled || !l.Standby {
+			continue
+		}
+		if l.From == hub && members[l.To] || l.To == hub && members[l.From] {
+			return true
+		}
+	}
+	return false
+}
+
+func boolNum(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+const poolStepShell = `
+# Pool next-hop hysteresis. Thresholds match internal/pool (FailsNeed,
+# RecoversNeed, Cooldown). A single failure does not move the route.
+# Mesh is refused on the IX west tables (100, 102, 150, main).
+pool_step() {
+  local pool="$1" table="$2" pref="$3" mesh="$4"
+  shift 4
+  local dir="/run/meridian/pool/${pool}"
+  mkdir -p "$dir" /run/meridian/pool-iface
+  local id iface peer fails goods state
+  local up_pref=0 alt_iface="" alt_id="" pref_iface=""
+  while [ $# -ge 3 ]; do
+    id="$1"; iface="$2"; peer="$3"; shift 3
+    echo "$iface" > "/run/meridian/pool-iface/${id}"
+    fails=0; goods=0; state=up
+    [ -f "$dir/$id.fails" ] && fails=$(cat "$dir/$id.fails")
+    [ -f "$dir/$id.goods" ] && goods=$(cat "$dir/$id.goods")
+    [ -f "$dir/$id.state" ] && state=$(cat "$dir/$id.state")
+    [ -n "$state" ] || state=up
+    if alive "$iface" "$peer"; then
+      fails=0
+      if [ "$state" = "down" ]; then
+        goods=$((goods+1))
+        if [ "$goods" -ge "$RECOVERS_NEED" ]; then state=up; goods=0; fi
+      else
+        goods=0; state=up
+      fi
+    else
+      goods=0
+      if [ "$state" = "up" ]; then
+        fails=$((fails+1))
+        if [ "$fails" -ge "$FAILS_NEED" ]; then state=down; fails=0; fi
+      fi
+    fi
+    echo "$fails" > "$dir/$id.fails"
+    echo "$goods" > "$dir/$id.goods"
+    echo "$state" > "$dir/$id.state"
+    if [ "$id" = "$pref" ]; then pref_iface="$iface"; fi
+    if [ "$id" = "$pref" ] && [ "$state" = "up" ]; then up_pref=1; fi
+    if [ "$id" != "$pref" ] && [ "$state" = "up" ] && [ -z "$alt_iface" ]; then
+      alt_iface="$iface"; alt_id="$id"
+    fi
+  done
+  local active="" want last=0 now
+  [ -f "$dir/active" ] && active=$(cat "$dir/active")
+  [ -n "$active" ] || active="$pref"
+  want="$active"
+  if [ "$active" = "$pref" ]; then
+    if [ "$up_pref" -eq 0 ]; then
+      if [ -n "$alt_id" ]; then want="$alt_id"
+      elif [ "$mesh" = "1" ]; then want="mmesh"; fi
+    fi
+  elif [ "$up_pref" -eq 1 ]; then
+    want="$pref"
+  elif [ "$active" = "mmesh" ]; then
+    if [ -n "$alt_id" ]; then want="$alt_id"; fi
+  else
+    local ast
+    ast=$(cat "$dir/$active.state" 2>/dev/null || echo down)
+    if [ "$ast" != "up" ]; then
+      if [ -n "$alt_id" ]; then want="$alt_id"
+      elif [ "$mesh" = "1" ]; then want="mmesh"; fi
+    fi
+  fi
+  now=$(date +%s)
+  last=0
+  if [ -f "$dir/switched" ]; then
+    last=$(cat "$dir/switched" 2>/dev/null || echo 0)
+  fi
+  case "$last" in
+    ''|*[!0-9]*) last=0 ;;
+  esac
+  if [ "$want" != "$active" ]; then
+    # 120s only delays the return to a preferred member that is up again.
+    # A member already marked down must be left immediately, or this table
+    # keeps handing packets to a dead tunnel.
+    if [ "$want" = "$pref" ] && [ "$up_pref" -eq 1 ] && [ "$last" -ne 0 ] && [ $((now-last)) -lt "$COOLDOWN" ]; then
+      return 0
+    fi
+    apply_pool_hop "$table" "$want" || return 0
+    echo "$want" > "$dir/active"
+    echo "$now" > "$dir/switched"
+  fi
+}
+apply_pool_hop() {
+  local table="$1" want="$2" dev
+  case "$table" in
+    ""|main|100|102|150)
+      echo "mesh/pool refused on table $table" >&2
+      return 1
+      ;;
+  esac
+  if [ "$want" = "mmesh" ]; then
+    dev="mmesh"
+    if ! ip link show mmesh >/dev/null 2>&1 || [ ! -f /run/meridian/mesh-sealed ]; then
+      ip route replace blackhole default table "$table"
+      ip -6 route replace blackhole default table "$table"
+      echo "mmesh is not sealed; pool $pool stays blackholed" >&2
+      return 0
+    fi
+  else
+    dev=$(cat "/run/meridian/pool-iface/$want" 2>/dev/null || true)
+  fi
+  [ -n "$dev" ] || return 0
+  ip route replace default dev "$dev" table "$table"
+  ip route replace blackhole default metric 32767 table "$table"
+  ip -6 route replace default dev "$dev" table "$table"
+  ip -6 route replace blackhole default metric 32767 table "$table"
+}
+`
 
 const failoverLoopHub = `
 alive() {
@@ -573,6 +841,9 @@ choose() {
 cur=""
 bad=0
 while true; do
+  if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then
+    /usr/local/sbin/meridian-mesh-up.sh --seal-only || rm -f /run/meridian/mesh-sealed
+  fi
   want=$(choose)
   if [ "$want" != "$cur" ]; then
     bad=$((bad+1))
@@ -584,6 +855,7 @@ while true; do
   else
     bad=0
   fi
+  check_pools || true
   sleep 5
 done
 `

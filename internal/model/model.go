@@ -76,7 +76,14 @@ type Node struct {
 	Residential  bool         `json:"residential"`
 	IXBound      bool         `json:"ix_bound"`
 	V6Workaround V6Workaround `json:"v6_workaround,omitempty"`
-	Pool         string       `json:"pool,omitempty"`
+	// DualstackRelay is an IX-after hop with both address families. The hub
+	// reaches it with v4; a pure-v6 exit dials it with v6. It is not a way
+	// around the IX.
+	DualstackRelay bool   `json:"dualstack_relay,omitempty"`
+	Pool           string `json:"pool,omitempty"`
+	// PoolPriority breaks ties inside a pool. IX-bound members still win.
+	// Lower numbers are tried first. Zero is the default.
+	PoolPriority int `json:"pool_priority,omitempty"`
 
 	// PublicKey is safe to store. PrivateKey is generated on apply and
 	// redacted by the API. Leave both empty in git.
@@ -86,6 +93,10 @@ type Node struct {
 	// EndpointV4 is the public IPv4 peers dial. It must stay empty on
 	// nat_dial_out nodes: the hub must not learn a public endpoint for them.
 	EndpointV4 string `json:"endpoint_v4,omitempty"`
+	// EndpointV6 is the public IPv6 a dual-stack relay dials. The Hong Kong
+	// hub has no IPv6 and must not be given this address as an Endpoint.
+	// Examples use 2001:db8::/32.
+	EndpointV6 string `json:"endpoint_v6,omitempty"`
 	ListenPort int    `json:"listen_port,omitempty"`
 
 	SSHHost string `json:"ssh_host,omitempty"`
@@ -181,6 +192,31 @@ type Settings struct {
 	// happens only at the exit.
 	TransitV4Prefix string `json:"transit_v4_prefix"`
 	TransitV6Prefix string `json:"transit_v6_prefix"`
+
+	// UnlockIntervalSec is the scheduled streaming/AI probe period.
+	// Zero means 6 hours. Manual rules are not moved by the results.
+	UnlockIntervalSec int `json:"unlock_interval_sec,omitempty"`
+
+	// NAT64 is a phase-3 reservation. Enabled must stay false until a
+	// translator is actually deployed; the compiler will not install a
+	// NAT64 route, so current v4 paths keep working.
+	NAT64 NAT64 `json:"nat64"`
+
+	// MeshImage is the OCI image for the hub/exit sidecar. Empty means
+	// the official Cloudflare Mesh node, cloudflare/mesh:latest.
+	// Pin a tag or digest here; do not invent a name.
+	MeshImage string `json:"mesh_image,omitempty"`
+	// RegioncheckImage is the OCI image for the exit unlock probe.
+	// Empty means lmc999/regioncheck:latest. It stays a separate container.
+	RegioncheckImage string `json:"regioncheck_image,omitempty"`
+}
+
+// NAT64 is the placeholder for a future translator in front of a pure-v6
+// host. The prefix is not added to any routing table by this version.
+type NAT64 struct {
+	Reserved bool   `json:"reserved"`
+	Enabled  bool   `json:"enabled"`
+	Prefix   string `json:"prefix,omitempty"`
 }
 
 // Topology is the whole document the panel edits.
