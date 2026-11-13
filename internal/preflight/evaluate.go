@@ -911,7 +911,7 @@ func (e *eval) interfaces() {
 				if x.Prefix.Addr().IsLinkLocalUnicast() || x.Prefix.Addr().IsLoopback() {
 					continue
 				}
-				if x.Iface == "lo" && e.out.Ownership == OwnSame && containsAddr(e.fp.LoAddrs, x.Prefix.Addr()) {
+				if x.Iface == "lo" && e.ownLoAddr(x.Prefix.Addr()) {
 					continue
 				}
 				if a.Masked().Overlaps(x.Prefix.Masked()) {
@@ -922,6 +922,7 @@ func (e *eval) interfaces() {
 			}
 		}
 	}
+	e.staleLoAddrs()
 	// Transit addresses the scripts put on lo: an address another
 	// interface already holds would be answered locally instead.
 	for _, a := range e.fp.LoAddrs {
@@ -1246,15 +1247,48 @@ func (e *eval) routes() {
 // ownLoRoute: the kernel route of a transit address this bundle itself
 // puts on lo, on a host this install already manages.
 func (e *eval) ownLoRoute(x Route) bool {
-	if e.out.Ownership != OwnSame || x.Dev != "lo" || !x.Dst.IsSingleIP() {
+	if x.Dev != "lo" || !x.Dst.IsSingleIP() {
 		return false
 	}
-	for _, a := range e.fp.LoAddrs {
-		if a.Addr() == x.Dst.Addr() {
+	return e.ownLoAddr(x.Dst.Addr())
+}
+
+// ownLoAddr: an address on lo that this install put there — one the bundle
+// declares, or (a topology change removed an exit or a group) a previous
+// install's transit address inside Meridian's own transit prefixes, which
+// the routes script deletes. Only on a host this install already manages.
+func (e *eval) ownLoAddr(a netip.Addr) bool {
+	if e.out.Ownership != OwnSame {
+		return false
+	}
+	if containsAddr(e.fp.LoAddrs, a) {
+		return true
+	}
+	for _, n := range e.fp.LoNets {
+		if n.Contains(a) {
 			return true
 		}
 	}
 	return false
+}
+
+// staleLoAddrs lists a previous install's transit addresses on lo that the
+// new plan no longer uses, as changes (they are removed by the install).
+func (e *eval) staleLoAddrs() {
+	if e.out.Ownership != OwnSame {
+		return
+	}
+	for _, x := range e.r.Addrs {
+		if x.Iface != "lo" || containsAddr(e.fp.LoAddrs, x.Prefix.Addr()) {
+			continue
+		}
+		for _, n := range e.fp.LoNets {
+			if n.Contains(x.Prefix.Addr()) {
+				e.change("address", "remove", "lo "+x.Prefix.String(), "上一次安装放在 lo 上的中转地址，这次的拓扑不再使用")
+				break
+			}
+		}
+	}
 }
 
 // samePlannedRoute: an existing route identical to one the bundle installs

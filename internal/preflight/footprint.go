@@ -86,6 +86,11 @@ type Footprint struct {
 	// LoAddrs are the transit addresses the scripts put on lo
 	// ("ip addr replace … dev lo").
 	LoAddrs []netip.Prefix `json:"lo_addrs"`
+	// LoNets are Meridian's own transit prefixes (from the routes script's
+	// "# meridian-transit:" line). On a host this install already manages,
+	// an address on lo inside them is a previous install's transit address;
+	// the routes script removes the ones the new plan no longer uses.
+	LoNets []netip.Prefix `json:"lo_nets,omitempty"`
 }
 
 // IfacePlan is a WireGuard interface the bundle brings up.
@@ -339,6 +344,15 @@ func FootprintOf(files map[string]string) Footprint {
 			for _, m := range reLoAddr.FindAllStringSubmatch(body, -1) {
 				if pr, err := netip.ParsePrefix(m[1]); err == nil && !containsPrefix(fp.LoAddrs, pr) {
 					fp.LoAddrs = append(fp.LoAddrs, pr)
+				}
+			}
+			for _, line := range strings.Split(body, "\n") {
+				if rest, ok := strings.CutPrefix(line, "# meridian-transit: "); ok {
+					for _, f := range strings.Fields(rest) {
+						if pr, err := netip.ParsePrefix(f); err == nil && !containsPrefix(fp.LoNets, pr) {
+							fp.LoNets = append(fp.LoNets, pr)
+						}
+					}
 				}
 			}
 			if strings.Contains(body, "harden_sysctl") {

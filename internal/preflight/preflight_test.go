@@ -1611,3 +1611,41 @@ func TestRemoteUpdateWithDeliveredResolver(t *testing.T) {
 		t.Fatalf("older own binary: %v %+v", codes(ev, Blocking), ev.Binaries)
 	}
 }
+
+// A topology change removed exits or groups: the previous install's transit
+// addresses are still on lo. On a real gateway the update was blocked with
+// route_overlap ("fd66::/48 dev m01 … fd66:0:0:ff::c dev lo"). They are this
+// install's own (inside Meridian's transit prefixes, on a host it already
+// manages): not a conflict, and listed as removed. The same addresses on a
+// host this install does not manage, or an address outside the transit
+// prefixes, still block.
+func TestGatewayStaleTransitAddressesAreOurs(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "gw"))
+	if len(fp.LoNets) != 2 {
+		t.Fatalf("transit prefixes from the routes script: %v", fp.LoNets)
+	}
+	stale := "addr lo 10.66.200.77/32\naddr lo fd66:0:0:ff::4d/128\n" +
+		"route6 fd66:0:0:ff::4d dev lo proto kernel metric 256 pref medium\n"
+	ctx := Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: gatewayOwned(fp)}
+	ev := Evaluate(fixture(t, "gateway-installed.txt", fp, allPresent(fp), stale), fp, ctx)
+	checkShape(t, ev)
+	if ev.Blocking || ev.Ownership != OwnSame || has(ev, "", CodeRouteOverlap) || has(ev, "", CodeAddressOverlap) {
+		t.Fatalf("stale transit addresses of our own install block the update: %+v %+v", find(ev, CodeRouteOverlap), find(ev, CodeAddressOverlap))
+	}
+	removed := map[string]bool{}
+	for _, ch := range ev.Changes {
+		if ch.Kind == "address" && ch.Action == "remove" {
+			removed[ch.Resource] = true
+		}
+	}
+	if !removed["lo 10.66.200.77/32"] || !removed["lo fd66:0:0:ff::4d/128"] || len(removed) != 2 {
+		t.Fatalf("removals listed: %v", removed)
+	}
+
+	// An address on lo outside the transit prefixes is nobody we know.
+	foreign := "addr lo fd66:0:0:7::1/128\nroute6 fd66:0:0:7::1 dev lo proto kernel metric 256 pref medium\n"
+	ev = Evaluate(fixture(t, "gateway-installed.txt", fp, allPresent(fp), foreign), fp, ctx)
+	if !ev.Blocking || !has(ev, "", CodeRouteOverlap) {
+		t.Fatalf("a foreign lo address inside fd66::/48 must still block: %+v", ev.Findings)
+	}
+}

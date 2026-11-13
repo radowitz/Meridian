@@ -122,6 +122,21 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	// Exit marks and region-group marks alike go to table 102 (the IX west
 	// path) and are SNATed to their own transit address; the hub picks the
 	// exit or group table by that source.
+	// Transit addresses of exits and groups that left the topology are still
+	// on lo from the previous install: remove the ones this plan no longer
+	// uses (only inside Meridian's own transit prefixes; the marker line
+	// tells the preflight which prefixes those are, so it attributes such
+	// leftovers to this install instead of reporting a foreign overlap).
+	{
+		keep := []string{upstreamProbeSrc}
+		for _, e := range markPlans(exits, groups) {
+			keep = append(keep, e.TransitV4, e.TransitV6)
+		}
+		fmt.Fprintf(sb, "# meridian-transit: %s %s\n", transitV4Net(), transitV6Net())
+		fmt.Fprintf(sb, "keep_transit=' %s '\n", strings.Join(keep, " "))
+		fmt.Fprintf(sb, "for a in $(ip -o -4 addr show dev lo to %s 2>/dev/null | awk '{print $4}'); do case \"$keep_transit\" in *\" ${a%%/*} \"*) ;; *) ip addr del \"$a\" dev lo 2>/dev/null || true ;; esac; done\n", transitV4Net())
+		fmt.Fprintf(sb, "for a in $(ip -o -6 addr show dev lo to %s 2>/dev/null | awk '{print $4}'); do case \"$keep_transit\" in *\" ${a%%/*} \"*) ;; *) ip -6 addr del \"$a\" dev lo 2>/dev/null || true ;; esac; done\n", transitV6Net())
+	}
 	for _, e := range markPlans(exits, groups) {
 		fmt.Fprintf(sb, "ip addr replace %s/32 dev lo\n", e.TransitV4)
 		fmt.Fprintf(sb, "ip -6 addr replace %s/128 dev lo\n", e.TransitV6)

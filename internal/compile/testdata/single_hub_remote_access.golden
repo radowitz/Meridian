@@ -111,8 +111,8 @@
 57c9af8d720139c186908c844445193ef1ef62ef8c7dc7345c6e42613b71a0e0 nodes/us-2/usr/local/sbin/meridian-up.sh
 5908878656466129019f889203e83afadb0b599de16d526264980b35b1afdf8b nodes/hk-2/usr/local/sbin/meridian-routes.sh
 5d179e6190435080c15f0eac79a267af8558b8e307239b0325b2751752e8d24b nodes/us-2/usr/local/sbin/meridian-fwcompat.sh
+5e9d469dc6a706c9f897e30bf2e0da39372fc76c90483afc0e0a04273bddd0e3 nodes/gw/usr/local/sbin/meridian-routes.sh
 5ea622e9a57efbbc6db3306ea6362e168b23ff4dbc855609d87b38107aad02b7 nodes/ds-relay/usr/local/sbin/meridian-fwcompat.sh
-5f2fe1c3dff80540d0d37c00ecc3837783cc4785a8547ed709cd7cb07ee85597 nodes/gw/usr/local/sbin/meridian-routes.sh
 5ff30927cea911df5c0e36733ba1473e43d192791962a68ea0c1f45079bde3e3 nodes/gw/etc/sysctl.d/99-meridian.conf
 64ea90f72cb0de48a9d0756f491b1347a715c3485370f3db329357e722da68bc nodes/hk-ix/usr/local/sbin/meridian-unlock-probe.sh
 6751f423d3006094ffb7176d757d32262755704a1fb7bc3b89a2404dabbb58cf nodes/gw/etc/wireguard/m02w.conf

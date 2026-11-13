@@ -109,6 +109,7 @@
 5799dc871c26fc75eb9eca95800fa9db2c42199048daa55d8768c14f53fda034 nodes/hk-hub/etc/meridian/wss/server.crt
 57c9af8d720139c186908c844445193ef1ef62ef8c7dc7345c6e42613b71a0e0 nodes/us-2/usr/local/sbin/meridian-up.sh
 5908878656466129019f889203e83afadb0b599de16d526264980b35b1afdf8b nodes/hk-2/usr/local/sbin/meridian-routes.sh
+5c6ce622bdbbcf9925da84a2f51f0d64446b90139845f235920acded5e415462 nodes/gw/usr/local/sbin/meridian-routes.sh
 5d179e6190435080c15f0eac79a267af8558b8e307239b0325b2751752e8d24b nodes/us-2/usr/local/sbin/meridian-fwcompat.sh
 5ea622e9a57efbbc6db3306ea6362e168b23ff4dbc855609d87b38107aad02b7 nodes/ds-relay/usr/local/sbin/meridian-fwcompat.sh
 5ff30927cea911df5c0e36733ba1473e43d192791962a68ea0c1f45079bde3e3 nodes/gw/etc/sysctl.d/99-meridian.conf
@@ -243,7 +244,6 @@ c52ca4b9c1cf63e5ccbe89a489d9c941678e8e796220a70d19df734663119493 nodes/hk-hub/et
 c755ffd5a6e647bf56975e1941f381d77e1d2f5e5eb7fe3f305cafd561827152 nodes/ali/etc/systemd/system/wstunnel-client-ali-hub-wss.service
 c7ab4ed21cf0953e05b596390097ba5069583372c8dff94e44ec18758328d428 nodes/jp/usr/local/sbin/meridian-up.sh
 cb11c05facd9f699679bb9d15e1201e7ad70403565649aa4c72b8416a877d766 nodes/hk-hub/etc/wireguard/m08.conf
-cbb9bb1179af0eedafabc1a499f5130d9e3d39636fb0d4a99c3391d859cf949d nodes/gw/usr/local/sbin/meridian-routes.sh
 d3d8a6e747bd406ee6429dd390d46afb2fa05bcb4797356bdf5699f6efb3f15d nodes/hk-hub/etc/wireguard/m07.conf
 d637adcad38180f4548fd362972a042e019554c1cc7911c9f211d7e6d8a46025 nodes/ds-relay/etc/wireguard/m01.conf
 d64f1368889b077a6fbf9f09bcec62163fc5f9dcf76f8f39cead255880cd901a README.txt
