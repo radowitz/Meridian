@@ -716,6 +716,13 @@ func renderDecideSnapshot(t model.Topology, rules []rulePlan, def target) string
 				sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcGeosite, Value: lists.FileName(r.Geosite)})
 			}
 		case model.MatchKeyword:
+			// The keyword itself (substring match, as mihomo) for a process
+			// that decides by the connection's name (internal/sniff); the
+			// list expansion the DNS path uses stays as a source (every name
+			// in it contains the keyword, so it adds nothing to the match).
+			if k, ok := ordered.NormKeyword(v); ok {
+				es = append(es, ordered.Entry{Kind: ordered.Keyword, Value: k})
+			}
 			sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcKeyword, Value: sanitize(r.ID)})
 		case model.MatchRuleSet:
 			sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcRuleSet, Value: r.RuleSet})

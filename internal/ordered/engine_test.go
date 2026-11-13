@@ -221,3 +221,133 @@ func TestAnalyzeLegacyDifference(t *testing.T) {
 		}
 	}
 }
+
+// Device rules by MAC (alone or with an address) on generated lists:
+// Decide equals Reference for clients with and without a known MAC, and
+// Decision.By names what decided.
+func TestDecideMACRulesMatchReference(t *testing.T) {
+	rng := rand.New(rand.NewSource(5))
+	uni := universe()
+	macs := []string{"02:00:00:00:00:0a", "02:00:00:00:00:0B"}
+	srcs := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("2001:db8:1::/48")}
+	n := 0
+	for iter := 0; iter < 1500; iter++ {
+		var rules []Rule
+		for i := 0; i < 1+rng.Intn(8); i++ {
+			r := Rule{ID: fmt.Sprint(i), Target: fmt.Sprintf("T%d", rng.Intn(4)), GeoIPCN: rng.Intn(10) == 0}
+			switch rng.Intn(4) {
+			case 0:
+				r.SourceMAC = macs[rng.Intn(2)]
+			case 1:
+				r.SourceMAC = macs[rng.Intn(2)]
+				r.Sources = []netip.Prefix{srcs[rng.Intn(2)]}
+			case 2:
+				r.Sources = []netip.Prefix{srcs[rng.Intn(2)]}
+			}
+			for k := 0; k < 1+rng.Intn(3); k++ {
+				switch rng.Intn(4) {
+				case 0:
+					r.Entries = append(r.Entries, sfx(uni[rng.Intn(len(uni))]))
+				case 1:
+					r.Entries = append(r.Entries, kw([]string{"exa", "b.c", "test"}[rng.Intn(3)]))
+				default:
+					r.Entries = append(r.Entries, cidr(cidrPool[rng.Intn(len(cidrPool))]))
+				}
+			}
+			rules = append(rules, r)
+		}
+		c := Compile(rules, testTail, -1)
+		for _, name := range append(uni[:6], "") {
+			for _, a := range []string{"198.51.100.7", "203.0.113.4", "2001:db8:1:2::5"} {
+				for _, s := range []string{"192.0.2.7", "2001:db8:1::7", ""} {
+					for _, m := range []string{"", "02:00:00:00:00:0a", "02:00:00:00:00:0b", "bad"} {
+						q := Query{Name: name, Addr: netip.MustParseAddr(a), SourceMAC: m}
+						if s != "" {
+							q.Source = netip.MustParseAddr(s)
+						}
+						want := Reference(rules, testTail, q)
+						got := c.Decide(Request{Name: q.Name, Addr: q.Addr, Source: q.Source, SourceMAC: m})
+						if got.Index != want.Index || got.Target != want.Target {
+							for i, r := range rules {
+								t.Logf("%d %s src=%v mac=%s %v", i, r.Target, r.Sources, r.SourceMAC, r.Entries)
+							}
+							t.Fatalf("%+v: decide %d %s, reference %d %s", q, got.Index, got.Target, want.Index, want.Target)
+						}
+						if want.Index >= 0 {
+							// Within the winning rule, a name entry and an
+							// address entry may both match; either is a
+							// correct "what decided".
+							ok := false
+							qq := q
+							qq.Name, _ = NormDomain(q.Name)
+							for _, e := range rules[want.Index].Entries {
+								if !e.Matches(qq) {
+									continue
+								}
+								if (e.Kind == CIDR) == (got.By == ByAddr) {
+									ok = true
+								}
+							}
+							if rules[want.Index].GeoIPCN && got.By == ByAddr {
+								ok = true
+							}
+							if !ok {
+								t.Fatalf("%+v: by %q, entry %v", q, got.By, want.Entry)
+							}
+						}
+						n++
+					}
+				}
+			}
+		}
+	}
+	t.Logf("%d decisions with MAC rules: Decide == Reference", n)
+}
+
+// LoadSnapshot keeps rules restricted by MAC (before, it dropped them, so
+// a device's MAC rule was ignored by a name-deciding process) and refuses
+// an unreadable restriction instead of widening the rule to every client.
+func TestSnapshotMACRules(t *testing.T) {
+	s := Snapshot{Version: SnapshotVersion, QUICAt: -1, Rules: []SnapshotRule{
+		{ID: "mac", Target: "exit:a", Mark: 0x102, SourceMAC: "02:00:00:00:00:AA", Entries: string(MarshalEntries([]Entry{sfx("dev.example")}))},
+		{ID: "both", Target: "exit:b", Mark: 0x103, SourceMAC: "02:00:00:00:00:bb", SourceAddrs: []string{"192.0.2.9"}, Entries: string(MarshalEntries([]Entry{sfx("dev.example")}))},
+		{ID: "all", Target: "group:c", Mark: 0x110, Entries: string(MarshalEntries([]Entry{sfx("dev.example")}))},
+	}, Tail: SnapshotTail{DirectMark: 0x64, Default: "group:d", DefaultMark: 0x111}}
+	b, _ := json.Marshal(s)
+	c, err := LoadSnapshot(b, MemReader{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.HasMACRules() || c.Len() != 3 {
+		t.Fatal("MAC rule dropped")
+	}
+	src := netip.MustParseAddr("192.0.2.9")
+	for _, x := range []struct {
+		src  netip.Addr
+		mac  string
+		want string
+	}{
+		{src, "02:00:00:00:00:aa", "mac"},
+		{src, "02:00:00:00:00:BB", "both"},
+		{netip.MustParseAddr("192.0.2.10"), "02:00:00:00:00:bb", "all"},
+		{src, "", "all"},
+	} {
+		if d := c.Decide(Request{Name: "x.dev.example", Source: x.src, SourceMAC: x.mac}); d.ID != x.want {
+			t.Errorf("%v %q: %+v", x.src, x.mac, d)
+		}
+	}
+	ts := c.Targets()
+	if len(ts) != 5 || ts[0].Target != "exit:a" || ts[4].Target != "group:d" {
+		t.Fatalf("targets %+v", ts)
+	}
+	for _, bad := range []SnapshotRule{
+		{ID: "m", Target: "exit:a", Mark: 1, SourceMAC: "02:00:00:00:00"},
+		{ID: "a", Target: "exit:a", Mark: 1, SourceAddrs: []string{"not-an-address"}},
+	} {
+		s.Rules = []SnapshotRule{bad}
+		b, _ := json.Marshal(s)
+		if _, err := LoadSnapshot(b, MemReader{}, nil); err == nil {
+			t.Errorf("%+v accepted", bad)
+		}
+	}
+}

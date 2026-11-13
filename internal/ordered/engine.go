@@ -99,14 +99,12 @@ func Compile(rules []Rule, tail Tail, quicAt int) *Compiled {
 		}
 	}
 	for i, r := range rules {
-		if len(r.Sources) > 0 {
+		if restricted(r) {
 			c.sources = append(c.sources, i)
-		}
-		if r.GeoIPCN && c.geoip < 0 && len(r.Sources) == 0 {
-			c.geoip = i
-		}
-		if len(r.Sources) > 0 {
 			continue // checked one by one (rare: device rules)
+		}
+		if r.GeoIPCN && c.geoip < 0 {
+			c.geoip = i
 		}
 		for _, e := range r.Entries {
 			switch e.Kind {
@@ -142,6 +140,9 @@ type Request struct {
 	Proto  string // "tcp", "udp" or ""
 	Port   int
 	Source netip.Addr
+	// SourceMAC is the client's hardware address (NormMAC form), "" when
+	// not known; see Rule.SourceMAC.
+	SourceMAC string
 }
 
 // Decision is the result of Decide.
@@ -153,6 +154,29 @@ type Decision struct {
 	Reason string `json:"reason"`
 	// QUICRejected: UDP 443 refused by the QUIC switch.
 	QUICRejected bool `json:"quic_rejected,omitempty"`
+	// Action is "direct" or "reject" for those targets ("" otherwise).
+	Action string `json:"action,omitempty"`
+	// By says what decided: ByName (a domain entry or the domestic list),
+	// ByAddr (a CIDR entry, GEOIP,CN or the China addresses) or ByDefault
+	// (nothing matched). A process that connects on the client's behalf
+	// re-resolves the name for ByName and ByDefault with a name, and keeps
+	// the client's destination address for ByAddr.
+	By string `json:"by,omitempty"`
+}
+
+// What decided (Decision.By).
+const (
+	ByName    = "name"
+	ByAddr    = "addr"
+	ByDefault = "default"
+)
+
+func byKind(k Kind) string {
+	switch k {
+	case Exact, Suffix, Sub, Keyword:
+		return ByName
+	}
+	return ByAddr // CIDR, or "" for GEOIP,CN
 }
 
 func (c *Compiled) nameMatch(name string) (int, Entry) {
@@ -213,12 +237,13 @@ func (c *Compiled) Decide(q Request) Decision {
 	}
 	// Device rules (source restriction): checked one by one, only where
 	// they could still win.
+	mac, _ := NormMAC(q.SourceMAC)
 	for _, i := range c.sources {
 		if best >= 0 && i > best {
 			break
 		}
 		r := c.rules[i]
-		if !sourceOK(r, q.Source) {
+		if !sourceOK(r, q.Source, mac) {
 			continue
 		}
 		qq := Query{Name: name, Addr: q.Addr}
@@ -238,7 +263,7 @@ func (c *Compiled) Decide(q Request) Decision {
 	var d Decision
 	if best >= 0 {
 		r := c.rules[best]
-		d = Decision{Index: best, ID: r.ID, Target: r.Target, Mark: r.Mark, Reason: reason(be)}
+		d = Decision{Index: best, ID: r.ID, Target: r.Target, Mark: r.Mark, Reason: reason(be), Action: r.Action, By: byKind(be.Kind)}
 		if be.Kind == "" {
 			d.Reason = "目的地址属于中国（GEOIP,CN）"
 		}
@@ -260,7 +285,19 @@ func (c *Compiled) Decide(q Request) Decision {
 	return d
 }
 
-func sourceOK(r Rule, src netip.Addr) bool {
+// restricted reports whether r is a device rule (source address or MAC).
+func restricted(r Rule) bool { return len(r.Sources) > 0 || r.SourceMAC != "" }
+
+// sourceOK: the MAC (when the rule names one) and one of the addresses
+// (when it names any) must match the client.
+func sourceOK(r Rule, src netip.Addr, mac string) bool {
+	if r.SourceMAC != "" {
+		want, ok1 := NormMAC(r.SourceMAC)
+		got, ok2 := NormMAC(mac)
+		if !ok1 || !ok2 || got != want {
+			return false
+		}
+	}
 	if len(r.Sources) == 0 {
 		return true
 	}
@@ -276,7 +313,7 @@ func (c *Compiled) tailDecision(name string, a netip.Addr) Decision {
 	if name != "" {
 		for x := name; ; {
 			if c.dom[x] {
-				return Decision{Index: -1, Target: c.tail.DirectTarget, Mark: c.tail.DirectMark, Reason: "内置国内名单（规则之后）：" + x}
+				return Decision{Index: -1, Target: c.tail.DirectTarget, Mark: c.tail.DirectMark, Reason: "内置国内名单（规则之后）：" + x, Action: "direct", By: ByName}
 			}
 			j := strings.IndexByte(x, '.')
 			if j < 0 {
@@ -286,10 +323,55 @@ func (c *Compiled) tailDecision(name string, a netip.Addr) Decision {
 		}
 	}
 	if a.IsValid() && c.china.lookup(a) >= 0 {
-		return Decision{Index: -1, Target: c.tail.DirectTarget, Mark: c.tail.DirectMark, Reason: "目的地址属于中国（规则和国内名单之后）"}
+		return Decision{Index: -1, Target: c.tail.DirectTarget, Mark: c.tail.DirectMark, Reason: "目的地址属于中国（规则和国内名单之后）", Action: "direct", By: ByAddr}
 	}
-	return Decision{Index: -1, Target: c.tail.Default, Mark: c.tail.DefaultMark, Reason: "没有规则命中：默认组（MATCH）"}
+	return Decision{Index: -1, Target: c.tail.Default, Mark: c.tail.DefaultMark, Reason: "没有规则命中：默认组（MATCH）", By: ByDefault}
 }
+
+// TargetMark is one target a Compiled list can decide, with its mark.
+type TargetMark struct {
+	Target string
+	Mark   uint32
+	Action string // "direct", "reject" or ""
+}
+
+// Targets lists every target the list (rules and tail) can decide, each
+// once, in first-use order. A target named with two different marks is
+// listed twice, so a consumer that maps targets to resources can refuse
+// the inconsistency.
+func (c *Compiled) Targets() []TargetMark {
+	var out []TargetMark
+	seen := map[TargetMark]bool{}
+	add := func(t TargetMark) {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	for _, r := range c.rules {
+		add(TargetMark{Target: r.Target, Mark: r.Mark, Action: r.Action})
+	}
+	add(TargetMark{Target: c.tail.DirectTarget, Mark: c.tail.DirectMark, Action: "direct"})
+	add(TargetMark{Target: c.tail.Default, Mark: c.tail.DefaultMark})
+	return out
+}
+
+// HasDeviceRules reports whether some rule is restricted by source address
+// or MAC (HasMACRules: by MAC).
+func (c *Compiled) HasDeviceRules() bool { return len(c.sources) > 0 }
+
+// HasMACRules reports whether some rule is restricted by MAC.
+func (c *Compiled) HasMACRules() bool {
+	for _, i := range c.sources {
+		if c.rules[i].SourceMAC != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// Len is the number of rules (without the tail).
+func (c *Compiled) Len() int { return len(c.rules) }
 
 // Engine holds the current Compiled value; Swap replaces it atomically
 // (a decision in flight keeps using the value it started with).
@@ -297,6 +379,9 @@ type Engine struct{ p atomic.Pointer[Compiled] }
 
 // Swap installs c.
 func (e *Engine) Swap(c *Compiled) { e.p.Store(c) }
+
+// Load returns the current value (nil before the first Swap).
+func (e *Engine) Load() *Compiled { return e.p.Load() }
 
 // Decide uses the current value; ok false before the first Swap.
 func (e *Engine) Decide(q Request) (Decision, bool) {
@@ -335,9 +420,11 @@ type SnapshotRule struct {
 	Entries string   `json:"entries,omitempty"` // MarshalEntries form
 	Sources []Source `json:"sources,omitempty"` // dynamic content
 	GeoIPCN bool     `json:"geoip_cn,omitempty"`
-	// SourceAddrs restricts the rule to clients (device rules). A rule
-	// restricted by MAC address (SourceMAC) is left out by LoadSnapshot: a
-	// decision by name does not see the client's MAC.
+	// SourceAddrs and SourceMAC restrict the rule to clients (device
+	// rules); with both, both must match (Rule.SourceMAC). The deciding
+	// process passes the client's MAC (Request.SourceMAC) from the kernel's
+	// neighbour table (internal/sniff); without one a MAC rule does not
+	// match, exactly as "ether saddr" does not match an L3 packet.
 	SourceAddrs []string `json:"source_addrs,omitempty"`
 	SourceMAC   string   `json:"source_mac,omitempty"`
 }
@@ -378,8 +465,13 @@ func LoadSnapshot(b []byte, r Reader, china []netip.Prefix) (*Compiled, error) {
 	}
 	rules := make([]Rule, 0, len(s.Rules))
 	for _, sr := range s.Rules {
+		var mac string
 		if sr.SourceMAC != "" {
-			continue
+			m, ok := NormMAC(sr.SourceMAC)
+			if !ok {
+				return nil, fmt.Errorf("rule %s: bad source MAC", sr.ID)
+			}
+			mac = m
 		}
 		es, err := UnmarshalEntries([]byte(sr.Entries))
 		if err != nil {
@@ -411,12 +503,16 @@ func LoadSnapshot(b []byte, r Reader, china []netip.Prefix) (*Compiled, error) {
 			}
 			es = append(es, more...)
 		}
-		rule := Rule{ID: sr.ID, Target: sr.Target, Mark: sr.Mark, Action: sr.Action, Entries: es, GeoIPCN: sr.GeoIPCN}
+		rule := Rule{ID: sr.ID, Target: sr.Target, Mark: sr.Mark, Action: sr.Action, Entries: es, GeoIPCN: sr.GeoIPCN, SourceMAC: mac}
 		for _, a := range sr.SourceAddrs {
 			if p, err := netip.ParsePrefix(a); err == nil {
-				rule.Sources = append(rule.Sources, p)
+				rule.Sources = append(rule.Sources, p.Masked())
 			} else if ad, err := netip.ParseAddr(a); err == nil {
 				rule.Sources = append(rule.Sources, netip.PrefixFrom(ad, ad.BitLen()))
+			} else {
+				// An unreadable restriction must not turn a device rule
+				// into a rule for every client.
+				return nil, fmt.Errorf("rule %s: bad source address", sr.ID)
 			}
 		}
 		rules = append(rules, rule)

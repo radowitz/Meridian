@@ -98,6 +98,28 @@ func NormDomain(s string) (string, bool) {
 	return s, true
 }
 
+// NormMAC returns a 48-bit hardware address as six lower-case hex pairs
+// separated by ":" (the form internal/validate accepts, any case), or false.
+func NormMAC(s string) (string, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) != 17 {
+		return "", false
+	}
+	for i := 0; i < 17; i++ {
+		c := s[i]
+		if i%3 == 2 {
+			if c != ':' {
+				return "", false
+			}
+			continue
+		}
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return "", false
+		}
+	}
+	return s, true
+}
+
 // NormKeyword lower-cases a keyword and checks it is printable and short.
 func NormKeyword(s string) (string, bool) {
 	s = strings.ToLower(strings.TrimSpace(s))
@@ -136,6 +158,13 @@ type Rule struct {
 	// Sources restricts the rule to these client addresses (device rules);
 	// empty: every client.
 	Sources []netip.Prefix
+	// SourceMAC restricts the rule to one client hardware address (NormMAC
+	// form; empty: every client). With Sources as well, both must match:
+	// the nft form is "ether saddr <mac> ip saddr <addr>" (sourcePreds in
+	// internal/compile). A client whose MAC is not known (a remote-access
+	// peer, a decision without a neighbour entry) never matches a MAC rule,
+	// as an L3 packet never matches "ether saddr".
+	SourceMAC string
 }
 
 // Tail is what follows the last rule: the built-in domestic list (suffix
@@ -159,6 +188,9 @@ type Query struct {
 	Addr netip.Addr
 	// Source is the client address (device rules).
 	Source netip.Addr
+	// SourceMAC is the client's hardware address in NormMAC form, "" when
+	// not known (device rules restricted by MAC).
+	SourceMAC string
 }
 
 // Match is the decision for one query.
@@ -210,7 +242,7 @@ func inChina(china []netip.Prefix, a netip.Addr) bool {
 func Reference(rules []Rule, tail Tail, q Query) Match {
 	q.Name, _ = NormDomain(q.Name)
 	for i, r := range rules {
-		if !sourceOK(r, q.Source) {
+		if !sourceOK(r, q.Source, q.SourceMAC) {
 			continue
 		}
 		for _, e := range r.Entries {

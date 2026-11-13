@@ -374,6 +374,47 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 
 以上只有仓库里的自动化回归和本机 Docker 里对固定版本 SmartDNS、nft 的测试，**没有在任何真实网关上执行过，也没有用过操作者真实的 mihomo 配置**。
 
+### 按域名嗅探的转发核心（`meridian sniff`，`internal/sniff`）
+
+这一节只描述转发核心本身（子命令、解析、决定、在目标处重新解析、限制、状态）。透明接管（TPROXY 或 REDIRECT 的 nft 规则）、单元与安装事务、按专用用户拒绝无标记出站、服务停止时的失败关闭、面板显示和命名空间测试都还**没有**接上；在接上并测过之前，网关的数据面与之前完全相同，只按地址分类。
+
+**分工。** 能从连接本身读到名字的 TCP 由它按名字决定；读不到名字的 TCP 按原目的地址决定；UDP（包括 QUIC）不经过它，继续由分类链按地址集合打标记。它只选择标记：打上标记之后的隧道、中继分担、主备枢纽和出口切换仍由内核数据面负责。
+
+**解析（按公开规范独立实现，没有参照或复制 mihomo、sing-box 或 SmartDNS 的代码）。** TLS：RFC 8446 §5.1 的记录层，ClientHello 可以跨多条握手记录、也可以跨多个 TCP 段到达，在 ClientHello 完整之前出现别的记录类型、长度为 0 或超过 2^14 的记录都算畸形；§4.1.2 的 ClientHello 和 §4.2 的扩展（同一扩展出现两次算畸形），RFC 6066 的 `server_name`（两个 `host_name` 算畸形，地址字面量不算名字）。HTTP/1：RFC 9112 的请求行和头部字段（obs-fold、冒号前的空白、多个 `Host` 都算畸形；可以接受单独的 LF），absolute-form 和 CONNECT 的 authority 优先于 `Host`（§3.2.2），`Host` 里的端口去掉，地址字面量不算名字。`PRI * HTTP/2.0`（h2c 直连前言）没有可读的名字。用标准库 TLS 客户端写出的 ClientHello 做了交叉核对（`TestTLSStdlibClientHello`）。
+
+**ECH。** 带 `encrypted_client_hello`（0xfe0d，以及旧的 0xffce）的 ClientHello，明文里的 `server_name` 是外层名字：真用 ECH 时它是 ECH 提供方的公共名字，不是用户要访问的站点；客户端只是发 GREASE ECH 扩展时它又恰好是真名字。线上无法区分这两种情况（这正是 ECH 的目的）。**默认按原目的地址决定**（与用户确认的方案一致），外层名字只记在 `Result.OuterName` 里，不当作真名字。代价：Chrome、Firefox 等在没有 ECH 配置时也发 GREASE ECH，默认设置下这些浏览器的 TLS 连接大多会落到按地址的结果。`--ech-outer` 改成按外层名字决定（对 GREASE 是真名字；对真 ECH 是按提供方的公共名字分流），是否打开由安装决定。
+
+**读不到名字时。** 没有 SNI、SNI 不是主机名、ECH（默认）、既不是 TLS 也不是 HTTP/1、畸形、超过读取上限、嗅探期限内数据不够（`timeout`）或一个字节都没有（`no_data`，服务器先说话的协议）、客户端半关闭（`eof`）、目的端口不在 `--sniff-ports` 里：都按原目的地址求值，连接原目的地址，**已经读到的字节一个不少地先发给上游**。
+
+**决定。** 与面板「这个域名/地址会命中哪条规则」和编译器对照用的是同一个求值：`ordered.LoadSnapshot` 读安装写下的 `decide.json`，`Compiled.Decide(Request{Name, Addr: 原目的地址, Proto: "tcp", Port, Source: 客户端地址, SourceMAC})`，结果等于参考解释器 `ordered.Reference`（`TestDecisionsMatchReference`：生成的规则列表，含完整域名、后缀、子域名、关键词、CIDR、GEOIP,CN、按地址和按 MAC 的设备规则、尾部，约 15 万个决定逐一相等，另有 90 条真实转发的连接记录与参考一致）。关键词规则在这里真正按子串执行（`decide.json` 里关键词规则现在带着关键词本身；按地址的路径只能靠名单展开）。`Decision.By` 说明是什么决定的：`name`（名字条目、内置国内名单）、`addr`（CIDR、GEOIP,CN、中国地址）、`default`（没有命中）。
+
+**设备规则与 MAC。** 以前 `LoadSnapshot` 跳过按 MAC 限定的规则，按名字决定的进程会把这台设备的规则当作不存在。现在保留它们：`Rule.SourceMAC` 与 nft 的 `ether saddr` 语义一致（同时写了地址时两者都要满足；不知道 MAC 的客户端——远程接入、没有邻居项——不命中 MAC 规则，正如三层包不命中 `ether saddr`）。客户端地址取自被接管连接的源地址（TPROXY 和 REDIRECT 都保留它）；MAC 取自内核邻居表（rtnetlink，只认 `--neigh-if` 列出的接口上可用状态的项，最多 1 秒的缓存，读不到时视为不知道）。信任程度与 `ether saddr` 相同：同时伪造别人地址和 MAC 的设备两条路径都骗得过；只伪造地址时邻居项会来回变，那段时间里的连接可能用到另一台设备的规则——设备规则是分流偏好，不是访问控制。不可解析的源地址或 MAC 让整份快照载入失败（以前不可解析的源地址会让设备规则变成对所有客户端生效）。
+
+**在目标处重新解析。** 按名字决定（`By` 是 `name`，或 `default` 且有名字）时，用目标自己的解析器、带目标的标记查询这个名字，再连接查到的地址：出口用 `fd66::54:<i>`、地区组用 `fd66::53:<k>`、直连用国内解析器，具体地址和查询标记由目标文件给出（见下）。先问与客户端同族的记录（目标不承载 IPv6 时只问 A，IPv6 客户端经 IPv4 连出），没有地址时再问目标允许的另一族。同一目标的多个解析器按顺序问，只有失败或 SERVFAIL 才问下一个；缓存按「目标名 + 查询标记 + 解析器列表」隔离，不同目标的答案互不复用，重载后不再存在或变了解析器的目标的缓存被丢弃；NXDOMAIN 和空回答缓存 10 秒，失败不缓存，TTL 限制在 5 秒到 10 分钟。**解析失败时连接失败**（RST），不问别的目标的解析器、不问国内解析器、不改连客户端自己的目的地址。只有决定本身是按地址作出的（`By` 是 `addr`，例如列表里更早的 CIDR 规则命中了原目的地址）才连接原目的地址。
+
+**客户端从别处得到的地址。** 名字决定目标 X、而客户端连接的地址来自别处（自己的加密 DNS、缓存、写死的地址）时，转发核心连接 X 的解析器返回的地址，不是客户端的地址。好处：出口看到的是从出口一侧解析的、就近的地址，共用 CDN 地址的两个站点各走各的目标，客户端不经网关 DNS 也按名字分流。代价：如果客户端特意连某个地址（固定的节点、测试某台服务器、DNS 污染之外另有用途的 IP），它到的可能是另一台服务器；SNI 与证书仍由客户端校验，所以名字对得上的服务器才能完成握手，结果最多是连到同名服务的另一台机器。
+
+**限制与默认值。** 每条连接决定前最多读 `--max-sniff-bytes 16384` 字节（声明长度放不下时立即判为超限，不等数据）；嗅探期限 `--sniff-timeout 1s`（整个分片 ClientHello 或 HTTP 头部都要在这段时间内到达；服务器先说话的协议因此晚 1 秒连接，安装可用 `--sniff-ports` 只嗅探 80/443 等）；上游连接 `--dial-timeout 10s`（最多试 4 个地址）；单次查询 `--resolve-timeout 2s`；两个方向都没有数据 `--idle-timeout 2h` 后关闭（0 表示不限）；同时最多 `--max-conns 2048` 条、每个客户端地址最多 `--max-per-source 512` 条，超出的立即 RST；转发缓冲每方向 16 KiB（池化）。直接连到监听端口本身（会形成环）、未指定、组播和广播目的地址直接 RST。
+
+**规则切换与健康。** 规则快照和目标文件作为一对原子替换（`Server.Install`）：正在决定的连接用它开始时的那一对，下一条用新的，任何时刻都有规则。载入时核对：快照里能决定的每个目标（拒绝除外）都在目标文件里、标记相同、至少有一个解析器，标记不重复；不一致时整对不生效，旧规则继续用，`last_reload_error` 说明原因。启动时第一次载入失败则进程以 `meridian-sniff-failed` 退出，不会以无规则状态监听。`SIGHUP` 重新读文件。`--status-socket`（Unix 套接字，0600）提供 `GET /v1/health`（就绪、代数、规则数、目标、是否有 MAC 规则、是否能查 MAC、计数器）和 `GET /v1/recent`（最近 `--recent 256` 个决定，只在内存里：源地址、原目的地址、协议、是否按名字、读不到名字的原因、命中的规则、目标、标记、上游地址、结果）。**默认不记录名字**；`--record-names` 打开后名字只进这份内存记录。日志和每 `--stats-interval 10m` 一行的计数器从不含名字。
+
+**命令行。** `meridian sniff --listen <地址:端口> --mode tproxy|redirect --snapshot /etc/meridian/rules/decide.json --targets <目标文件> [--lists-dir /var/lib/meridian] [--status-socket …] [--neigh-if <局域网口>] [--sniff-ports 80,443] …`。就绪行以 `meridian-sniff-ready` 开头。目标文件：
+
+```json
+{"version": 1, "targets": [
+  {"target": "direct",   "mark": 100, "resolvers": ["192.0.2.53:53"], "ipv6": true},
+  {"target": "group:hk", "mark": 266, "resolvers": ["[fd66::53:a]:53"]},
+  {"target": "exit:jp",  "mark": 258, "resolvers": ["[fd66::54:2]:53"], "dns_mark": 0},
+  {"target": "reject",   "mark": 101, "reject": true}
+]}
+```
+
+`dns_mark` 省略时等于 `mark`；组的解析地址需要组标记（`transit_snat` 认它），出口解析地址在网关的 SmartDNS 里是不带标记问的，安装要按实际路由选择。
+
+**留给接管与安装的接口。** `--mode tproxy` 时监听套接字设 `IP_TRANSPARENT`/`IPV6_TRANSPARENT`，原目的地址是连接的本地地址（`OrigDstLocal`）；`--mode redirect` 时用 `SO_ORIGINAL_DST`（`OrigDstRedirect`）。出站套接字带 `SO_MARK`（需要 `CAP_NET_ADMIN`；非 Linux 上非零标记一律失败，不会无标记发出）。转发核心对读不到名字的连接自己按地址求值，但这个求值看不到 SmartDNS 运行时写进各规则集合的地址（按名字学到的地址），所以「名字规则的站点 + 读不到名字」的连接会落到 CIDR/中国地址/默认组，而不是分类链会给的那条规则。要与按地址的路径完全一致，安装可以让分类链先打标记、经 `net.ipv4.tcp_fwmark_accept` 把 SYN 的标记带到接受的套接字，并设置 `Server.AddrMark`（用 `SocketMark` 读出）；未知标记时连接失败。这一步没有实现在子命令里。
+
+以上只有单元测试、回环上的转发测试和本机 Docker 里（特权容器、无网络）对 `SO_MARK`、透明监听、邻居表读取和 nft redirect 后 `SO_ORIGINAL_DST` 的测试（`TestLinuxSocketOptions`，需 `MERIDIAN_NETNS_TEST=1` 和 root），**没有在任何真实网关上运行过**。
+
 ## 名单源
 
 ### 策略与地址

@@ -18,6 +18,7 @@ import (
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/pathquality"
+	"github.com/radowitz/meridian/internal/sniff"
 	"github.com/radowitz/meridian/internal/store"
 )
 
@@ -31,6 +32,12 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "dns-split" {
 		os.Exit(dnssplit.Main(os.Args[2:]))
+	}
+	// The name-sniffing TCP forwarder (internal/sniff), run on the gateway
+	// host by its own unit; the install compiles its flags, snapshot and
+	// target file.
+	if len(os.Args) > 1 && os.Args[1] == "sniff" {
+		os.Exit(sniff.Main(os.Args[2:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "lists-update" {
 		os.Exit(listsUpdate(os.Args[2:]))
