@@ -102,7 +102,7 @@ func TestFWCompatDockerDropIPv4Only(t *testing.T) {
 			}
 			// The boot and re-assert units are enabled (never started from
 			// meridian-up.sh, which would deadlock at boot).
-			if !strings.Contains(calls, "systemctl enable meridian-node.service meridian-fwcompat.service") ||
+			if !strings.Contains(calls, "systemctl enable meridian-node.service\n") || !strings.Contains(calls, "systemctl enable meridian-fwcompat.service\n") ||
 				strings.Contains(calls, "enable --now meridian-node.service") || strings.Contains(calls, "start meridian-node.service") {
 				t.Fatalf("boot units:\n%s", calls)
 			}
@@ -483,5 +483,45 @@ func TestProvisionRechecksWAN(t *testing.T) {
 				t.Fatalf("exit %d\n%s", code, out)
 			}
 		})
+	}
+}
+
+// A host without Docker (seen on a real hub, Debian 13 / systemd 257):
+// "systemctl enable" of a unit that is WantedBy=docker.service exits 1
+// there ("added as a dependency to a non-existent unit docker.service"),
+// which failed the whole first install. The re-assert unit is only enabled
+// where docker.service exists; the boot unit is enabled everywhere, and
+// meridian-up.sh still runs the compatibility script on every start.
+func TestProvisionWithoutDockerDoesNotEnableReassertUnit(t *testing.T) {
+	sb := newSandbox(t)
+	script, _ := testScript(t, "tw", "none")
+	sys := "#!/bin/bash\necho \"systemctl $*\" >> \"$SANDBOX/calls.log\"\n" +
+		"case \"$*\" in\n" +
+		"  \"cat docker.service\") exit 1 ;;\n" +
+		"  \"enable meridian-fwcompat.service\") echo 'Unit meridian-fwcompat.service is added as a dependency to a non-existent unit docker.service.' >&2; exit 1 ;;\n" +
+		"esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(sb.bin, "systemctl"), []byte(sys), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := sb.run(script)
+	if code != 0 || !strings.Contains(out, "MERIDIAN_PROVISION_OK") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	calls := sb.read("/calls.log")
+	if strings.Contains(calls, "systemctl enable meridian-fwcompat.service") {
+		t.Fatalf("enabled the re-assert unit on a host without docker.service:\n%s", calls)
+	}
+	if !strings.Contains(calls, "systemctl enable meridian-node.service\n") {
+		t.Fatalf("boot unit not enabled:\n%s", calls)
+	}
+	if !strings.Contains(out, "no docker.service on this host") {
+		t.Fatalf("the skip is not reported:\n%s", out)
+	}
+	// The unit file is still installed and in the manifest, so a later
+	// update (after Docker is installed) only has to enable it and a
+	// withdraw removes it.
+	man := sb.read("/var/lib/meridian/node/manifest")
+	if !strings.Contains(man, "unit meridian-fwcompat.service") {
+		t.Fatalf("manifest lacks the unit:\n%s", man)
 	}
 }

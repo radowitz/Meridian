@@ -351,13 +351,24 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 	// meridian-up.sh just ran, and meridian-node.service runs it again at
 	// boot (it must never be started from meridian-up.sh itself).
 	if len(bootUnits) > 0 {
-		var q []string
-		for _, u := range bootUnits {
-			q = append(q, shellQuote(u))
-		}
 		sb.WriteString("if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then\n")
 		sb.WriteString("  systemctl daemon-reload\n")
-		fmt.Fprintf(&sb, "  systemctl enable %s\n", strings.Join(q, " "))
+		for _, u := range bootUnits {
+			if u == compile.FWCompatUnit {
+				// The re-assert unit is WantedBy=docker.service. On a host
+				// without Docker there is nothing to re-assert after, and
+				// systemd 257 (Debian 13) makes "enable" fail for a unit
+				// whose install target does not exist ("added as a
+				// dependency to a non-existent unit docker.service", exit
+				// status 1) — seen on a real hub without Docker, where it
+				// failed the whole install. meridian-up.sh still runs the
+				// compatibility script itself on every start and boot; a
+				// later update enables the unit once Docker is there.
+				fmt.Fprintf(&sb, "  if systemctl cat docker.service >/dev/null 2>&1; then systemctl enable %s; else echo 'meridian: no docker.service on this host; %s is installed but not enabled'; fi\n", shellQuote(u), u)
+				continue
+			}
+			fmt.Fprintf(&sb, "  systemctl enable %s\n", shellQuote(u))
+		}
 		sb.WriteString("else\n")
 		sb.WriteString("  echo 'meridian: no systemd; the boot unit cannot be enabled' >&2\n")
 		sb.WriteString("  exit 1\n")
