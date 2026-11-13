@@ -431,26 +431,36 @@ type rulePlan struct {
 	Set4       string
 	Set6       string
 	FilterAAAA bool
+	// Action is model.ActionDirect or model.ActionReject for a rule whose
+	// (service group's) target is direct or reject; Exit is then unset.
+	Action string
+	// CIDR4/CIDR6 are the nft sets of a rule-set rule's address entries
+	// (filled by the host's derive step, never by SmartDNS).
+	CIDR4, CIDR6 string
+	// QUIC marks the MatchQUICReject row (no sets, no target).
+	QUIC bool
 }
 
+// planRules returns the enabled rules in evaluation order (the list order,
+// model.Topology.EvalOrder), each with its sets r<n>/r<n>6 numbered in that
+// order. A rule whose target cannot be resolved is left out (validation
+// reports it). The QUIC row is kept as a marker.
 func planRules(t model.Topology, exits []ExitPlan, groups []GroupPlan, decisions map[string]string) []rulePlan {
-	rules := append([]model.Rule(nil), t.Rules...)
-	sort.SliceStable(rules, func(i, j int) bool {
-		if rules[i].Manual != rules[j].Manual {
-			return rules[i].Manual
-		}
-		if rules[i].Priority != rules[j].Priority {
-			return rules[i].Priority < rules[j].Priority
-		}
-		return rules[i].ID < rules[j].ID
-	})
 	var out []rulePlan
 	n := 0
-	for _, r := range rules {
+	quic := false
+	for _, r := range t.EvalOrder() {
 		if !r.Enabled {
 			continue
 		}
-		tg, ok := ruleExit(r, exits, groups, decisions)
+		if r.MatchType == model.MatchQUICReject {
+			if !quic {
+				out = append(out, rulePlan{Rule: r, QUIC: true})
+				quic = true
+			}
+			continue
+		}
+		tg, action, ok := ruleExit(t, r, exits, groups, decisions)
 		if !ok {
 			continue
 		}
@@ -462,6 +472,10 @@ func planRules(t model.Topology, exits []ExitPlan, groups []GroupPlan, decisions
 			Set4:       fmt.Sprintf("r%d", n),
 			Set6:       fmt.Sprintf("r%d6", n),
 			FilterAAAA: !tg.V6,
+			Action:     action,
+		}
+		if r.MatchType == model.MatchRuleSet {
+			rp.CIDR4, rp.CIDR6 = fmt.Sprintf("r%dc", n), fmt.Sprintf("r%dc6", n)
 		}
 		n++
 		out = append(out, rp)
@@ -473,24 +487,35 @@ func planRules(t model.Topology, exits []ExitPlan, groups []GroupPlan, decisions
 // health and the unlock map. A group rule uses the group's target; in an
 // automatic group the unlock map may move it to another eligible member,
 // which then carries it on that member's own mark. Manual groups ignore the
-// unlock map.
-func ruleExit(r model.Rule, exits []ExitPlan, groups []GroupPlan, decisions map[string]string) (target, bool) {
-	if r.TargetExit != "" {
-		e, ok := exitByID(exits, r.TargetExit)
-		return target{Exit: e, Mark: e.Mark, V6: carriesV6(e)}, ok
+// unlock map. A service group is followed to its target first; direct and
+// reject have no exit (action is set instead).
+func ruleExit(t model.Topology, r model.Rule, exits []ExitPlan, groups []GroupPlan, decisions map[string]string) (target, string, bool) {
+	rt := t.ResolveTarget(r)
+	switch rt.Kind {
+	case model.ActionDirect:
+		return target{Mark: markDomestic, V6: true}, model.ActionDirect, true
+	case model.ActionReject:
+		return target{Mark: markReject}, model.ActionReject, true
+	case "exit":
+		e, ok := exitByID(exits, rt.ID)
+		return target{Exit: e, Mark: e.Mark, V6: carriesV6(e)}, "", ok
+	case "group":
+	default:
+		return target{}, "", false
 	}
-	gp, ok := groupByID(groups, r.TargetGroup)
+	gp, ok := groupByID(groups, rt.ID)
 	if !ok {
-		return target{}, false
+		return target{}, "", false
 	}
 	if gp.Group.Mode == model.GroupAuto {
 		if id := decisions[r.ID]; id != "" && id != gp.Selection.Target && containsID(gp.Selection.Order, id) {
 			if e, ok := exitByID(exits, id); ok {
-				return target{Exit: e, Mark: e.Mark, V6: carriesV6(e)}, true
+				return target{Exit: e, Mark: e.Mark, V6: carriesV6(e)}, "", true
 			}
 		}
 	}
-	return groupTarget(gp)
+	tg, ok := groupTarget(gp)
+	return tg, "", ok
 }
 
 func containsID(ids []string, id string) bool {

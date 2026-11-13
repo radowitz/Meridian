@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,6 +34,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "lists-update" {
 		os.Exit(listsUpdate(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "lists-derive" {
+		os.Exit(listsDerive(os.Args[2:]))
 	}
 	// One pass of the gateway's relay-sharing controller, run by the
 	// compiled meridian-failover.sh (root, on the host, independent of the
@@ -135,6 +139,9 @@ func main() {
 	// WSS certificates: a rotation starts on its own 30 days before expiry
 	// (the panel then shows which ends to re-install, in order).
 	srv.StartWSSScheduler()
+	// Subscribed rule-sets: fetched again when their interval elapsed
+	// (failure keeps the active version; a less exact version is held).
+	go srv.RunRuleSetScheduler(context.Background())
 	// At boot the LAN address may not exist yet (ifupdown allow-hotplug +
 	// DHCP; Docker starts the container before the lease). Wait for it,
 	// bounded and with one log line every 10 s, instead of crash-looping
@@ -231,6 +238,40 @@ func hostRestore(args []string) int {
 	} else {
 		fmt.Println("meridian-restore-ok: data plane healthy, nothing restarted")
 	}
+	return 0
+}
+
+// listsDerive is run by the gateway's meridian-up.sh (root, on the host)
+// after the nft ruleset loaded: it derives the ordered rule domain-sets
+// from the installed manifest and the files on the host
+// (lists.DeriveOrdered) and loads the rule-set CIDR batch. Offline; no
+// download. Exit 1 on any failure (the up script then stops before
+// forwarding is enabled).
+func listsDerive(args []string) int {
+	fs := flag.NewFlagSet("lists-derive", flag.ContinueOnError)
+	dir := fs.String("dir", hostexec.DefaultListsDir, "lists directory")
+	manifest := fs.String("manifest", lists.ManifestPath, "ordered rule manifest")
+	load := fs.Bool("load-nft", true, "load the rule-set CIDR batch with nft -f")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		return 1
+	}
+	res, err := lists.DeriveOrdered(*dir, *manifest)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "meridian-lists-derive-failed:", err)
+		return 1
+	}
+	if *load && res.Batch != "" {
+		out, err := exec.Command("nft", "-f", filepath.Join(*dir, lists.RulesBatch)).CombinedOutput()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "meridian-lists-derive-failed: nft: %v %s\n", err, strings.TrimSpace(string(out)))
+			return 1
+		}
+	}
+	kept := 0
+	for _, st := range res.Stats {
+		kept += st.Kept
+	}
+	fmt.Printf("%s: %d sets, %d keys, changed=%v\n", lists.DeriveReadyMarker, len(res.Stats), kept, res.Changed)
 	return 0
 }
 

@@ -249,6 +249,23 @@ type Rule struct {
 	// a geosite snapshot is downloaded.
 	Domains []string `json:"domains,omitempty"`
 	Geosite string   `json:"geosite,omitempty"`
+
+	// RuleSet is the rule-set a MatchRuleSet rule uses (rules.go).
+	RuleSet string `json:"rule_set,omitempty"`
+	// TargetService points at a service group; TargetAction is "direct" or
+	// "reject" (rules.go). With TargetGroup and TargetExit exactly one of
+	// the four is set (none for a MatchQUICReject row).
+	TargetService string `json:"target_service,omitempty"`
+	TargetAction  string `json:"target_action,omitempty"`
+	// Origin is "" for a rule made in the panel (or a built-in row) and
+	// "mihomo" for a rule written by an import; SourceLine and SourceText
+	// are the imported line (1-based) and its text.
+	Origin     string `json:"origin,omitempty"`
+	SourceLine int    `json:"source_line,omitempty"`
+	SourceText string `json:"source_text,omitempty"`
+	// Accepted lists the ordering notices the operator accepted for this
+	// rule (codes from the import preview, such as "keyword_expanded").
+	Accepted []string `json:"accepted,omitempty"`
 }
 
 // Settings is the gateway-wide policy that nodes do not repeat.
@@ -347,6 +364,17 @@ type Topology struct {
 	Nodes    []Node   `json:"nodes"`
 	Links    []Link   `json:"links"`
 	Rules    []Rule   `json:"rules"`
+	// RulesOrdered: Rules is in evaluation order (first match wins, top to
+	// bottom). False only in a document from before the explicit list,
+	// whose order is LegacyRuleLess (MigrateRuleOrder).
+	RulesOrdered bool `json:"rules_ordered,omitempty"`
+	// RuleSets are the subscribed rule-sets rules can match on;
+	// ServiceGroups the switchable targets; MihomoImport the remembered
+	// import mapping (rules.go). Their own APIs own them: a whole-document
+	// save keeps the stored blocks.
+	RuleSets      []RuleSet      `json:"rule_sets,omitempty"`
+	ServiceGroups []ServiceGroup `json:"service_groups,omitempty"`
+	MihomoImport  *MihomoImport  `json:"mihomo_import,omitempty"`
 	// Groups are the region groups exits are selected through. See
 	// groups.go and docs/architecture.md「地区组」.
 	Groups []RegionGroup `json:"region_groups,omitempty"`

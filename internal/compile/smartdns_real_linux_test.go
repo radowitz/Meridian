@@ -20,6 +20,7 @@ import (
 	"github.com/radowitz/meridian/internal/defaults"
 	"github.com/radowitz/meridian/internal/dnssplit"
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/ordered"
 )
 
 // TestSmartDNSRealBinary runs the pinned SmartDNS (1.2026.08.05-0921,
@@ -398,9 +399,21 @@ func (l *dnsLab) conf(t *testing.T, topo model.Topology, b *Bundle, o labOpts) s
 		v6.Reset()
 	}
 	files := map[string]string{
-		"/var/lib/meridian/geosite/cn.txt": "cnlisted.example.net\n",
-		chinaListFile4:                     v4.String(),
-		chinaListFile6:                     v6.String(),
+		chinaListFile4: v4.String(),
+		chinaListFile6: v6.String(),
+	}
+	// The rule and domestic domain-sets as the host derives them from the
+	// bundle's manifest (lists.DeriveOrdered), with this geosite cn list.
+	m, err := ordered.ParseManifest([]byte(b.File("nodes/gw/etc/meridian/rules/order.conf")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := ordered.Derive(m, ordered.MemReader{Geo: map[string][]string{"cn": {"cnlisted.example.net"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for set, lines := range der.Files {
+		files[OrderedDir+"/"+set+".txt"] = strings.Join(lines, "\n") + "\n"
 	}
 	local := func(p string) string {
 		lp := filepath.Join(dir, strings.NewReplacer("/", "_").Replace(p))

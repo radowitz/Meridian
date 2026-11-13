@@ -335,9 +335,12 @@ type Agent struct {
 	// List updates (lists.go). ListsDir holds geosite/, keywords/ and
 	// lists/; default /var/lib/meridian. ListsGetter and ListsSources
 	// replace the downloader and the source table (tests only).
-	ListsDir     string
-	ListsGetter  lists.Getter
-	ListsSources func(lists.Policy) ([]lists.Source, error)
+	ListsDir string
+	// ListsManifest is the ordered rule manifest; default
+	// lists.ManifestPath (tests only).
+	ListsManifest string
+	ListsGetter   lists.Getter
+	ListsSources  func(lists.Policy) ([]lists.Source, error)
 	// ListsTimeout bounds one whole update; default 15m.
 	ListsTimeout time.Duration
 	// SmartDNSConf is the gateway resolver config a list update reads to

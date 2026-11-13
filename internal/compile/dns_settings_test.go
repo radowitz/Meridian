@@ -124,8 +124,12 @@ func TestGatewayDNSSettingsCombinations(t *testing.T) {
 				t.Fatalf("default6 nftset present=%v, catch-all AAAA=%v", !catchAll, catchAll)
 			}
 
-			// Domestic sets: never #6; exempt from force-AAAA-SOA.
-			for _, set := range []string{"gs_cn", "gs_apple"} {
+			// The domestic set: never #6; exempt from force-AAAA-SOA. Apple
+			// is not built in any more (Apple names are not domestic).
+			if strings.Contains(conf, "gs_apple") {
+				t.Fatal("built-in Apple-direct set rendered")
+			}
+			for _, set := range []string{"gs_cn"} {
 				l := lineWith(conf, "domain-rules /domain-set:"+set+"/")
 				if strings.Contains(l, "#6 ") || strings.Contains(l, "-address #") {
 					t.Fatalf("domestic set filters AAAA: %s", l)

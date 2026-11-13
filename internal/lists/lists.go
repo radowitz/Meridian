@@ -78,6 +78,9 @@ func Effective(s string) Policy {
 const (
 	KindGeosite  = "geosite"
 	KindChnroute = "chnroute"
+	// KindRules re-derives the ordered rule domain-sets (derive.go) from
+	// the files already on the host, without downloading anything.
+	KindRules = "rules"
 )
 
 // Source is one place every list can be downloaded from.
@@ -779,6 +782,9 @@ type Request struct {
 	Geosite  []string // v2fly names; published as geosite/<FileName>.txt
 	Keywords []Keyword
 	Chnroute bool
+	// Rules re-derives the ordered domain-sets even when no geosite list
+	// changed (after a rule-set activation).
+	Rules bool
 }
 
 // Attempt is one source tried for one list.
@@ -872,6 +878,9 @@ type Updater struct {
 	// and nft change (the host agent restarts SmartDNS here).
 	AfterPublish func(ctx context.Context, rep *Report)
 	Now          func() time.Time
+	// Manifest is the ordered rule manifest (ManifestPath on the gateway).
+	// "" skips the derive step.
+	Manifest string
 	// MinChnroute overrides MinChnroute4/6 (tests).
 	MinChnroute4, MinChnroute6 int
 }
@@ -965,7 +974,7 @@ func (u *Updater) Run(ctx context.Context, req Request) Report {
 	// 1. Download and check, nothing published yet.
 	// Candidates point into rep.Lists: its capacity covers every list, so
 	// no later append moves it.
-	rep.Lists = make([]ListResult, 0, len(req.Geosite)+len(chnFamilies)+len(req.Keywords))
+	rep.Lists = make([]ListResult, 0, len(req.Geosite)+len(chnFamilies)+len(req.Keywords)+1)
 	var geos []*geoCandidate
 	closures := map[string]*closure{}
 	for _, name := range req.Geosite {
@@ -1090,6 +1099,11 @@ func (u *Updater) Run(ctx context.Context, req Request) Report {
 			if u.publishChnroute(ctx, chns, &st) {
 				rep.ChnrouteChanged = true
 			}
+		}
+		// Every geosite or keyword file can change which rule owns a name:
+		// re-derive after publishing them (and when asked to).
+		if _, err := os.Stat(u.Manifest); u.Manifest != "" && (req.Rules || len(req.Geosite) > 0 && err == nil) {
+			rep.Lists = append(rep.Lists, u.derive(ctx, &rep))
 		}
 		if u.AfterPublish != nil && rep.Error == "" {
 			u.AfterPublish(ctx, &rep)

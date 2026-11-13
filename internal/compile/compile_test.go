@@ -102,23 +102,24 @@ func TestCompileExample(t *testing.T) {
 		t.Fatalf("v6-capable exit should NAT66, not drop v6:\n%s", hk)
 	}
 
-	dns := b.File("nodes/gw/etc/smartdns/smartdns.conf")
-	if !strings.Contains(dns, "domain-rules /ani.gamer.com.tw/ -nameserver rg_tw -address #6") {
-		t.Fatalf("TW rule should filter AAAA:\n%s", dns)
+	// The resolver line SmartDNS applies to a name (through the derived
+	// ordered domain-sets, ordered_rules_test.go).
+	if l := resolverLine(t, b, "ani.gamer.com.tw"); !strings.Contains(l, "-nameserver rg_tw -address #6") {
+		t.Fatalf("TW rule should filter AAAA: %s", l)
 	}
 	// Clients take IPv6 from the home router by default: even the
 	// v6-capable residential group returns no AAAA.
-	if !strings.Contains(lineWith(dns, "/netflix.com/"), "-address #6") {
-		t.Fatalf("netflix must be IPv4-only while clients_ipv6_via_gateway is off:\n%s", lineWith(dns, "netflix.com"))
+	if l := resolverLine(t, b, "netflix.com"); !strings.Contains(l, "-address #6") {
+		t.Fatalf("netflix must be IPv4-only while clients_ipv6_via_gateway is off: %s", l)
 	}
 	topo := defaults.Example()
 	topo.Settings.ClientsIPv6ViaGateway = true
-	dns = mustCompile(t, topo).File("nodes/gw/etc/smartdns/smartdns.conf")
-	if !strings.Contains(dns, "domain-rules /netflix.com/ -nameserver rg_hk_residential ") || strings.Contains(lineWith(dns, "/netflix.com/"), "-address #6") {
-		t.Fatalf("residential netflix should keep AAAA when clients route IPv6 through the gateway:\n%s", lineWith(dns, "netflix.com"))
+	b2 := mustCompile(t, topo)
+	if l := resolverLine(t, b2, "netflix.com"); !strings.Contains(l, "-nameserver rg_hk_residential ") || strings.Contains(l, "-address #6") {
+		t.Fatalf("residential netflix should keep AAAA when clients route IPv6 through the gateway: %s", l)
 	}
-	if !strings.Contains(dns, "domain-rules /ani.gamer.com.tw/ -nameserver rg_tw -address #6") {
-		t.Fatalf("TW rule should still filter AAAA:\n%s", dns)
+	if l := resolverLine(t, b2, "ani.gamer.com.tw"); !strings.Contains(l, "-nameserver rg_tw -address #6") {
+		t.Fatalf("TW rule should still filter AAAA: %s", l)
 	}
 }
 

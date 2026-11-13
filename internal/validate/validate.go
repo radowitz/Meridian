@@ -10,6 +10,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
+	rulesorder "github.com/radowitz/meridian/internal/ordered"
 	"github.com/radowitz/meridian/internal/pool"
 )
 
@@ -147,6 +148,7 @@ func Run(t model.Topology) Result {
 	out.Issues = append(out.Issues, checkPorts(t)...)
 	out.Issues = append(out.Issues, checkRules(t, nodes)...)
 	out.Issues = append(out.Issues, checkRuleReachable(t)...)
+	out.Issues = append(out.Issues, checkRuleSetsAndServices(t)...)
 	out.Issues = append(out.Issues, checkSafe(t)...)
 	out.Issues = append(out.Issues, CheckGroups(t)...)
 	out.Issues = append(out.Issues, CheckRemoteAccess(t)...)
@@ -769,7 +771,22 @@ func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {
 			continue
 		}
 		out = append(out, checkRuleShape(r)...)
-		if r.MatchType == model.MatchGeoIP || r.MatchType == model.MatchASN {
+		if r.MatchType == model.MatchQUICReject {
+			if r.TargetGroup != "" || r.TargetExit != "" || r.TargetService != "" || r.TargetAction != "" {
+				out = append(out, Issue{Code: "quic_row_target", Severity: SeverityError, RuleID: r.ID, Field: "target",
+					Message: "QUIC 开关行没有目标：它只决定哪些规则的 UDP 443 被拒绝（它下面的规则和默认组）。"})
+			}
+			continue
+		}
+		if r.MatchType == model.MatchRuleSet {
+			if _, ok := t.RuleSetByID(r.RuleSet); !ok {
+				out = append(out, Issue{Code: "ruleset_not_found", Severity: SeverityError, RuleID: r.ID, Field: "rule_set",
+					Message: fmt.Sprintf("规则「%s」使用的规则集 %s 不存在。", r.Name, r.RuleSet)})
+			}
+		}
+		if r.MatchType == model.MatchGeoIP && strings.EqualFold(strings.TrimSpace(r.MatchValue), "cn") {
+			// GEOIP,CN is executed with the China lists (chnroute).
+		} else if r.MatchType == model.MatchGeoIP || r.MatchType == model.MatchASN {
 			out = append(out, Issue{
 				Code: "match_not_enforced", Severity: SeverityWarning, RuleID: r.ID,
 				Message: fmt.Sprintf("规则「%s」的 %s 匹配在这一期不会写入数据面。它不会按归属地分流，流量会落到后面的策略。", r.Name, r.MatchType),
@@ -779,6 +796,17 @@ func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {
 		if errIss != nil {
 			out = append(out, *errIss)
 			continue
+		}
+		if act := t.ResolveTarget(r).Kind; act == model.ActionDirect || act == model.ActionReject {
+			if model.ResidentialRequired(r) || r.RequireV6 {
+				out = append(out, Issue{Code: "constraint_conflict", Severity: SeverityError, RuleID: r.ID, Field: "target",
+					Message: fmt.Sprintf("规则「%s」要求家宽或 IPv6，但目标是%s，不经过任何出口。", r.Name, actionLabel(act))})
+			}
+			continue
+		}
+		if exit != nil && model.IsExternal(*exit) {
+			out = append(out, Issue{Code: "tcp_only_target", Severity: SeverityWarning, RuleID: r.ID, ExitID: exit.ID,
+				Message: fmt.Sprintf("规则「%s」落到仅 TCP 的外部出口 %s：UDP（包括 QUIC）在那里被拒绝。", r.Name, exit.Name)})
 		}
 		if model.ResidentialRequired(r) {
 			if r.TargetExit != "" && (exit == nil || !exit.Residential) {
@@ -846,7 +874,51 @@ func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {
 	return out
 }
 
+func actionLabel(a string) string {
+	if a == model.ActionReject {
+		return "拒绝（REJECT）"
+	}
+	return "直连（DIRECT）"
+}
+
+// resolveRuleTarget checks a rule's target. A service group is followed to
+// its own target; direct and reject return no exit and no group.
 func resolveRuleTarget(t model.Topology, r model.Rule) (*model.Node, *model.RegionGroup, *Issue) {
+	n := 0
+	for _, v := range []string{r.TargetGroup, r.TargetExit, r.TargetService, r.TargetAction} {
+		if v != "" {
+			n++
+		}
+	}
+	if n > 1 && (r.TargetService != "" || r.TargetAction != "") {
+		return nil, nil, &Issue{Code: "rule_target_conflict", Severity: SeverityError, RuleID: r.ID, Field: "target_group",
+			Message: fmt.Sprintf("规则「%s」有多个目标，只能是地区组、出口、服务组、直连或拒绝之一。", r.Name)}
+	}
+	if r.TargetAction != "" {
+		if r.TargetAction != model.ActionDirect && r.TargetAction != model.ActionReject {
+			return nil, nil, &Issue{Code: "bad_action", Severity: SeverityError, RuleID: r.ID, Field: "target_action",
+				Message: fmt.Sprintf("规则「%s」的动作只能是 direct 或 reject。", r.Name)}
+		}
+		return nil, nil, nil
+	}
+	if r.TargetService != "" {
+		s, ok := t.ServiceByID(r.TargetService)
+		if !ok {
+			return nil, nil, &Issue{Code: "service_not_found", Severity: SeverityError, RuleID: r.ID, Field: "target_service",
+				Message: fmt.Sprintf("规则「%s」指向的服务组 %s 不存在。", r.Name, r.TargetService)}
+		}
+		via := r
+		via.TargetService, via.TargetGroup, via.TargetExit, via.TargetAction = "", s.TargetGroup, s.TargetExit, s.TargetAction
+		if via.TargetGroup == "" && via.TargetExit == "" && via.TargetAction == "" {
+			return nil, nil, &Issue{Code: "service_unmapped", Severity: SeverityError, RuleID: r.ID, Field: "target_service",
+				Message: fmt.Sprintf("服务组「%s」还没有指向地区组、出口、直连或拒绝。", s.Name)}
+		}
+		return resolveRuleTarget(t, via)
+	}
+	return resolveRuleTargetDirect(t, r)
+}
+
+func resolveRuleTargetDirect(t model.Topology, r model.Rule) (*model.Node, *model.RegionGroup, *Issue) {
 	if r.TargetPool != "" {
 		return nil, nil, &Issue{Code: "legacy_pool_target", Severity: SeverityError, RuleID: r.ID, Field: "target_pool",
 			Message: fmt.Sprintf("规则「%s」仍指向旧的出口池 %s。保存或重新载入拓扑会把它迁移到地区组。", r.Name, r.TargetPool)}
@@ -1338,6 +1410,10 @@ func checkRuleShape(r model.Rule) []Issue {
 	case model.MatchGeosite:
 		if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(r.Geosite) && r.Geosite != "" {
 			out = append(out, Issue{Code: "bad_domain", Severity: SeverityError, RuleID: r.ID, Message: "geosite 名称不合法。"})
+		}
+	case model.MatchRuleSet:
+		if !rulesorder.RuleSetIDOK(r.RuleSet) {
+			out = append(out, Issue{Code: "bad_rule_set", Severity: SeverityError, RuleID: r.ID, Field: "rule_set", Message: "规则集 ID 不合法。"})
 		}
 	case model.MatchCIDR:
 		if _, err := netip.ParsePrefix(r.MatchValue); err != nil {

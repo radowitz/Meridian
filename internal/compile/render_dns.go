@@ -1,12 +1,15 @@
 package compile
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/radowitz/meridian/internal/dnssplit"
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/ordered"
 )
 
 // SmartDNSSharedDirs are the host directories the gateway SmartDNS config
@@ -312,10 +315,12 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 		sb.WriteString("nftset #6:inet#meridian#default6\n")
 	}
 	sb.WriteString("\n")
-	sb.WriteString("domain-set -name gs_cn -file /var/lib/meridian/geosite/cn.txt\n")
-	sb.WriteString("domain-set -name gs_apple -file /var/lib/meridian/geosite/apple.txt\n")
-	fmt.Fprintf(&sb, "domain-rules /domain-set:gs_cn/ -nameserver domestic%s -nftset #4:inet#meridian#direct4,#6:inet#meridian#direct6\n", aaaa.domesticFlag())
-	fmt.Fprintf(&sb, "domain-rules /domain-set:gs_apple/ -nameserver domestic%s -nftset #4:inet#meridian#direct4,#6:inet#meridian#direct6\n", aaaa.domesticFlag())
+	// The built-in domestic list comes after every rule (lowest
+	// precedence): its derived file holds only the names no rule matches.
+	sb.WriteString("# Built-in domestic list (geosite cn), after every rule: names a rule matches were removed\n")
+	sb.WriteString("# from it on the host (meridian lists-derive), so a rule always wins over it.\n")
+	fmt.Fprintf(&sb, "domain-set -name %s -file %s/%s.txt\n", domesticSet, OrderedDir, domesticSet)
+	fmt.Fprintf(&sb, "domain-rules /domain-set:%s/ -nameserver domestic%s -nftset #4:inet#meridian#direct4,#6:inet#meridian#direct6\n", domesticSet, aaaa.domesticFlag())
 	sb.WriteString("\n")
 
 	// Known DoH names return SOA. This list is not exhaustive.
@@ -327,67 +332,124 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 	}
 	sb.WriteString("\n")
 
+	if len(rules) > 0 {
+		sb.WriteString("# Rules in list order, first match wins. Each rule's names are the domain-set the host derives\n")
+		fmt.Fprintf(&sb, "# from %s (meridian lists-derive): a name belongs to the first rule that\n", lists.ManifestPath)
+		sb.WriteString("# matches it, so SmartDNS's longest-name choice gives the same rule as list order.\n")
+	}
 	for _, rp := range rules {
+		if rp.QUIC {
+			sb.WriteString("# QUIC switch (UDP 443 refused for tunnelled traffic of the rules below and the default): nft only\n")
+			continue
+		}
 		nset := fmt.Sprintf("#4:inet#meridian#%s", rp.Set4)
 		withAAAA, flag := aaaa.ruleAAAA(rp)
+		ns := rp.Exit.Group
+		switch {
+		case rp.Action == model.ActionDirect:
+			ns, flag, withAAAA = "domestic", aaaa.domesticFlag(), true
+			fmt.Fprintf(&sb, "# rule %s -> direct (domestic resolvers, routed direct) manual=%v\n", rp.Rule.ID, rp.Rule.Manual)
+		case rp.Action == model.ActionReject:
+			// Resolved by the default target's resolver; the gateway refuses
+			// the connections (render_nft.go). No AAAA: an IPv6 answer could
+			// be used over the home line, past the refusal.
+			ns, flag, withAAAA = defT.dnsGroup(), " -address #6", false
+			fmt.Fprintf(&sb, "# rule %s -> reject (connections to the answers are refused by the gateway) manual=%v\n", rp.Rule.ID, rp.Rule.Manual)
+		case rp.ViaGroup != nil:
+			ns = rp.ViaGroup.DNSGroup
+			sb.WriteString(fmt.Sprintf("# rule %s -> %s manual=%v via group %s (switched by the hub; resolved at %s on the member in use)\n", rp.Rule.ID, rp.Exit.Node.ID, rp.Rule.Manual, rp.ViaGroup.Group.ID, rp.ViaGroup.Resolver))
+		default:
+			sb.WriteString(fmt.Sprintf("# rule %s -> %s manual=%v\n", rp.Rule.ID, rp.Exit.Node.ID, rp.Rule.Manual))
+		}
 		if withAAAA {
 			nset += fmt.Sprintf(",#6:inet#meridian#%s", rp.Set6)
 		}
-		ns := rp.Exit.Group
-		if rp.ViaGroup != nil {
-			ns = rp.ViaGroup.DNSGroup
-			sb.WriteString(fmt.Sprintf("# rule %s -> %s manual=%v via group %s (switched by the hub; resolved at %s on the member in use)\n", rp.Rule.ID, rp.Exit.Node.ID, rp.Rule.Manual, rp.ViaGroup.Group.ID, rp.ViaGroup.Resolver))
-		} else {
-			sb.WriteString(fmt.Sprintf("# rule %s -> %s manual=%v\n", rp.Rule.ID, rp.Exit.Node.ID, rp.Rule.Manual))
+		if !hasDomainSource(rp.Rule) {
+			fmt.Fprintf(&sb, "# %s %s is installed in nft set %s, not in SmartDNS\n", rp.Rule.MatchType, rp.Rule.MatchValue, rp.Set4)
+			continue
 		}
+		fmt.Fprintf(&sb, "domain-set -name %s -file %s/%s.txt\n", rp.Set4, OrderedDir, rp.Set4)
 		// No tunnel resolver (Mesh-only exit): return SOA. Falling through
 		// would ask another country's DNS, or the default group. A
 		// switchable group always has its resolver address.
-		if rp.ViaGroup == nil && rp.Exit.DNSULA == "" {
+		if rp.Action == "" && rp.ViaGroup == nil && rp.Exit.DNSULA == "" {
 			sb.WriteString("# no in-tunnel resolver; SOA so the query does not leave via another exit\n")
-			switch rp.Rule.MatchType {
-			case model.MatchGeosite:
-				if rp.Rule.Geosite != "" {
-					fmt.Fprintf(&sb, "domain-set -name gs_%s -file /var/lib/meridian/geosite/%s.txt\n", sanitize(rp.Rule.Geosite), sanitize(rp.Rule.Geosite))
-					fmt.Fprintf(&sb, "domain-rules /domain-set:gs_%s/ -address #\n", sanitize(rp.Rule.Geosite))
-				}
-			case model.MatchKeyword:
-				fmt.Fprintf(&sb, "domain-set -name kw_%s -file /var/lib/meridian/keywords/%s.txt\n", sanitize(rp.Rule.ID), sanitize(rp.Rule.ID))
-				fmt.Fprintf(&sb, "domain-rules /domain-set:kw_%s/ -address #\n", sanitize(rp.Rule.ID))
-			case model.MatchCIDR, model.MatchGeoIP, model.MatchASN:
-				fmt.Fprintf(&sb, "# %s %s is installed in nft set %s, not in SmartDNS\n", rp.Rule.MatchType, rp.Rule.MatchValue, rp.Set4)
-			}
-			for _, d := range rp.Rule.Domains {
-				d = strings.TrimPrefix(d, ".")
-				fmt.Fprintf(&sb, "address /%s/#\n", d)
-			}
-			if len(rp.Rule.Domains) == 0 && (rp.Rule.MatchType == model.MatchDomain || rp.Rule.MatchType == model.MatchSuffix) && rp.Rule.MatchValue != "" {
-				fmt.Fprintf(&sb, "address /%s/#\n", strings.TrimPrefix(rp.Rule.MatchValue, "."))
-			}
+			fmt.Fprintf(&sb, "domain-rules /domain-set:%s/ -address #\n", rp.Set4)
 			continue
 		}
-		switch rp.Rule.MatchType {
-		case model.MatchGeosite:
-			if rp.Rule.Geosite != "" {
-				fmt.Fprintf(&sb, "domain-set -name gs_%s -file /var/lib/meridian/geosite/%s.txt\n", sanitize(rp.Rule.Geosite), sanitize(rp.Rule.Geosite))
-				fmt.Fprintf(&sb, "domain-rules /domain-set:gs_%s/ -nameserver %s%s -nftset %s\n", sanitize(rp.Rule.Geosite), ns, flag, nset)
-			}
-		case model.MatchKeyword:
-			fmt.Fprintf(&sb, "# keyword %q is expanded by the list update into /var/lib/meridian/keywords/%s.txt\n", rp.Rule.MatchValue, sanitize(rp.Rule.ID))
-			fmt.Fprintf(&sb, "domain-set -name kw_%s -file /var/lib/meridian/keywords/%s.txt\n", sanitize(rp.Rule.ID), sanitize(rp.Rule.ID))
-			fmt.Fprintf(&sb, "domain-rules /domain-set:kw_%s/ -nameserver %s%s -nftset %s\n", sanitize(rp.Rule.ID), ns, flag, nset)
-		case model.MatchCIDR, model.MatchGeoIP, model.MatchASN:
-			fmt.Fprintf(&sb, "# %s %s is installed in nft set %s, not in SmartDNS\n", rp.Rule.MatchType, rp.Rule.MatchValue, rp.Set4)
-		}
-		for _, d := range rp.Rule.Domains {
-			d = strings.TrimPrefix(d, ".")
-			fmt.Fprintf(&sb, "domain-rules /%s/ -nameserver %s%s -nftset %s\n", d, ns, flag, nset)
-		}
-		if len(rp.Rule.Domains) == 0 && (rp.Rule.MatchType == model.MatchDomain || rp.Rule.MatchType == model.MatchSuffix) && rp.Rule.MatchValue != "" {
-			fmt.Fprintf(&sb, "domain-rules /%s/ -nameserver %s%s -nftset %s\n", strings.TrimPrefix(rp.Rule.MatchValue, "."), ns, flag, nset)
-		}
+		fmt.Fprintf(&sb, "domain-rules /domain-set:%s/ -nameserver %s%s -nftset %s\n", rp.Set4, ns, flag, nset)
 	}
 	return sb.String()
+}
+
+// The derived domain-sets (internal/ordered, lists.DeriveOrdered) and the
+// name of the built-in domestic list's set.
+const (
+	OrderedDir  = "/var/lib/meridian/" + lists.OrderedSubdir
+	domesticSet = "gs_cn"
+)
+
+// hasDomainSource: the rule matches names (it has a domain-set).
+func hasDomainSource(r model.Rule) bool {
+	if len(r.Domains) > 0 {
+		return true
+	}
+	switch r.MatchType {
+	case model.MatchDomain, model.MatchSuffix:
+		return strings.TrimSpace(r.MatchValue) != ""
+	case model.MatchGeosite:
+		return r.Geosite != ""
+	case model.MatchKeyword:
+		return strings.TrimSpace(r.MatchValue) != ""
+	case model.MatchRuleSet:
+		return true
+	}
+	return false
+}
+
+// renderRuleManifest is the ordered list of domain sources the host derives
+// the rule domain-sets from (/etc/meridian/rules/order.conf, see
+// internal/ordered): one set per rule with names, in list order, then the
+// built-in domestic list.
+func renderRuleManifest(rules []rulePlan) string {
+	var m ordered.Manifest
+	for _, rp := range rules {
+		if rp.QUIC || !hasDomainSource(rp.Rule) {
+			continue
+		}
+		r := rp.Rule
+		set := ordered.ManifestSet{Name: rp.Set4, CIDR4: rp.CIDR4, CIDR6: rp.CIDR6}
+		v := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(r.MatchValue)), ".")
+		switch r.MatchType {
+		case model.MatchDomain:
+			if d, ok := ordered.NormDomain(v); ok {
+				set.Add(ordered.SrcExact, d)
+			}
+		case model.MatchSuffix:
+			if d, ok := ordered.NormDomain(v); ok {
+				set.Add(ordered.SrcSuffix, d)
+			}
+		case model.MatchGeosite:
+			if r.Geosite != "" {
+				set.Add(ordered.SrcGeosite, lists.FileName(r.Geosite))
+			}
+		case model.MatchKeyword:
+			set.Add(ordered.SrcKeyword, sanitize(r.ID))
+		case model.MatchRuleSet:
+			set.Add(ordered.SrcRuleSet, r.RuleSet)
+		}
+		// Explicit names of a rule match the name and everything under it.
+		for _, d := range r.Domains {
+			if d, ok := ordered.NormDomain(strings.TrimPrefix(d, ".")); ok {
+				set.Add(ordered.SrcSuffix, d)
+			}
+		}
+		m.Sets = append(m.Sets, set)
+	}
+	dom := ordered.ManifestSet{Name: domesticSet}
+	dom.Add(ordered.SrcGeosite, "cn")
+	m.Sets = append(m.Sets, dom)
+	return m.Render()
 }
 
 // writeGroupResolvers adds one upstream group per region group the hub can
@@ -477,11 +539,13 @@ func renderExitDNS(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exi
 	return sb.String()
 }
 
-// GeositeNames are the v2fly categories the gateway SmartDNS config loads
-// (cn, apple and every rule's geosite), lower case, sorted. Each is
+// GeositeNames are the v2fly categories the gateway needs (cn and every
+// rule's geosite), lower case, sorted. Each is
 // published as /var/lib/meridian/geosite/<lists.FileName(name)>.txt.
 func GeositeNames(t model.Topology) []string {
-	names := map[string]bool{"cn": true, "apple": true}
+	// apple is no longer built in: Apple names are not domestic. A rule
+	// can still use the apple category (with any target).
+	names := map[string]bool{"cn": true}
 	for _, r := range t.Rules {
 		if r.Geosite != "" {
 			names[strings.ToLower(r.Geosite)] = true
@@ -606,4 +670,71 @@ func sortStrings(s []string) {
 			j--
 		}
 	}
+}
+
+// DecidePath is the serialized ordered rule list (ordered.Snapshot) for a
+// process that decides by name (ordered.LoadSnapshot / Compiled.Decide).
+const DecidePath = "/etc/meridian/rules/decide.json"
+
+// renderDecideSnapshot serializes the rule list in evaluation order with
+// every target resolved (through its service group) to its mark.
+func renderDecideSnapshot(t model.Topology, rules []rulePlan, def target) string {
+	s := ordered.Snapshot{Version: ordered.SnapshotVersion, QUICAt: -1,
+		Tail: ordered.SnapshotTail{DomesticGeosite: "cn", DirectMark: markDomestic, Default: "group:" + t.Settings.DefaultGroup, DefaultMark: def.Mark}}
+	n := 0
+	for _, rp := range rules {
+		if rp.QUIC {
+			s.QUICAt = n
+			continue
+		}
+		n++
+		r := rp.Rule
+		tg := t.ResolveTarget(r)
+		sr := ordered.SnapshotRule{ID: r.ID, Target: tg.Kind, Mark: rp.Mark, Action: rp.Action, GeoIPCN: isGeoIPCN(r), SourceMAC: r.SourceMAC}
+		if tg.ID != "" {
+			sr.Target += ":" + tg.ID
+		}
+		var es []ordered.Entry
+		v := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(r.MatchValue)), ".")
+		switch r.MatchType {
+		case model.MatchDomain:
+			if d, ok := ordered.NormDomain(v); ok {
+				es = append(es, ordered.Entry{Kind: ordered.Exact, Value: d})
+			}
+		case model.MatchSuffix:
+			if d, ok := ordered.NormDomain(v); ok {
+				es = append(es, ordered.Entry{Kind: ordered.Suffix, Value: d})
+			}
+		case model.MatchCIDR:
+			if p, err := netip.ParsePrefix(v); err == nil {
+				es = append(es, ordered.Entry{Kind: ordered.CIDR, Prefix: p.Masked()})
+			} else if a, err := netip.ParseAddr(v); err == nil {
+				es = append(es, ordered.Entry{Kind: ordered.CIDR, Prefix: netip.PrefixFrom(a, a.BitLen())})
+			}
+		case model.MatchGeosite:
+			if r.Geosite != "" {
+				sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcGeosite, Value: lists.FileName(r.Geosite)})
+			}
+		case model.MatchKeyword:
+			sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcKeyword, Value: sanitize(r.ID)})
+		case model.MatchRuleSet:
+			sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcRuleSet, Value: r.RuleSet})
+		}
+		for _, d := range r.Domains {
+			if d, ok := ordered.NormDomain(strings.TrimPrefix(d, ".")); ok {
+				es = append(es, ordered.Entry{Kind: ordered.Suffix, Value: d})
+			}
+		}
+		if len(es) > 0 {
+			sr.Entries = string(ordered.MarshalEntries(es))
+		}
+		for _, a := range []string{r.SourceIPv4, r.SourceIPv6} {
+			if a != "" {
+				sr.SourceAddrs = append(sr.SourceAddrs, a)
+			}
+		}
+		s.Rules = append(s.Rules, sr)
+	}
+	b, _ := json.MarshalIndent(s, "", " ")
+	return string(b) + "\n"
 }

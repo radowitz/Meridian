@@ -4,7 +4,8 @@ package hostexec
 // (POST /v1/lists/status).
 //
 // Parameters are enumerations and managed names only: a policy (domestic,
-// overseas, automatic), which kinds (geosite, chnroute), the v2fly category
+// overseas, automatic), which kinds (geosite, chnroute, rules: re-derive the
+// ordered rule domain-sets from files already on the host), the v2fly category
 // names and keyword rules compile produces. Source URLs come from package
 // lists (plus the agent's own environment overrides, see lists.WithEnv);
 // files are derived from the names under the fixed directory
@@ -86,13 +87,13 @@ func ValidateLists(req ListsRequest) error {
 	if _, ok := lists.ParsePolicy(req.Policy); !ok {
 		return errors.New("policy 只能是 domestic、overseas 或 automatic")
 	}
-	if len(req.Lists) == 0 || len(req.Lists) > 2 {
-		return errors.New("lists 需要 geosite、chnroute 中的一到两个")
+	if len(req.Lists) == 0 || len(req.Lists) > 3 {
+		return errors.New("lists 需要 geosite、chnroute、rules 中的一到三个")
 	}
 	geo := false
 	seen := map[string]bool{}
 	for _, l := range req.Lists {
-		if l != lists.KindGeosite && l != lists.KindChnroute {
+		if l != lists.KindGeosite && l != lists.KindChnroute && l != lists.KindRules {
 			return fmt.Errorf("不支持的名单 %q", l)
 		}
 		if seen[l] {
@@ -176,6 +177,8 @@ func (a *Agent) UpdateLists(ctx context.Context, req ListsRequest) (lists.Report
 			ureq.Geosite = append([]string(nil), req.Geosite...)
 		case lists.KindChnroute:
 			ureq.Chnroute = true
+		case lists.KindRules:
+			ureq.Rules = true
 		}
 	}
 	// Like an action: runs to its own deadline, not the caller's.
@@ -189,10 +192,15 @@ func (a *Agent) UpdateLists(ctx context.Context, req ListsRequest) (lists.Report
 	if sources == nil {
 		sources = func(p lists.Policy) ([]lists.Source, error) { return lists.WithEnv(lists.Order(p), os.Getenv) }
 	}
+	manifest := a.ListsManifest
+	if manifest == "" {
+		manifest = lists.ManifestPath
+	}
 	u := &lists.Updater{
-		Dir:     a.listsDir(),
-		Get:     get,
-		Sources: sources,
+		Manifest: manifest,
+		Dir:      a.listsDir(),
+		Get:      get,
+		Sources:  sources,
 		LoadNFT: func(ctx context.Context, path string) error {
 			x := &run{a: a, ctx: ctx}
 			if _, err := x.cmd(a.StepTimeout, "nft", "list", "table", "inet", "meridian"); err != nil {

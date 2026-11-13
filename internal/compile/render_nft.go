@@ -54,7 +54,7 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 		fmt.Fprintf(&sb, "# group %s mark %#x transit %s target %s %s\n", g.Group.ID, g.Mark, g.TransitV4, g.Target.Node.ID, kind)
 	}
 	fmt.Fprintf(&sb, "# mss-clamp v4 %d v6 %d\n", mss4, mss6)
-	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits, groups...), rp)
+	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits, groups...), rp, usesReject(t))
 	writeAtomicReplace(&sb, tableMain)
 	sb.WriteString("table inet meridian {\n")
 
@@ -85,6 +85,9 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	writeSet(&sb, "underlay4", "ipv4_addr", false, underlay)
 
 	for _, rp := range rules {
+		if rp.QUIC {
+			continue
+		}
 		var v4, v6 []string
 		if rp.Rule.MatchType == model.MatchCIDR {
 			if addr, err := netip.ParsePrefix(rp.Rule.MatchValue); err == nil {
@@ -105,6 +108,14 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 		writeSet(&sb, rp.Set4, "ipv4_addr", timeout, v4)
 		if !rp.FilterAAAA {
 			writeSet(&sb, rp.Set6, "ipv6_addr", timeout, v6)
+		}
+		// A rule-set's address entries: filled by the host's derive step
+		// (lists.DeriveOrdered), never by the resolver, never expiring.
+		if rp.CIDR4 != "" {
+			writeSet(&sb, rp.CIDR4, "ipv4_addr", false, nil)
+			if !rp.FilterAAAA {
+				writeSet(&sb, rp.CIDR6, "ipv6_addr", false, nil)
+			}
 		}
 	}
 
@@ -134,11 +145,15 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	// unmarked so they follow the main table instead of an exit.
 	sb.WriteString("    ip6 daddr { fe80::/10, ff00::/8, ::1 } return\n")
 	sb.WriteString("    ip daddr { 224.0.0.0/4, 255.255.255.255 } return\n")
+	// Rules in list order: the first set holding the address decides, so an
+	// address rule and a name rule keep their list order (internal/ordered).
 	for _, rp := range rules {
+		if rp.QUIC {
+			continue
+		}
 		for _, pred := range sourcePreds(rp.Rule) {
-			fmt.Fprintf(&sb, "    %sip daddr @%s meta mark set %#x return\n", pred, rp.Set4, rp.Mark)
-			if !rp.FilterAAAA {
-				fmt.Fprintf(&sb, "    %sip6 daddr @%s meta mark set %#x return\n", pred, rp.Set6, rp.Mark)
+			for _, m := range ruleMatches(rp) {
+				fmt.Fprintf(&sb, "    %s%s meta mark set %#x return\n", pred, m, rp.Mark)
 			}
 		}
 	}
@@ -162,6 +177,9 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	sp := planShare(t, tunnels)
 	if sp != nil {
 		writeShareNFT(&sb, sp)
+	}
+	if q := quicChain(rules, in, markExitBase, guardLastExitMark(exits, groups...)); q != "" {
+		sb.WriteString(q)
 	}
 	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname %s jump classify\n", in)
 	if sp != nil {
@@ -586,7 +604,7 @@ func gatewayTunnelIfaces(tunnels []Tunnel) []string {
 // replies from ROS) reach the device pools on mra; nothing else may leave on
 // mra from an ingress, so devices cannot reach each other. iifname matches
 // by name, so the early-boot copy loads before mra exists.
-func writeGuardTable(sb *strings.Builder, lan string, tunnelIfaces []string, lastExitMark uint32, rp *remotePlan) {
+func writeGuardTable(sb *strings.Builder, lan string, tunnelIfaces []string, lastExitMark uint32, rp *remotePlan, reject bool) {
 	sb.WriteString("# LAN fail-closed guard. Independent of table inet meridian: it reads only\n")
 	sb.WriteString("# the fwmark and the output interface, so if classification is missing\n")
 	sb.WriteString("# every forwarded LAN packet is unmarked and dropped here.\n")
@@ -609,6 +627,11 @@ func writeGuardTable(sb *strings.Builder, lan string, tunnelIfaces []string, las
 			quoted[i] = "\"" + name + "\""
 		}
 		fmt.Fprintf(sb, "    iifname %s meta mark %#x-%#x oifname { %s } return comment \"exit marks: WireGuard only\"\n", in, markExitBase, lastExitMark, strings.Join(quoted, ", "))
+	}
+	if reject {
+		// REJECT rules (model.ActionReject): refused at once, never routed.
+		fmt.Fprintf(sb, "    iifname %s meta mark %#x meta l4proto tcp reject with tcp reset comment \"reject rules: TCP reset\"\n", in, markReject)
+		fmt.Fprintf(sb, "    iifname %s meta mark %#x reject with icmpx port-unreachable comment \"reject rules: ICMP port unreachable\"\n", in, markReject)
 	}
 	fmt.Fprintf(sb, "    iifname %s counter drop comment \"fail closed: unclassified or misrouted LAN traffic, v4 and v6\"\n", in)
 	sb.WriteString("  }\n}\n")
@@ -680,4 +703,71 @@ func lanULAPrefix(t model.Topology) (netip.Prefix, bool) {
 		return netip.Prefix{}, false
 	}
 	return p.Masked(), true
+}
+
+// ruleMatches are the classify matches of one rule, in order: its own
+// sets, its rule-set's address sets, and the China lists for GEOIP,CN.
+func ruleMatches(rp rulePlan) []string {
+	out := []string{"ip daddr @" + rp.Set4}
+	if !rp.FilterAAAA {
+		out = append(out, "ip6 daddr @"+rp.Set6)
+	}
+	if rp.CIDR4 != "" {
+		out = append(out, "ip daddr @"+rp.CIDR4)
+		if !rp.FilterAAAA {
+			out = append(out, "ip6 daddr @"+rp.CIDR6)
+		}
+	}
+	if isGeoIPCN(rp.Rule) {
+		out = append(out, "ip daddr @chnroute")
+		if !rp.FilterAAAA {
+			out = append(out, "ip6 daddr @chnroute6")
+		}
+	}
+	return out
+}
+
+func isGeoIPCN(r model.Rule) bool {
+	return r.MatchType == model.MatchGeoIP && strings.EqualFold(strings.TrimSpace(r.MatchValue), "cn")
+}
+
+// usesReject: some enabled rule's target (directly or through its service
+// group) is reject.
+func usesReject(t model.Topology) bool {
+	for _, r := range t.Rules {
+		if r.Enabled && r.MatchType != model.MatchQUICReject && t.ResolveTarget(r).Kind == model.ActionReject {
+			return true
+		}
+	}
+	return false
+}
+
+// quicChain is the QUIC switch (model.MatchQUICReject): UDP to port 443 of
+// tunnelled traffic (exit and group marks) from the LAN or remote access is
+// refused with ICMP port unreachable, so clients fall back to TCP at once.
+// Addresses of the rules ABOVE the switch row are exempt, in list order as
+// classified (an address in an exempt set was classified by that rule or an
+// earlier one, all above the row). Direct traffic (domestic mark) is never
+// touched. "" when the list has no switch row.
+func quicChain(rules []rulePlan, in string, first, last uint32) string {
+	at := -1
+	for i, rp := range rules {
+		if rp.QUIC {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("  chain quic {\n    type filter hook forward priority filter; policy accept;\n")
+	for _, rp := range rules[:at] {
+		for _, m := range ruleMatches(rp) {
+			fmt.Fprintf(&sb, "    iifname %s udp dport 443 %s return comment \"above the QUIC switch: exempt\"\n", in, m)
+		}
+	}
+	fmt.Fprintf(&sb, "    iifname %s meta mark %#x-%#x udp dport 443 reject with icmpx port-unreachable comment \"QUIC switch: tunnelled UDP 443 refused\"\n", in, first, last)
+	sb.WriteString("  }\n\n")
+	return sb.String()
 }

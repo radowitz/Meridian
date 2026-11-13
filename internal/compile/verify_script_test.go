@@ -573,7 +573,8 @@ func TestVerifyScriptExecutedChecks(t *testing.T) {
 		{name: "dig not installed", mutate: func(h *verifyHost) { h.dig = nil }, wantCode: 2,
 			want: []string{"UNKNOWN dns_aaaa_tunnelled: dig not found"}, forbidden: []string{"PASS dns_aaaa"}},
 		{name: "AAAA test name is domestic", mutate: func(h *verifyHost) {
-			h.files["var/lib/meridian/geosite/cn.txt"] += "google.com\n"
+			// The derived domestic list SmartDNS loads (names a rule matches are removed).
+			h.files["var/lib/meridian/geosite/ordered/gs_cn.txt"] += "google.com\n"
 		}, wantCode: 2, want: []string{"UNKNOWN dns_aaaa_tunnelled: the test name www.google.com is a domestic name (google.com in "}, forbidden: []string{"PASS dns_aaaa"}},
 		{name: "AAAA test name from the environment", mutate: func(h *verifyHost) {
 			h.env = []string{"MERIDIAN_VERIFY_AAAA_NAME=www.example.net"}

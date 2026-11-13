@@ -12,6 +12,14 @@
 
 import type {
   AllocationView,
+  ImportPreview,
+  ImportRequest,
+  RuleAnalysis,
+  RuleRef,
+  RuleSet,
+  RuleSetView,
+  RuleTestResult,
+  ServiceGroup,
   ApiErrorBody,
   ApplyResult,
   Carrying,
@@ -481,3 +489,22 @@ export const wssCancel = (nodeId: string) =>
 // ------------------------------------------------------------------ leak ---
 
 export const getLeakcheck = () => request<{ items: LeakItem[] }>("GET", "/api/leakcheck");
+
+// ---------------------------------------------------- ordered rules ---
+
+export const listRuleSets = () => request<{ rule_sets: RuleSetView[]; formats: string[] }>("GET", "/api/rule-sets");
+export const createRuleSet = (input: Partial<RuleSet>) => request<RuleSetView>("POST", "/api/rule-sets", input);
+export const updateRuleSetDef = (id: string, patch: Partial<RuleSet>) => request<RuleSetView>("PATCH", `/api/rule-sets/${enc(id)}`, patch);
+export const deleteRuleSet = (id: string) => request<{ deleted: string }>("DELETE", `/api/rule-sets/${enc(id)}`);
+export const fetchRuleSet = (id: string) => request<RuleSetView>("POST", `/api/rule-sets/${enc(id)}/update`, {});
+export const activateHeldRuleSet = (id: string) => request<RuleSetView>("POST", `/api/rule-sets/${enc(id)}/activate-held`, { accept: true });
+export const listServiceGroups = () => request<{ service_groups: { service_group: ServiceGroup; used_by: RuleRef[] }[] }>("GET", "/api/service-groups");
+export const setServiceTarget = (id: string, target: string) =>
+  request<{ service_group: ServiceGroup }>("PATCH", `/api/service-groups/${enc(id)}`, { target });
+export const createServiceGroup = (name: string, target: string) => request<{ service_group: ServiceGroup }>("POST", "/api/service-groups", { name, target });
+export const deleteServiceGroup = (id: string) => request<{ deleted: string }>("DELETE", `/api/service-groups/${enc(id)}`);
+export const importPreview = (body: ImportRequest) => request<ImportPreview>("POST", "/api/rules/import/preview", body);
+export const importConfirm = (body: ImportRequest) =>
+  request<{ imported: number; services: number; rule_sets: number; default_group: string; digest: string }>("POST", "/api/rules/import/confirm", body);
+export const testRule = (name: string, address: string) => request<RuleTestResult>("POST", "/api/rules/test", { name, address });
+export const ruleAnalysis = () => request<{ rules: RuleAnalysis[]; notes?: string[] | null; shared_address: string }>("GET", "/api/rules/analysis");

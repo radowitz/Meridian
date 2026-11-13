@@ -1200,9 +1200,10 @@ elif [[ ! $aaaa_name =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A
 else
   listed="" n=$aaaa_name
   while [ -n "$n" ]; do
-    for f in "$listsdir/geosite/cn.txt" "$listsdir/geosite/apple.txt"; do
-      [ -f "$f" ] && grep -qixF -- "$n" "$f" && listed="$n in $f"
-    done
+    # The built-in domestic list as SmartDNS loads it (derived: names a
+    # rule matches are not in it; Apple is not built in any more).
+    f="$listsdir/geosite/ordered/gs_cn.txt"
+    [ -f "$f" ] && grep -qixF -e "$n" -e "-.$n" -e "*.$n" -- "$f" && listed="$n in $f"
     case "$n" in *.*) n=${n#*.} ;; *) n="" ;; esac
   done
   if [ -n "$listed" ]; then

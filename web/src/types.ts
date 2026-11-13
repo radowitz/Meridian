@@ -148,6 +148,145 @@ export interface Rule {
   notes?: string;
   domains?: string[];
   geosite?: string;
+  /** match_type "ruleset": the subscribed rule-set this rule matches on. */
+  rule_set?: string;
+  /** A service group (switchable target) or an action instead of a group / exit. */
+  target_service?: string;
+  target_action?: "direct" | "reject";
+  /** "" made in the panel (or built in); "mihomo" written by an import. */
+  origin?: string;
+  source_line?: number;
+  source_text?: string;
+  /** Ordering notices the operator accepted (import preview codes). */
+  accepted?: string[];
+}
+
+/** A subscribed rule-set (Clash/mihomo provider or Surge list), fetched by URL. */
+export interface RuleSet {
+  id: string;
+  name: string;
+  url: string;
+  format?: string;
+  behavior?: string;
+  source?: "url" | "policy";
+  interval_sec?: number;
+  allow_lan?: boolean;
+  origin?: string;
+}
+
+export interface RuleSetStatus {
+  state: "never" | "fetching" | "ok" | "failed" | "held";
+  fetched_at?: string;
+  digest?: string;
+  format?: string;
+  source?: string;
+  url?: string;
+  counts?: Record<string, number>;
+  unsupported?: Record<string, number>;
+  notes?: string[];
+  last_attempt?: string;
+  last_error?: string;
+  held?: { digest: string; format: string; counts: Record<string, number>; unsupported?: Record<string, number>; reason: string; fetched_at: string } | null;
+  applied?: string;
+}
+
+export interface RuleRef {
+  rule_id: string;
+  name: string;
+  position: number;
+  enabled?: boolean;
+}
+
+export interface RuleSetView {
+  rule_set: RuleSet;
+  status: RuleSetStatus;
+  used_by: RuleRef[];
+  candidates: { source: string; url: string }[];
+}
+
+/** A switchable target between rules and the data plane (a mihomo select group). */
+export interface ServiceGroup {
+  id: string;
+  name: string;
+  origin?: string;
+  target_group?: string;
+  target_exit?: string;
+  target_action?: "direct" | "reject";
+  /** The MATCH group: its target is the default group. */
+  default?: boolean;
+}
+
+export interface ImportFlag {
+  code: string;
+  severity: "block" | "accept" | "info";
+  message: string;
+  by?: string[];
+}
+
+export interface ImportRow {
+  line: number;
+  text: string;
+  type: string;
+  value?: string;
+  policy?: string;
+  action: "rule" | "quic" | "match" | "tail" | "after_match" | "unsupported";
+  match?: string;
+  target?: { kind: string; id?: string; name?: string; resolved?: string; chain?: string[] } | null;
+  flags?: ImportFlag[];
+  status: "ok" | "blocked" | "accepted" | "dropped" | "info";
+  diff?: "new" | "same" | "changed";
+  position?: number;
+  rule_id?: string;
+}
+
+export interface ImportPreview {
+  rows: ImportRow[];
+  removed?: { rule_id: string; line: number; text: string }[];
+  mapping: { name: string; kind: string; mapped?: string; remembered?: boolean; suggestions?: { value: string; label: string }[]; used_by?: number[] }[];
+  services: { id: string; name: string; chain: string[]; target?: string; current?: string; keep_current?: boolean; default?: boolean; pick: string; pick_from: string; used_by?: number[]; existing: boolean }[];
+  rule_sets: { name: string; id: string; url: string; behavior: string; existing: boolean; state: string; error?: string; format?: string; counts?: Record<string, number>; unsupported?: Record<string, number>; used_by?: number[] }[];
+  default?: ImportRow["target"];
+  quic?: string;
+  builtin_disabled?: string[];
+  notes: string[];
+  blocking: number;
+  can_confirm: boolean;
+  digest: string;
+  summary: Record<string, number>;
+}
+
+export interface ImportRequest {
+  config: string;
+  selection?: string;
+  picks?: Record<string, string>;
+  mapping?: Record<string, string>;
+  drop?: number[];
+  accept?: Record<string, string[]>;
+  disable_builtin: boolean;
+  reset_services?: boolean;
+  at_start?: boolean;
+  fetch_rule_sets?: boolean;
+  digest?: string;
+}
+
+export interface RuleAnalysis {
+  rule_id: string;
+  entries: number;
+  shadowed: number;
+  fully_shadowed: boolean;
+  shadowed_by?: string[] | null;
+  partly_by?: string[] | null;
+  keywords?: number;
+  keyword_note?: string;
+  rule_set?: { state: string; counts?: Record<string, number>; unsupported?: Record<string, number>; held?: boolean };
+}
+
+export interface RuleTestResult {
+  reason: string;
+  target: string;
+  notes?: string[] | null;
+  note_address?: string;
+  rule?: { id: string; name: string; position: number; origin?: string; source_line?: number };
 }
 
 export interface Settings {
@@ -269,6 +408,11 @@ export interface Topology {
   nodes: Node[];
   links: Link[];
   rules: Rule[];
+  /** Rules are in evaluation order (first match wins, top to bottom). */
+  rules_ordered?: boolean;
+  rule_sets?: RuleSet[];
+  service_groups?: ServiceGroup[];
+  mihomo_import?: { mapping?: Record<string, string>; imported_at?: string; digest?: string; rules?: number };
   region_groups?: RegionGroup[];
   /**
    * Persisted slot table (server-owned): each link's interface, default

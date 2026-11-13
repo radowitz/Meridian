@@ -209,7 +209,7 @@ WireGuard 不携带 fwmark。家宽到阿里云只有一条逻辑隧道，枢纽
 
 SmartDNS 只绑在网关的局域网地址上。
 
-- `223.5.5.5` 和 `1.12.12.12` 的 DoT 解析国内名单，结果写入 `direct4` / `direct6`，走 ROS。
+- `223.5.5.5` 和 `1.12.12.12` 的 DoT 解析内置国内名单（geosite `cn`），结果写入 `direct4` / `direct6`，走 ROS。这个名单排在**所有规则之后**：规则命中的名字已经从它里面去掉（见「分流规则：一个有序列表」）。以前还内置了 `apple` 名单直连，已经去掉：苹果的名字不是国内名字，要直连就写一条指向直连的规则（规则页「添加规则」，匹配 geosite `apple`，去向「直连」；不默认启用）。
 - 各服务名单经对应出口隧道上的解析器查询，再写入该规则的 nftset。规则指向枢纽可切换的地区组时，问的是组自己的解析地址，跟着枢纽当前选中的成员走，见「地区组的解析」。
 - 没命中的名字走默认组（示例里是香港机房组），写入默认集合；默认组可切换时同样经组的解析地址。打开「未列名单域名的国内解析」时先问国内解析器，见下文。
 - AAAA 由「客户端 IPv6 经本网关」决定，见下文。打开它之后，出口没有 `egress_v6` 的规则仍加 `-address #6`，不返回 AAAA，也不改到别的国家。
@@ -222,7 +222,7 @@ SmartDNS 只绑在网关的局域网地址上。
 
 为什么默认关：手机（iOS/Android）在 Wi-Fi 里只能手填 IPv4 网关和 DNS，IPv6 地址和 IPv6 默认路由仍来自家里路由器（ROS）的 RA。网关解析器只要给国外域名返回 AAAA，手机就优先用 IPv6，从家宽的 IPv6 直接出去，**不经过网关、也不进隧道**：被封的网站先卡住、等回落到 IPv4 才打开（“开头慢”），没被封的国外网站则静默地从家宽直连。以前只有规则级的 AAAA 过滤（出口没有 `egress_v6`），没命中规则的默认组不过滤，所以只配了一个纯 IPv4 出口时 google、youtube、netflix 之类仍拿得到 AAAA。
 
-| 设置 | 走隧道的域名（默认组、每条规则、地区组、钉死出口） | 国内域名（`cn` / `apple` 名单，及下文被采用的国内答案） |
+| 设置 | 走隧道的域名（默认组、每条规则、地区组、钉死出口） | 国内域名（内置 `cn` 名单、指向直连的规则，及下文被采用的国内答案） |
 | --- | --- | --- |
 | 关闭（默认） | 一律不返回 AAAA（空的 NOERROR + SOA），HTTPS 记录里的 IPv6 提示也去掉；客户端只用 IPv4 经网关进隧道 | 照常返回 AAAA，经家里路由器直连 |
 | 打开 | 出口（地区组按全部可切换成员）能端到端承载 IPv6（`egress_v6`）时返回 AAAA，否则同上 | 同上 |
@@ -232,7 +232,7 @@ SmartDNS 只绑在网关的局域网地址上。
 SmartDNS 里的写法（固定版本 Release48.4，源码 `src/dns_server/soa.c` 的 `_dns_server_is_return_soa_qtype`）：
 
 - 默认组不能有 AAAA（设置关闭，或默认组没有 IPv6）时全局 `force-AAAA-SOA yes`。它对每个 AAAA 回空的 NOERROR（SOA），不问上游；HTTPS 记录的 `ipv6hint` 因同一个判断被丢掉。
-- 例外按域名规则给：`cn`、`apple` 两个名单的 `domain-rules` 加 `-address -6`（`DOMAIN_FLAG_ADDR_IPV6_IGN`，在 force-AAAA-SOA 之前判断）；允许 IPv6 的规则同样加 `-address -6`，并照旧写 `#6:` 的 nftset。
+- 例外按域名规则给：内置 `cn` 名单（以前还有 `apple`）和指向直连的规则的 `domain-rules` 加 `-address -6`（`DOMAIN_FLAG_ADDR_IPV6_IGN`，在 force-AAAA-SOA 之前判断）；允许 IPv6 的规则同样加 `-address -6`，并照旧写 `#6:` 的 nftset。
 - 不允许 IPv6 的规则仍是 `-address #6`，它比上面两者都优先。默认组不能有 AAAA 时不再写 `nftset #6:…#default6`。
 - 打开且默认组有 IPv6 时不写 force-AAAA-SOA，生成结果和以前相同。
 
@@ -300,6 +300,65 @@ AAAA 仍先由 SmartDNS 按第 1 节决定（`force-AAAA-SOA`），只有允许 
 **真实网关上的结果（2026-11-13，由主会话在用户的网关上测过一次；没有存档的日志）。** 网关运行的是独立分支上的同一套实现（`meridian-dns-split` 加上面的决定时机）：20 个冷的国外名字全部解析到出口给的地址，用时 52–72 ms（上一版时机下每个约 400 ms，因为两个国内解析器里有一个从不回答这类查询）；之前只得到 CNAME 的三个名字解析正确；带国内 CDN 节点的名单外名字由国内解析器回答，约 8 ms，并直连；走隧道的名字没有 AAAA，名单内的国内名字保留 AAAA；关掉设置立即生效，没有旧回答；网关的 `meridian-verify.sh` 通过（`dns_aaaa_tunnelled`、`dns_split_active`）。这是一次人工观测，不是可复现的记录；外部出口、挂靠出口、多中继、Mesh 和远程接入下的这项功能都**没有**在真实环境里用过。iOS 的「无线局域网没有接入互联网」**不知道是否已经解决**，见[测试设备](test-device.md)「iOS 联网检测复测」。
 
 chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly/domain-list-community（MIT）。GPL 的规则包只作为可选数据源，不放进仓库，也不链进面板。下载、展开和发布见下一节「名单源」。
+
+## 分流规则：一个有序列表
+
+和 Clash、mihomo、Surge 一样，面板的分流规则是**一个有序列表，从上到下，第一条命中的规则决定去向**。手工规则、内置规则、从 mihomo 导入的规则、使用规则集的规则都在同一个列表里；规则页的表格顺序就是语义。所有规则之后依次是：内置国内名单（geosite `cn`，国内解析器、直连）、中国地址直连（chnroute，相当于 `GEOIP,CN,DIRECT`）、默认组（相当于 `MATCH`）。
+
+### 模型
+
+- `Topology.Rules` 的**切片顺序**就是求值顺序（`rules_ordered: true`）。旧拓扑读进来时按以前编译器用的顺序排好（手工在前、再按优先级、再按 ID，`model.MigrateRuleOrder`），所以 nft 分类链和每条规则的集合 `r<n>` 编号与升级前完全相同；`priority` 只保留原值，不再决定顺序。
+- 规则的去向：地区组、出口、**服务组**（`target_service`）、**直连**、**拒绝**（`target_action`）。匹配方式多了**规则集**（`match_type: ruleset`、`rule_set`）和 **QUIC 开关行**（`quic_reject`，没有去向）。导入的规则 `origin: "mihomo"`，带 `source_line` / `source_text`。
+- 参考解释器在 `internal/ordered`（不依赖面板的任何包）：`ordered.Reference` 是线性的规格；`ordered.Compile(rules, tail, quicAt)` 建出不可变的索引（精确名、后缀、子域名各一个哈希表，按名字的每一级查一次；关键词用 Aho-Corasick 一次扫描；CIDR 按前缀长度各一个表），`(*Compiled).Decide(Request{Name, Addr, Proto, Port, Source})` 返回 `{index, id, target, mark, reason, quic_rejected}`，并发安全；`ordered.Engine` 原子替换。安装写出序列化形式 `/etc/meridian/rules/decide.json`（`ordered.Snapshot`：每条规则的去向已经经服务组解析成 mark，静态条目内联，规则集 / geosite / 关键词展开按引用，`ordered.LoadSnapshot` 用和 derive 相同的文件读取）。规则页的「哪条规则会命中？」调用的就是 `Decide`。测得：60 条规则共 6 万条后缀、9600 个关键词、1.8 万条 CIDR，一次判断约 1 µs，建索引约 17 ms（`go test ./internal/ordered -bench .`，开发机）。
+
+### 数据面怎样保持「第一条命中」
+
+网关不是按连接看名字，而是两步：SmartDNS 为被查询的名字选一条域名规则，把答案地址写进那条规则的 nft 集合；分类链再按目的地址在集合里查。两者本身都不按列表顺序：
+
+- **SmartDNS 选最长的匹配键**（Release48.4 `_config_setup_domain_key` / `_dns_server_get_rules`：键是倒序的名字，普通键覆盖名字本身和下级，`*.d` 只覆盖下级，`-.d` 只覆盖名字本身；查询时从短到长走过所有前缀键，同一类规则后面的覆盖前面的；标志位按位或累加）。
+- 所以安装时不再把域名直接写进 `domain-rules`：编译器写出规则的**有序来源清单** `/etc/meridian/rules/order.conf`（每条规则一个集合：静态名字、geosite 分类、关键词展开、规则集；最后是 `cn`），网关上的 `meridian lists-derive`（`meridian-up.sh` 在 nft 加载之后、打开转发之前执行；名单更新和规则集启用之后宿主代理也会重做）把它变成 `/var/lib/meridian/geosite/ordered/<集合>.txt`。**规则（优先级过滤）**：按列表顺序处理，每个名字键有「名字本身」和「下级名字」两部分；某个上级名字的「下级」已经属于更早的集合时整条丢掉；否则只保留还没有归属的部分，写成 `k`、`-.k` 或 `*.k`。于是每个 SmartDNS 键只出现一次，而且属于第一条匹配它的规则；最长匹配就等于第一条命中（`ordered.Derive` 的注释里有证明）。内置国内名单最后处理，所以规则里出现过的名字（包括它的下级）不会再被当成国内名字——规则总是优先。
+- **分类链**按列表顺序放每条规则的集合（`r<n>`、`r<n>6`，规则集的地址条目在 `r<n>c` / `r<n>c6`，由 derive 写入，不过期；`GEOIP,CN` 规则在它的位置查 `chnroute`），再是 `direct4/6`、`chnroute`、私网、`default4/6`。一个名字的地址只会被写进第一条匹配它的规则的集合，而地址规则和名字规则在链里按列表顺序排，所以「名字规则在前、地址规则在后」和「地址规则在前」都与第一条命中一致（域名与 IP 规则交叉不需要特别处理）。
+
+**唯一的固有差别（请记住）**：Clash / Surge 按每个连接请求的名字判断；网关按 DNS 学到的目的地址判断。两个去向不同的名字解析到**同一个地址**时，网关分不清它们的连接：这个地址按列表里**更靠前**的规则走（分类链里更早的集合先命中），直到集合里的条目按 TTL 过期。这是确定的，测试里按这个行为写（`TestSharedAddressEarlierRuleWins`）；运行时不统计这种碰撞（没有便宜的办法从 SmartDNS 的写入里看出来，没有做）。另外，客户端不经网关解析、直接连地址时，只有地址规则和别的名字已经学到的地址起作用。一个后续任务会加按 SNI / Host 判断的转发器，届时有名字的 TCP 连接按 `Decide` 直接判断。
+
+其它与列表语义不同、并在规则页 / 导入预览里逐条标出的地方：
+
+- **关键词**：SmartDNS 不能按子串匹配（没有正则、没有通配）。面板的关键词规则沿用以前的做法：用已下载的 geosite 名单里含这个词的名字（按后缀）代替；名单之外含这个词的名字不会命中。导入的 `DOMAIN-KEYWORD` 只有在操作者接受这个替代后才能写入；规则集里的关键词条目不执行，计数显示。
+- **AAAA 的标志位会继承**：SmartDNS 的 `-address #6` / `-address -6` 按位或，上级名字的标志也作用到下级。规则不返回 AAAA 时（默认）这只会让某些名字少拿 AAAA（安全方向），不会让该隧道的名字拿到 AAAA。
+- **只有 Mesh、没有隧道内解析器的出口**：它的规则以 `-address #`（SOA）实现，这个标志同样继承给列表里更早、但名字更具体的规则——这种组合目前没有拦下，是已知缺口。
+- 规则集的 IPv6 地址条目、IPv6 CIDR 规则：去向不能承载 IPv6（`FilterAAAA`）时不写 IPv6 集合（与以前的 CIDR 规则相同），这些 IPv6 目的地落到后面的规则。
+
+### 去向的语义
+
+- **直连**：名字由国内解析器（DoT）解析，地址写进这条规则自己的集合 `r<n>`，在规则的位置打国内标记，经 ROS 直出；AAAA 照常返回（与内置国内名单相同）。只作用于规则（或内置国内名单）明确列出的名字：其它名字一律由出口的解析器解析、走隧道，**即使出口给的是中国地址**——唯一的例外是没有任何规则命中的名字，它的地址在中国时按 chnroute 直连（就是 mihomo 列表末尾 `GEOIP,CN,DIRECT` 在 `MATCH` 之前的效果）。`unlisted_domestic_dns`（dns-split）照旧是可选设置，默认关闭，导入不依赖它。
+- **拒绝**：名字照常由默认组的解析器解析（只给 IPv4，`-address #6`，免得客户端拿 IPv6 从家宽绕过），地址进这条规则的集合并打标记 `0x65`；兜底表（`inet meridian_guard` 的 forward 链，在最后的丢弃之前）对这个标记的 TCP 回 RST、其它协议回 ICMP 端口不可达。客户端看到的是「连接被拒绝」，立即失败，不是超时。没有任何路由规则认识 `0x65`，被拒绝之前它不会离开网关。只有用到拒绝的拓扑才生成这两行。
+- **服务组**（`service_groups`）：`{id, name, origin, target_group | target_exit | target_action, default}`。规则指向服务组，服务组指向一个地区组、出口、直连或拒绝；`PATCH /api/service-groups/{id}` 改指向，所有用它的规则跟着变，经正常安装生效；住宅 / IPv6 要求按服务组当前的指向校验，新增错误时拒绝修改。`default: true` 的是 MATCH 对应的服务组：只能指向地区组，改它会同时改默认组。
+
+### QUIC 开关
+
+导入时只认两种写法（忽略空格，国家 / 分类不分大小写）：`AND,(AND,(DST-PORT,443),(NETWORK,UDP)),(NOT,((GEOSITE,cn))),REJECT` 和同样以 `GEOIP,CN` 结尾的那条；它们变成列表里的一行 `quic_reject`。网关在 `inet meridian` 里加一条 forward 链：来自局域网和远程接入（`mra`）、带出口或地区组标记的 UDP 443 回 ICMP 端口不可达（客户端立即改用 TCP）；**这一行之上的规则的集合豁免**（地址在它们的集合里就放行），国内标记的流量不受影响。所以 mihomo 里有意排在 QUIC 规则之前的规则（例如 AI）在网关上同样不被拒绝。与 mihomo 的差别（预览里要求接受）：mihomo 按「不是国内」判断，网关按「走隧道」判断——开关之下指向直连的规则不拒绝 UDP 443；开关之下指向代理、但名字在 geosite cn 里或地址在中国的连接会被拒绝。其它逻辑规则一律不支持。
+
+### 规则集
+
+`rule_sets`：`{id, name, url, format, behavior, source, interval_sec, allow_lan, origin}`，由 `/api/rule-sets` 管理（拓扑保存保留这个块）。
+
+- 格式（先看内容，再看扩展名；可手动指定）：Clash/mihomo 的 yaml（`payload:`，classical / domain / ipcidr）和 text 形式；Surge `.list`（`TYPE,值[,选项…]`，`#` 与 `//` 注释，附带的策略字段忽略并计数）；Surge DOMAIN-SET（`example.com` 只是这个名字，`.example.com` 是名字和下级）。domain 行为里 `+.x` = 名字和下级，`.x` = 只有下级（SmartDNS `*.x`），`x` = 只有这个名字，`*.x`（恰好一级）不能表达，计为不支持。Surge `DOMAIN-WILDCARD,*.x` = 所有下级，其它通配不支持。`.mrs` 二进制规则集识别出来并拒绝。BOM、CRLF、大小写混用的类型都接受。
+- 能执行的：`DOMAIN`、`DOMAIN-SUFFIX`、子域名条目、`IP-CIDR`/`IP-CIDR6`（`no-resolve` 计数，没有影响）。`DOMAIN-KEYWORD` 保留但不执行。其它（`PROCESS-NAME`、`USER-AGENT`、`URL-REGEX`、`IP-ASN`、`GEOIP`、端口、逻辑规则……）按类型计数；不会让整个规则集失败，但规则页和预览显示「只部分生效」和数字。
+- 下载在面板里进行（`internal/ruleset`）：URL 里能找到 GitHub 原始文件时（也包括 `https://<加速前缀>/https://raw.githubusercontent.com/…` 这种），按名单的下载策略试 jsDelivr（国内源）/ raw.githubusercontent.com（海外源），最后试原 URL；`source: url` 只用原 URL。上限 16 MiB、50 万条、60 秒；不用环境里的代理；最多 5 次重定向且只允许 http/https；**每次建立连接时**检查目的地址（所以重定向后的地址也查）：拒绝回环、链路本地、组播、未指定、本机任何接口地址，以及私网（RFC 1918、100.64/10、fc00::/7）——后者在规则集打开 `allow_lan` 时允许。内容只当数据解析，从不执行。
+- 启用：解析成功才把规范化内容（`ordered.MarshalEntries`）原子写到 `/var/lib/meridian/geosite/rulesets/<id>.txt`（宿主共享目录），然后请宿主执行器做一次 `rules`（只重做 derive、装载 CIDR 批次、按需重启 SmartDNS，不下载）。失败时旧版本不动。新版本里网关执行不了的条目比当前版本多（关键词或不支持的条目增多）时**暂缓**，状态显示原因，要操作者「启用暂缓的版本」。按 `interval_sec`（默认 24 小时）自动更新。被规则使用的规则集不能删除（返回使用它的规则）。
+
+### 导入 mihomo
+
+见[从 mihomo 导入](mihomo-import.md)。实现：`internal/mihomo`（YAML 用 `gopkg.in/yaml.v3`，只解码 `rules`、`rule-providers`、`proxy-groups` 三个键；其它键的树在解析后丢弃；YAML 错误只返回行号，不返回那一行的内容）。策略按「服务选择组 → 当前选中 → 地区选择组 → 当前选中 → 线路组」解析，第一个在映射表里有对应的名字为止；每个被规则直接引用的 `select` 组成为一个服务组。预览的每个标记带机器可读的 `class`：`address_only`（只因为按地址分类而不精确：关键词、规则集里的关键词、QUIC 的逐条豁免）、`unsupported`（任何方式都不能执行）、`data`（规则集还没下载）、`mapping`（去向没有对应）、`info`；`Options.NameAware`（今天总是 false）打开时 `address_only` 不再阻止确认。
+
+### 迁移与现有拓扑
+
+- 规则顺序：见上。一对规则以前由 SmartDNS 选更长的名字、现在由列表里更早的规则决定的情况（例如手工后缀 `example.com` 在内置 `a.example.com` 之前），规则页的「遮蔽」列逐条标出；面板不自动调整顺序。
+- 去掉内置 Apple 直连。现有网关的生成结果变化的文件：`nodes/gw/etc/smartdns/smartdns.conf`（域名规则改成派生的 domain-set、没有 `gs_apple`）、`nodes/gw/usr/local/sbin/meridian-up.sh`（派生步骤）、`nodes/gw/usr/local/sbin/meridian-update-geosite.sh`（不再下载 `apple`，除非有规则用它）、`nodes/gw/usr/local/sbin/meridian-verify.sh`（AAAA 测试名的国内判断看派生的 `gs_cn`），新增 `nodes/gw/etc/meridian/rules/order.conf` 和 `decide.json`。nft、路由、其他节点不变。没有使用新功能的拓扑，nft 分类链和兜底表逐字不变。
+- 苹果的联网检测名字（`captive.apple.com` 等）以前随 `apple` 名单直连，现在没有规则时走默认组。需要直连时加一条指向直连的规则。
+- 主机上的 `meridian` 二进制必须是这一版（`meridian-up.sh` 检查 `meridian-lists-derive-ready`，旧版在打开转发之前失败）。
+
+以上只有仓库里的自动化回归和本机 Docker 里对固定版本 SmartDNS、nft 的测试，**没有在任何真实网关上执行过，也没有用过操作者真实的 mihomo 配置**。
 
 ## 名单源
 

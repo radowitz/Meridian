@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/radowitz/meridian/internal/artifacts"
+	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
 )
 
@@ -147,7 +148,7 @@ func renderGuardNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, groups
 	sb.WriteString("#!/usr/sbin/nft -f\n")
 	sb.WriteString("# Meridian early-boot LAN guard. Loaded by meridian-guard.service before\n")
 	sb.WriteString("# forwarding can be enabled. Replaces only table inet meridian_guard.\n")
-	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits, groups...), planRemote(t))
+	writeGuardTable(&sb, lan, gatewayTunnelIfaces(tunnels), guardLastExitMark(exits, groups...), planRemote(t), usesReject(t))
 	return sb.String()
 }
 
@@ -316,6 +317,9 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool, ex
 		}
 	}
 	sb.WriteString(nftLoadCommands(n.Role == model.RoleGateway))
+	if n.Role == model.RoleGateway {
+		sb.WriteString(deriveCommands)
+	}
 	if n.Role == model.RoleGateway {
 		// Firewall and guard are loaded; nothing has been forwarded or
 		// routed yet. At boot the LAN address may still be on its way.
@@ -750,6 +754,21 @@ RestartSec=2
 WantedBy=multi-user.target
 `, desc, exec)
 }
+
+// deriveCommands derives the ordered rule domain-sets (first match in list
+// order, internal/ordered) from the installed manifest and the list files,
+// and loads the rule-set CIDR sets, right after the ruleset loaded and
+// before forwarding: a failure stops here with forwarding off (fail
+// closed). An older host binary without the step is refused.
+const deriveCommands = `if ! grep -q ` + lists.DeriveReadyMarker + ` /usr/local/bin/meridian; then
+  echo "meridian-lists-derive-missing: /usr/local/bin/meridian has no lists-derive (run install.sh of this version)" >&2
+  exit 1
+fi
+if ! /usr/local/bin/meridian lists-derive; then
+  echo "meridian-lists-derive-failed: rule domain-sets not derived; forwarding not enabled" >&2
+  exit 1
+fi
+`
 
 // chnrouteReaddCommands builds the ruleset with the saved chnroute
 // elements (see nftLoadCommands). It only changes which file

@@ -117,6 +117,16 @@ type Server struct {
 	HostPreflight HostPreflightRuntime
 	// provMu guards provBusy (one preflight or provision per node), the
 	// deployment id and the provision outcomes.
+	// Rule-sets (rulesets.go): RuleSetDir is where active contents are
+	// written (default /var/lib/meridian/geosite/rulesets, shared with the
+	// host); RuleSetFetch replaces the downloader (tests); ListsDir is the
+	// gateway lists dir the rule tester reads (default /var/lib/meridian).
+	RuleSetDir   string
+	RuleSetFetch func(allowLAN bool) RuleSetFetcher
+	ListsDir     string
+	rsOnce       sync.Once
+	rsState      *ruleSetState
+
 	provMu   sync.Mutex
 	provBusy map[string]bool
 }
@@ -167,6 +177,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/artifacts", s.getArtifacts)
 	s.registerWithdraw(mux)
 	s.registerWSS(mux)
+	s.registerRuleSets(mux)
+	s.registerRulesImport(mux)
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
 	}
@@ -301,6 +313,12 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.RemoteAccess = cur.RemoteAccess.Clone()
+	// Rule-sets, service groups and the import mapping have their own
+	// endpoints (rulesets.go, rules_import.go): a whole-document save keeps
+	// the stored blocks.
+	if !imported {
+		t.RuleSets, t.ServiceGroups, t.MihomoImport = cur.RuleSets, cur.ServiceGroups, cur.MihomoImport
+	}
 	// Validate what will be stored: the slots the store will keep or give
 	// (the save reconciles again under the store lock, with the same result
 	// unless another save slipped in between).

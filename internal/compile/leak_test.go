@@ -314,7 +314,7 @@ func TestGuardExitRange(t *testing.T) {
 		t.Fatalf("guard must widen to cover every exit mark, got %#x", got)
 	}
 	var sb strings.Builder
-	writeGuardTable(&sb, "lan0", nil, 0x140, nil)
+	writeGuardTable(&sb, "lan0", nil, 0x140, nil, false)
 	if strings.Contains(sb.String(), "0x101-") {
 		t.Fatalf("no tunnel interfaces, no exit return path:\n%s", sb.String())
 	}
@@ -455,6 +455,12 @@ exit 0
 esac
 exit 0
 `)
+			// The host binary: carries the lists-derive marker and records
+			// the call (the derive itself is tested in internal/lists).
+			meridianBin := filepath.Join(dir, "meridian-bin")
+			if err := os.WriteFile(meridianBin, []byte("#!/bin/sh\n# meridian-lists-derive-ready\necho \"meridian $*\" >> \"$CALL_LOG\"\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 			routes := filepath.Join(dir, "routes.sh")
 			if err := os.WriteFile(routes, []byte("#!/bin/sh\necho routes >> \"$CALL_LOG\"\n"), 0o755); err != nil {
 				t.Fatal(err)
@@ -494,6 +500,7 @@ exit 0
 				"/etc/meridian", filepath.Join(dir, "etc-meridian"),
 				"/etc/wireguard", filepath.Join(dir, "wireguard"),
 				"/run/systemd/system", filepath.Join(dir, "run-systemd"),
+				"/usr/local/bin/meridian", meridianBin,
 			).Replace(up)
 			cmd := exec.Command(bash, "-c", script)
 			cmd.Env = append([]string{"PATH=" + bin + ":/usr/bin:/bin", "CALL_LOG=" + log, "MERIDIAN_LAN_WAIT_SEC=3"}, tc.env...)
@@ -537,7 +544,7 @@ exit 0
 				t.Fatalf("sysctl/wg/routes touched=%v after outcome ok=%v:\n%s", touched, tc.wantOK, calls)
 			}
 			if tc.wantOK {
-				order := []string{"nft -c -f", "nft -f", "nft list table inet meridian_guard", "ip -4 route get 192.168.100.1", "sysctl", "routes"}
+				order := []string{"nft -c -f", "nft -f", "nft list table inet meridian_guard", "meridian lists-derive", "ip -4 route get 192.168.100.1", "sysctl", "routes"}
 				pos := -1
 				for _, want := range order {
 					i := strings.Index(calls, want)

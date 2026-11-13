@@ -79,12 +79,13 @@ func smartDNSServers(t *testing.T, conf string) []dnsServer {
 }
 
 // nameserverOf returns the -nameserver of the domain-rules line for domain.
-func nameserverOf(t *testing.T, conf, domain string) string {
+// nameserverOf: the upstream group SmartDNS uses for domain, through the
+// derived ordered domain-sets (ordered_rules_test.go).
+func nameserverOf(t *testing.T, b *Bundle, domain string) string {
 	t.Helper()
-	re := regexp.MustCompile(`(?m)^domain-rules /` + regexp.QuoteMeta(domain) + `/ -nameserver (\S+) `)
-	m := re.FindStringSubmatch(conf)
+	m := regexp.MustCompile(`-nameserver (\S+) `).FindStringSubmatch(resolverLine(t, b, domain))
 	if m == nil {
-		t.Fatalf("no domain-rules for %s", domain)
+		t.Fatalf("no nameserver for %s", domain)
 	}
 	return m[1]
 }
@@ -229,7 +230,7 @@ func TestGroupDNSSmartDNS(t *testing.T) {
 		"v6only.example.com": v6.Target.Group, // static group: its member's resolver
 		"netflix.com":        mustGroup(t, groups, "hk-residential").DNSGroup,
 	} {
-		if got := nameserverOf(t, conf, domain); got != want {
+		if got := nameserverOf(t, b, domain); got != want {
 			t.Errorf("%s resolved by %s, want %s", domain, got, want)
 		}
 	}

@@ -23,6 +23,7 @@ import {
   Dropdown,
   Form,
   Input,
+  InputNumber,
   Radio,
   Select,
   Space,
@@ -34,18 +35,21 @@ import {
 } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
+import { ImportDrawer, RuleSetsSection, RuleTester, ServiceGroupsSection, specLabel } from "./RulesImport";
 import { href, useRouter, useTopologyDoc } from "./state";
-import type { Issue, Rule, Topology } from "./types";
+import type { Issue, Rule, RuleAnalysis, Topology } from "./types";
 import { ApiErrorAlert, EmptyState, IssueList, Link, Page, StatusTag, TABLE_SCROLL, TopologyDocBar, groupLabel, isDuplicateGroupName, regionLabel, useConfirmDanger } from "./ui";
 
 export const MATCH_TYPES: { value: string; label: string; help: string; placeholder: string }[] = [
   { value: "domain", label: "完整域名", help: "只匹配这个域名本身。", placeholder: "api.example.com" },
   { value: "suffix", label: "域名后缀", help: "匹配这个域名和它的所有子域名。", placeholder: "example.com" },
-  { value: "keyword", label: "域名关键词", help: "域名里含有这个词就匹配（字母、数字、点、下划线、短横线）。", placeholder: "netflix" },
+  { value: "keyword", label: "域名关键词", help: "网关上只匹配已下载的 geosite 名单里含这个词的域名（SmartDNS 不能按子串匹配，名单之外的域名不会命中）。", placeholder: "netflix" },
   { value: "geosite", label: "geosite 名单", help: "使用「名单」页下载的 geosite 分类；下载之前只用下面的显式域名。", placeholder: "netflix" },
   { value: "cidr", label: "IP / CIDR", help: "目的地址或网段。", placeholder: "203.0.113.0/24" },
-  { value: "geoip", label: "geoip", help: "这一期不会写入数据面：不按归属地分流，流量会落到后面的策略。", placeholder: "us" },
+  { value: "geoip", label: "geoip", help: "只有 CN 会写入数据面（中国地址名单 chnroute）；其它国家没有数据源，这一期不会写入数据面，流量会落到后面的策略。", placeholder: "cn" },
   { value: "asn", label: "ASN", help: "这一期不会写入数据面：不按 ASN 分流，流量会落到后面的策略。", placeholder: "AS13335" },
+  { value: "ruleset", label: "规则集", help: "使用下面「规则集」里订阅的规则集；它的全部条目都在这一条的位置匹配（和 Clash 的 RULE-SET 一样）。", placeholder: "" },
+  { value: "quic_reject", label: "QUIC 开关", help: "这一行之下的规则和默认组：走隧道的 UDP 443 被拒绝（客户端立即改用 TCP）；之上的规则豁免；直连不受影响。", placeholder: "" },
 ];
 const MATCH_LABEL = Object.fromEntries(MATCH_TYPES.map((m) => [m.value, m.label]));
 
@@ -75,6 +79,13 @@ function cleanRule(r: Rule): Rule {
 }
 
 function targetOf(t: Topology, r: Rule) {
+  if (r.match_type === "quic_reject") return { kind: "quic" as const, id: "", name: "UDP 443 拒绝开关", missing: false };
+  if (r.target_action) return { kind: r.target_action, id: "", name: r.target_action === "direct" ? "直连" : "拒绝", missing: false };
+  if (r.target_service) {
+    const sg = (t.service_groups ?? []).find((x) => x.id === r.target_service);
+    const spec = sg ? (sg.target_action ?? (sg.target_group ? `group:${sg.target_group}` : sg.target_exit ? `exit:${sg.target_exit}` : "")) : "";
+    return { kind: "service" as const, id: r.target_service, name: sg ? `${sg.name} → ${specLabel(t, spec)}` : r.target_service, missing: !sg };
+  }
   if (r.target_exit) {
     const n = t.nodes.find((x) => x.id === r.target_exit);
     return { kind: "exit" as const, id: r.target_exit, name: n?.name ?? r.target_exit, missing: !n };
@@ -92,6 +103,16 @@ function targetOf(t: Topology, r: Rule) {
  */
 export function effectiveOrder(rules: Rule[]): Rule[] {
   return [...rules].sort((a, b) => (a.manual === b.manual ? 0 : a.manual ? -1 : 1) || a.priority - b.priority || a.id.localeCompare(b.id));
+}
+
+/** Moves rule id to position to in an explicit (ordered) list. */
+export function moveInList(rules: Rule[], id: string, to: number): Rule[] {
+  const from = rules.findIndex((r) => r.id === id);
+  if (from < 0) return rules;
+  const dest = Math.max(0, Math.min(rules.length - 1, to));
+  const out = rules.filter((r) => r.id !== id);
+  out.splice(dest, 0, rules[from]);
+  return out;
 }
 
 /** Lowest priority number a rule of this class may get: manual ≥ 1, built-in above every manual one. */
@@ -151,14 +172,24 @@ function topManualPriority(rules: Rule[]) {
 
 // --------------------------------------------------------------- drawer ---
 
+function initialTarget(rule: Rule | null): "group" | "exit" | "service" | "direct" | "reject" {
+  if (!rule) return "group";
+  if (rule.target_action) return rule.target_action;
+  if (rule.target_service) return "service";
+  return rule.target_exit ? "exit" : "group";
+}
+
 interface FormValues {
   name: string;
   match_type: string;
   match_value: string;
   domains: string[];
-  target: "group" | "exit";
+  target: "group" | "exit" | "service" | "direct" | "reject";
   target_group?: string;
   target_exit?: string;
+  target_service?: string;
+  rule_set?: string;
+  insert_at?: number;
   require_residential: boolean;
   require_v6: boolean;
   source_mac?: string;
@@ -178,13 +209,13 @@ function RuleDrawer({
   rule: Rule | null;
   topo: Topology;
   onClose: () => void;
-  onApply: (r: Rule) => void;
+  onApply: (r: Rule, insertAt?: number) => void;
 }) {
   const [form] = Form.useForm<FormValues>();
   const [checking, setChecking] = useState(false);
   const [problems, setProblems] = useState<Issue[] | null>(null);
   const [checkError, setCheckError] = useState<api.ApiError | null>(null);
-  const target = Form.useWatch("target", form) ?? (rule?.target_exit ? "exit" : "group");
+  const target = Form.useWatch("target", form) ?? initialTarget(rule);
   const matchType = Form.useWatch("match_type", form) ?? rule?.match_type ?? "domain";
   const mt = MATCH_TYPES.find((m) => m.value === matchType);
   const groups = topo.region_groups ?? [];
@@ -203,9 +234,11 @@ function RuleDrawer({
         match_type: rule.match_type,
         match_value: rule.match_value,
         domains: rule.domains ?? [],
-        target: rule.target_exit ? "exit" : "group",
+        target: initialTarget(rule),
         target_group: rule.target_group,
         target_exit: rule.target_exit,
+        target_service: rule.target_service,
+        rule_set: rule.rule_set,
         require_residential: rule.require_residential,
         require_v6: rule.require_v6,
         source_mac: rule.source_mac,
@@ -222,6 +255,7 @@ function RuleDrawer({
         target_group: topo.settings.default_group || groups[0]?.id,
         require_residential: false,
         require_v6: false,
+        insert_at: 1,
       };
 
   function build(v: FormValues): Rule {
@@ -234,7 +268,9 @@ function RuleDrawer({
     }
     const value = v.match_value.trim();
     let domains = (v.domains ?? []).map((d) => d.trim().replace(/^\./, "")).filter(Boolean);
-    if ((v.match_type === "domain" || v.match_type === "suffix") && value && !domains.includes(value.replace(/^\./, ""))) {
+    // Explicit names match the name and everything under it; in an explicit
+    // (ordered) list a "完整域名" rule stays exact, so its value is not added.
+    if ((v.match_type === "suffix" || (v.match_type === "domain" && !topo.rules_ordered)) && value && !domains.includes(value.replace(/^\./, ""))) {
       domains = [value.replace(/^\./, ""), ...domains];
     }
     const base: Rule = rule ?? {
@@ -265,8 +301,19 @@ function RuleDrawer({
       notes: v.notes?.trim() || undefined,
       target_group: v.target === "group" ? v.target_group : undefined,
       target_exit: v.target === "exit" ? v.target_exit : undefined,
+      target_service: v.target === "service" ? v.target_service : undefined,
+      target_action: v.target === "direct" || v.target === "reject" ? v.target : undefined,
+      rule_set: v.match_type === "ruleset" ? v.rule_set : undefined,
       overridden: base.manual ? base.overridden : true,
     };
+    if (v.match_type === "ruleset" || v.match_type === "quic_reject") out.match_value = "";
+    if (v.match_type === "quic_reject") {
+      delete out.target_group;
+      delete out.target_exit;
+      delete out.target_service;
+      delete out.target_action;
+    }
+    for (const k of ["target_service", "target_action", "rule_set"] as const) if (!out[k]) delete out[k];
     if (!out.geosite) delete out.geosite;
     return cleanRule(out);
   }
@@ -280,7 +327,7 @@ function RuleDrawer({
     }
     const r = build(v);
     if (force) {
-      onApply(r);
+      onApply(r, v.insert_at);
       return;
     }
     // Check the candidate document; put this rule's errors on its fields.
@@ -292,7 +339,7 @@ function RuleDrawer({
       const mine = (res.issues ?? []).filter((i) => i.rule_id === r.id);
       const errors = mine.filter((i) => i.severity === "error");
       if (errors.length === 0) {
-        onApply(r);
+        onApply(r, v.insert_at);
         return;
       }
       setProblems(mine);
@@ -353,10 +400,25 @@ function RuleDrawer({
           <Form.Item name="match_type" label="匹配方式" style={{ width: 170 }}>
             <Select options={MATCH_TYPES.map((m) => ({ value: m.value, label: m.label }))} aria-label="匹配方式" />
           </Form.Item>
-          <Form.Item name="match_value" label="匹配值" style={{ flex: 1 }} rules={[{ required: true, message: "请填写匹配值" }]} extra={mt?.help}>
-            <Input className="mono" placeholder={mt?.placeholder} aria-label="匹配值" />
-          </Form.Item>
+          {matchType === "ruleset" ? (
+            <Form.Item name="rule_set" label="规则集" style={{ flex: 1 }} rules={[{ required: true, message: "选择一个规则集" }]} extra={mt?.help}>
+              <Select aria-label="规则集" options={(topo.rule_sets ?? []).map((x) => ({ value: x.id, label: x.name }))} placeholder="先在下方「规则集」里按 URL 添加" />
+            </Form.Item>
+          ) : matchType === "quic_reject" ? (
+            <Form.Item label=" " style={{ flex: 1 }} extra={mt?.help}>
+              <Typography.Text type="secondary">没有匹配值，也没有去向。</Typography.Text>
+            </Form.Item>
+          ) : (
+            <Form.Item name="match_value" label="匹配值" style={{ flex: 1 }} rules={[{ required: true, message: "请填写匹配值" }]} extra={mt?.help}>
+              <Input className="mono" placeholder={mt?.placeholder} aria-label="匹配值" />
+            </Form.Item>
+          )}
         </Space.Compact>
+        {!rule && topo.rules_ordered ? (
+          <Form.Item name="insert_at" label="放在第几条" extra="列表从上到下匹配，第一条命中生效。">
+            <InputNumber min={1} max={topo.rules.length + 1} aria-label="放在第几条" />
+          </Form.Item>
+        ) : null}
         <Form.Item
           name="domains"
           label="显式域名"
@@ -374,10 +436,27 @@ function RuleDrawer({
               <Radio value="exit">
                 固定出口 <Typography.Text type="secondary">— 只用这一个出口，不受健康状态或解锁结果影响</Typography.Text>
               </Radio>
+              {topo.rules_ordered ? (
+                <>
+                  <Radio value="service">
+                    服务组 <Typography.Text type="secondary">— 可切换的指向，改服务组不必改规则</Typography.Text>
+                  </Radio>
+                  <Radio value="direct">
+                    直连 <Typography.Text type="secondary">— 国内解析器解析，直连出去</Typography.Text>
+                  </Radio>
+                  <Radio value="reject">
+                    拒绝 <Typography.Text type="secondary">— 照常解析（只给 IPv4），连接被网关立即拒绝：TCP 复位，其它返回 ICMP 端口不可达</Typography.Text>
+                  </Radio>
+                </>
+              ) : null}
             </Space>
           </Radio.Group>
         </Form.Item>
-        {target === "group" ? (
+        {target === "direct" || target === "reject" || matchType === "quic_reject" ? null : target === "service" ? (
+          <Form.Item name="target_service" label="服务组" rules={[{ required: true, message: "选择一个服务组" }]}>
+            <Select aria-label="服务组" options={(topo.service_groups ?? []).map((x) => ({ value: x.id, label: x.name }))} />
+          </Form.Item>
+        ) : target === "group" ? (
           <Form.Item name="target_group" label="地区组" rules={[{ required: true, message: "选择一个地区组" }]}>
             <Select
               aria-label="地区组"
@@ -452,8 +531,30 @@ export default function RulesPage() {
   const [editing, setEditing] = useState<Rule | "new" | null>(null);
   const [q, setQ] = useState("");
   const [kind, setKind] = useState<"all" | "manual" | "auto">("all");
+  const [importing, setImporting] = useState(false);
+  const [analysis, setAnalysis] = useState<Map<string, RuleAnalysis>>(new Map());
+  const [sharedNote, setSharedNote] = useState("");
   const topo = doc.topo;
   const focus = route.params[0];
+  const ordered = !!topo?.rules_ordered;
+
+  // The static ordering analysis of the saved list (shadowing, keyword and
+  // rule-set notes); only for the explicit list and a saved document.
+  useEffect(() => {
+    if (!ordered || doc.dirty) return;
+    let live = true;
+    api
+      .ruleAnalysis()
+      .then((r) => {
+        if (!live) return;
+        setAnalysis(new Map(r.rules.map((a) => [a.rule_id, a])));
+        setSharedNote(r.shared_address);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [ordered, doc.dirty, topo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!topo || !focus) return;
@@ -475,7 +576,7 @@ export default function RulesPage() {
     );
   }
 
-  const sorted = effectiveOrder(topo.rules);
+  const sorted = ordered ? topo.rules : effectiveOrder(topo.rules);
   const manualCount = topo.rules.filter((r) => r.manual).length;
   const shown = sorted.filter((r) => {
     if (kind === "manual" && !r.manual) return false;
@@ -488,19 +589,57 @@ export default function RulesPage() {
   const setRules = (rules: Rule[]) => doc.setTopo({ ...topo, rules: rules.map(cleanRule) });
   const patch = (id: string, p: Partial<Rule>) =>
     setRules(topo.rules.map((r) => (r.id === id ? { ...r, ...p, overridden: r.manual ? r.overridden : true } : r)));
-  /** Position of r within its class (manual rules, then built-in rules). */
-  const classIndex = (r: Rule) => sorted.filter((x) => x.manual === r.manual).findIndex((x) => x.id === r.id);
-  const classSize = (r: Rule) => (r.manual ? manualCount : topo.rules.length - manualCount);
-  const move = (r: Rule, to: number) => setRules(moveRule(topo.rules, r.id, to));
+  /** Position of r within its class (manual rules, then built-in rules); the whole list once it is explicit. */
+  const classIndex = (r: Rule) => (ordered ? sorted.findIndex((x) => x.id === r.id) : sorted.filter((x) => x.manual === r.manual).findIndex((x) => x.id === r.id));
+  const classSize = (r: Rule) => (ordered ? topo.rules.length : r.manual ? manualCount : topo.rules.length - manualCount);
+  const move = (r: Rule, to: number) => setRules(ordered ? moveInList(topo.rules, r.id, to) : moveRule(topo.rules, r.id, to));
+  const byID = new Map(sorted.map((r, i) => [r.id, i + 1]));
 
   return (
     <Page
       title="分流规则"
       description="按优先级从上到下匹配，第一条命中的规则决定去向；没有命中的境外流量走默认组。规则是拓扑的一部分，保存后安装才生效。"
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing("new")}>
-          添加规则
-        </Button>
+        <Space>
+          {ordered ? (
+            <Tooltip title={doc.dirty ? "先保存或放弃当前修改" : "粘贴 mihomo 配置，预览后导入"}>
+              <Button disabled={doc.dirty} onClick={() => setImporting(true)}>
+                从 mihomo 导入
+              </Button>
+            </Tooltip>
+          ) : null}
+          {ordered && !topo.rules.some((r) => r.match_type === "quic_reject") ? (
+            <Tooltip title="在列表末尾加一行 QUIC 开关；它之上的规则豁免，把它移到需要的位置">
+              <Button
+                onClick={() =>
+                  setRules([
+                    ...topo.rules,
+                    { id: "quic-switch", name: "QUIC 开关", manual: true, priority: 0, enabled: true, overridden: false, match_type: "quic_reject", match_value: "", require_residential: false, require_v6: false },
+                  ])
+                }
+              >
+                添加 QUIC 开关
+              </Button>
+            </Tooltip>
+          ) : null}
+          {ordered && !topo.rules.some((r) => r.id === "template-apple-direct") ? (
+            <Tooltip title="可选模板：geosite apple → 直连。默认不启用；苹果的名字不是国内名字，只有你确定要直连时才启用。">
+              <Button
+                onClick={() =>
+                  setRules([
+                    ...topo.rules,
+                    { id: "template-apple-direct", name: "模板：Apple 直连（未启用）", manual: true, priority: 0, enabled: false, overridden: false, match_type: "geosite", match_value: "apple", geosite: "apple", target_action: "direct", require_residential: false, require_v6: false },
+                  ])
+                }
+              >
+                Apple 直连模板
+              </Button>
+            </Tooltip>
+          ) : null}
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing("new")}>
+            添加规则
+          </Button>
+        </Space>
       }
     >
       <TopologyDocBar />
@@ -538,7 +677,12 @@ export default function RulesPage() {
           )}
         </Typography.Text>
       </Space>
-      {topo.rules.length > 0 ? (
+      {topo.rules.length > 0 && ordered ? (
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }} data-testid="rules-order-note">
+          表格就是匹配顺序，和 Clash / Surge 一样从上到下、第一条命中生效；手动、导入、内置规则在同一个列表里，可以任意上下移动。所有规则之后依次是：内置国内名单（geosite cn，国内解析、直连）、中国地址直连（chnroute）、默认组。网关按解析出的目的地址分流：两个指向不同目标的名字解析到同一个地址时，该地址按更靠前的规则走。
+        </Typography.Paragraph>
+      ) : null}
+      {topo.rules.length > 0 && !ordered ? (
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           表格就是匹配顺序：手动规则总是排在内置规则前面，各自按优先级排。上下箭头和「…」里的移到最前 / 最后只在同一类里移动；移动后需要时会把这一类重新编号（步长 10），保存后按这个顺序生效。
         </Typography.Paragraph>
@@ -588,8 +732,8 @@ export default function RulesPage() {
                       trigger={["click"]}
                       menu={{
                         items: [
-                          { key: "top", icon: <VerticalAlignTopOutlined />, label: r.manual ? "移到最前" : "移到内置规则的最前", disabled: ci === 0 },
-                          { key: "bottom", icon: <VerticalAlignBottomOutlined />, label: r.manual ? "移到手动规则的最后" : "移到最后", disabled: ci === last },
+                          { key: "top", icon: <VerticalAlignTopOutlined />, label: ordered || r.manual ? "移到最前" : "移到内置规则的最前", disabled: ci === 0 },
+                          { key: "bottom", icon: <VerticalAlignBottomOutlined />, label: ordered ? "移到最后" : r.manual ? "移到手动规则的最后" : "移到最后", disabled: ci === last },
                         ],
                         onClick: ({ key }) => move(r, key === "top" ? 0 : last),
                       }}
@@ -607,11 +751,26 @@ export default function RulesPage() {
                 <div>
                   <Space size={4}>
                     <Typography.Text strong>{r.name}</Typography.Text>
-                    {r.manual ? <Tag color="blue">手动</Tag> : <Tooltip title="内置的自动规则；改动后标为「已改默认」"><Tag>内置</Tag></Tooltip>}
+                    {r.origin === "mihomo" ? (
+                      <Tooltip title={r.source_text}>
+                        <Tag color="cyan">导入 · 第 {r.source_line} 行</Tag>
+                      </Tooltip>
+                    ) : r.manual ? (
+                      <Tag color="blue">手动</Tag>
+                    ) : (
+                      <Tooltip title="内置的自动规则；改动后标为「已改默认」"><Tag>内置</Tag></Tooltip>
+                    )}
                     {!r.manual && r.overridden ? <Tag color="orange">已改默认</Tag> : null}
                   </Space>
                   <div className="muted" style={{ fontSize: 12 }}>
-                    {MATCH_LABEL[r.match_type] ?? r.match_type}：<span className="mono">{r.match_type === "geosite" ? `geosite:${r.geosite || r.match_value}` : r.match_value}</span>
+                    {MATCH_LABEL[r.match_type] ?? r.match_type}：
+                    <span className="mono">
+                      {r.match_type === "geosite"
+                        ? `geosite:${r.geosite || r.match_value}`
+                        : r.match_type === "ruleset"
+                          ? ((topo.rule_sets ?? []).find((x) => x.id === r.rule_set)?.name ?? r.rule_set)
+                          : r.match_value}
+                    </span>
                     {(r.domains?.length ?? 0) > 0 ? (
                       <Tooltip title={r.domains!.join("、")}>
                         <span> · 显式域名 {r.domains!.length} 个</span>
@@ -627,6 +786,17 @@ export default function RulesPage() {
               className: "nowrap",
               render: (_, r) => {
                 const t = targetOf(topo, r);
+                if (t.kind === "quic" || t.kind === "direct" || t.kind === "reject") {
+                  return <Tag color={t.kind === "reject" ? "red" : t.kind === "direct" ? "green" : "purple"}>{t.name}</Tag>;
+                }
+                if (t.kind === "service") {
+                  return (
+                    <Space size={4}>
+                      <Tag color="geekblue">服务组</Tag>
+                      {t.missing ? <StatusTag kind="failed">{t.id} 不存在</StatusTag> : <span>{t.name}</span>}
+                    </Space>
+                  );
+                }
                 return (
                   <Space size={4}>
                     {t.kind === "group" ? <Tag>地区组</Tag> : <Tag color="purple">固定出口</Tag>}
@@ -654,6 +824,46 @@ export default function RulesPage() {
                 </>
               ),
             },
+            ...(ordered
+              ? [
+                  {
+                    title: "遮蔽",
+                    className: "nowrap",
+                    render: (_: unknown, r: Rule) => {
+                      const a = analysis.get(r.id);
+                      if (!a) return <Typography.Text type="secondary">—</Typography.Text>;
+                      const ref = (ids?: string[] | null) => (ids ?? []).map((id) => `第 ${byID.get(id) ?? "?"} 条`).join("、");
+                      const notes: string[] = [];
+                      if (a.keyword_note) notes.push(a.keyword_note);
+                      if (a.keywords && !a.keyword_note) notes.push(`${a.keywords} 条关键词条目在网关上不执行`);
+                      if (a.rule_set?.unsupported && Object.keys(a.rule_set.unsupported).length) notes.push("规则集只部分生效：" + Object.entries(a.rule_set.unsupported).map(([k, v]) => `${k} ${v}`).join("，"));
+                      if (a.rule_set?.held) notes.push("规则集有被暂缓的新版本");
+                      return (
+                        <Space direction="vertical" size={0} data-testid={`rule-shadow-${r.id}`}>
+                          {a.fully_shadowed ? (
+                            <StatusTag kind="attention">永远不会命中（被 {ref(a.shadowed_by)} 遮蔽）</StatusTag>
+                          ) : a.shadowed > 0 ? (
+                            <Typography.Text type="warning" style={{ fontSize: 12 }}>
+                              {a.shadowed}/{a.entries} 个条目被 {ref(a.shadowed_by)} 遮蔽
+                            </Typography.Text>
+                          ) : null}
+                          {(a.partly_by ?? []).length > 0 ? (
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              部分名字先被 {ref(a.partly_by)} 接走
+                            </Typography.Text>
+                          ) : null}
+                          {notes.map((n) => (
+                            <Typography.Text key={n} type="secondary" style={{ fontSize: 12 }}>
+                              {n}
+                            </Typography.Text>
+                          ))}
+                          {!a.fully_shadowed && !a.shadowed && !(a.partly_by ?? []).length && notes.length === 0 ? <Typography.Text type="secondary">—</Typography.Text> : null}
+                        </Space>
+                      );
+                    },
+                  },
+                ]
+              : []),
             {
               title: "校验",
               className: "nowrap",
@@ -689,7 +899,7 @@ export default function RulesPage() {
                   >
                     编辑
                   </Button>
-                  {r.manual ? (
+                  {r.manual || (ordered && r.origin === "mihomo") ? (
                     <Button
                       type="link"
                       size="small"
@@ -713,6 +923,19 @@ export default function RulesPage() {
         />
       )}
       <IssueList issues={doc.issues.filter((i) => !i.rule_id && (i.group_id || i.code === "no_default_exit"))} />
+      {ordered && sharedNote ? (
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          {sharedNote}
+        </Typography.Paragraph>
+      ) : null}
+      {ordered ? (
+        <>
+          <RuleTester />
+          <ServiceGroupsSection topo={topo} dirty={doc.dirty} onChanged={() => void doc.reload()} />
+          <RuleSetsSection dirty={doc.dirty} onChanged={() => void doc.reload()} />
+          <ImportDrawer open={importing} topo={topo} onClose={() => setImporting(false)} onDone={() => void doc.reload()} />
+        </>
+      ) : null}
       <RuleDrawer
         open={editing !== null}
         rule={editing === "new" ? null : editing}
@@ -721,8 +944,16 @@ export default function RulesPage() {
           setEditing(null);
           if (focus) navigate(href("rules"), { replace: true });
         }}
-        onApply={(r) => {
+        onApply={(r, insertAt) => {
           const exists = topo.rules.some((x) => x.id === r.id);
+          if (!exists && ordered) {
+            const next = [...topo.rules];
+            next.splice(Math.max(0, Math.min(next.length, (insertAt ?? 1) - 1)), 0, r);
+            setRules(next);
+            setEditing(null);
+            if (focus) navigate(href("rules"), { replace: true });
+            return;
+          }
           let next = exists ? topo.rules.map((x) => (x.id === r.id ? r : x)) : [...topo.rules, r];
           // A new manual rule goes to the top; with no room above the first one, renumber the manual rules.
           if (!exists && r.manual && r.priority < 1) next = moveRule(next.map((x) => (x.id === r.id ? { ...x, priority: Number.MAX_SAFE_INTEGER } : x)), r.id, 0);

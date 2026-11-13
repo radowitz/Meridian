@@ -10,6 +10,10 @@ const (
 	markUnderlay uint32 = 0x4d72
 	markDomestic uint32 = 0x64
 	markExitBase uint32 = 0x101
+	// markReject is set by the classifier on traffic of a REJECT rule. No
+	// routing rule knows it; the guard refuses it on forward (TCP reset,
+	// otherwise ICMP port unreachable) before anything else may pass.
+	markReject uint32 = 0x65
 )
 
 // Priorities sit well above the local table (0) and well below main

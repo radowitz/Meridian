@@ -271,6 +271,33 @@ MERIDIAN_WSTUNNEL_BIN=/usr/share/meridian/artifacts/wstunnel-x86_64 go test ./in
 
 ## 规则
 
+### 有序列表、导入、规则集（自动化回归与本机 Docker；没有在真实网关或真实 mihomo 配置上执行过）
+
+等级：代码级回归，加上本机容器里对固定版本 SmartDNS（Release48.4）和 nft 1.1.3 的真实执行；**不是网关上的证据**，也从没用操作者的真实配置跑过。
+
+- `go test ./internal/ordered`：参考解释器与数据面模型（派生的 domain-set 由 SmartDNS 最长键模型选择 + 分类链按集合顺序）的差分测试：3000 个生成的列表（每个 1–8 条规则、1–4 个条目：精确名、后缀、子域名、嵌套和重叠的 CIDR、GEOIP,CN，三层名字空间里大量重复后缀、先具体后一般、先一般后具体、同名的精确 / 后缀对、单个名字例外在包含它的规则之前；随机的国内名单），共 28.2 万个探测（每个名字和它的下级各一个新地址，四分之一取自 CIDR 池以覆盖域名与 IP 交叉，另有只给地址的探测），全部一致；故意把过滤改坏时测试失败（手工变异检查过一次）。手写的形状：重复后缀、先具体后一般、单名例外、精确与后缀同名、IP 规则夹在域名规则之间、规则先于国内名单、GEOIP,CN 在中间。共享地址按「更靠前的规则赢」写成测试；关键词不执行的差别也写成测试。`Decide`（索引版）与 `Reference` 在 2000 个含关键词、子域名、按设备规则的生成列表上比较了 112.8 万次判断，全部一致。基准：`go test ./internal/ordered -bench .`。
+- `go test ./internal/compile -run 'Ordered|RejectDirect|RulesBefore'`：用**真实渲染出来的** `order.conf`、`smartdns.conf`、nft 分类链（含静态集合元素）和 `decide.json`，400 个生成的拓扑规则列表（精确、后缀、CIDR、规则集〔精确 / 后缀 / 子域名 / CIDR 条目〕、GEOIP,CN；去向为地区组、服务组、直连、拒绝）共 4400 个探测，渲染出的标记 == 参考解释器 == `Decide`。拒绝的兜底表行、QUIC 链的豁免、没有新功能时 nft 不变、规则优先于国内名单、没有 `gs_apple`。
+- 真实 SmartDNS（opt-in，本机 Docker，2026-11-13 在开发机上用 `meridian:local` 的 Release48.4 跑通）：
+
+```
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/compile.test ./internal/compile
+docker run --rm --network none --platform linux/amd64 -v /tmp/compile.test:/compile.test:ro \
+  -e MERIDIAN_SMARTDNS_BIN=/usr/share/meridian/artifacts/smartdns-x86_64 \
+  --entrypoint /compile.test meridian:local -test.run 'TestOrderedRealSmartDNS|TestSmartDNSRealBinary' -test.v
+```
+
+  `TestOrderedRealSmartDNS`：25 个生成的列表（精确 / 后缀 / 子域名，`-.d` 与 `*.d` 写在 domain-set 文件里）装进真实 SmartDNS，1100 个名字逐个查询：SmartDNS 的选择 == `DNSModel` == 参考解释器；再装 16 万个键（10 万规则集名字 + 6 万国内名字），启动约 0.1 秒内开始应答，抽查的名字（规则集之前的精确例外、规则集、同时在国内名单里的名字、国内名字）都对。单层名字（例如 `example`）SmartDNS 不按规则回答，测试不用。`TestSmartDNSRealBinary`（已有）改为用派生的集合后同样通过。
+- nft（opt-in，特权容器）：`docker run --rm --privileged --platform linux/amd64 -v /tmp/compile.test:/compile.test:ro -e MERIDIAN_NFT_TEST=1 --entrypoint /compile.test meridian:local -test.run TestRuleSetNFTLoadLarge -test.v`：带规则集、拒绝和 QUIC 开关的整份网关规则集 `nft -c` / `nft -f` 通过；6 万条 IPv4 + 2 万条 IPv6 规则集前缀（含重叠）合并后约 0.27 秒装入，再装一次（重启时）也通过。
+- `go test ./internal/ruleset`：每种格式（Clash yaml 三种行为、Clash text 三种、Surge .list 与 DOMAIN-SET）、CRLF、BOM、注释、行内策略字段、大小写混用、IPv6、超大内容、二进制 / .mrs、重定向到私网和回环被拒绝、默认守卫拒绝回环源。
+- `go test ./internal/mihomo`：锚点、合并键、流式映射、带空格的名字、注释；假的密码 / UUID / 私钥 / 订阅令牌 / 控制口令不出现在解析结果、预览或计划里；经选中状态的映射链；遮蔽；重复导入的差异；写入后能通过校验；导入的列表与 mihomo 的第一条命中给出相同去向；`address_only` 等标记分类。
+- `go test ./internal/api -run 'Import|ServiceGroup|RuleSet|RuleTester'`：预览 → 规则集后台下载 → 接受 → 摘要不符被拒 → 确认；秘密不在任何应答、日志、数据库文件或数据目录的任何文件里；拓扑整份保存保留服务组和规则集；服务组改指向时住宅要求被校验；规则集被使用时不能删、失败保留旧版、关键词变多的新版本被暂缓、确认后启用；测试器用 `Decide`。
+- `npm --prefix web test`：`src/rules_ordered.test.tsx`（跨类移动并按列表顺序保存、来源和服务组去向、遮蔽列、服务组改指向、测试器、导入：阻止 → 接受 → 刷新 → 带摘要确认、粘贴的文本不进浏览器存储）。
+- [ ] 实机（主会话，未执行）：安装这一版后 `ls /var/lib/meridian/geosite/ordered/` 有每条规则一个文件和 `gs_cn.txt`；`journalctl -u meridian.service` 有 `meridian-lists-derive-ready`；规则页测试器和 `dig @<网关> <名字>` + `nft get element inet meridian r<n> { <地址> }` 对几个有先后关系的名字一致；名单更新后 `status.json` 的 `rules` 一项为已更新。
+- [ ] 实机（主会话，未执行）：用真实 mihomo 配置导入，预览里没有出现任何 `proxies` 段的内容；确认、安装后，原来排在 QUIC 规则之前的规则的 UDP 443 不被拒绝、之后的被拒绝（`nft list chain inet meridian quic` 计数）。
+- [ ] 实机（主会话，未执行）：iOS「无可用互联网」复测时注意，`captive.apple.com` 现在没有规则时走默认组（内置 Apple 直连已去掉）。
+
+### 原有项
+
 - [ ] 手动规则优先于自动表。示例里的 `api.example.com` 钉在美国池。
 - [ ] 把 Netflix 改到机房出口时，校验报 `residential_required`，不能保存。
 - [ ] 台湾规则失败时不会自动改去日本。解锁结果只在同一个地区组里换成员。

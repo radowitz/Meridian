@@ -76,6 +76,9 @@ func (s *Store) Load() (model.Topology, bool, error) {
 	// compiled with (positions, after the group migration above, exactly
 	// as the compiler read it); MigrateAllocations below persists it.
 	model.MigrateAllocations(&t)
+	// The rule list becomes explicit in the order the compiler already
+	// used (model.MigrateRuleOrder); saving persists it.
+	model.MigrateRuleOrder(&t)
 	return t, true, nil
 }
 
@@ -249,6 +252,8 @@ func (s *Store) save(next model.Topology, imported bool) error {
 	}
 	// A stored topology never carries the legacy pool fields.
 	model.MigrateRegionGroups(&next)
+	// A document from an older client is put into the order it meant.
+	model.MigrateRuleOrder(&next)
 	// After the group migration: groups it creates get slots too.
 	switch {
 	case imported && ok:

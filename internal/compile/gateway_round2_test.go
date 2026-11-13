@@ -69,7 +69,7 @@ func TestGatewaySmartDNSBindsAndCertificate(t *testing.T) {
 		t.Fatalf("certificate directives missing or after bind-tls:\n%s", conf)
 	}
 	refs := SmartDNSFileRefs(conf)
-	for _, want := range []string{"/etc/meridian/dns/cert.pem", "/etc/meridian/dns/key.pem", "/var/lib/meridian/geosite/cn.txt"} {
+	for _, want := range []string{"/etc/meridian/dns/cert.pem", "/etc/meridian/dns/key.pem", "/var/lib/meridian/geosite/ordered/gs_cn.txt"} {
 		found := false
 		for _, r := range refs {
 			found = found || r == want
@@ -339,11 +339,12 @@ func TestListScriptsUseHostAgentAction(t *testing.T) {
 	// Real v2fly names are requested (the old script fetched the
 	// sanitized file stem, "category_ads_all", which does not exist);
 	// SmartDNS reads the sanitized file.
-	if !regexp.MustCompile(`--geosite '([a-z0-9,-]*,)?apple,([a-z0-9,-]*,)?category-ads-all,([a-z0-9,-]*,)?cn(,[a-z0-9,-]*)?'`).MatchString(geo) {
+	if !regexp.MustCompile(`--geosite '([a-z0-9,-]*,)?category-ads-all,([a-z0-9,-]*,)?cn(,[a-z0-9,-]*)?'`).MatchString(geo) {
 		t.Fatalf("geosite names:\n%s", geo)
 	}
-	if !strings.Contains(b.File("nodes/gw/etc/smartdns/smartdns.conf"), "/var/lib/meridian/geosite/category_ads_all.txt") {
-		t.Fatal("SmartDNS does not read the sanitized file")
+	// The derive step reads the sanitized file (geosite/<stem>.txt).
+	if !strings.Contains(b.File("nodes/gw/etc/meridian/rules/order.conf"), "\ngeosite category_ads_all\n") {
+		t.Fatal("the rule manifest does not name the sanitized file")
 	}
 	if !strings.Contains(b.File("nodes/gw/usr/local/sbin/meridian-up.sh"), "[ -f /var/lib/meridian/geosite/category_ads_all.txt ]") {
 		t.Fatal("up script does not seed the sanitized file")

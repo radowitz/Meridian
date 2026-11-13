@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/validate"
 )
@@ -275,6 +276,9 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		switch n.Role {
 		case model.RoleGateway:
 			add(prefix+"etc/smartdns/smartdns.conf", renderGatewayDNS(t, exits, groups, decisions))
+			add(prefix+strings.TrimPrefix(lists.ManifestPath, "/"), renderRuleManifest(planRules(t, exits, groups, decisions)))
+			defT, _ := defaultExit(t, groups)
+			add(prefix+strings.TrimPrefix(DecidePath, "/"), renderDecideSnapshot(t, planRules(t, exits, groups, decisions), defT))
 			if unit, ok := renderDNSSplitUnit(t, exits, groups); ok {
 				add(prefix+"etc/systemd/system/"+DNSSplitUnit, unit)
 			}
