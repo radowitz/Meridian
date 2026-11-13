@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/radowitz/meridian/internal/compile"
+	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/model"
 )
 
@@ -87,17 +88,25 @@ func RedactSecret(s, key string) string {
 // is reported.
 var ErrMissingSecret = errors.New("缺少 WireGuard 配置引用的密钥，已在写入任何主机配置前中止")
 
-// InjectSecrets replaces every __MERIDIAN_SECRET_<id>__ placeholder of a
-// WireGuard config with secrets[id]. Other files are returned unchanged;
-// a placeholder outside etc/wireguard/ is refused (it must never reach a
-// host file). A missing or malformed value fails; the value is never
-// echoed.
+// InjectSecrets replaces every __MERIDIAN_SECRET_<id>__ placeholder with
+// secrets[id]. A WireGuard config may only name WireGuard keys (32-byte
+// base64); a WSS file (etc/meridian/wss/) may only name WSS secrets (a path
+// prefix: a plain token; a private key: a PKCS#8 EC PEM), told apart by
+// their id prefix. A placeholder anywhere else is refused (it must never
+// reach a host file), and so is an unresolved __MERIDIAN_WSS_ token (the
+// carrier's material was not generated: the WSS carrier never runs
+// without its certificate verification). A missing or malformed value
+// fails; the value is never echoed.
 func InjectSecrets(rel, body string, secrets map[string]string) (string, error) {
+	if compile.HasWSSTokens(body) {
+		return "", fmt.Errorf("%w（%s）", ErrWSSUnresolved, strings.TrimPrefix(rel, "/"))
+	}
 	ms := model.SecretPlaceholderRe.FindAllStringSubmatch(body, -1)
 	if len(ms) == 0 {
 		return body, nil
 	}
-	if !isWireGuardConf(rel) {
+	wg, wss := isWireGuardConf(rel), isWSSFile(rel)
+	if !wg && !wss {
 		return "", fmt.Errorf("拒绝安装：%s 含有密钥占位符", strings.TrimPrefix(rel, "/"))
 	}
 	for _, m := range ms {
@@ -105,12 +114,39 @@ func InjectSecrets(rel, body string, secrets map[string]string) (string, error) 
 		if !ok || v == "" {
 			return "", fmt.Errorf("%w（%s 引用 %s）", ErrMissingSecret, strings.TrimPrefix(rel, "/"), m[1])
 		}
-		if !ValidPrivateKey(v) {
-			return "", fmt.Errorf("WireGuard 密钥 %s 格式不正确（应为 32 字节 base64）", m[1])
+		switch {
+		case wg:
+			if IsWSSSecretID(m[1]) || !ValidPrivateKey(v) {
+				return "", fmt.Errorf("WireGuard 密钥 %s 格式不正确（应为 32 字节 base64）", m[1])
+			}
+		case strings.HasPrefix(m[1], credentials.WSSPathIDPrefix+"-"):
+			if !credentials.ValidWSSPath(v) {
+				return "", fmt.Errorf("WSS 路径 %s 格式不正确", m[1])
+			}
+		case strings.HasPrefix(m[1], credentials.WSSKeyIDPrefix+"-"):
+			if !strings.HasSuffix(rel, ".key") || !credentials.ValidWSSKey(v) {
+				return "", fmt.Errorf("WSS 私钥 %s 格式不正确或位置不对", m[1])
+			}
+		default:
+			return "", fmt.Errorf("拒绝安装：%s 引用了不是 WSS 凭据的密钥 %s", strings.TrimPrefix(rel, "/"), m[1])
 		}
-		body = strings.ReplaceAll(body, m[0], v)
+		body = strings.ReplaceAll(body, m[0], strings.TrimSuffix(v, "\n"))
 	}
 	return body, nil
+}
+
+// ErrWSSUnresolved means a bundle file still carries a WSS token: the
+// panel had no WSS material for it (credential store unavailable or not
+// generated). Nothing is written.
+var ErrWSSUnresolved = errors.New("WSS 承载的路径和证书还没有生成（或凭据存储不可用），已在写入任何主机配置前中止")
+
+func isWSSFile(rel string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(rel, "/"), strings.TrimPrefix(compile.WSSDir, "/")+"/")
+}
+
+// IsWSSSecretID reports whether a credential-store id is a WSS secret.
+func IsWSSSecretID(id string) bool {
+	return strings.HasPrefix(id, credentials.WSSPathIDPrefix+"-") || strings.HasPrefix(id, credentials.WSSKeyIDPrefix+"-")
 }
 
 // SecretRefs lists the credential-store ids the placeholders in text name.

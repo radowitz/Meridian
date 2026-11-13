@@ -506,6 +506,7 @@ func (s *Server) postWithdraw(w http.ResponseWriter, r *http.Request) {
 	case wo.OK && err == nil:
 		rec.State, rec.Message = withdrawStateDone, "撤回完成：清单列出的内容已移除并复核"
 		installed = &f
+		s.markWSSNode(body.NodeID, model.WSSStageNone, "节点已撤回")
 	case wo.Already && err == nil:
 		rec.State, rec.Message = withdrawStateAlready, "服务器上的 journal 显示已经撤回过"
 		installed = &f
@@ -768,6 +769,7 @@ func (s *Server) postHostWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 	rec.State, rec.Removed, rec.Kept, rec.Host = res.State, res.Removed, res.Kept, res.Host
 	s.saveGatewayWithdraw(rec)
+	s.markWSSNode(localNodeID, model.WSSStageNone, "网关已撤回")
 	writeJSON(w, http.StatusOK, map[string]any{"status": res.State, "removed": res.Removed, "kept": res.Kept, "host": res.Host})
 }
 

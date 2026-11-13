@@ -64,7 +64,7 @@ WireGuard 不携带 fwmark。家宽到阿里云只有一条逻辑隧道，枢纽
 | 家宽 → 阿里云 | UDP WG 与 WSS 两套接口，优先 UDP | 1412 / 1360，TCP MSS 按更小的那条夹 |
 | 阿里云 → IX → 枢纽 | 直连 WG，外层 IPv4 | 1420 |
 | 枢纽 → 出口 | 公网直连 WG。NAT 节点反过来拨 | 1420 |
-| IX 替换 | 预置 WSS，`timeout_sec=0`，`restrict-to` 本机 WG 端口，正式证书 | 1360 |
+| IX 替换 | 预置 WSS，`timeout_sec=0`，每条链路一个随机路径、只放行到本机该链路的 WG 端口；面板生成的自签证书，客户端只信任它（见「WSS 承载：随机路径与自签证书」） | 1360 |
 
 所有 WireGuard 接口都是 `Table = off`，避免 `wg-quick` 把机器自己的默认路由抢走。外层端点在网关上有一条经 `192.168.100.1` 的主机路由，避免隧道把自己的握手包卷进去。
 
@@ -433,7 +433,7 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 | `docker_present`、`docker_missing`、`cloudflare_warp`、`wireguard_present`、`dns_listeners`、`nft_tables_present`、`netfilter_persistent`、`iptables_legacy`、`existing_install`、`forwarding_enable`、`host_summary` | 信息 | 认出来并说明是什么：Docker、主机级 WARP（`warp-svc`、`CloudflareWARP`、`inet cloudflare-warp`、100.96.0.0/12 地址）、别的 WireGuard 接口和端口、53 端口上不冲突的监听、别的 nft 表、legacy iptables（连同下面「与 iptables-legacy 共存」的说明）、这次会全局打开转发等 |
 | `platform_supported`、`artifact_plan`、`foreign_binary` | 信息 | 匹配到的支持平台；每个面板下发的二进制要「传输并安装 / 已是固定版本不传输 / 替换」；主机上别的服务装的 wstunnel 或 smartdns 软件包（不使用、不覆盖、不删除） |
 
-**不检查**（随每个结果返回，面板里也显示）：放行规则是否覆盖 Meridian 的端口；云厂商安全组和上游 NAT；别的服务以后的改动（Docker 重启由 meridian-fwcompat.service 接上；WARP 重连、有人手动启动或重载一个没启用的 nftables.service 不在预检之内）；SmartDNS 上游、wstunnel 证书和域名（面板下发的二进制只核对架构、路径和 SHA-256，预检里不执行它们）；预检里不执行 nft（远端规则集已避开 nft 0.9.3 不确定的写法，装机时 `meridian-up.sh` 仍先 `nft -c`）；iptables-legacy 主机上 legacy 链里的单条规则、nat 改写和 MARK；WARP 的配置和账户（只读进程名和地址）；sudo。预检不修改任何东西，发现的冲突由你处理。
+**不检查**（随每个结果返回，面板里也显示）：放行规则是否覆盖 Meridian 的端口；云厂商安全组和上游 NAT；别的服务以后的改动（Docker 重启由 meridian-fwcompat.service 接上；WARP 重连、有人手动启动或重载一个没启用的 nftables.service 不在预检之内）；SmartDNS 上游；WSS 两端能否握手（证书和路径由面板生成，见「WSS 承载：随机路径与自签证书」；面板下发的二进制只核对架构、路径和 SHA-256，预检里不执行它们）；预检里不执行 nft（远端规则集已避开 nft 0.9.3 不确定的写法，装机时 `meridian-up.sh` 仍先 `nft -c`）；iptables-legacy 主机上 legacy 链里的单条规则、nat 改写和 MARK；WARP 的配置和账户（只读进程名和地址）；sudo。预检不修改任何东西，发现的冲突由你处理。
 
 预检结果（`preflight` 记录）还带 `platform`（匹配到的支持平台）、`binaries`（每个面板下发的二进制：名字、版本、架构、主机路径、SHA-256、大小、`install|keep|replace|refuse`、是否要传输）和 `package_plan`（每个发行版包：命令在不在、已装版本、apt 候选、`none|install|unavailable`），面板「安装计划」里逐项显示。
 
@@ -639,6 +639,108 @@ Ubuntu 20.04 的 nft 是 0.9.3。远端规则集（出口、中转、枢纽）�
 ### 内存预算
 
 远端节点的预算（`preflight.MemHeadroomKB` 等）：装机余量 48 MB（apt/dpkg、bash、wg-quick）+ 出口解析器 48 MB（固定版本的 SmartDNS，`cache-size 4096`，只绑隧道地址）+ wstunnel 32 MB；更新时已经在跑的受管进程不再计算。可用内存（MemAvailable）低于预算时：要本机解析器的节点**阻断**（`memory_budget`）——不跳过解析器、不改用国内或别的解析器、不在解析器起不来时声称节点可用（装机脚本最后检查 `meridian-smartdns.service` 必须在运行，否则失败补偿）；没有解析器的节点只警告。真实主机里最小的两台（共约 440 MB、约 940 MB，可用都约 200 MB）在预算之内；原来 `low_memory`（可用 < 256 MB 或总量 < 512 MB）的警告保留。预算数值是估计，没有在这些主机上测过实际占用。
+
+## WSS 承载：随机路径与自签证书
+
+每条 WSS 链路（`wg_over_wss`、`udp_wss_failover` 的 WSS 腿、`ix_replacement_wss`，包括网关到备用枢纽的那条）的升级路径前缀、每个 WSS 监听（一个节点的 `wss_listen_port` 上的一个 wstunnel 服务端）的证书都由面板生成，用户不填写任何东西。**不使用 ACME**，不需要域名，不用 Cloudflare 的 DNS 接口。这一节的行为只在仓库的自动化测试里跑过（含下面说的真实 wstunnel 二进制在本机容器里的回环测试），**没有在真实主机、也没有在真实网络路径上执行过**，数据面标为未验证。
+
+### 固定版本的 wstunnel 支持什么
+
+依据 wstunnel 11.1.0 的源码（`wstunnel/src/config.rs`、`protocols/tls/server.rs`、`tunnel/ca_reloader.rs`、`restrictions/`）和它锁定的 rustls-native-certs 0.8.5：
+
+- 客户端**没有**证书指纹或公钥固定选项，也没有指定信任根文件的参数。`--tls-verify-certificate` 打开校验（默认关闭，关闭时用一个什么都接受的校验器）；信任根来自 `rustls_native_certs::load_native_certs()`，它在设置了 `SSL_CERT_FILE` 时**只**读这个文件（再加 `SSL_CERT_DIR` 里的目录，所以单元里把它设为空）。
+- 校验的名字是 `--tls-sni-override` 给的名字（同时作为 SNI 发送）；不给时是连接地址。
+- 路径前缀 `--http-upgrade-path-prefix` 也能从环境变量 `WSTUNNEL_HTTP_UPGRADE_PATH_PREFIX` 读（clap 的 `env`），所以不必出现在命令行（`ps` 看得到命令行）。
+- 服务端的 `--restrict-config` 是一份 YAML：每条规则用正则匹配路径前缀、并列出允许的目的地（协议、端口、网段）；文件变化时自动重载。证书和私钥文件变化时也自动重载。一个服务端进程只出示**一张**证书。
+
+所以采用的做法是题目给的第二种：**该监听的自签证书作为唯一信任根 + 确定的合成名称校验**。真实二进制的测试证明：换成另一张自签证书（握手被客户端以 `UnknownCA` 拒绝）、换一个名字（`BadCertificate`）、换一个路径（服务端 `Rejecting connection with not allowed destination`，回 400）都建立不了隧道；同一张错误证书在去掉 `--tls-verify-certificate` 时能连上——说明拒绝确实来自证书校验。
+
+### 渲染出来的东西
+
+服务端（监听节点，`wstunnel-meridian.service`，参数里没有秘密）：
+
+```
+/usr/local/sbin/meridian-wstunnel server --restrict-config /etc/meridian/wss/server.yaml \
+  --tls-certificate /etc/meridian/wss/server.crt --tls-private-key /etc/meridian/wss/server.key wss://0.0.0.0:<wss_listen_port>
+```
+
+`server.yaml`（0600）每条链路一条规则：`!PathPrefix "^(?:<该链路的前缀>)$"`，只允许 `Udp` 到 `127.0.0.1/32` 上**这条链路**的 WireGuard 端口——一条链路的前缀到不了别的链路的端口（以前所有链路共用一个前缀和一组 `--restrict-to`）。`server.crt`（0644）是证书，`server.key`（0600）是私钥。目录 `/etc/meridian/wss` 是 0700。
+
+客户端（拨号节点，每条链路一个 `wstunnel-client-<链路>.service`）：
+
+```
+Environment=SSL_CERT_FILE=/etc/meridian/wss/client-<链路>.trust.pem
+Environment=SSL_CERT_DIR=
+EnvironmentFile=/etc/meridian/wss/client-<链路>.env
+ExecStart=/usr/local/sbin/meridian-wstunnel client -L 'udp://127.0.0.1:<本地端口>:127.0.0.1:<WG 端口>?timeout_sec=0' \
+  --tls-verify-certificate --tls-sni-override ${MERIDIAN_WSS_SNI} wss://<监听地址>:<WSS 端口>
+```
+
+`client-<链路>.env`（0600）里是 `WSTUNNEL_HTTP_UPGRADE_PATH_PREFIX=<前缀>` 和 `MERIDIAN_WSS_SNI=<合成名称>`；`client-<链路>.trust.pem`（0644）只有该监听的证书（轮换中是新旧两张），开头的注释写着指纹和到期时间。连接地址（`wss://` 后面的 IP）与校验名称分开。
+
+### 材料的参数
+
+- **路径前缀**：24 字节随机数的小写十六进制（48 个字符，192 位），每条链路一个，互不相同；只出现在服务端的 `server.yaml` 和该链路客户端的 `.env` 里。
+- **证书**：ECDSA P-256、SHA-256 签名、128 位随机序列号；`CN` 和唯一的 `subjectAltName dNSName` 都是合成名称；`keyUsage digitalSignature`、`extendedKeyUsage serverAuth`、不是 CA（rustls/webpki 拒绝把 CA 证书当终端证书）；有效期从生成时刻往前 48 小时（容忍时钟偏差）到往后 365 天。面板显示 DER 的 SHA-256 指纹。
+- **合成名称**：每个监听一个 `w<16 位随机十六进制>.invalid`（RFC 6761 保留的 `.invalid`，永远不会解析、不会是谁的真实域名）。
+
+### 秘密放在哪里、怎么注入
+
+路径前缀和私钥是凭据存储（`internal/credentials`，0700 目录、0600 文件、索引里只有元数据）里的秘密，id 前缀 `wssp-` / `wssk-`。公开状态（证书、指纹、有效期、合成名称、各端阶段、最近结果）在同一个索引的 `wss` 段里，不在拓扑里，不随数据目录快照回滚。
+
+编译器只认拓扑：它在 WSS 文件里写记号 `__MERIDIAN_WSS_<种类>_<id>__`。面板编译时（`compileTopo` → `compile.ResolveWSS`）按 WSS 状态替换：证书、合成名称直接写进去，秘密变成 `__MERIDIAN_SECRET_<id>__` 占位符。所以编译预览、差异、快照、安装清单（网关存的是带占位符的副本）、导出和 API 都不含秘密。只有两处换成真值：网关安装事务写宿主文件时（`apply.InjectSecrets`，与远程接入密钥同一个边界），和远端装机脚本在内存里组装、经已固定指纹的 SSH 会话发送时（`provision.InjectPrivateWSS`，**只**接受 WSS 秘密，远程接入的密钥永远不会发到远端）。注入按种类限制位置：路径只能进 `/etc/meridian/wss/` 下的文件，私钥只能进 `.key`，WireGuard 配置里只能是 WireGuard 密钥。还带着 `__MERIDIAN_WSS_` 记号（没有材料、凭据存储不可用）的包被每条安装路径在写任何文件之前拒绝：WSS 承载不会在没有校验的情况下运行。
+
+远端节点的清单（`/var/lib/meridian/node/manifest`）照旧记每个文件的 SHA-256，撤回时据此只删没被改过的文件。秘密文件的哈希不泄露秘密：内容里的秘密是 192 位随机数或 EC 私钥，SHA-256 不可逆；清单本身是 0600。预检的足迹（`secret_files`）列出这些 0600 文件。
+
+### 主动探测者看得到什么、看不到什么
+
+- 看得到：这个端口上有 TLS（TLS 1.3，ALPN `h2`/`http/1.1`），证书是自签的，名字是一个 `.invalid` 的合成名称（任何人连上来都能拿到证书）；客户端发出的 SNI 是同一个合成名称，在 ClientHello 里明文可见（没有用 ECH）。这和「正常网站」不一样，**不做伪装**。
+- 别的路径、不带升级的请求：wstunnel 11.1.0 回 `400`，正文 `Invalid request`，没有 `Server` 头（真实二进制测试记录了这一点）。这不暴露「这是 wstunnel」的字样，但也不是一个像样的网站——一个固定的 400 本身就可能被指纹识别。
+- 看不到：路径前缀（只在 TLS 里传输），因此拿不到隧道；即使拿到证书也冒充不了服务端（没有私钥），客户端也不会连到别的服务端（只信任这一张证书）。WireGuard 本身的认证照旧在里面。
+
+### 轮换：两端都要换，任何时候两端都能互通
+
+手动「重新生成路径」（一条链路）、「重新生成证书」（一个监听），以及证书到期前 30 天自动开始的轮换（面板每小时检查一次；它只**生成**新证书并告警，不会自己去改主机），都走同一套分阶段的状态（`model.WSSListener`）。当前路径 P、证书 C，新的 P′、C′：
+
+| 阶段 | 服务端接受 | 服务端出示 | 客户端发送 | 客户端信任 |
+| --- | --- | --- | --- | --- |
+| 0 | P | C | P | C |
+| 1 | P、P′ | C | P | C、C′ |
+| 2 | P、P′ | C′ | P′ | C、C′ |
+| 3 | P′ | C′ | P′ | C′ |
+
+相邻两个阶段的两端总能互通。面板记录每一端最后一次**成功**安装的阶段；下一次安装渲染的目标阶段是「对端可能处于的最低阶段 + 1」，并且不比对端可能处于的最高阶段低超过 1。因此：
+
+- 两端交替各安装大约两次（面板「下一步」按顺序列出：哪个节点、服务端还是客户端、从哪个阶段到哪个阶段），每一端都到阶段 3 后新材料自动转正、阶段归零，旧路径和旧私钥在没有任何网关快照还引用它们之后从凭据存储删除。
+- **只更新了一端**（另一端还没装、或装失败）时两端处于相邻阶段，隧道照常工作；面板显示「两端暂不一致」和下一步。
+- 安装失败并被补偿：那一端回到旧文件（远端脚本会把它重启过的 wstunnel 在恢复的文件上再重启一次），记录的阶段不变，面板显示失败原因；旧凭据继续有效。
+- 结果不明（补偿不完整、连接中断）或网关运行时回滚：那一端的阶段记为「不确定」（可能是旧阶段也可能是目标阶段，回滚则是 0 到原阶段之间），另一端的目标按最坏情况计算，面板要求先重新下发不确定的那一端。
+- 两端都没装过时重新生成直接替换，不经过阶段。轮换开始后、还没有任何一端装上新材料时可以取消。
+
+**中断**：每次在一端安装新阶段，这一端的 wstunnel 会重启（网关的安装本来就重启所有单元；远端脚本只重启 WSS 文件内容真的变了的那个单元，`MERIDIAN_WSS_RESTARTED`），这条 WSS 承载断几秒，WireGuard 随后重新握手。这是固定版本做得到的最小中断：服务端换证书时 wstunnel 会自动重载，但客户端的信任根只在启动时读取。
+
+**到期**：客户端校验证书有效期，证书过期后 WSS 承载建立不了。为此：到期前 30 天自动开始轮换并告警，14 天内新证书仍未装好时变成红色告警，过期后显示「已过期，WSS 承载已无法建立」。面板不会在无人操作时自己去改远端主机。
+
+### 旧拓扑的迁移
+
+以前的拓扑在节点上有固定的 `wss_path_prefix`（没填时实际用的是 `example-wss-path-prefix`）和操作员自备证书的路径 `tls_cert_path` / `tls_key_path`，客户端的信任根是系统 CA（自签证书时其实连不上，用公认证书时只能证明是「某个有公认证书的服务器」）。「操作员自备证书文件」**不保留**：面板无法读取远端的证书文件来固定它，保留它就意味着要用户另外上传一份证书来信任，这和面板自己生成没有区别。
+
+规则（`migrateWSS`，面板启动时和每次保存拓扑时执行，可重复）：
+
+1. 为每个 WSS 监听生成证书和合成名称，为每条 WSS 链路生成随机路径；然后从拓扑里删掉 `wss_path_prefix`、`tls_cert_path`、`tls_key_path`（API 和导出里不再出现）。
+2. **只在第一次**（凭据存储里还没有 WSS 状态时）：一个监听或它的某个拨号端被这个面板装过（网关有安装清单，远端有成功的装机记录）就标为「迁移中」。迁移中服务端先接受「旧固定前缀 + 新前缀」、出示新证书；旧客户端不校验证书、发的是旧前缀，所以继续能连。每个装过的客户端重新下发后（新前缀、只信任新证书），服务端再下发一次去掉旧前缀，迁移结束。旧前缀不是纯字母数字/`_`/`-` 时不带过去（那条链路在两端重新下发之间会断）。谁都没装过就直接用新材料。
+3. 迁移只能完成不能取消；之后再导入带这些字段的旧拓扑，只会删掉字段、生成材料，不会再进入迁移状态（两端重新下发之前那条 WSS 承载不通）。
+
+面板在「部署」页的「WSS 承载」里显示迁移状态、旧前缀是否仍被接受和下一步。
+
+### 面板与 API
+
+- `GET /api/wss`：每个监听的合成名称、证书指纹、生成和到期时间（剩余天数）、新证书（轮换中）、每条链路的路径「已设置」和生成时间（**不返回路径和私钥，也不返回它们在凭据存储里的 id**）、各端已安装和下次下发的阶段、下一步、最近结果、告警。
+- `POST /api/wss/links/{id}/regenerate-path`、`POST /api/wss/listeners/{id}/regenerate-cert`：开始轮换（已有一次进行中时 409 `wss_rotation_in_progress`）。`POST /api/wss/listeners/{id}/cancel`：取消还没被任何一端装上的轮换。
+- 让轮换前进的只有已有的安装：网关「安装到本机」（`POST /api/apply`，安装事务）和远端「下发」（`POST /api/provision`，带预检和补偿的装机脚本）。没有新的任意命令接口。成功、失败、补偿、结果不明都会记进 WSS 状态；撤回节点后它的各端记为未安装。
+- 拓扑页不再有路径和证书路径的输入框：节点的「WSS 入口（高级）」只剩监听端口和说明，WSS 链路显示路径是否已设置和监听的指纹。
+
+网关上的 DoT 证书（SmartDNS 的 `/etc/meridian/dns/`）与这里无关，没有改动。
 
 ## 撤回与失败后的恢复
 

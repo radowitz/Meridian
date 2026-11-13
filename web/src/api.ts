@@ -76,6 +76,8 @@ import type {
   WithdrawPlan,
   WithdrawRunResult,
   DeploymentView,
+  WSSListenerView,
+  WSSView,
 } from "./types";
 
 // Re-exported for the components that still import them from here.
@@ -440,6 +442,18 @@ export const withdrawAbandon = (nodeId: string, confirm: string) =>
 export const forgetDeployment = (nodeId: string) => request<{ deleted: string }>("DELETE", `/api/provision/state/${enc(nodeId)}`);
 export const hostWithdraw = (confirm: string, releaseGuard = false) =>
   request<HostWithdrawResult>("POST", "/api/host/withdraw", releaseGuard ? { confirm, release_guard: true } : { confirm });
+
+// ------------------------------------------------------------------- WSS ---
+
+/** WSS carriers: per-listener certificate (fingerprint, validity), per-link
+ * path ("set" only), rotation stages. No secret is ever returned. */
+export const getWSS = () => request<WSSView>("GET", "/api/wss");
+export const wssRegeneratePath = (linkId: string) =>
+  request<{ listener: WSSListenerView; committed: boolean }>("POST", `/api/wss/links/${enc(linkId)}/regenerate-path`, {});
+export const wssRegenerateCert = (nodeId: string) =>
+  request<{ listener: WSSListenerView; committed: boolean }>("POST", `/api/wss/listeners/${enc(nodeId)}/regenerate-cert`, {});
+export const wssCancel = (nodeId: string) =>
+  request<{ listener: WSSListenerView; committed: boolean }>("POST", `/api/wss/listeners/${enc(nodeId)}/cancel`, {});
 
 // ------------------------------------------------------------------ leak ---
 

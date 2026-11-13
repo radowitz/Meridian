@@ -150,9 +150,6 @@ func Example() model.Topology {
 				LANIPv6Prefix: "2001:db8:100::/64", UnderlayNextHop: "192.168.100.1",
 				PathV4: true, PathV6: false,
 				SSHHost: "192.168.100.88", SSHPort: 22, SSHUser: "root",
-				WSSPathPrefix: "example-wss-path-prefix",
-				TLSCertPath:   "/etc/meridian/tls/fullchain.pem",
-				TLSKeyPath:    "/etc/meridian/tls/privkey.pem",
 			},
 			{
 				ID: "ali", Name: "阿里云上海", Role: model.RoleRelay, Region: "cn",
@@ -160,9 +157,7 @@ func Example() model.Topology {
 				WANInterface: "eth0", EndpointV4: "203.0.113.10", ListenPort: 51820,
 				PathV4: true, PathV6: false,
 				SSHHost: "aliyun.example.invalid", SSHPort: 22, SSHUser: "root",
-				WSSListenPort: 443, WSSPathPrefix: "example-wss-path-prefix",
-				TLSCertPath: "/etc/meridian/tls/fullchain.pem",
-				TLSKeyPath:  "/etc/meridian/tls/privkey.pem",
+				WSSListenPort: 443,
 			},
 			{
 				ID: "ix", Name: "深港 IX", Role: model.RoleIX, Region: "cn",
@@ -175,9 +170,7 @@ func Example() model.Topology {
 				WANInterface: "eth0", EndpointV4: "203.0.113.20", ListenPort: 51820,
 				PathV4: true, PathV6: false,
 				SSHHost: "hk-hub.example.invalid", SSHPort: 22, SSHUser: "root",
-				WSSListenPort: 443, WSSPathPrefix: "example-wss-path-prefix",
-				TLSCertPath: "/etc/meridian/tls/fullchain.pem",
-				TLSKeyPath:  "/etc/meridian/tls/privkey.pem",
+				WSSListenPort: 443,
 			},
 			{
 				ID: "hk-ix", Name: "香港出口（IX 绑定）", Role: model.RoleExit, Region: "hk",

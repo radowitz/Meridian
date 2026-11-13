@@ -11,12 +11,13 @@ import (
 
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/wsstest"
 )
 
 func TestDiffApplyRollback(t *testing.T) {
 	dir := t.TempDir()
 	ap := Applier{DataDir: dir, LocalID: "gw"}
-	b, err := compile.Compile(defaults.Example())
+	b, err := wsstest.StableCompileErr(defaults.Example())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func TestDiffApplyRollback(t *testing.T) {
 
 	topo := defaults.Example()
 	topo.Settings.IXReplacementMode = true
-	next, err := compile.Compile(topo)
+	next, err := wsstest.StableCompileErr(topo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,13 +174,13 @@ func TestInstallInjectsKeyAndKeepsSnapshotsRedacted(t *testing.T) {
 	data, host := t.TempDir(), t.TempDir()
 	key := testKey(t)
 	activated := 0
-	ap := Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: key, HostRoot: host,
+	ap := Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: key, HostRoot: host, Secrets: wsstest.StableSecrets(),
 		Activate: func() error { activated++; return nil }}
 	// A pre-existing world-readable config must end up 0600.
 	if err := os.MkdirAll(filepath.Join(host, "etc", "wireguard"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	b, err := compile.Compile(defaults.Example())
+	b, err := wsstest.StableCompileErr(defaults.Example())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +226,7 @@ func TestInstallInjectsKeyAndKeepsSnapshotsRedacted(t *testing.T) {
 	// Reuse on a later apply with a changed topology.
 	topo := defaults.Example()
 	topo.Settings.IXReplacementMode = true
-	next, err := compile.Compile(topo)
+	next, err := wsstest.StableCompileErr(topo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +251,7 @@ func TestInstallInjectsKeyAndKeepsSnapshotsRedacted(t *testing.T) {
 }
 
 func TestInstallWithoutKeyFailsBeforeOverwrite(t *testing.T) {
-	b, err := compile.Compile(defaults.Example())
+	b, err := wsstest.StableCompileErr(defaults.Example())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +266,7 @@ func TestInstallWithoutKeyFailsBeforeOverwrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			activated := false
-			ap := Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: key, HostRoot: host,
+			ap := Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: key, HostRoot: host, Secrets: wsstest.StableSecrets(),
 				Activate: func() error { activated = true; return nil }}
 			_, err := ap.Apply(b, false)
 			if err == nil {
@@ -292,7 +293,7 @@ func TestInstallWithoutKeyFailsBeforeOverwrite(t *testing.T) {
 
 func TestRollbackWithoutKeyLeavesSnapshots(t *testing.T) {
 	data := t.TempDir()
-	b, err := compile.Compile(defaults.Example())
+	b, err := wsstest.StableCompileErr(defaults.Example())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +305,7 @@ func TestRollbackWithoutKeyLeavesSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(filepath.Join(data, "applied", "canonical.txt"))
-	ap := Applier{DataDir: data, Install: true, LocalID: "gw", HostRoot: t.TempDir(), Activate: func() error { return nil }}
+	ap := Applier{DataDir: data, Install: true, LocalID: "gw", HostRoot: t.TempDir(), Secrets: wsstest.StableSecrets(), Activate: func() error { return nil }}
 	if err := ap.Rollback(); err == nil {
 		t.Fatal("rollback install without a key must fail")
 	}
@@ -320,12 +321,12 @@ func TestRollbackWithoutKeyLeavesSnapshots(t *testing.T) {
 // covered by the Linux netns test in internal/compile.
 func TestInstallSurfacesFirewallLoadFailure(t *testing.T) {
 	data, host := t.TempDir(), t.TempDir()
-	b, err := compile.Compile(defaults.Example())
+	b, err := wsstest.StableCompileErr(defaults.Example())
 	if err != nil {
 		t.Fatal(err)
 	}
 	const msg = "meridian-nft-load-failed: the batch was aborted as a whole; previous Meridian tables kept"
-	ap := Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: testKey(t), HostRoot: host,
+	ap := Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: testKey(t), HostRoot: host, Secrets: wsstest.StableSecrets(),
 		Activate: func() error { return errors.New(msg) }}
 	_, err = ap.Apply(b, false)
 	if err == nil || !strings.Contains(err.Error(), "meridian-nft-load-failed") {

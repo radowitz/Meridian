@@ -165,6 +165,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerPreflight(mux)
 	mux.HandleFunc("GET /api/artifacts", s.getArtifacts)
 	s.registerWithdraw(mux)
+	s.registerWSS(mux)
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
 	}
@@ -332,6 +333,11 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 	merr := cerr
 	if cs != nil {
 		merr = s.migrateNodesLocked(cs)
+		// An imported fixed-path topology: the fields move out (random
+		// path and certificate instead), as at startup.
+		if werr := s.migrateWSS(cs); werr != nil && merr == nil {
+			merr = werr
+		}
 	}
 	s.resMu.Unlock()
 	stored, _ := s.topology()
@@ -537,6 +543,14 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 		ap.Secrets = s.wgSecrets()
 	}
 	res, err := ap.Apply(b, body.DryRun)
+	if install {
+		ok, unknown := wssInstallResult(err)
+		msg := ""
+		if err != nil {
+			msg = apply.RedactSecrets(err.Error(), key, ap.Secrets)
+		}
+		s.recordWSS(localNodeID, b, ok, unknown, msg)
+	}
 	if err != nil {
 		writeTxnErr(w, err, key, http.StatusInternalServerError, ap.Secrets)
 		return
@@ -604,6 +618,11 @@ func (s *Server) postRollback(w http.ResponseWriter, r *http.Request) {
 		ap.Secrets = s.wgSecrets()
 	}
 	rep, err := ap.RollbackReport()
+	if body.Install && err == nil {
+		// The previous snapshot may carry earlier WSS material: the
+		// gateway's WSS ends are unknown until installed again.
+		s.markWSSNode(localNodeID, model.WSSStageUnknown, "网关运行时回滚到上一个快照")
+	}
 	if err != nil {
 		writeTxnErr(w, err, ap.PrivateKey, http.StatusConflict, ap.Secrets)
 		return

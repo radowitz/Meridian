@@ -37,6 +37,7 @@ import type {
 } from "./types";
 import { DeploymentRecords, GatewayWithdraw, WithdrawDialog } from "./Withdraw";
 import { roleLabel } from "./types";
+import { WSSPanel } from "./WSS";
 import {
   TABLE_SCROLL,
   ApiErrorAlert,
@@ -1421,6 +1422,7 @@ export default function DeployPage() {
       <PendingChanges nodeName={nodeName} />
       <InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} />
       <RemoteNodes nodes={remote} servers={servers.data?.servers} onWithdrawn={() => void deployments.reload()} />
+      <WSSPanel nodeName={nodeName} />
       <ArtifactsCard />
       <DeploymentRecords state={deployments} onChanged={() => void deployments.reload()} />
       <Section title="当前安装">

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/radowitz/meridian/internal/apply"
 	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/preflight"
 	"github.com/radowitz/meridian/internal/provision"
@@ -178,7 +179,16 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		writeCoded(w, http.StatusConflict, codeBundleChanged, "预检之后这个节点要下发的配置变了：重新预检后再执行", nil)
 		return
 	}
-	injected, err := provision.InjectPrivate(files, key)
+	// The node's WSS secrets (its listener's key and accepted prefixes,
+	// its clients' prefixes) are injected here, in memory, into the
+	// script that is sent over the pinned SSH session; nothing else
+	// (remote-access keys) is ever passed to a remote node.
+	wssSec, err := cs.WSSSecrets()
+	if err != nil {
+		writeResErr(w, err)
+		return
+	}
+	injected, err := provision.InjectPrivateWSS(files, key, wssSec)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
@@ -214,7 +224,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 	defer cancel()
 	res, err := s.connector(cs).RunScript(ctx, ident.target(), script)
-	out := provision.Redact(res.Output, key)
+	out := redactRemote(res.Output, key, wssSec)
 	so := parseScriptOutcome(out)
 	oc := provisionOutcome{NodeID: node.ID, ServerID: ident.ServerID, Address: ident.Address, Port: ident.Port, Fingerprint: ident.Fingerprint,
 		Run: run, Bundle: bundle, At: time.Now().UTC(), Leftovers: so.Leftovers, Kept: so.Kept, Restored: so.Restored,
@@ -231,6 +241,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		oc.OK = true
 		oc.Outcome = "installed"
 		s.saveOutcome(oc)
+		s.recordWSS(node.ID, b, true, false, "")
 		base["dry_run"] = false
 		base["outcome"] = "installed"
 		base["host_key"] = res.Fingerprint
@@ -242,7 +253,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusBadGateway
 	msg := ""
 	if err != nil {
-		msg = provision.Redact(err.Error(), key)
+		msg = redactRemote(err.Error(), key, wssSec)
 	}
 	switch {
 	case so.Refused != "":
@@ -291,6 +302,12 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 			msg += "。脚本可能在执行中被中断：结果不明，不当作成功；服务器上的补偿会在断线时运行，重新预检会显示它的 journal"
 		}
 	}
+	switch base["outcome"] {
+	case "refused", "compensated":
+		s.recordWSS(node.ID, b, false, false, msg)
+	case "left_behind", "unknown":
+		s.recordWSS(node.ID, b, false, true, msg)
+	}
 	if base["outcome"] != "not_started" {
 		oc.Outcome, _ = base["outcome"].(string)
 		oc.Code = code
@@ -305,4 +322,15 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		base["login_help"] = h
 	}
 	writeJSON(w, status, base)
+}
+
+// redactRemote hides the node key and every WSS secret (whole values and,
+// for a PEM key echoed in pieces, its longer lines) in script output.
+func redactRemote(text, key string, wss map[string]string) string {
+	text = apply.RedactSecrets(text, key, wss)
+	vals := make([]string, 0, len(wss))
+	for _, v := range wss {
+		vals = append(vals, v)
+	}
+	return credentials.Scrub(text, vals...)
 }

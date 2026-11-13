@@ -31,6 +31,7 @@ import type {
   Rule,
   ServerView,
   Topology,
+  WSSListenerView,
 } from "./types";
 
 const NOW = "2026-11-12T10:00:00Z";
@@ -2755,5 +2756,121 @@ describe("primary and backup hub", () => {
     expect(within(detail).queryByLabelText("国内入口地址（中继拨入）")).toBeNull();
     await userEvent.click(within(notice.closest(".ant-alert") as HTMLElement).getByRole("button", { name: /close|关闭/i }));
     await waitFor(() => expect(screen.queryByTestId("ix-hub-migration")).toBeNull());
+  });
+});
+
+// ----------------------------------------------------------- WSS carriers ---
+
+describe("WSS carriers: random path and pinned self-signed certificate", () => {
+  const FP = "AB:CD:".repeat(15) + "EF:01";
+  const NEWFP = "12:34:".repeat(15) + "56:78";
+  function listener(over: Partial<WSSListenerView> = {}): WSSListenerView {
+    return {
+      node_id: "hk-hub",
+      server_name: "w0123456789abcdef.invalid",
+      cert: { fingerprint_sha256: FP, not_before: NOW, not_after: "2027-11-12T10:00:00Z", created_at: NOW, days_left: 364 },
+      legacy: false,
+      rotating: false,
+      inconsistent: false,
+      links: [{ link_id: "gw-hub", dialer_id: "gw", path_set: true, path_created_at: NOW }],
+      parties: [
+        { party: "server", role: "server", node_id: "hk-hub", installed_stage: 0, target_stage: 0, involved: true },
+        { party: "client:gw-hub", role: "client", link_id: "gw-hub", node_id: "gw", installed_stage: 0, target_stage: 0, involved: true },
+      ],
+      next_steps: [],
+      results: [],
+      warnings: [],
+      ...over,
+    };
+  }
+  const view = (ls: WSSListenerView[]) => ({ listeners: ls, validity_days: 365, rotate_before: 30, verification: "唯一信任根", interruption: "中断几秒。", order: "交替下发。" });
+
+  it("shows fingerprint, validity and 'set' only, and regenerates a certificate through the API", async () => {
+    let current = listener();
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/wss": () => view([current]),
+      "POST /api/wss/listeners/:id/regenerate-cert": (req) => {
+        current = listener({
+          rotating: true,
+          rotation_reason: "manual_cert",
+          rotation_started: NOW,
+          pending_cert: { fingerprint_sha256: NEWFP, not_before: NOW, not_after: "2027-12-12T10:00:00Z", created_at: NOW, days_left: 394 },
+          parties: [
+            { party: "server", role: "server", node_id: "hk-hub", installed_stage: 1, target_stage: 1, involved: true },
+            { party: "client:gw-hub", role: "client", link_id: "gw-hub", node_id: "gw", installed_stage: 0, target_stage: 2, involved: true },
+          ],
+          inconsistent: true,
+          next_steps: [{ node_id: "gw", party: "client:gw-hub", from: 0, to: 2 }],
+          warnings: [{ level: "warning", message: "两端暂不一致（只更新了一端）" }],
+        });
+        return { listener: { ...current, node_id: req.params.id }, committed: false };
+      },
+    });
+    renderAt("#/deploy");
+    const card = await screen.findByTestId("wss-listener-hk-hub");
+    expect(card).toHaveTextContent(FP);
+    expect(card).toHaveTextContent("w0123456789abcdef.invalid");
+    expect(card).toHaveTextContent("剩 364 天");
+    expect(within(screen.getByTestId("wss-links-hk-hub")).getByText("已设置")).toBeInTheDocument();
+    expect(card).not.toHaveTextContent(/ACME/i);
+    await userEvent.click(within(card).getByRole("button", { name: btn("重新生成证书") }));
+    await confirmModal("重新生成");
+    await waitFor(() => expect(api.find("POST /api/wss/listeners/hk-hub/regenerate-cert")).toHaveLength(1));
+    const next = await screen.findByTestId("wss-next-hk-hub");
+    expect(next).toHaveTextContent("安装到本机（网关）");
+    expect(next).toHaveTextContent("阶段 2");
+    const after = screen.getByTestId("wss-listener-hk-hub");
+    expect(after).toHaveTextContent(NEWFP);
+    expect(after).toHaveTextContent("两端暂不一致");
+    expect(within(screen.getByTestId("wss-parties-hk-hub")).getAllByText(/阶段 1/).length).toBeGreaterThan(0);
+    expect(within(after).getByRole("button", { name: btn("重新生成证书") })).toBeDisabled();
+    expect(webStorageDump()).not.toContain(FP);
+  });
+
+  it("regenerates a link's path and shows a legacy migration and an expired certificate", async () => {
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/wss": () =>
+        view([
+          listener(),
+          listener({
+            node_id: "ali",
+            legacy: true,
+            rotating: true,
+            rotation_reason: "migration",
+            links: [{ link_id: "gw-ali", dialer_id: "gw", path_set: true, path_created_at: NOW, legacy_path_accepted: true }],
+            cert: { fingerprint_sha256: FP, not_before: NOW, not_after: "2026-11-01T00:00:00Z", created_at: NOW, days_left: -11 },
+            warnings: [{ level: "error", message: "证书已过期：客户端校验证书有效期，WSS 承载已无法建立。" }],
+          }),
+        ]),
+      "POST /api/wss/links/:id/regenerate-path": () => ({ listener: listener(), committed: true }),
+    });
+    renderAt("#/deploy");
+    const ali = await screen.findByTestId("wss-listener-ali");
+    expect(ali).toHaveTextContent("旧固定路径仍被接受");
+    expect(ali).toHaveTextContent("证书已过期");
+    expect(ali).toHaveTextContent("需要立即处理");
+    expect(within(ali).getByRole("button", { name: btn("重新生成路径") })).toBeDisabled();
+    const hub = screen.getByTestId("wss-listener-hk-hub");
+    await userEvent.click(within(hub).getByRole("button", { name: btn("重新生成路径") }));
+    await confirmModal("重新生成");
+    await waitFor(() => expect(api.find("POST /api/wss/links/gw-hub/regenerate-path")).toHaveLength(1));
+  });
+
+  it("has no path or certificate-path inputs in the topology editor and shows the link's WSS status", async () => {
+    const t = topology({ links: [{ id: "gw-hub", from: "gw", to: "hk-hub", transport: "wg_over_wss", enabled: true, standby: false }] });
+    fakeApi({ "GET /api/topology": () => t, "GET /api/wss": () => view([listener()]) });
+    renderAt("#/topology/gw-hub");
+    const status = await screen.findByTestId("wss-link-status");
+    expect(status).toHaveTextContent("已设置（面板随机生成，不显示）");
+    expect(status).toHaveTextContent(FP);
+    renderAt("#/topology/hk-hub");
+    const detail = await screen.findByTestId("node-detail");
+    await userEvent.click(within(detail).getByText("WSS 入口（高级）"));
+    expect(await within(detail).findByTestId("wss-node-note")).toHaveTextContent("没有 ACME");
+    expect(within(detail).queryByText("WSS 路径前缀")).toBeNull();
+    expect(within(detail).queryByText("TLS 证书路径")).toBeNull();
+    expect(within(detail).queryByText("TLS 私钥路径")).toBeNull();
   });
 });

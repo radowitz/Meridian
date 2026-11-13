@@ -33,6 +33,10 @@ type Bundle struct {
 	Order  []string              `json:"order"`
 	Issues []validate.Issue      `json:"issues"`
 	Paths  []validate.PathReport `json:"paths"`
+	// WSS is set by ResolveWSS: the rotation stage each WSS party was
+	// rendered at (recorded after a successful install) and unresolved
+	// tokens.
+	WSS *WSSPlan `json:"-"`
 }
 
 func (b Bundle) Canonical() string {
@@ -247,13 +251,18 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			add(prefix+"etc/systemd/system/meridian-mesh-seal.timer", renderMeshSealTimer())
 		}
 		if srv := renderWstunnelServer(n, tunnels); srv != "" {
-			add(prefix+"etc/systemd/system/wstunnel-meridian.service", srv)
+			add(prefix+"etc/systemd/system/"+WSSServerUnit, srv)
+			add(prefix+strings.TrimPrefix(WSSServerYAML, "/"), renderWSSRestrictions(n, tunnels))
+			add(prefix+strings.TrimPrefix(WSSServerCert, "/"), renderWSSServerCert(n))
+			add(prefix+strings.TrimPrefix(WSSServerKey, "/"), renderWSSServerKey(n))
 		}
 		for _, tun := range nodeTunnels {
 			if tun.Mode != "wss" || tun.Dialer().ID != n.ID {
 				continue
 			}
-			add(prefix+"etc/systemd/system/wstunnel-client-"+tun.LinkID+".service", renderWstunnelClient(tun))
+			add(prefix+"etc/systemd/system/"+WSSClientUnit(tun.LinkID), renderWstunnelClient(tun))
+			add(prefix+strings.TrimPrefix(WSSClientEnv(tun.LinkID), "/"), renderWSSClientEnv(tun))
+			add(prefix+strings.TrimPrefix(WSSClientTrust(tun.LinkID), "/"), renderWSSClientTrust(tun))
 		}
 		switch n.Role {
 		case model.RoleGateway:

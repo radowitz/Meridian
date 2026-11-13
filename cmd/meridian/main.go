@@ -110,6 +110,9 @@ func main() {
 		log.Printf("region-group migration: created groups %v, %d rules, %d nodes", rep.CreatedGroups, rep.Rules, rep.Nodes)
 	}
 	srv.StartUnlockScheduler()
+	// WSS certificates: a rotation starts on its own 30 days before expiry
+	// (the panel then shows which ends to re-install, in order).
+	srv.StartWSSScheduler()
 	// At boot the LAN address may not exist yet (ifupdown allow-hotplug +
 	// DHCP; Docker starts the container before the lease). Wait for it,
 	// bounded and with one log line every 10 s, instead of crash-looping

@@ -13,6 +13,7 @@ import (
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/defaults"
 	"github.com/radowitz/meridian/internal/preflight"
+	"github.com/radowitz/meridian/internal/wsstest"
 )
 
 func TestKeypairShape(t *testing.T) {
@@ -446,13 +447,10 @@ func (sb *sandbox) read(p string) string {
 
 func testScript(t *testing.T, node, expect string) (string, map[string]string) {
 	t.Helper()
-	b, err := compile.Compile(defaults.Example())
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := wsstest.StableCompile(t, defaults.Example())
 	files := FilesFor(b.Files, node)
 	kp, _ := GenerateKeypair()
-	injected, err := InjectPrivate(files, kp.Private)
+	injected, err := InjectPrivateWSS(files, kp.Private, wsstest.StableSecrets())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,13 +658,10 @@ func TestProvisionScriptUnboundRefuses(t *testing.T) {
 // scriptWith builds the bound script of node with the given artifacts.
 func scriptWith(t *testing.T, node, expect string, arts []Artifact) (string, map[string]string) {
 	t.Helper()
-	b, err := compile.Compile(defaults.Example())
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := wsstest.StableCompile(t, defaults.Example())
 	files := FilesFor(b.Files, node)
 	kp, _ := GenerateKeypair()
-	injected, err := InjectPrivate(files, kp.Private)
+	injected, err := InjectPrivateWSS(files, kp.Private, wsstest.StableSecrets())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,16 +15,23 @@ import (
 // It is derived from the rendered files only (FootprintOf), so it describes
 // exactly what the install would do, not what the topology intends.
 type Footprint struct {
-	Files      []string       `json:"files"`
-	Interfaces []IfacePlan    `json:"interfaces"`
-	Listens    []ListenPlan   `json:"listens"`
-	Routes     []RoutePlan    `json:"routes"`
-	Rules      []RulePlan     `json:"rules"`
-	Tables     []int          `json:"route_tables"`
-	TableNames map[int]string `json:"route_table_names"`
-	NFTTables  []string       `json:"nft_tables"`
-	Marks      []string       `json:"fwmarks"`
-	Units      []string       `json:"units"`
+	Files []string `json:"files"`
+	// SecretFiles are the files installed 0600 in a 0700 directory
+	// because they carry a secret: WireGuard configs (private key) and the
+	// WSS restrictions, private key and client environments (path
+	// prefixes). Their hashes in the node manifest are SHA-256 of
+	// high-entropy secrets (WireGuard key: 256 bits; path prefix: 192
+	// bits; EC key) and do not reveal them.
+	SecretFiles []string       `json:"secret_files"`
+	Interfaces  []IfacePlan    `json:"interfaces"`
+	Listens     []ListenPlan   `json:"listens"`
+	Routes      []RoutePlan    `json:"routes"`
+	Rules       []RulePlan     `json:"rules"`
+	Tables      []int          `json:"route_tables"`
+	TableNames  map[int]string `json:"route_table_names"`
+	NFTTables   []string       `json:"nft_tables"`
+	Marks       []string       `json:"fwmarks"`
+	Units       []string       `json:"units"`
 	// Packages are the distribution packages the install script installs
 	// (apt-get) when the command is missing. Binaries are the panel-delivered
 	// executables (wstunnel, smartdns) the bundle's units run from their
@@ -146,6 +153,20 @@ var (
 	reSysctlLine = regexp.MustCompile(`(?m)^\s*-?\s*(net\.[a-z0-9_.@-]+)\s*=`)
 )
 
+// SecretFile reports whether a host path is installed 0600 because it
+// carries a secret (internal/compile.WSSSecretFile plus WireGuard
+// configs; a test keeps the two rules equal).
+func SecretFile(p string) bool {
+	p = "/" + strings.TrimPrefix(p, "/")
+	if strings.HasPrefix(p, "/etc/wireguard/") && strings.HasSuffix(p, ".conf") {
+		return true
+	}
+	if !strings.HasPrefix(p, "/etc/meridian/wss/") {
+		return false
+	}
+	return strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".key") || strings.HasSuffix(p, ".env")
+}
+
 // FWCompatPath is the coexistence script (internal/compile.FWCompatPath).
 const FWCompatPath = "/usr/local/sbin/meridian-fwcompat.sh"
 
@@ -197,7 +218,8 @@ func (fp Footprint) PreflightPaths() []string {
 func FootprintOf(files map[string]string) Footprint {
 	fp := Footprint{TableNames: map[int]string{}, Files: []string{}, Interfaces: []IfacePlan{}, Listens: []ListenPlan{},
 		Routes: []RoutePlan{}, Rules: []RulePlan{}, Tables: []int{}, NFTTables: []string{}, Marks: []string{}, Units: []string{},
-		Packages: []PackagePlan{}, Binaries: []string{}, LoAddrs: []netip.Prefix{}, SysctlIfaces: []string{}, SysctlKeys: []string{}, FWRules: []string{}}
+		Packages: []PackagePlan{}, Binaries: []string{}, LoAddrs: []netip.Prefix{}, SysctlIfaces: []string{}, SysctlKeys: []string{}, FWRules: []string{},
+		SecretFiles: []string{}}
 	keys := map[string]bool{}
 	paths := make([]string, 0, len(files))
 	for p := range files {
@@ -215,6 +237,9 @@ func FootprintOf(files map[string]string) Footprint {
 	for _, p := range paths {
 		body := files[p]
 		fp.Files = append(fp.Files, p)
+		if SecretFile(p) {
+			fp.SecretFiles = append(fp.SecretFiles, p)
+		}
 		dir, base := splitDir(p)
 		switch {
 		case dir == "/etc/wireguard" && strings.HasSuffix(base, ".conf"):

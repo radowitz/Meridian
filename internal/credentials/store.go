@@ -174,6 +174,11 @@ type index struct {
 	// WGSecrets are WireGuard keys for the gateway's remote access (its
 	// private key and the devices' pre-shared keys). Metadata only here.
 	WGSecrets []WGSecretMeta `json:"wireguard_secrets,omitempty"`
+	// WSSSecrets are the WSS carriers' upgrade path prefixes and
+	// certificate private keys (metadata only here); WSS is the public
+	// per-listener state (certificates, fingerprints, rotation stages).
+	WSSSecrets []WSSSecretMeta `json:"wss_secrets,omitempty"`
+	WSS        model.WSSState  `json:"wss,omitempty"`
 }
 
 // secret is the content of one secret file.
@@ -184,6 +189,7 @@ type secret struct {
 	Passphrase string `json:"passphrase,omitempty"`
 	APIToken   string `json:"api_token,omitempty"`
 	WGKey      string `json:"wg_key,omitempty"`
+	WSSValue   string `json:"wss_value,omitempty"`
 }
 
 // Store is the credential store. Methods are safe for concurrent use.
@@ -406,6 +412,9 @@ func (s *Store) cleanOrphans() {
 	for _, w := range s.idx.WGSecrets {
 		want[filepath.Base(s.secretPath(w.ID, 1))] = true
 	}
+	for _, w := range s.idx.WSSSecrets {
+		want[filepath.Base(s.secretPath(w.ID, 1))] = true
+	}
 	for _, d := range []string{s.dir, filepath.Join(s.dir, "secrets")} {
 		entries, err := os.ReadDir(d)
 		if err != nil {
@@ -491,6 +500,9 @@ func (s *Store) commit(next index, secrets map[string]secret) error {
 	for _, w := range next.WGSecrets {
 		keep[s.secretPath(w.ID, 1)] = true
 	}
+	for _, w := range next.WSSSecrets {
+		keep[s.secretPath(w.ID, 1)] = true
+	}
 	for _, c := range old.Credentials {
 		if p := s.secretPath(c.ID, c.Gen); !keep[p] {
 			_ = os.Remove(p)
@@ -502,6 +514,11 @@ func (s *Store) commit(next index, secrets map[string]secret) error {
 		}
 	}
 	for _, w := range old.WGSecrets {
+		if p := s.secretPath(w.ID, 1); !keep[p] {
+			_ = os.Remove(p)
+		}
+	}
+	for _, w := range old.WSSSecrets {
 		if p := s.secretPath(w.ID, 1); !keep[p] {
 			_ = os.Remove(p)
 		}
@@ -555,6 +572,11 @@ func (i *index) idTaken(id string) bool {
 		}
 	}
 	for _, x := range i.WGSecrets {
+		if x.ID == id {
+			return true
+		}
+	}
+	for _, x := range i.WSSSecrets {
 		if x.ID == id {
 			return true
 		}

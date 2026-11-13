@@ -19,6 +19,7 @@ import (
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/remoteaccess"
+	"github.com/radowitz/meridian/internal/wsstest"
 )
 
 // simHost is a hostexec.Runner standing in for a Debian host. "systemctl
@@ -261,7 +262,7 @@ func newRig(t *testing.T) *rig {
 }
 
 func (r *rig) applier() Applier {
-	return Applier{DataDir: r.data, Install: true, LocalID: "gw", PrivateKey: r.key, HostRoot: r.host, Host: r.rt}
+	return Applier{DataDir: r.data, Install: true, LocalID: "gw", PrivateKey: r.key, HostRoot: r.host, Host: r.rt, Secrets: wsstest.StableSecrets()}
 }
 
 // restart models a new panel process: same disks, same host, new agent
@@ -272,7 +273,7 @@ func (r *rig) restart() {
 
 func compileTopo(t *testing.T, topo model.Topology) *compile.Bundle {
 	t.Helper()
-	b, err := compile.Compile(topo)
+	b, err := wsstest.StableCompileErr(topo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,14 +348,14 @@ func TestNoHostExecFailsBeforeAnything(t *testing.T) {
 	data := t.TempDir()
 	// Real root, no host boundary: refused up front (nothing can be written
 	// to / by this test because the check runs first).
-	ap := Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: testKey(t)}
+	ap := Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: testKey(t), Secrets: wsstest.StableSecrets()}
 	if _, err := ap.Apply(b, false); !errors.Is(err, ErrNoHostExec) {
 		t.Fatalf("got %v", err)
 	}
 	// A boundary that is configured but unreachable: same, before any write.
 	host := t.TempDir()
 	unreachable := &hostexec.Client{Socket: filepath.Join(t.TempDir(), "none.sock"), TokenFile: filepath.Join(t.TempDir(), "t")}
-	ap = Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: testKey(t), HostRoot: host, Host: unreachable}
+	ap = Applier{DataDir: data, Install: true, LocalID: "gw", PrivateKey: testKey(t), HostRoot: host, Host: unreachable, Secrets: wsstest.StableSecrets()}
 	if _, err := ap.Apply(b, false); !errors.Is(err, ErrNoHostExec) {
 		t.Fatalf("got %v", err)
 	}
@@ -800,6 +801,10 @@ func legacyHost(t *testing.T, r *rig, topo model.Topology, key string) map[strin
 		if err != nil {
 			t.Fatal(err)
 		}
+		// A running data plane has its WSS secrets in place as well.
+		if body, err = InjectSecrets(rel, body, wsstest.StableSecrets()); err != nil {
+			t.Fatal(err)
+		}
 		p := filepath.Join(r.host, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -1040,7 +1045,9 @@ func raTopology(t *testing.T) raFixture {
 
 func (r *rig) raApplier(secrets map[string]string) Applier {
 	a := r.applier()
-	a.Secrets = secrets
+	for k, v := range secrets {
+		a.Secrets[k] = v
+	}
 	return a
 }
 
@@ -1178,7 +1185,20 @@ func TestRemoteReferencedSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !refs["ra-key-test"] || !refs["ra-psk-aaaa"] || len(refs) != 2 {
+	// Exactly the two remote-access ids plus the WSS secrets the bundle
+	// names (path prefixes and listener keys are referenced the same way).
+	nonWSS := 0
+	for id := range refs {
+		if !IsWSSSecretID(id) {
+			nonWSS++
+		}
+	}
+	if !refs["ra-key-test"] || !refs["ra-psk-aaaa"] || nonWSS != 2 {
 		t.Fatalf("refs %v", refs)
+	}
+	for _, id := range SecretRefs(compileTopo(t, f.topo).Canonical()) {
+		if !refs[id] {
+			t.Fatalf("referenced secret %s missing from %v", id, refs)
+		}
 	}
 }

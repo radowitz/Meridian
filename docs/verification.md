@@ -156,6 +156,38 @@ sudo bash deploy/verify-smartdns.sh qq.com     # 或者指定域名
 
 DoH 只能拦截清单内的公共解析器。用非常见的 DoH 地址仍可能绕过，这是已知边界，不要把它写成「绝对不泄漏」。
 
+## WSS 承载：随机路径、自签证书与轮换
+
+等级：自动化测试（已有）+ 本机容器里真实 wstunnel 二进制的回环测试（已执行，见下）+ 实机人工签收（**都还没有做**）。机制见 architecture.md「WSS 承载：随机路径与自签证书」。
+
+自动化测试（不连接任何远端）：
+
+- `go test ./internal/credentials -run WSS`：路径格式与熵（2000 个互不相同、48 位十六进制）、证书参数（P-256、SHA-256、非 CA、唯一 SAN、有效期、指纹）、Go TLS 按客户端同样的信任模型拒绝别的自签证书 / 别的名字 / 过期证书并接受轮换中的双根；生成幂等、秘密只在 0600 的生成文件里不在索引里；链路和监听删除后秘密变成未使用；**轮换状态机的随机化测试**（60 个种子，安装成功 / 补偿失败 / 结果不明随机交替，每一步检查两端实际运行的阶段都能互通，最终完成并释放旧密钥）；固定顺序的中断与补偿；回滚与撤回的标记；注入时钟的到期轮换；旧版迁移（部署过的监听进入迁移、旧前缀不是纯 token 时不带过去、幂等、之后不再进入迁移）。
+- `go test ./internal/compile -run WSS`：渲染出的服务端 / 客户端单元参数逐字比对（单枢纽、中继、双枢纽的备用枢纽 WSS 链路、中继的故障切换 WSS 腿）：服务端只用 `--restrict-config`，每条链路一条规则、只放行 UDP 到 `127.0.0.1` 上自己的 WG 端口；客户端有 `--tls-verify-certificate`、`--tls-sni-override ${MERIDIAN_WSS_SNI}`、`SSL_CERT_FILE` 指向信任文件、`SSL_CERT_DIR=` 为空，命令行里没有路径前缀；解析后的包里没有任何秘密；轮换阶段 1 的服务端接受两个前缀、仍出示旧证书，客户端信任两张证书；没有材料时记号保留且被两条安装路径和预览脚本拒绝；路径和私钥不能注入到错误的文件，远程接入密钥不能发给远端节点；**结构性的否定用例**：用注入后的真实文件，自己的前缀只到自己的端口，别的链路的前缀、旧固定前缀、截断 / 加长 / 大写的前缀都被拒绝；按信任文件和 `.env` 里的名字做的 TLS 握手接受本监听、拒绝别的监听的信任文件和别的名字。
+- `go test ./internal/provision -run WSS`（沙箱里真跑装机脚本）：WSS 目录 0700、`server.yaml` / `server.key` / `.env` 0600、证书 0644；清单记录这些文件但不含秘密；只重启 WSS 文件真的变了的那个单元；换证书时服务端重启失败 → 补偿恢复旧证书和私钥并在恢复的文件上再重启一次；撤回删掉 WSS 文件和目录。
+- `go test ./internal/api -run WSS`：网关安装把前缀写进宿主的 0600 文件，API（各个只读视图、`/api/wss`、编译、差异、校验、宿主状态、装机记录）、日志、数据目录（数据库和快照）里都没有 WSS 秘密，`/api/wss` 也不返回秘密在凭据存储里的 id；证书轮换经网关安装完成，旧私钥在不再被任何快照引用后删除；运行时回滚后网关一端显示「配置不确定」并列为下一步；旧版拓扑的迁移（字段移出、迁移状态、服务端接受新旧前缀、幂等、之后导入的旧字段同样移出）；远端装机只把这个节点的 WSS 秘密放进装机脚本的标准输入，别的节点的不放，预览只有占位符且拒绝运行。
+- `npm --prefix web test`（`pages.test.tsx`「WSS carriers」）：部署页显示指纹、合成名称、到期、路径「已设置」，重新生成证书后显示下一步、两端不一致和各端阶段；迁移和过期证书的告警；重新生成路径；拓扑页没有路径和证书路径输入框，链路编辑器显示 WSS 状态。
+
+真实二进制（可选，Linux）：`TestWstunnelRealBinary` 用编译器渲染出的参数和环境、注入后的真实文件，在回环上跑固定版本的 wstunnel：正确的证书 + 名字 + 路径时 UDP 包能过；另一个监听的证书（服务端日志 `received fatal alert: UnknownCA`）、另一个名字（`BadCertificate`）、另一个路径和旧固定路径（`Rejecting connection with not allowed destination`，客户端 `Invalid status code: 400`）都过不去；去掉 `--tls-verify-certificate` 的对照组用错误证书能过；轮换用的双根信任文件能过；对服务端发普通请求和错误路径的升级请求都回 `400 "Invalid request"`、没有 `Server` 头。运行方式（在有这个二进制的 Linux 主机上；仓库里的 Go 1.22+）：
+
+```
+MERIDIAN_WSTUNNEL_BIN=/usr/local/sbin/meridian-wstunnel go test ./internal/compile -run TestWstunnelRealBinary -v
+# 或用镜像里的副本：
+MERIDIAN_WSTUNNEL_BIN=/usr/share/meridian/artifacts/wstunnel-x86_64 go test ./internal/compile -run TestWstunnelRealBinary -v
+```
+
+只在回环上监听（随机端口），不连接外网，不改系统配置；没有这个变量时测试跳过。也可以在 Mac 上交叉编译后放进镜像跑：`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o compile.test ./internal/compile`，`docker run --rm --platform linux/amd64 --network none -v $PWD/compile.test:/t/compile.test:ro -e MERIDIAN_WSTUNNEL_BIN=/usr/share/meridian/artifacts/wstunnel-x86_64 --entrypoint /t/compile.test meridian:local -test.run TestWstunnelRealBinary -test.v`。2026-11-13 在开发机上用本地镜像 `meridian:local`（linux/amd64 仿真，wstunnel 11.1.0）这样跑过，全部通过；这是本机容器里的回环，**不是**真实主机或真实网络路径。
+
+实机签收（**都还没有做**）：
+
+- [ ] 升级后第一次打开面板：拓扑里不再有 `wss_path_prefix` / `tls_*`；「部署」页的「WSS 承载」对以前装过的监听显示「从旧版固定路径迁移中」和下一步。
+- [ ] 按下一步依次重新下发服务端、客户端、服务端；每一步之后 WSS 腿仍然可用（`wg show` 的 WSS 接口最近握手在更新），最后旧前缀不再被接受。
+- [ ] 中继上 `ls -l /etc/meridian/wss` 是 0700，`server.key`、`server.yaml`、`client-*.env` 是 0600；`ps -o args -C meridian-wstunnel` 里没有路径前缀。
+- [ ] 从外部 `curl -vk https://<中继>:<WSS 端口>/` 得到 400，证书是自签、名字是 `.invalid`；`openssl s_client -connect <中继>:<端口> -servername x.invalid` 能看到同一张证书（证书对任何人可见）。
+- [ ] 把网关上一条链路的信任文件换成别的证书后重启客户端：服务端日志出现 `UnknownCA`，WSS 腿不通；恢复后通。
+- [ ] 手动重新生成证书并按下一步完成轮换；途中只下发一端时面板显示「两端暂不一致」而 WSS 腿仍通；每次下发时 WSS 腿中断的时长（预计几秒）记下来。
+- [ ] 证书到期前 30 天的自动轮换：把面板的时钟（或用一张短有效期的证书，需要临时改代码）推到到期前，确认面板告警且没有自动改动主机。
+
 ## WebRTC
 
 等级：实机人工签收。
@@ -613,6 +645,8 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 | 同上：远程设备创建 → 安装 → 停用 → 重新生成 → 失败补偿 | `internal/api/remote_access_test.go` `TestRemoteAccessLifecycleAndSecrets` |
 | 设备私钥从不落盘（含 `secrets/` 和已安装的宿主目录），重新生成后旧预共享密钥不在 `mra.conf` | `secrets_seams_test.go` `TestRegeneratedDeviceKeysAreNeverStored` |
 | 账户与凭据创建、错误信息、快照、编译、差异 | `internal/api/resources_test.go` `TestResourceLifecycleAndReferences`、`TestSecretsStayOutOfSnapshotsAndBundles`、`TestErrorsScrubShortSecrets` |
+| WSS 路径前缀和证书私钥只在安装边界注入（网关安装事务、远端装机脚本），不在 API、日志、数据库 / 快照、拓扑、编译产物、差异、`/api/wss`、清单里；远端只收到自己的 WSS 秘密 | `internal/api/wss_test.go` `TestWSSGatewayInstallSecretsAndRotation`、`TestWSSProvisionInjectsOnlyIntoTheScript`；`internal/compile/wss_test.go` `TestWSSResolveRendersOnePathPerLinkAndNoSecretInBundle`；`internal/provision/wss_test.go`；`internal/credentials/wss_test.go` `TestEnsureWSSGeneratesAndIsIdempotent` |
+| WSS 轮换两端始终互通、失败补偿保留旧凭据、迁移幂等 | `internal/credentials/wss_test.go` `TestWSSCertRotationNeverBreaksTheCarrier`、`TestWSSRotationSequenceAndCompensation`、`TestWSSLegacyMigration`；`internal/api/wss_test.go` `TestWSSLegacyMigrationThroughThePanel` |
 | 网关和节点 WireGuard 私钥只在安装边界注入 | `internal/api/server_test.go` `TestApplyInstallInjectsStoredKey`；`internal/apply` `TestInstallInjectsKeyAndKeepsSnapshotsRedacted`、`TestRemotePeersFollowTransaction`；`internal/compile` `TestStoredPrivateKeyStaysOutOfBundle`、`TestRemoteBundleCarriesNoSecrets`；面板「防泄露」的 `bundle_keys_placeholder` |
 | 改版前数据目录一次升级（池 → 地区组、节点 `ssh_*` → 服务器、`mesh/cloudflare.json` → 账户、Mesh 记录 schema 2 → 3），按 `cmd/meridian` 的启动顺序，第二次启动不改任何东西 | `internal/api/upgrade_test.go` `TestUpgradeFromPreRedesignDataDir`（固件是 `5b01903` 的仓库示例）；各自的单项：`internal/store/store_test.go`、`internal/credentials/store_test.go` `TestMigrateNodesIdempotentAndInterrupted` / `TestMigrateLegacyCloudflareIdempotent`、`internal/mesh/upgrade_test.go`、`resources_test.go` `TestMigrationKeepsDeploymentsAndIsIdempotent` |
 | 被引用时拒绝删除：服务器、凭据、Cloudflare 账户、地区组（含只被默认组引用） | `TestResourceLifecycleAndReferences`、`TestCloudflareAccountBinding`、`TestMeshDeployAndWithdrawByID`、`internal/api/region_groups_test.go` `TestRegionGroupCreatePatchDelete`、`upgrade_test.go` `TestDefaultGroupReferenceBlocksDeletion` |

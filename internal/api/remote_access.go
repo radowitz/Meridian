@@ -783,6 +783,7 @@ func (s *Server) GCRemoteSecrets() {
 	s.raMu.Lock()
 	defer s.raMu.Unlock()
 	s.gcRemoteSecretsLocked(cs, t)
+	s.gcWSSSecrets(cs)
 }
 
 // wgSecrets are the WireGuard secrets for the install boundary. With no
@@ -797,6 +798,17 @@ func (s *Server) wgSecrets() map[string]string {
 	if err != nil {
 		log.Printf("remote access: WireGuard secrets unreadable: %v", err)
 		return nil
+	}
+	// The WSS carriers' secrets (path prefixes, the listener's private
+	// key) go through the same install boundary (apply.InjectSecrets
+	// keeps each kind to its own files).
+	w, err := cs.WSSSecrets()
+	if err != nil {
+		log.Printf("wss: secrets unreadable: %v", err)
+		return m
+	}
+	for id, v := range w {
+		m[id] = v
 	}
 	return m
 }

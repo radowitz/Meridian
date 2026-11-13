@@ -537,7 +537,7 @@ func readNodeFiles(snapshot, nodeID string) (map[string]string, error) {
 
 func hostMode(rel string) os.FileMode {
 	switch {
-	case isWireGuardConf(rel):
+	case isWireGuardConf(rel), compile.WSSSecretFile(rel):
 		return 0o600
 	case strings.HasSuffix(rel, ".sh") || strings.HasPrefix(rel, "usr/local/sbin/"):
 		return 0o755

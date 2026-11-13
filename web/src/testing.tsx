@@ -71,6 +71,7 @@ export const DEFAULTS: Record<string, Handler> = {
   "POST /api/diff": () => ({ diff: "（没有变化）\n", order: [], issues: [] }),
   "GET /api/lists/job": () => ({ job: null }),
   "GET /api/artifacts": () => ({ artifacts: [] }),
+  "GET /api/wss": () => ({ listeners: [], validity_days: 365, rotate_before: 30, verification: "", interruption: "", order: "" }),
   "GET /api/unlock/jobs": () => ({ jobs: [], running: "", catalog: [], available: false }),
   "GET /api/mesh": () => ({
     dataplane: "unverified",

@@ -144,7 +144,13 @@ type Node struct {
 	IngressV4        string `json:"ingress_v4,omitempty"`
 	IngressInterface string `json:"ingress_interface,omitempty"`
 
-	WSSListenPort int    `json:"wss_listen_port,omitempty"`
+	WSSListenPort int `json:"wss_listen_port,omitempty"`
+	// WSSPathPrefix, TLSCertPath and TLSKeyPath are legacy input only (the
+	// fixed path and operator certificate files of the versions before the
+	// panel generated them). The panel moves them out of the stored
+	// topology when it starts and on every save (api.migrateWSS); the path
+	// and the certificate now come from the WSS state (model.WSSState) and
+	// the credential store. The compiler never reads them.
 	WSSPathPrefix string `json:"wss_path_prefix,omitempty"`
 	TLSCertPath   string `json:"tls_cert_path,omitempty"`
 	TLSKeyPath    string `json:"tls_key_path,omitempty"`

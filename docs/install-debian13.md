@@ -135,9 +135,11 @@ Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧
 - `203.0.113.0/24`、`198.51.100.0/24`：出口和中继的公网 IPv4
 - `2001:db8:100::/64`：局域网 IPv6 前缀占位，改成运营商实际委派的 /64
 - `fe80::1`：改成 ROS bridge 上的真实链路本地地址
-- `example.invalid`、`example-wss-path-prefix`：管理域名和 WSS 路径前缀
+- `example.invalid`：管理域名
 
-在每个 WSS 服务端放上正式证书（Let's Encrypt 或你自己的 CA），路径是 `/etc/meridian/tls/fullchain.pem` 和 `privkey.pem`。wstunnel 自带的证书会被识别，不要用。
+**WSS 不需要证书文件、域名或 ACME。** 每条 WSS 链路的升级路径前缀（192 位随机数）和每个 WSS 监听的自签证书（ECDSA P-256，365 天，名字是随机的 `….invalid`）都由面板生成，存进面板的凭据存储，只在「安装到本机」和远端「下发」时写进两端的 `/etc/meridian/wss/`（目录 0700，路径和私钥文件 0600）。客户端只信任这一张证书并校验这个名字（wstunnel 11.1.0 没有指纹固定选项，用的是 `SSL_CERT_FILE` 唯一信任根 + `--tls-verify-certificate` + `--tls-sni-override`）。「部署」页的「WSS 承载」显示每个监听的证书指纹、到期时间、各端阶段和下一步，并提供「重新生成路径」「重新生成证书」；轮换时两端交替重新下发，每次这一端的 WSS 腿中断几秒，只更新了一端时隧道仍通。证书到期前 30 天面板自动生成新证书并告警，但不会自己去改主机：要按下一步下发。
+
+**从旧版升级**：拓扑里的 `wss_path_prefix`、`tls_cert_path`、`tls_key_path` 在面板启动时被移出，换成随机路径和面板的证书（`/etc/meridian/tls/` 里你自己放的证书不再使用，也不会被删除）。以前装过的监听进入「迁移中」：先重新下发服务端（同时接受旧路径和新路径，旧客户端不受影响），再重新下发每个客户端，最后再下发一次服务端去掉旧路径。细节见 [架构](architecture.md)「WSS 承载：随机路径与自签证书」。这些都**没有在真实主机上执行过**。
 
 私钥由装机时生成，API 返回给浏览器时会打成 `***`。不要把私钥、面板数据目录或 `/var/lib/meridian` 提交进 git。
 

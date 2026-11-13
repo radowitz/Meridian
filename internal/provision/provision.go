@@ -178,6 +178,10 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		sb.WriteString("# PREVIEW ONLY: WireGuard configs still contain " + PrivatePlaceholder + ".\n")
 		sb.WriteString("echo 'meridian: preview script still has the private-key placeholder; refusing to overwrite configs' >&2\n")
 		sb.WriteString("exit 1\n")
+	} else if needsSecrets(files) {
+		sb.WriteString("# PREVIEW ONLY: WSS files still contain credential-store placeholders or unresolved WSS tokens.\n")
+		sb.WriteString("echo 'meridian: preview script still has secret placeholders; refusing to overwrite configs' >&2\n")
+		sb.WriteString("exit 1\n")
 	}
 	if err := CheckOptions(o); err != nil {
 		sb.WriteString("# NOT BOUND to a target: built without a node, deployment and preflight.\n")
@@ -321,6 +325,13 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		switch {
 		case strings.HasPrefix(clean, "/etc/wireguard/"):
 			mode, dirMode = "600", "700"
+		case strings.HasPrefix(clean, compile.WSSDir+"/"):
+			// The WSS directory holds the path prefixes and the private
+			// key: 0700, secret files 0600, certificates 0644.
+			dirMode = "700"
+			if compile.WSSSecretFile(clean) {
+				mode = "600"
+			}
 		case strings.HasSuffix(clean, ".sh") || strings.Contains(clean, "/usr/local/sbin/"):
 			mode = "755"
 		}
@@ -365,6 +376,25 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		if len(us) > 0 {
 			fmt.Fprintf(&sb, "if grep -qx %s \"$M_WORK/actions\"; then systemctl try-restart %s; fi\n", shellQuote("file-replaced "+artifacts.HostPath(a.Name)), strings.Join(us, " "))
 		}
+	}
+	// wstunnel units whose unit file, restrictions, certificate, key,
+	// environment or trust file changed are restarted (enable --now in
+	// meridian-up.sh leaves a running unit alone; a rotation stage must
+	// take effect in this run). The restart briefly interrupts that WSS
+	// carrier; a unit that does not come back fails the run (compensated).
+	for _, w := range wssUnitFiles(files) {
+		var q []string
+		for _, f := range w.files {
+			q = append(q, "m_changed "+shellQuote(f))
+		}
+		fmt.Fprintf(&sb, "if %s; then\n"+
+			"  m_note unit-restarted %s\n"+
+			"  systemctl restart %s\n"+
+			"  sleep 1\n"+
+			"  systemctl is-active --quiet %s || { echo 'meridian: %s is not active after its WSS files changed' >&2; systemctl status --no-pager %s >&2 || true; exit 1; }\n"+
+			"  echo MERIDIAN_WSS_RESTARTED %s\n"+
+			"fi\n",
+			strings.Join(q, " || "), shellQuote(w.unit), shellQuote(w.unit), shellQuote(w.unit), w.unit, shellQuote(w.unit), w.unit)
 	}
 	if hasDNS {
 		sb.WriteString(smartDNSStart)
@@ -562,6 +592,11 @@ m_compensate() {
       pkg) m_kept package "$p" ;;
     esac
   done
+  # A wstunnel unit this run restarted with new WSS files runs with what it
+  # read at start: restart it on the restored files (it was active before).
+  awk '$1=="unit-restarted" {print $2}' "$M_WORK/actions" 2>/dev/null | while read -r u; do
+    if [ "$(m_pre_unit "$u" 3)" = active ]; then systemctl restart "$u" >/dev/null 2>&1 || m_left unit "$u could not be restarted on the restored WSS files"; fi
+  done
   if [ "$M_EXPECT" = same ] && [ -x "$M_ROOT/usr/local/sbin/meridian-up.sh" ]; then
     if "$M_ROOT/usr/local/sbin/meridian-up.sh" >/dev/null 2>&1; then
       echo MERIDIAN_RESTORED_PREVIOUS
@@ -637,6 +672,12 @@ m_track() {
   else
     m_note "file-new $p"
   fi
+}
+# m_changed: this run created the file, or replaced it with different content.
+m_changed() {
+  grep -qxF "file-new $1" "$M_WORK/actions" && return 0
+  grep -qxF "file-replaced $1" "$M_WORK/actions" || return 1
+  ! cmp -s -- "$M_WORK/backup$1" "$1"
 }
 # m_commit writes the ownership manifest (what the next preflight reads to
 # tell "ours, same node" from everything else, and what a withdraw removes)
@@ -811,6 +852,43 @@ func artifactUnits(files map[string]string, name string) []string {
 	return out
 }
 
+type wssUnit struct {
+	unit  string
+	files []string
+}
+
+// wssUnitFiles maps each wstunnel unit of files to the files it reads.
+func wssUnitFiles(files map[string]string) []wssUnit {
+	var out []wssUnit
+	srv := "/etc/systemd/system/" + compile.WSSServerUnit
+	if _, ok := files[srv]; ok {
+		out = append(out, wssUnit{unit: compile.WSSServerUnit, files: []string{srv, compile.WSSServerYAML, compile.WSSServerCert, compile.WSSServerKey}})
+	}
+	var links []string
+	for p := range files {
+		name := strings.TrimPrefix(p, "/etc/systemd/system/")
+		if name != p && strings.HasPrefix(name, "wstunnel-client-") && strings.HasSuffix(name, ".service") {
+			links = append(links, strings.TrimSuffix(strings.TrimPrefix(name, "wstunnel-client-"), ".service"))
+		}
+	}
+	sort.Strings(links)
+	for _, l := range links {
+		out = append(out, wssUnit{unit: compile.WSSClientUnit(l), files: []string{"/etc/systemd/system/" + compile.WSSClientUnit(l), compile.WSSClientEnv(l), compile.WSSClientTrust(l)}})
+	}
+	return out
+}
+
+// needsSecrets reports whether any file still carries a credential-store
+// placeholder or an unresolved WSS token (a preview).
+func needsSecrets(files map[string]string) bool {
+	for _, body := range files {
+		if model.SecretPlaceholderRe.MatchString(body) || compile.HasWSSTokens(body) {
+			return true
+		}
+	}
+	return false
+}
+
 // FilesFor returns host paths (no nodes/<id> prefix) for one node.
 func FilesFor(bundle map[string]string, nodeID string) map[string]string {
 	prefix := "nodes/" + nodeID + "/"
@@ -830,14 +908,30 @@ func FilesFor(bundle map[string]string, nodeID string) map[string]string {
 // A remote-access secret placeholder (gateway only) is refused: SSH
 // provisioning never carries credential-store secrets.
 func InjectPrivate(files map[string]string, private string) (map[string]string, error) {
+	return InjectPrivateWSS(files, private, nil)
+}
+
+// InjectPrivateWSS is InjectPrivate plus the node's WSS secrets (path
+// prefixes, the listener's private key). Only WSS secrets are accepted;
+// any other credential-store id (remote-access keys) is never passed to
+// a remote node, so a placeholder naming one is refused.
+func InjectPrivateWSS(files map[string]string, private string, wss map[string]string) (map[string]string, error) {
 	out, err := apply.InjectPrivateKeys(files, private)
 	if err != nil {
 		return nil, err
 	}
+	only := map[string]string{}
+	for id, v := range wss {
+		if apply.IsWSSSecretID(id) {
+			only[id] = v
+		}
+	}
 	for p, body := range out {
-		if _, err := apply.InjectSecrets(strings.TrimPrefix(p, "/"), body, nil); err != nil {
+		v, err := apply.InjectSecrets(strings.TrimPrefix(p, "/"), body, only)
+		if err != nil {
 			return nil, err
 		}
+		out[p] = v
 	}
 	return out, nil
 }

@@ -46,6 +46,7 @@ import {
 } from "antd";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
+import { WSSLinkStatus } from "./WSS";
 import { serverReadiness } from "./ServersPage";
 import { href, useRouter, useTopologyDoc } from "./state";
 import type { DeploymentView, Issue, Link as TLink, Node, Role, ServerView, Settings, Topology, Transport } from "./types";
@@ -560,15 +561,9 @@ function NodeDetail({
                       aria-label="WSS 监听端口"
                     />
                   </Row>
-                  <Row label="WSS 路径前缀">
-                    <Input className="mono" value={node.wss_path_prefix ?? ""} onChange={(e) => patch({ wss_path_prefix: e.target.value || undefined })} />
-                  </Row>
-                  <Row label="TLS 证书路径" help="服务器上的文件路径。">
-                    <Input className="mono" value={node.tls_cert_path ?? ""} onChange={(e) => patch({ tls_cert_path: e.target.value || undefined })} />
-                  </Row>
-                  <Row label="TLS 私钥路径" help="服务器上的文件路径；面板不读取私钥内容。">
-                    <Input className="mono" value={node.tls_key_path ?? ""} onChange={(e) => patch({ tls_key_path: e.target.value || undefined })} />
-                  </Row>
+                  <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }} data-testid="wss-node-note">
+                    WSS 路径和证书由面板自动生成：每条 WSS 链路一个随机路径，每个监听一张自签证书，客户端只信任这张证书并校验合成名称；不需要域名、证书文件，也没有 ACME。状态、指纹和重新生成在「部署」页的「WSS 承载」里。
+                  </Typography.Paragraph>
                 </>
               ),
             },
@@ -664,6 +659,11 @@ function LinkDetail({ link, topo, onChange, onDelete }: { link: TLink; topo: Top
             style={{ width: "100%" }}
             aria-label="wstunnel 本地端口"
           />
+        </Row>
+      ) : null}
+      {link.transport === "wg_over_wss" || link.transport === "udp_wss_failover" || link.transport === "ix_replacement_wss" ? (
+        <Row label="WSS 路径与证书" help="面板自动生成：随机路径（只显示已设置）和监听的自签证书（客户端固定校验）。">
+          <WSSLinkStatus linkId={link.id} />
         </Row>
       ) : null}
       {link.transport === "cf_mesh" ? (

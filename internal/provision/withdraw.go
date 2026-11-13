@@ -395,6 +395,8 @@ w_remove_all() {
       if rm -f -- "$f"; then w_removed file "$p"; else w_left file "$p"; fi
     fi
   done
+  # The WSS directory (path prefixes, private key) goes when it is empty.
+  if [ -d "$M_ROOT/etc/meridian/wss" ] && [ ! -L "$M_ROOT/etc/meridian/wss" ]; then rmdir -- "$M_ROOT/etc/meridian/wss" 2>/dev/null || true; fi
   if [ "$reload" = 1 ]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
   # The list of interfaces meridian-up.sh switched to accept_ra=2. Their
   # runtime value stays 2 (forwarding stays on; 1 would drop their IPv6).

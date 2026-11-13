@@ -42,10 +42,7 @@
       "ix_bound": false,
       "ssh_host": "192.168.100.88",
       "ssh_port": 22,
-      "ssh_user": "root",
-      "wss_path_prefix": "example-wss-path-prefix",
-      "tls_cert_path": "/etc/meridian/tls/fullchain.pem",
-      "tls_key_path": "/etc/meridian/tls/privkey.pem"
+      "ssh_user": "root"
     },
     {
       "id": "ali",
@@ -68,10 +65,7 @@
       "ssh_host": "aliyun.example.invalid",
       "ssh_port": 22,
       "ssh_user": "root",
-      "wss_listen_port": 443,
-      "wss_path_prefix": "example-wss-path-prefix",
-      "tls_cert_path": "/etc/meridian/tls/fullchain.pem",
-      "tls_key_path": "/etc/meridian/tls/privkey.pem"
+      "wss_listen_port": 443
     },
     {
       "id": "ix",
@@ -111,10 +105,7 @@
       "ssh_port": 22,
       "ssh_user": "root",
       "hub_tier": "primary",
-      "wss_listen_port": 443,
-      "wss_path_prefix": "example-wss-path-prefix",
-      "tls_cert_path": "/etc/meridian/tls/fullchain.pem",
-      "tls_key_path": "/etc/meridian/tls/privkey.pem"
+      "wss_listen_port": 443
     },
     {
       "id": "hk-ix",

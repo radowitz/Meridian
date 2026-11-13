@@ -21,8 +21,15 @@ const (
 	poolKey   = "pool_runtime"
 )
 
+// compileTopo compiles t and resolves the WSS tokens from the panel's WSS
+// state (generating missing material first). Without a credential store
+// the tokens stay and every install path refuses the bundle.
 func (s *Server) compileTopo(t model.Topology) (*compile.Bundle, error) {
-	return compile.CompileWithDecisions(t, s.unlockDecisions(t))
+	b, err := compile.CompileWithDecisions(t, s.unlockDecisions(t))
+	if err != nil {
+		return nil, err
+	}
+	return s.resolveWSS(t, b), nil
 }
 
 func (s *Server) unlockDecisions(t model.Topology) map[string]string {

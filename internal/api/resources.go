@@ -76,6 +76,9 @@ func (s *Server) migrate(cs *credentials.Store) []error {
 	if err := s.upgradeMeshJournal(cs); err != nil {
 		errs = append(errs, fmt.Errorf("Mesh 部署记录升级：%w", err))
 	}
+	if err := s.migrateWSS(cs); err != nil {
+		errs = append(errs, fmt.Errorf("WSS 路径和证书：%w", err))
+	}
 	return errs
 }
 
