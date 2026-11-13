@@ -340,12 +340,24 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 
 ### 规则集
 
-`rule_sets`：`{id, name, url, format, behavior, source, interval_sec, allow_lan, origin}`，由 `/api/rule-sets` 管理（拓扑保存保留这个块）。
+`rule_sets`：`{id, name, url, format, behavior, source, interval_sec, allow_lan, origin}`，由 `/api/rule-sets` 管理（拓扑保存保留这个块）。视图另带 `auth`（订阅认证的元数据 `{kind, secret_set, updated_at}` 或 `null`，从不带内容）。
 
 - 格式（先看内容，再看扩展名；可手动指定）：Clash/mihomo 的 yaml（`payload:`，classical / domain / ipcidr）和 text 形式；Surge `.list`（`TYPE,值[,选项…]`，`#` 与 `//` 注释，附带的策略字段忽略并计数）；Surge DOMAIN-SET（`example.com` 只是这个名字，`.example.com` 是名字和下级）。domain 行为里 `+.x` = 名字和下级，`.x` = 只有下级（SmartDNS `*.x`），`x` = 只有这个名字，`*.x`（恰好一级）不能表达，计为不支持。Surge `DOMAIN-WILDCARD,*.x` = 所有下级，其它通配不支持。`.mrs` 二进制规则集识别出来并拒绝。BOM、CRLF、大小写混用的类型都接受。
 - 能执行的：`DOMAIN`、`DOMAIN-SUFFIX`、子域名条目、`IP-CIDR`/`IP-CIDR6`（`no-resolve` 计数，没有影响）。`DOMAIN-KEYWORD` 保留但不执行。其它（`PROCESS-NAME`、`USER-AGENT`、`URL-REGEX`、`IP-ASN`、`GEOIP`、端口、逻辑规则……）按类型计数；不会让整个规则集失败，但规则页和预览显示「只部分生效」和数字。
-- 下载在面板里进行（`internal/ruleset`）：URL 里能找到 GitHub 原始文件时（也包括 `https://<加速前缀>/https://raw.githubusercontent.com/…` 这种），按名单的下载策略试 jsDelivr（国内源）/ raw.githubusercontent.com（海外源），最后试原 URL；`source: url` 只用原 URL。上限 16 MiB、50 万条、60 秒；不用环境里的代理；最多 5 次重定向且只允许 http/https；**每次建立连接时**检查目的地址（所以重定向后的地址也查）：拒绝回环、链路本地、组播、未指定、本机任何接口地址，以及私网（RFC 1918、100.64/10、fc00::/7）——后者在规则集打开 `allow_lan` 时允许。内容只当数据解析，从不执行。
-- 启用：解析成功才把规范化内容（`ordered.MarshalEntries`）原子写到 `/var/lib/meridian/geosite/rulesets/<id>.txt`（宿主共享目录），然后请宿主执行器做一次 `rules`（只重做 derive、装载 CIDR 批次、按需重启 SmartDNS，不下载）。失败时旧版本不动。新版本里网关执行不了的条目比当前版本多（关键词或不支持的条目增多）时**暂缓**，状态显示原因，要操作者「启用暂缓的版本」。按 `interval_sec`（默认 24 小时）自动更新。被规则使用的规则集不能删除（返回使用它的规则）。
+- 下载在面板里进行（`internal/ruleset`）：URL 里能找到 GitHub 原始文件时（也包括 `https://<加速前缀>/https://raw.githubusercontent.com/…` 这种），按名单的下载策略试 jsDelivr（国内源）/ raw.githubusercontent.com（海外源），最后试原 URL；`source: url` 只用原 URL。上限 16 MiB、50 万条、60 秒；不用环境里的代理；最多 5 次重定向且只允许 http/https；**每次建立连接时**检查目的地址（所以重定向后的地址也查）：拒绝回环、链路本地、组播、未指定、本机任何接口地址，以及私网（RFC 1918、100.64/10、fc00::/7）——后者在规则集打开 `allow_lan` 时允许。**网关自身和内部的地址即使打开 `allow_lan` 也拒绝**（`gatewayDeny`，从拓扑算出：网关的局域网地址、每条隧道链路的地址和自动分配的 /30、/64 块、中转网段 `transit_v4/v6_prefix`、远程接入地址池）；局域网里别的主机（例如放名单的 NAS）仍由 `allow_lan` 决定。导入 mihomo 时的预下载同样带这份拒绝列表、不允许局域网源。内容只当数据解析，从不执行。测试：`TestFetchRedirectToPrivateRefused`、`TestAddrAllowedDeny`、`TestGatewayDeny`。
+- 启用：解析成功才把规范化内容（`ordered.MarshalEntries`）原子写到 `/var/lib/meridian/geosite/rulesets/<id>.txt`（宿主共享目录），然后请宿主执行器做一次 `rules`（只重做 derive、装载 CIDR 批次、按需重启 SmartDNS，不下载）。失败时旧版本不动。新版本里网关执行不了的条目比当前版本多（关键词或不支持的条目增多）时**暂缓**，状态显示原因，要操作者「启用暂缓的版本」。按 `interval_sec`（默认 24 小时）自动更新：每 10 分钟检查一次，上次尝试（成功或失败）距今超过间隔的就下载（`dueRuleSets`，`TestDueRuleSets`）。被规则使用的规则集不能删除（返回使用它的规则，`TestRuleSetLifecycle`）。
+
+### 规则集合的订阅认证
+
+私有的规则集 URL 需要认证时，认证**不放在 URL 里**：
+
+- 存储的 URL 不能带用户信息（`https://user:pw@…`），也不能带名字像秘密的查询参数（名字里含 token、key、secret、pass、pwd、auth、sig、credential、session、ticket、otp、code，不分大小写；`ruleset.SecretQueryKey`）。新建 / 修改时这样的 URL 返回 422 `url_has_secret`，错误不回显 URL；校验（`bad_rule_set`）同样拒绝。判断是保守的：名字恰好含这些字样的公开参数也要放进认证。
+- 认证三种：`bearer`（`Authorization: Bearer …`）、`basic`（HTTP Basic）、`query`（`k=v&k2=v2`，下载时附加到 URL）。`POST /api/rule-sets` 和 `PATCH` 可带 `auth`，或用 `PUT /api/rule-sets/{id}/auth`、`DELETE /api/rule-sets/{id}/auth`。内容存在受限凭据存储（`credentials.SetRuleSetAuth`，0600 文件、只写），不进拓扑、快照、导出、状态、错误和日志。
+- 只通过 https、只发给配置的 URL 的**同一来源**（协议、主机、端口）：按名单下载策略生成的镜像候选（jsDelivr 等）不带认证；重定向到别的来源时去掉 `Authorization` 头（Go 默认还会发给子域名，这里不发）。`PATCH` 把 URL 改到另一个来源而没有同时给新认证时，已存的认证被删除——只写的秘密不能跟着 URL 被送到编辑者选的主机。删除规则集同时删除认证。
+- 下载出错的文字一律经 `ruleset.Redact`（去掉用户信息，查询串换成 `?…`）并替换掉认证的值；状态里的来源 URL、候选 URL 同样处理（旧版本写下的状态读出时也处理）。
+- 迁移：启动时（以及 `PUT /api/topology` 之后）把旧拓扑里 URL 带的用户信息 / 秘密参数移进凭据存储，拓扑只留干净的 URL（`migrateRuleSetSecrets`，可重复）。从 mihomo 导入时 `rule-providers` 的 URL 也这样拆开：预览只显示干净的 URL 和认证类型，确认时写入凭据存储。拓扑应答（`store.Redact`）对仍带秘密的 URL 只显示去掉秘密的形式。
+- 已知不足：迁移之前数据库里旧值所在的页、以前的拓扑快照可能还留着旧 URL；面板不重写历史。
+- 测试：`TestSplitSecretAndRedact`、`TestFetchAuthOriginOnly`、`TestRuleSetAuthLifecycle`、`TestRuleSetAuthWriteOnly`、`TestRuleSetSecretURLMigration`、`TestImportProviderURLSecret`。
 
 ### 导入 mihomo
 
@@ -353,7 +365,9 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 
 ### 迁移与现有拓扑
 
-- 规则顺序：见上。一对规则以前由 SmartDNS 选更长的名字、现在由列表里更早的规则决定的情况（例如手工后缀 `example.com` 在内置 `a.example.com` 之前），规则页的「遮蔽」列逐条标出；面板不自动调整顺序。
+- 规则顺序：见上。一对规则以前由 SmartDNS 选更长的名字、现在由列表里更早的规则决定、而且去向不同的情况（例如手工后缀 `example.com` 指向 A 在 `a.example.com` 指向 B 之前），`GET /api/rules/analysis` 对后面那条给出 `legacy_lost`（个数）和 `legacy_lost_to`（接走它们的规则），规则页「遮蔽」列显示「升级后变化」（`ordered.RuleAnalysis.LegacyLost`，`TestAnalyzeLegacyDifference` 用最长名字解释器对照）。面板不自动调整顺序。只比较名字条目；关键词和内置国内名单之间的变化不计。
+- 规则页显示 `upgrade_notes`：苹果和联网检测名字不再内置直连；靠前的规则优先于更长的后缀；`unlisted_domestic_dns` 默认关闭且不被依赖（`TestUnlistedDomesticDNSDefaultOff`）。
+- 规则命中的名字不会进入直连集合：派生后的 `gs_cn` 去掉了规则覆盖的名字，分类链里规则的集合在 `direct4` 和 `chnroute` 之前，所以即使出口的解析器回答中国地址，连接仍打规则的标记（`TestProxyRuleNameNeverDirect`，在编译出的文件上判断）。
 - 去掉内置 Apple 直连。现有网关的生成结果变化的文件：`nodes/gw/etc/smartdns/smartdns.conf`（域名规则改成派生的 domain-set、没有 `gs_apple`）、`nodes/gw/usr/local/sbin/meridian-up.sh`（派生步骤）、`nodes/gw/usr/local/sbin/meridian-update-geosite.sh`（不再下载 `apple`，除非有规则用它）、`nodes/gw/usr/local/sbin/meridian-verify.sh`（AAAA 测试名的国内判断看派生的 `gs_cn`），新增 `nodes/gw/etc/meridian/rules/order.conf` 和 `decide.json`。nft、路由、其他节点不变。没有使用新功能的拓扑，nft 分类链和兜底表逐字不变。
 - 苹果的联网检测名字（`captive.apple.com` 等）以前随 `apple` 名单直连，现在没有规则时走默认组。需要直连时加一条指向直连的规则。
 - 主机上的 `meridian` 二进制必须是这一版（`meridian-up.sh` 检查 `meridian-lists-derive-ready`，旧版在打开转发之前失败）。

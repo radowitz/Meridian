@@ -33,10 +33,21 @@ type Candidate struct {
 	URL    string `json:"url"`
 }
 
-// CheckURL accepts an absolute http(s) URL with a host, no credentials and
-// no whitespace.
+// CheckURL accepts a URL a rule-set may store: an absolute http(s) URL
+// with a host, no whitespace, no user information and no secret-looking
+// query parameter (auth.go: those belong in the subscription credential).
+// Its message never quotes the URL.
 func CheckURL(s string) error {
-	if len(s) > 2048 || strings.ContainsAny(s, " \t\r\n\"'`\\<>") {
+	if u, err := url.Parse(s); err == nil && (u.User != nil || HasSecret(s)) {
+		return ErrURLSecret
+	}
+	return checkFetchURL(s)
+}
+
+// checkFetchURL is CheckURL without the secret-parameter check (the
+// download URL may carry the query credential).
+func checkFetchURL(s string) error {
+	if len(s) > 4096 || strings.ContainsAny(s, " \t\r\n\"'`\\<>") {
 		return errors.New("URL 含有空白、引号或过长")
 	}
 	u, err := url.Parse(s)
@@ -106,15 +117,28 @@ func Candidates(raw, mode string, p lists.Policy) []Candidate {
 }
 
 // Fetcher downloads one rule-set. It refuses, at connect time (so redirect
-// targets are checked too), every address that is loopback, link-local,
-// multicast, unspecified, private (RFC 1918, CGNAT 100.64/10, ULA fc00::/7)
-// or one of this host's own addresses; private ranges only when AllowLAN is
-// false. It uses no proxy from the environment, follows at most 5 redirects
-// (http/https only), reads at most MaxBytes, and gives up after Timeout.
+// targets and every address a name resolves to are checked too), every
+// address that is loopback, link-local, multicast, unspecified, one of this
+// host's own addresses, or inside Deny (the gateway's own and internal
+// ranges the panel knows from the topology: its LAN address, tunnel and
+// transit ranges, the remote-access pools); those stay refused even with
+// AllowLAN. Private ranges (RFC 1918, CGNAT 100.64/10, ULA fc00::/7) are
+// refused unless AllowLAN. It uses no proxy from the environment, follows at
+// most 5 redirects (http/https only), reads at most MaxBytes, and gives up
+// after Timeout.
+//
+// Auth, when set, is sent only to AuthOrigin (scheme://host[:port] of the
+// configured URL), only over https; a redirect to another origin drops the
+// Authorization header. Errors never contain the query string, user
+// information or any secret value.
 type Fetcher struct {
 	Timeout  time.Duration
 	MaxBytes int64
 	AllowLAN bool
+	Deny     []netip.Prefix
+	// Auth and AuthOrigin: see above.
+	Auth       *Auth
+	AuthOrigin string
 	// Guard replaces the address check (tests); nil = AddrAllowed.
 	Guard func(netip.AddrPort) error
 	// Transport replaces the dialer entirely (tests only).
@@ -137,8 +161,16 @@ func ownAddrs() map[netip.Addr]bool {
 	return out
 }
 
-// AddrAllowed is the default connect-time check.
-func AddrAllowed(a netip.Addr, allowLAN bool) error {
+// AddrAllowed is the default connect-time check (without Deny).
+func AddrAllowed(a netip.Addr, allowLAN bool) error { return addrAllowed(a, allowLAN, nil) }
+
+// AddrAllowedDeny is AddrAllowed with the gateway's own ranges refused even
+// when allowLAN is set.
+func AddrAllowedDeny(a netip.Addr, allowLAN bool, deny []netip.Prefix) error {
+	return addrAllowed(a, allowLAN, deny)
+}
+
+func addrAllowed(a netip.Addr, allowLAN bool, deny []netip.Prefix) error {
 	a = a.Unmap()
 	switch {
 	case !a.IsValid(), a.IsUnspecified():
@@ -152,6 +184,11 @@ func AddrAllowed(a netip.Addr, allowLAN bool) error {
 	}
 	if ownAddrs()[a] {
 		return errors.New("本机地址")
+	}
+	for _, p := range deny {
+		if p.Contains(a) {
+			return errors.New("网关自身或内部地址（局域网地址、隧道、中转或远程接入网段），允许局域网源也不放行")
+		}
 	}
 	if (a.IsPrivate() || cgnat.Contains(a)) && !allowLAN {
 		return errors.New("局域网 / 私有地址（这个规则集没有允许局域网源）")
@@ -167,7 +204,7 @@ func (f *Fetcher) client() *http.Client {
 	if tr == nil {
 		guard := f.Guard
 		if guard == nil {
-			guard = func(ap netip.AddrPort) error { return AddrAllowed(ap.Addr(), f.AllowLAN) }
+			guard = func(ap netip.AddrPort) error { return addrAllowed(ap.Addr(), f.AllowLAN, f.Deny) }
 		}
 		d := &net.Dialer{
 			Timeout: 15 * time.Second,
@@ -200,15 +237,51 @@ func (f *Fetcher) client() *http.Client {
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" || req.URL.User != nil {
 				return errors.New("重定向到不允许的地址")
 			}
+			// The credential goes to the configured origin only (Go
+			// would still forward it to a subdomain).
+			if origin(req.URL.String()) != f.AuthOrigin || f.AuthOrigin == "" {
+				req.Header.Del("Authorization")
+			}
 			return nil
 		},
 	}
 }
 
-// Get downloads u.
+// Get downloads u (a URL without the credential; Auth is applied here).
 func (f *Fetcher) Get(ctx context.Context, u string) ([]byte, error) {
-	if err := CheckURL(u); err != nil {
+	b, err := f.get(ctx, u)
+	if err != nil {
+		msg := Scrub(err.Error(), f.Auth.Secrets()...)
+		if errors.Is(err, ErrBlocked) {
+			return nil, blockedError{msg}
+		}
+		return nil, errors.New(msg)
+	}
+	return b, nil
+}
+
+// blockedError keeps errors.Is(err, ErrBlocked) through the scrubbing.
+type blockedError struct{ msg string }
+
+func (e blockedError) Error() string        { return e.msg }
+func (e blockedError) Is(target error) bool { return target == ErrBlocked }
+
+func (f *Fetcher) get(ctx context.Context, u string) ([]byte, error) {
+	if err := checkFetchURL(u); err != nil {
 		return nil, err
+	}
+	withAuth := f.Auth != nil && f.AuthOrigin != "" && origin(u) == f.AuthOrigin
+	if withAuth {
+		if !strings.EqualFold(strings.SplitN(u, ":", 2)[0], "https") {
+			return nil, errors.New("订阅认证只通过 https 发送：这个 URL 是 http")
+		}
+		if f.Auth.Kind == AuthQuery {
+			sep := "?"
+			if strings.Contains(u, "?") {
+				sep = "&"
+			}
+			u += sep + strings.TrimPrefix(f.Auth.Query, "?")
+		}
 	}
 	to := f.Timeout
 	if to <= 0 {
@@ -225,8 +298,25 @@ func (f *Fetcher) Get(ctx context.Context, u string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "meridian-ruleset")
+	if withAuth {
+		switch f.Auth.Kind {
+		case AuthBearer:
+			req.Header.Set("Authorization", "Bearer "+f.Auth.Token)
+		case AuthBasic:
+			req.SetBasicAuth(f.Auth.Username, f.Auth.Password)
+		}
+	}
 	resp, err := f.client().Do(req)
 	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			// url.Error quotes the whole URL (query included).
+			msg := ue.Op + " " + Redact(ue.URL) + ": " + ue.Err.Error()
+			if errors.Is(err, ErrBlocked) {
+				return nil, blockedError{msg}
+			}
+			return nil, errors.New(msg)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()

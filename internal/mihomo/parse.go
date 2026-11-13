@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/radowitz/meridian/internal/ruleset"
 )
 
 // MaxConfigBytes bounds a pasted config.
@@ -30,6 +32,12 @@ type Provider struct {
 	Format   string `json:"format,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Interval int    `json:"interval,omitempty"`
+	// Auth is the credential the URL carried (user information or secret
+	// query parameters, ruleset.SplitSecret); URL is then the URL without
+	// it. It goes to the credential store on confirm and is never shown.
+	Auth *ruleset.Auth `json:"-"`
+	// URLError: the URL carries a credential that cannot be split off.
+	URLError string `json:"-"`
 }
 
 // Group is one proxy-group: only what the mapping needs.
@@ -94,10 +102,19 @@ func Parse(text string) (Config, error) {
 				return cfg, errors.New("rule-providers 无法解析" + yamlErrLine(err))
 			}
 			for name, p := range m {
-				cfg.Providers[name] = Provider{
+				pr := Provider{
 					Name: name, Type: str(p["type"]), Behavior: str(p["behavior"]), Format: str(p["format"]),
 					URL: str(p["url"]), Interval: num(p["interval"]),
 				}
+				if ruleset.HasSecret(pr.URL) {
+					clean, a, err := ruleset.SplitSecret(pr.URL)
+					if err != nil {
+						pr.URL, pr.URLError = ruleset.Redact(pr.URL), err.Error()
+					} else {
+						pr.URL, pr.Auth = clean, a
+					}
+				}
+				cfg.Providers[name] = pr
 			}
 		case "proxy-groups":
 			var gs []map[string]any

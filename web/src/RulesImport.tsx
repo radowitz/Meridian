@@ -9,7 +9,7 @@
 import { Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import type { ImportPreview, ImportRequest, ImportRow, RuleRef, RuleSetView, RuleTestResult, ServiceGroup, Topology } from "./types";
+import type { ImportPreview, ImportRequest, ImportRow, RuleRef, RuleSetAuthInput, RuleSetView, RuleTestResult, ServiceGroup, Topology } from "./types";
 import { ApiErrorAlert, Section, StatusTag, TABLE_SCROLL, TimeText, groupLabel, useConfirmDanger } from "./ui";
 
 /** Panel targets a service group or a mapping can point at. */
@@ -52,6 +52,16 @@ const ACTION_LABEL: Record<ImportRow["action"], string> = {
 
 type Filter = "all" | "blocked" | "unsupported" | "shadowed" | "changed";
 
+/** What accepting each accept code means (the import's stated alternatives). */
+export const ACCEPT_LABEL: Record<string, string> = {
+  keyword_expanded: "关键词：用已下载名单里含这个词的名字代替",
+  ruleset_keywords: "规则集里的关键词条目不执行",
+  ruleset_partial: "规则集只部分生效（不能执行的条目跳过）",
+  ruleset_unavailable: "规则集还没下载：先写入但停用",
+  quic_semantics: "QUIC 开关按「走隧道」而不是「不是国内」判断",
+  quic_direct_below: "QUIC 开关之下的直连规则不拒绝 UDP 443",
+};
+
 /** Paste / upload a mihomo config, map its lines, preview in order, confirm. */
 export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; topo: Topology; onClose: () => void; onDone: () => void }) {
   const [config, setConfig] = useState("");
@@ -59,6 +69,7 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [drop, setDrop] = useState<number[]>([]);
   const [accept, setAccept] = useState<Record<string, string[]>>({});
+  const [acceptCodes, setAcceptCodes] = useState<string[]>([]);
   const [disableBuiltin, setDisableBuiltin] = useState(true);
   const [atStart, setAtStart] = useState(false);
   const [resetServices, setResetServices] = useState(false);
@@ -84,6 +95,7 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
     mapping,
     drop,
     accept,
+    accept_codes: acceptCodes.length ? acceptCodes : undefined,
     disable_builtin: disableBuiltin,
     at_start: atStart,
     reset_services: resetServices,
@@ -262,6 +274,26 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
             </Section>
           ) : null}
 
+          {(preview.accept_summary ?? []).length > 0 ? (
+            <Section title="需要接受的替代（按类型）">
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+                同一类可以一次全部接受；每一行仍在下面逐条列出。接受的类型会记在每条规则上，确认时和预览一起核对。
+              </Typography.Paragraph>
+              <Space direction="vertical" size={4} data-testid="accept-codes">
+                {preview.accept_summary!.map((c) => (
+                  <Checkbox
+                    key={c.code}
+                    checked={acceptCodes.includes(c.code)}
+                    aria-label={`全部接受 ${c.code}`}
+                    onChange={(e) => setAcceptCodes((x) => (e.target.checked ? [...x.filter((y) => y !== c.code), c.code] : x.filter((y) => y !== c.code)))}
+                  >
+                    全部接受：{ACCEPT_LABEL[c.code] ?? c.code}（{c.lines.length} 行：第 {c.lines.join("、")} 行；已接受 {c.accepted}）
+                  </Checkbox>
+                ))}
+              </Space>
+            </Section>
+          ) : null}
+
           {preview.rule_sets.length > 0 ? (
             <Section title="规则集">
               <Table
@@ -270,7 +302,7 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
                 pagination={false}
                 dataSource={preview.rule_sets}
                 columns={[
-                  { title: "名称", dataIndex: "name" },
+                  { title: "名称", render: (_, r) => <span>{r.name}{r.auth ? <Tooltip title="URL 里带的认证信息确认后存入凭据存储，不显示、不导出；面板只在下载这个规则集时附加。"><Tag color="gold" style={{ marginLeft: 4 }}>订阅认证 {r.auth}</Tag></Tooltip> : null}</span> },
                   { title: "状态", render: (_, r) => <Tooltip title={r.error}>{r.state === "available" ? <StatusTag kind="ok">已下载</StatusTag> : r.state === "pending" ? <StatusTag kind="running">下载中</StatusTag> : <StatusTag kind="failed">{r.state}</StatusTag>}</Tooltip> },
                   { title: "格式", render: (_, r) => r.format ?? "—" },
                   { title: "条目", render: (_, r) => (r.counts ? Object.entries(r.counts).map(([k, v]) => `${k} ${v}`).join("，") : "—") },
@@ -323,7 +355,8 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
                         <div key={f.code} style={{ fontSize: 12 }}>
                           {f.severity === "accept" ? (
                             <Checkbox
-                              checked={(accept[String(r.line)] ?? []).includes(f.code)}
+                              checked={acceptCodes.includes(f.code) || (accept[String(r.line)] ?? []).includes(f.code)}
+                              disabled={acceptCodes.includes(f.code)}
                               onChange={(e) => toggleAccept(r.line, f.code, e.target.checked)}
                               aria-label={`接受 第${r.line}行 ${f.code}`}
                             >
@@ -447,7 +480,9 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
   const [formats, setFormats] = useState<string[]>([]);
   const [error, setError] = useState<api.ApiError | null>(null);
   const [adding, setAdding] = useState(false);
-  const [form] = Form.useForm<{ name: string; url: string; format?: string; source: "url" | "policy"; interval_h?: number; allow_lan?: boolean }>();
+  const [form] = Form.useForm<{ name: string; url: string; format?: string; source: "url" | "policy"; interval_h?: number; allow_lan?: boolean } & AuthFields>();
+  const [authFor, setAuthFor] = useState<RuleSetView | null>(null);
+  const [authForm] = Form.useForm<AuthFields>();
   const confirm = useConfirmDanger();
   const load = () =>
     api
@@ -512,6 +547,17 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
               </Space>
             ),
           },
+          {
+            title: "订阅认证",
+            render: (_, r) =>
+              r.auth ? (
+                <Tooltip title="只写：面板不显示、不导出；只在下载这个规则集时发给 URL 的同一来源（仅 https）">
+                  <Tag color="gold" data-testid={`rs-auth-${r.rule_set.id}`}>{AUTH_LABEL[r.auth.kind] ?? r.auth.kind}（已设置）</Tag>
+                </Tooltip>
+              ) : (
+                "—"
+              ),
+          },
           { title: "使用", render: (_, r) => (r.used_by.length ? r.used_by.map((u) => `第 ${u.position} 条 ${u.name}`).join("、") : "—") },
           {
             title: "操作",
@@ -520,6 +566,14 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
                 <Button type="link" size="small" onClick={() => void act(() => api.fetchRuleSet(r.rule_set.id))}>
                   立即更新
                 </Button>
+                <Button type="link" size="small" onClick={() => setAuthFor(r)}>
+                  {r.auth ? "更换认证" : "设置认证"}
+                </Button>
+                {r.auth ? (
+                  <Button type="link" size="small" onClick={() => void act(() => api.clearRuleSetAuth(r.rule_set.id))}>
+                    清除认证
+                  </Button>
+                ) : null}
                 {r.status.held ? (
                   <Button type="link" size="small" onClick={() => void act(() => api.activateHeldRuleSet(r.rule_set.id))}>
                     启用暂缓的版本
@@ -553,7 +607,15 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
         onOk={async () => {
           const v = await form.validateFields();
           await act(() =>
-            api.createRuleSet({ name: v.name, url: v.url, format: v.format || "", source: v.source, interval_sec: v.interval_h ? v.interval_h * 3600 : 0, allow_lan: !!v.allow_lan }),
+            api.createRuleSet({
+              name: v.name,
+              url: v.url,
+              format: v.format || "",
+              source: v.source,
+              interval_sec: v.interval_h ? v.interval_h * 3600 : 0,
+              allow_lan: !!v.allow_lan,
+              auth: authInput(v),
+            }),
           );
           setAdding(false);
           form.resetFields();
@@ -564,9 +626,10 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="url" label="URL" rules={[{ required: true }]}>
+          <Form.Item name="url" label="URL" rules={[{ required: true }]} extra="只填公开部分：用户名密码和 token、key 之类的参数放到下面的「订阅认证」，带着它们的 URL 会被拒绝。">
             <Input className="mono" placeholder="https://raw.githubusercontent.com/org/repo/main/rules/Example.list" />
           </Form.Item>
+          <AuthFormItems />
           <Form.Item name="format" label="格式" extra="默认按内容自动识别（再看扩展名）">
             <Select allowClear options={formats.map((f) => ({ value: f, label: f }))} placeholder="自动识别" />
           </Form.Item>
@@ -586,7 +649,98 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
           </Form.Item>
         </Form>
       </Modal>
+      <Modal
+        title={`订阅认证：${authFor?.rule_set.name ?? ""}`}
+        open={authFor !== null}
+        destroyOnHidden
+        onCancel={() => setAuthFor(null)}
+        okText="保存"
+        onOk={async () => {
+          const v = await authForm.validateFields();
+          const a = authInput(v);
+          if (!authFor || !a) return;
+          await act(() => api.setRuleSetAuth(authFor.rule_set.id, a));
+          setAuthFor(null);
+          authForm.resetFields();
+        }}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          只写：保存后面板不再显示它。改 URL 到另一个主机时，已保存的认证会被清除。
+        </Typography.Paragraph>
+        <Form form={authForm} layout="vertical" initialValues={{ auth_kind: authFor?.auth?.kind ?? "bearer" }}>
+          <AuthFormItems required />
+        </Form>
+      </Modal>
     </Section>
+  );
+}
+
+const AUTH_LABEL: Record<string, string> = { bearer: "Bearer 令牌", basic: "用户名密码", query: "查询参数" };
+
+type AuthFields = { auth_kind?: "" | "bearer" | "basic" | "query"; auth_token?: string; auth_username?: string; auth_password?: string; auth_query?: string };
+
+/** The write-only credential from the form (undefined: none). */
+export function authInput(v: AuthFields): RuleSetAuthInput | undefined {
+  switch (v.auth_kind) {
+    case "bearer":
+      return { kind: "bearer", token: v.auth_token ?? "" };
+    case "basic":
+      return { kind: "basic", username: v.auth_username ?? "", password: v.auth_password ?? "" };
+    case "query":
+      return { kind: "query", query: v.auth_query ?? "" };
+  }
+  return undefined;
+}
+
+function AuthFormItems({ required = false }: { required?: boolean }) {
+  return (
+    <>
+      <Form.Item
+        name="auth_kind"
+        label="订阅认证（可选）"
+        extra="存进受限的凭据存储，只写：不显示、不导出、不进日志；只通过 https 发给这个 URL 的同一主机，不发给镜像源，跳转到别的主机时不带。"
+      >
+        <Select
+          aria-label="订阅认证方式"
+          options={[
+            ...(required ? [] : [{ value: "", label: "不需要" }]),
+            { value: "bearer", label: "Bearer 令牌（Authorization 头）" },
+            { value: "basic", label: "用户名密码（HTTP Basic）" },
+            { value: "query", label: "查询参数（例如 token=…，附加到 URL）" },
+          ]}
+          placeholder="不需要"
+        />
+      </Form.Item>
+      <Form.Item noStyle shouldUpdate={(a, b) => a.auth_kind !== b.auth_kind}>
+        {({ getFieldValue }) => {
+          const k = getFieldValue("auth_kind");
+          if (k === "bearer")
+            return (
+              <Form.Item name="auth_token" label="令牌" rules={[{ required: true }]}>
+                <Input.Password autoComplete="off" aria-label="订阅令牌" />
+              </Form.Item>
+            );
+          if (k === "basic")
+            return (
+              <>
+                <Form.Item name="auth_username" label="用户名" rules={[{ required: true }]}>
+                  <Input autoComplete="off" aria-label="订阅用户名" />
+                </Form.Item>
+                <Form.Item name="auth_password" label="密码" rules={[{ required: true }]}>
+                  <Input.Password autoComplete="off" aria-label="订阅密码" />
+                </Form.Item>
+              </>
+            );
+          if (k === "query")
+            return (
+              <Form.Item name="auth_query" label="查询参数" rules={[{ required: true }]} extra="k=v&k2=v2，不带 ?">
+                <Input.Password autoComplete="off" aria-label="订阅查询参数" />
+              </Form.Item>
+            );
+          return null;
+        }}
+      </Form.Item>
+    </>
   );
 }
 

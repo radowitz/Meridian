@@ -402,3 +402,97 @@ func TestRulesBeforeDomesticList(t *testing.T) {
 		t.Fatalf("domestic stats %+v", g.derived.Stats["gs_cn"])
 	}
 }
+
+// A name an explicit proxy rule covers never lands in the domestic (direct)
+// sets, even when the built-in domestic list also lists it and the exit's
+// resolver answers with a China address: the resolver writes the answer
+// into the rule's set, and the classify chain checks the rule's set before
+// direct4 and chnroute, so the connection keeps the rule's mark.
+func TestProxyRuleNameNeverDirect(t *testing.T) {
+	rules := []model.Rule{rr("p", model.MatchSuffix, "proxied.example", "us")}
+	tp := orderedTopo(rules)
+	b, err := Compile(tp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd := ordered.MemReader{Geo: map[string][]string{"cn": {"proxied.example", "www.proxied.example", "plain.cn.example"}}}
+	g := parseRendered(t, b, rd)
+	china := []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}
+	// The derived domestic set no longer holds the rule's names.
+	for _, l := range g.derived.Files["gs_cn"] {
+		if strings.Contains(l, "proxied.example") {
+			t.Fatalf("domestic set still lists %q", l)
+		}
+	}
+	marks := map[string]uint32{}
+	pos := map[string]int{}
+	for i, c := range g.chain {
+		marks[c.set], pos[c.set] = c.mark, i
+	}
+	set := g.setOf[g.dns.Lookup("www.proxied.example")]
+	if set == "" || set == "direct4" {
+		t.Fatalf("www.proxied.example resolves into %q", set)
+	}
+	for _, tail := range []string{"direct4", "chnroute"} {
+		if _, ok := pos[tail]; !ok {
+			t.Fatalf("no %s in the classify chain", tail)
+		}
+		if pos[set] > pos[tail] {
+			t.Fatalf("rule set %s after %s in the chain", set, tail)
+		}
+	}
+	learned := map[string]map[netip.Addr]bool{}
+	cnAddr := netip.MustParseAddr("203.0.113.9")
+	for _, name := range []string{"proxied.example", "www.proxied.example"} {
+		got := g.classify(learned, name, cnAddr, china)
+		if got != marks[set] || got == marks["direct4"] || got == marks["chnroute"] {
+			t.Fatalf("%s at a China address: mark %#x, rule %#x, direct %#x", name, got, marks[set], marks["direct4"])
+		}
+	}
+	if learned["direct4"][cnAddr] {
+		t.Fatal("the address entered the direct set")
+	}
+	// The same address with no rule in front is direct (the chnroute tail).
+	if got := g.classify(map[string]map[netip.Addr]bool{}, "", netip.MustParseAddr("203.0.113.77"), china); got != marks["chnroute"] {
+		t.Fatalf("unlisted China address: %#x", got)
+	}
+	// A domestic-only name still goes to the domestic set.
+	if s := g.setOf[g.dns.Lookup("plain.cn.example")]; s != "direct4" {
+		t.Fatalf("domestic name -> %q", s)
+	}
+}
+
+// unlisted_domestic_dns is off by default and nothing in the rendered
+// gateway depends on it: the example topology renders no dns-split service
+// and the same resolver configuration whether the field is absent or false.
+func TestUnlistedDomesticDNSDefaultOff(t *testing.T) {
+	tp := defaults.Example()
+	if tp.Settings.UnlistedDomesticDNS {
+		t.Fatal("unlisted_domestic_dns on in the defaults")
+	}
+	tp.Rules = []model.Rule{rr("p", model.MatchSuffix, "proxied.example", "us")}
+	tp.RulesOrdered = true
+	b, err := Compile(tp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for f := range b.Files {
+		if strings.Contains(f, "dns-split") {
+			t.Fatalf("dns-split rendered with the setting off: %s", f)
+		}
+	}
+	if SmartDNSUsesDNSSplit(b.File("nodes/gw/etc/smartdns/smartdns.conf")) {
+		t.Fatal("SmartDNS sends names to dns-split with the setting off")
+	}
+	// Turning it on adds the service; the ordered rules' resolver lines
+	// do not change.
+	on := tp
+	on.Settings.UnlistedDomesticDNS = true
+	b2, err := Compile(on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolverLine(t, b, "proxied.example") != resolverLine(t, b2, "proxied.example") {
+		t.Fatal("a rule's resolver line depends on unlisted_domestic_dns")
+	}
+}

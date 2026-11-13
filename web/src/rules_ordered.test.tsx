@@ -201,3 +201,107 @@ describe("rules: import from mihomo", () => {
     expect(webStorageDump()).not.toContain("fake-pass-in-paste");
   });
 });
+
+describe("rules: remaining gaps (accept by code, subscription credentials, move to N, upgrade difference)", () => {
+  it("accepts every row of one code at once and sends accept_codes", async () => {
+    const rowsFor = (accepted: boolean): ImportPreview => ({
+      rows: [7, 8].map((line) => ({
+        line,
+        text: `RULE-SET,S${line},AI`,
+        type: "RULE-SET",
+        action: "rule" as const,
+        flags: [{ code: "ruleset_partial", severity: "accept" as const, message: "规则集只部分生效", accepted }],
+        status: accepted ? ("accepted" as const) : ("blocked" as const),
+      })),
+      mapping: [],
+      services: [],
+      rule_sets: [{ name: "S7", id: "rs-s7", url: "https://rules.example.org/s7.list", behavior: "classical", existing: false, state: "available", auth: "query" }],
+      notes: [],
+      blocking: accepted ? 0 : 2,
+      can_confirm: accepted,
+      digest: accepted ? "d-acc" : "d-blk",
+      summary: accepted ? { accepted: 2 } : { blocked: 2 },
+      accept_summary: [{ code: "ruleset_partial", class: "unsupported", lines: [7, 8], accepted: accepted ? 2 : 0, by_code: accepted }],
+    });
+    const api = fakeApi({
+      ...ORDERED_DEFAULTS,
+      "GET /api/topology": () => topo(),
+      "POST /api/rules/import/preview": (req) => rowsFor(((req.body as { accept_codes?: string[] }).accept_codes ?? []).includes("ruleset_partial")),
+    });
+    renderAt("#/rules");
+    await userEvent.click(await screen.findByRole("button", { name: btn("从 mihomo 导入") }));
+    const drawer = await screen.findByRole("dialog");
+    fireEvent.change(within(drawer).getByLabelText("mihomo 配置"), { target: { value: "rules:\n  - MATCH,AI\n" } });
+    await userEvent.click(within(drawer).getByRole("button", { name: btn("预览") }));
+    const codes = await within(drawer).findByTestId("accept-codes");
+    expect(codes).toHaveTextContent("2 行：第 7、8 行");
+    expect(within(drawer).getByText("订阅认证 query")).toBeTruthy();
+    await userEvent.click(within(drawer).getByRole("checkbox", { name: "全部接受 ruleset_partial" }));
+    // Each row still shows, ticked through the code.
+    expect(within(drawer).getByRole("checkbox", { name: "接受 第7行 ruleset_partial" })).toBeChecked();
+    await userEvent.click(within(drawer).getByRole("button", { name: btn("刷新预览") }));
+    await waitFor(() => expect(within(drawer).getByRole("button", { name: btn("确认导入") })).toBeEnabled());
+    const last = api.find("POST /api/rules/import/preview").at(-1)!.body as { accept_codes?: string[] };
+    expect(last.accept_codes).toEqual(["ruleset_partial"]);
+  });
+
+  it("shows only the kind of a rule-set's credential, sets and clears it write-only", async () => {
+    const token = "fake-ui-token-5150";
+    const view = (auth: boolean) => ({
+      rule_set: { id: "rs-p", name: "Private", url: "https://private.example.org/p.list" },
+      status: { state: "ok" },
+      used_by: [],
+      candidates: [],
+      auth: auth ? { kind: "bearer", secret_set: true } : null,
+    });
+    let has = true;
+    const api = fakeApi({
+      ...ORDERED_DEFAULTS,
+      "GET /api/topology": () => topo(),
+      "GET /api/rule-sets": () => ({ rule_sets: [view(has)], formats: [] }),
+      "DELETE /api/rule-sets/:id/auth": () => {
+        has = false;
+        return view(false);
+      },
+      "PUT /api/rule-sets/:id/auth": () => {
+        has = true;
+        return view(true);
+      },
+    });
+    renderAt("#/rules");
+    expect(await screen.findByTestId("rs-auth-rs-p")).toHaveTextContent("Bearer 令牌（已设置）");
+    await userEvent.click(screen.getByRole("button", { name: btn("清除认证") }));
+    await waitFor(() => expect(api.find("DELETE /api/rule-sets/rs-p/auth")).toHaveLength(1));
+    await userEvent.click(await screen.findByRole("button", { name: btn("设置认证") }));
+    const dlg = await screen.findByRole("dialog");
+    await userEvent.type(within(dlg).getByLabelText("订阅令牌"), token);
+    await userEvent.click(within(dlg).getByRole("button", { name: btn("保存") }));
+    await waitFor(() => expect(api.find("PUT /api/rule-sets/rs-p/auth")).toHaveLength(1));
+    expect(api.find("PUT /api/rule-sets/rs-p/auth")[0].body).toEqual({ kind: "bearer", token });
+    expect(webStorageDump()).not.toContain(token);
+  });
+
+  it("moves a rule to a typed position and shows the upgrade difference and DNS change notes", async () => {
+    fakeApi({
+      ...ORDERED_DEFAULTS,
+      "GET /api/topology": () => topo(),
+      "GET /api/rules/analysis": () => ({
+        rules: [{ rule_id: "imp", entries: 1, shadowed: 0, fully_shadowed: false, legacy_lost: 1, legacy_lost_to: ["m1"] }],
+        shared_address: "按更靠前的规则走。",
+        upgrade_notes: ["升级后，苹果和各系统的联网检测域名不再内置直连"],
+      }),
+    });
+    renderAt("#/rules");
+    await waitFor(() => expect(screen.getByTestId("rule-shadow-imp")).toHaveTextContent("升级后变化：1 个名字以前按更长的名字归本条，现在被 第 1 条 先命中"));
+    expect(screen.getByTestId("rules-upgrade-notes")).toHaveTextContent("联网检测域名不再内置直连");
+    const row = screen.getByTestId("rule-row-imp");
+    fireEvent.click(within(row).getByRole("button", { name: "移动 imp" }));
+    fireEvent.click(await screen.findByText("移到第 N 条…"));
+    const dlg = await screen.findByRole("dialog");
+    const box = within(dlg).getByLabelText("目标位置");
+    await userEvent.clear(box);
+    await userEvent.type(box, "1");
+    await userEvent.click(within(dlg).getByRole("button", { name: btn("移动") }));
+    await waitFor(() => expect(screen.getByTestId("rule-pos-imp")).toHaveTextContent("1"));
+  });
+});

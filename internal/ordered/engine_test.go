@@ -159,3 +159,65 @@ func BenchmarkCompile(b *testing.B) {
 		bigCompiled(b)
 	}
 }
+
+// legacyLongest is the resolver's behaviour before the list was ordered:
+// the rule with the longest matching name key wins (earlier rule on a tie).
+func legacyLongest(rules []Rule, name string) int {
+	best, bestLen := -1, -1
+	for i, r := range rules {
+		for _, e := range r.Entries {
+			if e.Kind == Keyword || e.Kind == CIDR || !e.Matches(Query{Name: name}) {
+				continue
+			}
+			if len(e.Value) > bestLen {
+				best, bestLen = i, len(e.Value)
+			}
+		}
+	}
+	return best
+}
+
+// The migration difference: a later rule's more specific name that an
+// earlier rule's shorter suffix now takes (with another target) is
+// counted, and it is exactly the names where the old longest-key choice
+// and first match disagree.
+func TestAnalyzeLegacyDifference(t *testing.T) {
+	rules := []Rule{
+		{Target: "group:a", Entries: []Entry{sfx("example.com")}},
+		{Target: "direct:", Action: "direct", Entries: []Entry{sfx("cdn.example.com"), exact("www.example.org")}},
+		{Target: "group:a", Entries: []Entry{sfx("img.example.com")}}, // same target: no change
+		{Target: "group:b", Entries: []Entry{sfx("example.org")}},
+		{Target: "group:c", Entries: []Entry{sfx("x.example.org")}},
+	}
+	an := Analyze(rules)
+	if an[1].LegacyLost != 1 || len(an[1].LegacyLostTo) != 1 || an[1].LegacyLostTo[0] != 0 {
+		t.Fatalf("rule 1: %+v", an[1])
+	}
+	if an[2].LegacyLost != 0 {
+		t.Fatalf("rule 2 (same target): %+v", an[2])
+	}
+	if an[4].LegacyLost != 1 || an[4].LegacyLostTo[0] != 3 {
+		t.Fatalf("rule 4: %+v", an[4])
+	}
+	if an[3].LegacyLost != 0 {
+		t.Fatalf("rule 3 (an earlier, longer exact key wins both ways): %+v", an[3])
+	}
+	// Cross-check with the interpreters: every name whose result changed
+	// belongs to a flagged rule, and every flagged rule lost a name.
+	lostAny := map[int]bool{}
+	for _, n := range []string{"a.cdn.example.com", "cdn.example.com", "www.example.org", "q.x.example.org", "img.example.com", "example.com"} {
+		now := Reference(rules, Tail{}, Query{Name: n}).Index
+		old := legacyLongest(rules, n)
+		if now != old && rules[now].Target != rules[old].Target {
+			lostAny[old] = true
+			if an[old].LegacyLost == 0 {
+				t.Errorf("%s: now %d old %d, rule %d not flagged", n, now, old, old)
+			}
+		}
+	}
+	for i, a := range an {
+		if a.LegacyLost > 0 && !lostAny[i] {
+			t.Errorf("rule %d flagged without a changed name", i)
+		}
+	}
+}

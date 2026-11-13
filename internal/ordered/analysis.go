@@ -26,6 +26,13 @@ type RuleAnalysis struct {
 	// Keywords are keyword entries: SmartDNS cannot match a substring, so
 	// they do not execute in list order (see Keyword).
 	Keywords int `json:"keywords,omitempty"`
+	// LegacyLost counts the name entries whose result changed when the
+	// list became ordered (the upgrade): before, the resolver gave a name
+	// to the rule with the longest matching name key, so this rule's more
+	// specific name won over an earlier rule's shorter suffix; now the
+	// earlier rule (LegacyLostTo, with a different target) takes it.
+	LegacyLost   int   `json:"legacy_lost,omitempty"`
+	LegacyLostTo []int `json:"legacy_lost_to,omitempty"`
 }
 
 type keyIndex struct {
@@ -46,10 +53,14 @@ func Analyze(rules []Rule) []RuleAnalysis {
 	out := make([]RuleAnalysis, len(rules))
 	for i, r := range rules {
 		a := RuleAnalysis{Index: i, Entries: len(r.Entries)}
-		by, part := map[int]bool{}, map[int]bool{}
+		by, part, lost := map[int]bool{}, map[int]bool{}, map[int]bool{}
 		for _, e := range r.Entries {
 			if e.Kind == Keyword {
 				a.Keywords++
+			}
+			if j, ok := ix.legacyLoser(e); ok && (rules[j].Target != r.Target || rules[j].Action != r.Action) {
+				a.LegacyLost++
+				lost[j] = true
 			}
 			if j, ok := ix.covers(e); ok {
 				a.Shadowed++
@@ -64,7 +75,7 @@ func Analyze(rules []Rule) []RuleAnalysis {
 			ix.add(e, i)
 		}
 		a.FullyShadowed = a.Entries > 0 && a.Shadowed == a.Entries && !r.GeoIPCN
-		a.ShadowedBy, a.PartlyBy = keys(by), keys(part)
+		a.ShadowedBy, a.PartlyBy, a.LegacyLostTo = keys(by), keys(part), keys(lost)
 		out[i] = a
 	}
 	return out
@@ -139,6 +150,35 @@ func (ix *keyIndex) covers(e Entry) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// legacyLoser: for a name entry, the earlier rule that first-match gives
+// its name to through a strictly shorter key (a suffix or sub-domain key of
+// an ancestor), when no earlier rule has the same key. Under the resolver's
+// longest-key choice (before the ordered list) the entry's own, longer key
+// won; now that earlier rule does.
+func (ix *keyIndex) legacyLoser(e Entry) (int, bool) {
+	if e.Kind != Exact && e.Kind != Suffix && e.Kind != Sub {
+		return 0, false
+	}
+	equal := -1
+	for _, m := range []map[string]int{ix.exact, ix.suffix, ix.sub} {
+		if j, ok := m[e.Value]; ok && (equal < 0 || j < equal) {
+			equal = j
+		}
+	}
+	anc := -1
+	for _, a := range ancestors(e.Value)[1:] {
+		for _, m := range []map[string]int{ix.suffix, ix.sub} {
+			if j, ok := m[a]; ok && (anc < 0 || j < anc) {
+				anc = j
+			}
+		}
+	}
+	if anc < 0 || (equal >= 0 && equal < anc) {
+		return 0, false
+	}
+	return anc, true
 }
 
 // partly: earlier entries that take a part of what e matches.

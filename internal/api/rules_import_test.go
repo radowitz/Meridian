@@ -68,7 +68,7 @@ func importServer(t *testing.T) (*Server, *fakeFetch) {
 	s.RuleSetDir = filepath.Join(t.TempDir(), "rulesets")
 	s.ListsDir = t.TempDir()
 	f := &fakeFetch{body: map[string]string{"https://rules.example.org/ads.list": "DOMAIN-SUFFIX,ads.example.net\nDOMAIN,tracker.example.org\nPROCESS-NAME,x.exe\n"}}
-	s.RuleSetFetch = func(bool) RuleSetFetcher { return f }
+	s.RuleSetFetch = func(RuleSetFetchOptions) RuleSetFetcher { return f }
 	if _, err := s.topology(); err != nil {
 		t.Fatal(err)
 	}

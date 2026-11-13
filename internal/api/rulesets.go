@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -102,11 +103,38 @@ func (s *Server) ruleSetDir() string {
 	return filepath.Join(hostexec.DefaultListsDir, lists.RuleSetSubdir)
 }
 
-func (s *Server) fetcher(allowLAN bool) RuleSetFetcher {
+// RuleSetFetchOptions configure one download (see ruleset.Fetcher).
+type RuleSetFetchOptions struct {
+	AllowLAN bool
+	// Deny: the gateway's own and internal ranges (gatewayDeny), refused
+	// even with AllowLAN.
+	Deny []netip.Prefix
+	// Auth is sent to AuthOrigin only (nil: none).
+	Auth       *ruleset.Auth
+	AuthOrigin string
+}
+
+func (s *Server) fetcher(o RuleSetFetchOptions) RuleSetFetcher {
 	if s.RuleSetFetch != nil {
-		return s.RuleSetFetch(allowLAN)
+		return s.RuleSetFetch(o)
 	}
-	return &ruleset.Fetcher{AllowLAN: allowLAN}
+	return &ruleset.Fetcher{AllowLAN: o.AllowLAN, Deny: o.Deny, Auth: o.Auth, AuthOrigin: o.AuthOrigin}
+}
+
+// fetchOptions are the download options of a rule-set.
+func (s *Server) fetchOptions(t model.Topology, id, url string, allowLAN bool) (RuleSetFetchOptions, error) {
+	o := RuleSetFetchOptions{AllowLAN: allowLAN, Deny: gatewayDeny(t)}
+	if id == "" {
+		return o, nil
+	}
+	a, err := s.ruleSetAuth(id)
+	if err != nil {
+		return o, errors.New("读不到这个规则集的订阅认证（凭据存储不可用或文件损坏）")
+	}
+	if a != nil {
+		o.Auth, o.AuthOrigin = a, ruleset.Origin(url)
+	}
+	return o, nil
 }
 
 func (s *Server) registerRuleSets(mux *http.ServeMux) {
@@ -116,6 +144,8 @@ func (s *Server) registerRuleSets(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/rule-sets/{id}", s.deleteRuleSet)
 	mux.HandleFunc("POST /api/rule-sets/{id}/update", s.updateRuleSet)
 	mux.HandleFunc("POST /api/rule-sets/{id}/activate-held", s.activateHeld)
+	mux.HandleFunc("PUT /api/rule-sets/{id}/auth", s.putRuleSetAuth)
+	mux.HandleFunc("DELETE /api/rule-sets/{id}/auth", s.deleteRuleSetAuth)
 }
 
 func (s *Server) loadRSStatus() map[string]*RuleSetStatus {
@@ -187,22 +217,37 @@ func (s *Server) ruleSetView(t model.Topology, rs model.RuleSet, st map[string]*
 	if status == nil {
 		status = &RuleSetStatus{State: "never"}
 	}
+	cp := *status
+	status = &cp
 	s.rs().mu.Lock()
 	if s.rs().fetching[rs.ID] {
-		cp := *status
 		cp.State = "fetching"
-		status = &cp
 	}
 	s.rs().mu.Unlock()
+	// Nothing about a download is shown with its query string or user
+	// information (a status written by an older version may have them).
+	if cp.URL != "" {
+		cp.URL = ruleset.Redact(cp.URL)
+	}
+	cp.LastError = redactText(cp.LastError)
 	users := ruleSetUsers(t, rs.ID)
 	if users == nil {
 		users = []map[string]any{}
+	}
+	cands := ruleset.Candidates(rs.URL, sourceMode(rs), lists.Effective(t.Settings.ListSource))
+	for i := range cands {
+		cands[i].URL = ruleset.Redact(cands[i].URL)
+	}
+	if ruleset.HasSecret(rs.URL) {
+		rs.URL = ruleset.Redact(rs.URL)
 	}
 	return map[string]any{
 		"rule_set":   rs,
 		"status":     status,
 		"used_by":    users,
-		"candidates": ruleset.Candidates(rs.URL, sourceMode(rs), lists.Effective(t.Settings.ListSource)),
+		"candidates": cands,
+		// Metadata of the subscription credential (never the material).
+		"auth": s.ruleSetAuthView(rs.ID),
 	}
 }
 
@@ -237,6 +282,24 @@ type ruleSetBody struct {
 	Source      *string `json:"source"`
 	IntervalSec *int    `json:"interval_sec"`
 	AllowLAN    *bool   `json:"allow_lan"`
+	// Auth (write-only) stores or rotates the subscription credential.
+	Auth *authBody `json:"auth,omitempty"`
+}
+
+// checkBody refuses a URL that carries a credential (it belongs in auth)
+// and an invalid credential, without quoting either.
+func (b ruleSetBody) check(w http.ResponseWriter) bool {
+	if b.URL != nil && ruleset.HasSecret(strings.TrimSpace(*b.URL)) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": ruleset.ErrURLSecret.Error(), "code": "url_has_secret", "field": "url"})
+		return false
+	}
+	if b.Auth != nil {
+		if err := b.Auth.auth().Check(); err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error(), "code": "bad_auth", "field": "auth"})
+			return false
+		}
+	}
+	return true
 }
 
 func (b ruleSetBody) apply(rs *model.RuleSet) {
@@ -299,6 +362,9 @@ func (s *Server) createRuleSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("请求格式错误"))
 		return
 	}
+	if !b.check(w) {
+		return
+	}
 	var rs model.RuleSet
 	b.apply(&rs)
 	if rs.Source == "" {
@@ -311,6 +377,13 @@ func (s *Server) createRuleSet(w http.ResponseWriter, r *http.Request) {
 	})
 	if s.writeSaveErr(w, issues, err) {
 		return
+	}
+	if b.Auth != nil {
+		a := b.Auth.auth()
+		if err := s.storeRuleSetAuth(rs.ID, a); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "规则集已添加，但订阅认证没有保存：" + ruleset.Scrub(err.Error(), a.Secrets()...) + "。请在规则集上重新设置认证。", "code": "auth_not_stored"})
+			return
+		}
 	}
 	s.startFetch(t, rs, false)
 	writeJSON(w, http.StatusCreated, s.ruleSetView(t, rs, s.loadRSStatus()))
@@ -339,10 +412,15 @@ func (s *Server) patchRuleSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("请求格式错误"))
 		return
 	}
+	if !b.check(w) {
+		return
+	}
 	var out model.RuleSet
+	var oldURL string
 	t, issues, err := s.saveTopologyChecked(func(t *model.Topology) error {
 		for i := range t.RuleSets {
 			if t.RuleSets[i].ID == id {
+				oldURL = t.RuleSets[i].URL
 				b.apply(&t.RuleSets[i])
 				out = t.RuleSets[i]
 				return nil
@@ -352,6 +430,21 @@ func (s *Server) patchRuleSet(w http.ResponseWriter, r *http.Request) {
 	})
 	if s.writeSaveErr(w, issues, err) {
 		return
+	}
+	switch {
+	case b.Auth != nil:
+		a := b.Auth.auth()
+		if err := s.storeRuleSetAuth(id, a); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "订阅认证没有保存：" + ruleset.Scrub(err.Error(), a.Secrets()...), "code": "auth_not_stored"})
+			return
+		}
+	case ruleset.Origin(oldURL) != ruleset.Origin(out.URL):
+		// A write-only credential must not follow the URL to another
+		// origin (that would hand it to whoever runs the new host): it is
+		// dropped unless the same request sets a new one.
+		if cs, err := s.credStore(); err == nil {
+			_ = cs.DeleteRuleSetAuth(id)
+		}
 	}
 	writeJSON(w, http.StatusOK, s.ruleSetView(t, out, s.loadRSStatus()))
 }
@@ -380,6 +473,9 @@ func (s *Server) deleteRuleSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = os.Remove(filepath.Join(s.ruleSetDir(), id+".txt"))
+	if cs, err := s.credStore(); err == nil {
+		_ = cs.DeleteRuleSetAuth(id)
+	}
 	s.rs().mu.Lock()
 	m := s.loadRSStatus()
 	delete(m, id)
@@ -458,7 +554,7 @@ func (s *Server) startFetch(t model.Topology, rs model.RuleSet, wait bool) bool 
 			delete(st.fetching, rs.ID)
 			st.mu.Unlock()
 		}()
-		s.fetchOnce(rs, policy)
+		s.fetchOnce(t, rs, policy)
 	}
 	if wait {
 		run()
@@ -469,13 +565,14 @@ func (s *Server) startFetch(t model.Topology, rs model.RuleSet, wait bool) bool 
 }
 
 // fetchCandidates downloads and parses the first candidate that works.
-func (s *Server) fetchCandidates(ctx context.Context, url, mode, format, behavior string, allowLAN bool, p lists.Policy) (ruleset.Parsed, []byte, ruleset.Candidate, []string) {
+// Error text never carries a query string or a credential.
+func (s *Server) fetchCandidates(ctx context.Context, url, mode, format, behavior string, o RuleSetFetchOptions, p lists.Policy) (ruleset.Parsed, []byte, ruleset.Candidate, []string) {
 	var errs []string
-	f := s.fetcher(allowLAN)
+	f := s.fetcher(o)
 	for _, c := range ruleset.Candidates(url, mode, p) {
 		b, err := f.Get(ctx, c.URL)
 		if err != nil {
-			errs = append(errs, c.Source+": "+err.Error())
+			errs = append(errs, c.Source+": "+redactText(ruleset.Scrub(err.Error(), o.Auth.Secrets()...)))
 			continue
 		}
 		parsed, err := ruleset.Parse(b, format, behavior, c.URL)
@@ -491,11 +588,21 @@ func (s *Server) fetchCandidates(ctx context.Context, url, mode, format, behavio
 	return ruleset.Parsed{}, nil, ruleset.Candidate{}, errs
 }
 
-func (s *Server) fetchOnce(rs model.RuleSet, p lists.Policy) {
+func (s *Server) fetchOnce(t model.Topology, rs model.RuleSet, p lists.Policy) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	now := time.Now().UTC().Format(time.RFC3339)
-	parsed, content, cand, errs := s.fetchCandidates(ctx, rs.URL, sourceMode(rs), rs.Format, rs.Behavior, rs.AllowLAN, p)
+	o, err := s.fetchOptions(t, rs.ID, rs.URL, rs.AllowLAN)
+	if err != nil {
+		s.updateRSStatus(rs.ID, func(st *RuleSetStatus) {
+			st.LastAttempt, st.LastError = now, err.Error()
+			if st.Digest == "" {
+				st.State = "failed"
+			}
+		})
+		return
+	}
+	parsed, content, cand, errs := s.fetchCandidates(ctx, rs.URL, sourceMode(rs), rs.Format, rs.Behavior, o, p)
 	if content == nil {
 		s.updateRSStatus(rs.ID, func(st *RuleSetStatus) {
 			st.LastAttempt, st.LastError = now, strings.Join(errs, "；")
@@ -565,7 +672,7 @@ func (s *Server) activateContent(id string, content []byte, format string, count
 		st.State, st.FetchedAt, st.LastAttempt, st.LastError = "ok", now, now, ""
 		st.Digest, st.Format, st.Counts, st.Unsupported, st.Notes, st.Held = digestOf(content), format, counts, unsupported, notes, nil
 		if source != "" {
-			st.Source, st.URL = source, url
+			st.Source, st.URL = source, ruleset.Redact(url)
 		}
 	})
 	if string(old) != string(content) {
@@ -651,24 +758,30 @@ func (s *Server) RunRuleSetScheduler(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		st := s.loadRSStatus()
-		ids := make([]string, 0, len(t.RuleSets))
-		for _, rs := range t.RuleSets {
-			ids = append(ids, rs.ID)
-		}
-		sort.Strings(ids)
-		for _, rs := range t.RuleSets {
-			iv := time.Duration(rs.IntervalSec) * time.Second
-			if iv == 0 {
-				iv = 24 * time.Hour
-			}
-			last := time.Time{}
-			if x := st[rs.ID]; x != nil {
-				last, _ = time.Parse(time.RFC3339, x.LastAttempt)
-			}
-			if time.Since(last) >= iv {
-				s.startFetch(t, rs, true)
-			}
+		for _, rs := range dueRuleSets(t, s.loadRSStatus(), time.Now()) {
+			s.startFetch(t, rs, true)
 		}
 	}
+}
+
+// dueRuleSets are the rule-sets whose interval (default 24 h) elapsed since
+// their last attempt (successful or not), by ID. A rule-set never tried is
+// due at once.
+func dueRuleSets(t model.Topology, st map[string]*RuleSetStatus, now time.Time) []model.RuleSet {
+	var out []model.RuleSet
+	for _, rs := range t.RuleSets {
+		iv := time.Duration(rs.IntervalSec) * time.Second
+		if iv == 0 {
+			iv = 24 * time.Hour
+		}
+		last := time.Time{}
+		if x := st[rs.ID]; x != nil {
+			last, _ = time.Parse(time.RFC3339, x.LastAttempt)
+		}
+		if now.Sub(last) >= iv {
+			out = append(out, rs)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }

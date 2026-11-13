@@ -202,6 +202,23 @@ export interface RuleSetView {
   status: RuleSetStatus;
   used_by: RuleRef[];
   candidates: { source: string; url: string }[];
+  /** Metadata of the subscription credential; the material is write-only. */
+  auth?: RuleSetAuthView | null;
+}
+
+export interface RuleSetAuthView {
+  kind: "bearer" | "basic" | "query";
+  secret_set: boolean;
+  updated_at?: string;
+}
+
+/** Write-only subscription credential input. */
+export interface RuleSetAuthInput {
+  kind: "bearer" | "basic" | "query";
+  token?: string;
+  username?: string;
+  password?: string;
+  query?: string;
 }
 
 /** A switchable target between rules and the data plane (a mihomo select group). */
@@ -221,6 +238,18 @@ export interface ImportFlag {
   severity: "block" | "accept" | "info";
   message: string;
   by?: string[];
+  class?: string;
+  /** Accepted for this line or through accept_codes. */
+  accepted?: boolean;
+}
+
+/** One accept code across the preview. */
+export interface ImportCodeSummary {
+  code: string;
+  class: string;
+  lines: number[];
+  accepted: number;
+  by_code: boolean;
 }
 
 export interface ImportRow {
@@ -244,7 +273,7 @@ export interface ImportPreview {
   removed?: { rule_id: string; line: number; text: string }[];
   mapping: { name: string; kind: string; mapped?: string; remembered?: boolean; suggestions?: { value: string; label: string }[]; used_by?: number[] }[];
   services: { id: string; name: string; chain: string[]; target?: string; current?: string; keep_current?: boolean; default?: boolean; pick: string; pick_from: string; used_by?: number[]; existing: boolean }[];
-  rule_sets: { name: string; id: string; url: string; behavior: string; existing: boolean; state: string; error?: string; format?: string; counts?: Record<string, number>; unsupported?: Record<string, number>; used_by?: number[] }[];
+  rule_sets: { name: string; id: string; url: string; behavior: string; existing: boolean; state: string; error?: string; format?: string; counts?: Record<string, number>; unsupported?: Record<string, number>; used_by?: number[]; auth?: string }[];
   default?: ImportRow["target"];
   quic?: string;
   builtin_disabled?: string[];
@@ -253,6 +282,7 @@ export interface ImportPreview {
   can_confirm: boolean;
   digest: string;
   summary: Record<string, number>;
+  accept_summary?: ImportCodeSummary[];
 }
 
 export interface ImportRequest {
@@ -262,6 +292,8 @@ export interface ImportRequest {
   mapping?: Record<string, string>;
   drop?: number[];
   accept?: Record<string, string[]>;
+  /** Accept every row's flag of these codes. */
+  accept_codes?: string[];
   disable_builtin: boolean;
   reset_services?: boolean;
   at_start?: boolean;
@@ -278,6 +310,9 @@ export interface RuleAnalysis {
   partly_by?: string[] | null;
   keywords?: number;
   keyword_note?: string;
+  /** Names this rule lost to an earlier rule's shorter suffix with the upgrade. */
+  legacy_lost?: number;
+  legacy_lost_to?: string[] | null;
   rule_set?: { state: string; counts?: Record<string, number>; unsupported?: Record<string, number>; held?: boolean };
 }
 

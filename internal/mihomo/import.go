@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -34,6 +35,24 @@ type Flag struct {
 	Class   string   `json:"class"`
 	Message string   `json:"message"`
 	By      []string `json:"by,omitempty"`
+	// Accepted: an accept flag the operator accepted, for this line
+	// (Options.Accept) or for every row with this code (AcceptCodes).
+	Accepted bool `json:"accepted,omitempty"`
+}
+
+// AcceptCodes are the codes of accept flags, which Options.AcceptCodes
+// may accept for every row at once.
+var AcceptCodes = []string{"keyword_expanded", "quic_semantics", "quic_direct_below", "ruleset_keywords", "ruleset_partial", "ruleset_unavailable"}
+
+// CodeSummary is one accept code across the preview: which rows carry it
+// and how many of them are accepted (the UI's "accept all of this kind").
+type CodeSummary struct {
+	Code     string `json:"code"`
+	Class    string `json:"class"`
+	Lines    []int  `json:"lines"`
+	Accepted int    `json:"accepted"`
+	// ByCode: the whole code is accepted (Options.AcceptCodes).
+	ByCode bool `json:"by_code"`
 }
 
 // Flag classes.
@@ -156,6 +175,9 @@ type RuleSetView struct {
 	Counts      map[string]int `json:"counts,omitempty"`
 	Unsupported map[string]int `json:"unsupported,omitempty"`
 	UsedBy      []int          `json:"used_by,omitempty"`
+	// Auth is the kind of subscription credential the provider's URL
+	// carried (moved to the credential store on confirm; never the value).
+	Auth string `json:"auth,omitempty"`
 }
 
 // Content is what the panel has of a provider's rule-set right now.
@@ -178,6 +200,10 @@ type Options struct {
 	Mapping map[string]string
 	Drop    map[int]bool
 	Accept  map[int][]string
+	// AcceptCodes accepts every row's flag of these codes (one of
+	// AcceptCodes); each such row records the code in its Accepted list,
+	// so the digest covers the choice.
+	AcceptCodes map[string]bool
 	// DisableBuiltin turns off the built-in default rows (not manual ones).
 	DisableBuiltin bool
 	// ResetServices sets existing service groups to the imported target
@@ -207,6 +233,8 @@ type Preview struct {
 	CanConfirm bool           `json:"can_confirm"`
 	Digest     string         `json:"digest"`
 	Summary    map[string]int `json:"summary"`
+	// AcceptSummary lists every accept code present, with its rows.
+	AcceptSummary []CodeSummary `json:"accept_summary"`
 }
 
 // Plan is what confirming writes.
@@ -219,6 +247,10 @@ type Plan struct {
 	Mapping       map[string]string
 	ActivateSets  map[string]Content // rule-set ID -> content to activate
 	ImportedCount int
+	// Auth: rule-set ID -> subscription credential split off a provider
+	// URL, stored in the credential store on confirm (never digested,
+	// shown or written to the topology).
+	Auth map[string]*ruleset.Auth
 }
 
 // Selection parses GET /proxies of mihomo's controller: only selector
@@ -530,6 +562,9 @@ func (b *builder) target(policy string, line int, row *Row) (spec string, ok boo
 }
 
 func accepted(o Options, line int, code string) bool {
+	if o.AcceptCodes[code] {
+		return true
+	}
 	for _, c := range o.Accept[line] {
 		if c == code {
 			return true
@@ -541,7 +576,7 @@ func accepted(o Options, line int, code string) bool {
 // Build computes the preview and the plan.
 func Build(t model.Topology, cfg Config, o Options, content func(Provider) Content) (*Preview, *Plan) {
 	p := &Preview{Summary: map[string]int{}}
-	plan := &Plan{Mapping: map[string]string{}, ActivateSets: map[string]Content{}}
+	plan := &Plan{Mapping: map[string]string{}, ActivateSets: map[string]Content{}, Auth: map[string]*ruleset.Auth{}}
 	b := &builder{t: t, cfg: cfg, o: o, content: content, p: p, plan: plan,
 		mapRows: map[string]*MappingRow{}, services: map[string]*ServiceView{}, sets: map[string]*RuleSetView{}}
 	if b.o.Mapping == nil {
@@ -657,6 +692,11 @@ func Build(t model.Topology, cfg Config, o Options, content func(Provider) Conte
 		p.Rows = append(p.Rows, row)
 		if write {
 			mr.Accepted = append([]string(nil), o.Accept[r.Line]...)
+			for _, f := range row.Flags {
+				if f.Severity == SevAccept && o.AcceptCodes[f.Code] && !slices.Contains(mr.Accepted, f.Code) {
+					mr.Accepted = append(mr.Accepted, f.Code)
+				}
+			}
 			plan.Rules = append(plan.Rules, mr)
 			p.Rows[len(p.Rows)-1].RuleID = mr.ID
 		}
@@ -755,6 +795,9 @@ func (b *builder) mapRuleSet(r Rule, row *Row, mr *model.Rule) bool {
 	sv := b.sets[name]
 	if sv == nil {
 		sv = &RuleSetView{Name: name, URL: prov.URL, Behavior: prov.Behavior, ID: idFor("rs-", name)}
+		if prov.Auth != nil {
+			sv.Auth = prov.Auth.Kind
+		}
 		for _, rs := range b.t.RuleSets {
 			if rs.Name == name || (prov.URL != "" && rs.URL == prov.URL) {
 				sv.ID, sv.Existing = rs.ID, true
@@ -765,6 +808,8 @@ func (b *builder) mapRuleSet(r Rule, row *Row, mr *model.Rule) bool {
 			sv.State, sv.Error = "unsupported", "只支持 type: http 的规则集（"+prov.Type+" 不行）"
 		case strings.EqualFold(prov.Format, "mrs"):
 			sv.State, sv.Error = "unsupported", ruleset.ErrMRS.Error()
+		case prov.URLError != "":
+			sv.State, sv.Error = "unsupported", prov.URLError
 		case ruleset.CheckURL(prov.URL) != nil:
 			sv.State, sv.Error = "unsupported", "URL 不合法"
 		default:
@@ -847,6 +892,9 @@ func (b *builder) finish() {
 			}
 		}
 		plan.RuleSets = append(plan.RuleSets, rs)
+		if prov.Auth != nil {
+			plan.Auth[rs.ID] = prov.Auth
+		}
 	}
 	for _, name := range sortedKeys(b.mapRows) {
 		mr := b.mapRows[name]
@@ -961,7 +1009,7 @@ func (b *builder) finish() {
 		if row.Action == "match" || row.Action == "tail" || row.Action == "after_match" {
 			st = "info"
 		}
-		for _, f := range row.Flags {
+		for k, f := range row.Flags {
 			if o.NameAware && f.Class == ClassAddress {
 				continue
 			}
@@ -970,6 +1018,7 @@ func (b *builder) finish() {
 				st = "blocked"
 			case SevAccept:
 				if accepted(o, row.Line, f.Code) {
+					row.Flags[k].Accepted = true
 					if st == "ok" {
 						st = "accepted"
 					}
@@ -983,6 +1032,31 @@ func (b *builder) finish() {
 			p.Blocking++
 		}
 		p.Summary[st]++
+	}
+	// Per accept code: its rows and how many are accepted.
+	byCode := map[string]*CodeSummary{}
+	for _, row := range p.Rows {
+		if row.Status == "dropped" {
+			continue
+		}
+		for _, f := range row.Flags {
+			if f.Severity != SevAccept {
+				continue
+			}
+			cs := byCode[f.Code]
+			if cs == nil {
+				cs = &CodeSummary{Code: f.Code, Class: f.Class, Lines: []int{}, ByCode: o.AcceptCodes[f.Code]}
+				byCode[f.Code] = cs
+			}
+			cs.Lines = append(cs.Lines, row.Line)
+			if f.Accepted {
+				cs.Accepted++
+			}
+		}
+	}
+	p.AcceptSummary = []CodeSummary{}
+	for _, c := range sortedKeys(byCode) {
+		p.AcceptSummary = append(p.AcceptSummary, *byCode[c])
 	}
 	for id, r := range old {
 		if !oldUsed[id] && !newIDs[id] {

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/radowitz/meridian/internal/ruleset"
 	"sort"
 	"sync"
 
@@ -281,6 +282,19 @@ func Redact(t model.Topology) model.Topology {
 		if t.Nodes[i].PrivateKey != "" {
 			t.Nodes[i].PrivateKey = "***"
 		}
+	}
+	// A rule-set URL never carries a credential once the panel has
+	// migrated it into the credential store (api migrateRuleSetSecrets);
+	// one that still does (a draft or an import awaiting the migration) is
+	// shown without it.
+	if len(t.RuleSets) > 0 {
+		rs := append([]model.RuleSet(nil), t.RuleSets...)
+		for i := range rs {
+			if ruleset.HasSecret(rs[i].URL) {
+				rs[i].URL = ruleset.Redact(rs[i].URL)
+			}
+		}
+		t.RuleSets = rs
 	}
 	return t
 }

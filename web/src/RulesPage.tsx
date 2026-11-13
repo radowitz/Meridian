@@ -24,6 +24,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Radio,
   Select,
   Space,
@@ -534,6 +535,8 @@ export default function RulesPage() {
   const [importing, setImporting] = useState(false);
   const [analysis, setAnalysis] = useState<Map<string, RuleAnalysis>>(new Map());
   const [sharedNote, setSharedNote] = useState("");
+  const [upgradeNotes, setUpgradeNotes] = useState<string[]>([]);
+  const [moveTo, setMoveTo] = useState<{ rule: Rule; to: number } | null>(null);
   const topo = doc.topo;
   const focus = route.params[0];
   const ordered = !!topo?.rules_ordered;
@@ -549,6 +552,7 @@ export default function RulesPage() {
         if (!live) return;
         setAnalysis(new Map(r.rules.map((a) => [a.rule_id, a])));
         setSharedNote(r.shared_address);
+        setUpgradeNotes(r.upgrade_notes ?? []);
       })
       .catch(() => undefined);
     return () => {
@@ -734,8 +738,9 @@ export default function RulesPage() {
                         items: [
                           { key: "top", icon: <VerticalAlignTopOutlined />, label: ordered || r.manual ? "移到最前" : "移到内置规则的最前", disabled: ci === 0 },
                           { key: "bottom", icon: <VerticalAlignBottomOutlined />, label: ordered ? "移到最后" : r.manual ? "移到手动规则的最后" : "移到最后", disabled: ci === last },
+                          ...(ordered ? [{ key: "to", label: "移到第 N 条…" }] : []),
                         ],
-                        onClick: ({ key }) => move(r, key === "top" ? 0 : last),
+                        onClick: ({ key }) => (key === "to" ? setMoveTo({ rule: r, to: ci + 1 }) : move(r, key === "top" ? 0 : last)),
                       }}
                     >
                       <Button type="text" size="small" icon={<EllipsisOutlined />} aria-label={`移动 ${r.name}`} />
@@ -838,6 +843,7 @@ export default function RulesPage() {
                       if (a.keywords && !a.keyword_note) notes.push(`${a.keywords} 条关键词条目在网关上不执行`);
                       if (a.rule_set?.unsupported && Object.keys(a.rule_set.unsupported).length) notes.push("规则集只部分生效：" + Object.entries(a.rule_set.unsupported).map(([k, v]) => `${k} ${v}`).join("，"));
                       if (a.rule_set?.held) notes.push("规则集有被暂缓的新版本");
+                      if (a.legacy_lost) notes.push(`升级后变化：${a.legacy_lost} 个名字以前按更长的名字归本条，现在被 ${ref(a.legacy_lost_to)} 先命中`);
                       return (
                         <Space direction="vertical" size={0} data-testid={`rule-shadow-${r.id}`}>
                           {a.fully_shadowed ? (
@@ -923,6 +929,43 @@ export default function RulesPage() {
         />
       )}
       <IssueList issues={doc.issues.filter((i) => !i.rule_id && (i.group_id || i.code === "no_default_exit"))} />
+      {ordered && upgradeNotes.length > 0 ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginTop: 12 }}
+          data-testid="rules-upgrade-notes"
+          message="升级后的解析变化"
+          description={
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {upgradeNotes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          }
+        />
+      ) : null}
+      <Modal
+        title={moveTo ? `把「${moveTo.rule.name}」移到第几条？` : ""}
+        open={moveTo !== null}
+        onCancel={() => setMoveTo(null)}
+        okText="移动"
+        onOk={() => {
+          if (moveTo) move(moveTo.rule, moveTo.to - 1);
+          setMoveTo(null);
+        }}
+      >
+        <InputNumber
+          aria-label="目标位置"
+          min={1}
+          max={topo.rules.length}
+          value={moveTo?.to}
+          onChange={(v) => setMoveTo((m) => (m && v ? { ...m, to: Number(v) } : m))}
+        />
+        <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+          共 {topo.rules.length} 条；从上到下第一条命中生效。
+        </Typography.Text>
+      </Modal>
       {ordered && sharedNote ? (
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           {sharedNote}

@@ -79,6 +79,9 @@ func (s *Server) migrate(cs *credentials.Store) []error {
 	if err := s.migrateWSS(cs); err != nil {
 		errs = append(errs, fmt.Errorf("WSS 路径和证书：%w", err))
 	}
+	if err := s.migrateRuleSetSecrets(cs); err != nil {
+		errs = append(errs, fmt.Errorf("规则集订阅认证：%w", err))
+	}
 	return errs
 }
 

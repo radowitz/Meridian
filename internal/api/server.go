@@ -122,7 +122,7 @@ type Server struct {
 	// host); RuleSetFetch replaces the downloader (tests); ListsDir is the
 	// gateway lists dir the rule tester reads (default /var/lib/meridian).
 	RuleSetDir   string
-	RuleSetFetch func(allowLAN bool) RuleSetFetcher
+	RuleSetFetch func(o RuleSetFetchOptions) RuleSetFetcher
 	ListsDir     string
 	rsOnce       sync.Once
 	rsState      *ruleSetState
@@ -380,6 +380,11 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 		// path and certificate instead), as at startup.
 		if werr := s.migrateWSS(cs); werr != nil && merr == nil {
 			merr = werr
+		}
+		// An imported rule-set URL with a credential: it moves into the
+		// credential store, as at startup.
+		if rerr := s.migrateRuleSetSecrets(cs); rerr != nil && merr == nil {
+			merr = rerr
 		}
 	}
 	s.resMu.Unlock()

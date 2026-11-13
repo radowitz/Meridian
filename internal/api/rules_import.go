@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,12 +36,17 @@ import (
 // blocks.
 
 type importBody struct {
-	Config    string              `json:"config"`
-	Selection string              `json:"selection,omitempty"`
+	Config string `json:"config"`
+	// Selection is mihomo's GET /proxies output: as a JSON string (the
+	// pasted text) or as the JSON object itself.
+	Selection json.RawMessage     `json:"selection,omitempty"`
 	Picks     map[string]string   `json:"picks,omitempty"`
 	Mapping   map[string]string   `json:"mapping,omitempty"`
 	Drop      []int               `json:"drop,omitempty"`
 	Accept    map[string][]string `json:"accept,omitempty"`
+	// AcceptCodes accepts every row's flag of these codes (one of
+	// mihomo.AcceptCodes); the rows still show individually.
+	AcceptCodes []string `json:"accept_codes,omitempty"`
 	// DisableBuiltin turns off the built-in default rows on confirm.
 	DisableBuiltin bool `json:"disable_builtin"`
 	ResetServices  bool `json:"reset_services,omitempty"`
@@ -70,18 +77,52 @@ func decodeImport(w http.ResponseWriter, r *http.Request) (importBody, error) {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&b); err != nil {
-		// Never echo the decoder's message: it can quote the body.
-		return b, errors.New("请求格式错误")
+		// Never echo the decoder's message: it can quote the body. Say
+		// which field when the decoder knows it.
+		var te *json.UnmarshalTypeError
+		if errors.As(err, &te) && te.Field != "" {
+			return b, errors.New("请求格式错误：字段 " + te.Field + " 的类型不对（config 是字符串；selection 是字符串或对象；mapping 是 名字→目标 的对象；drop 是行号数组；accept 是 行号→代码数组；accept_codes 是代码数组）")
+		}
+		return b, errors.New("请求格式错误：需要 JSON 对象 {\"config\": \"<YAML>\", …}")
 	}
 	return b, nil
 }
 
+// selectionBytes is the selection as GET /proxies JSON: a JSON string's
+// content, or the object itself.
+func (b importBody) selectionBytes() ([]byte, error) {
+	raw := strings.TrimSpace(string(b.Selection))
+	switch {
+	case raw == "" || raw == "null":
+		return nil, nil
+	case strings.HasPrefix(raw, "\""):
+		var s string
+		if err := json.Unmarshal([]byte(raw), &s); err != nil {
+			return nil, errors.New("selection 不是合法的 JSON 字符串")
+		}
+		return []byte(s), nil
+	case strings.HasPrefix(raw, "{"):
+		return []byte(raw), nil
+	}
+	return nil, errors.New("selection 必须是 GET /proxies 的输出：JSON 对象，或装着它的字符串")
+}
+
 func (b importBody) options() (mihomo.Options, error) {
 	o := mihomo.Options{UIPicks: b.Picks, Mapping: b.Mapping, Drop: map[int]bool{}, Accept: map[int][]string{},
-		DisableBuiltin: b.DisableBuiltin, ResetServices: b.ResetServices, AtStart: b.AtStart}
-	sel, err := mihomo.Selection([]byte(b.Selection))
+		AcceptCodes: map[string]bool{}, DisableBuiltin: b.DisableBuiltin, ResetServices: b.ResetServices, AtStart: b.AtStart}
+	raw, err := b.selectionBytes()
 	if err != nil {
 		return o, err
+	}
+	sel, err := mihomo.Selection(raw)
+	if err != nil {
+		return o, err
+	}
+	for _, c := range b.AcceptCodes {
+		if !slices.Contains(mihomo.AcceptCodes, c) {
+			return o, errors.New("accept_codes 里的 " + strconv.Quote(c) + " 不是可接受的代码（" + strings.Join(mihomo.AcceptCodes, "、") + "）")
+		}
+		o.AcceptCodes[c] = true
 	}
 	o.Selection = sel
 	for _, l := range b.Drop {
@@ -120,7 +161,7 @@ func (s *Server) providerContent(t model.Topology, fetch bool) func(mihomo.Provi
 		pf, ok := rs.prefetch[p.URL]
 		if !ok && fetch {
 			rs.prefetch[p.URL] = prefetched{state: "pending", at: time.Now()}
-			go s.prefetch(p, policy)
+			go s.prefetch(t, p, policy)
 			pf = prefetched{state: "pending"}
 			ok = true
 		}
@@ -136,7 +177,7 @@ func (s *Server) providerContent(t model.Topology, fetch bool) func(mihomo.Provi
 	}
 }
 
-func (s *Server) prefetch(p mihomo.Provider, policy lists.Policy) {
+func (s *Server) prefetch(t model.Topology, p mihomo.Provider, policy lists.Policy) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	format := ""
@@ -147,7 +188,11 @@ func (s *Server) prefetch(p mihomo.Provider, policy lists.Policy) {
 	if _, _, _, _, ok := ruleset.GitHubRaw(p.URL); ok {
 		mode = ruleset.SourcePolicy
 	}
-	parsed, content, _, errs := s.fetchCandidates(ctx, p.URL, mode, format, p.Behavior, false, policy)
+	o := RuleSetFetchOptions{Deny: gatewayDeny(t)}
+	if p.Auth != nil {
+		o.Auth, o.AuthOrigin = p.Auth, ruleset.Origin(p.URL)
+	}
+	parsed, content, _, errs := s.fetchCandidates(ctx, p.URL, mode, format, p.Behavior, o, policy)
 	pf := prefetched{state: "available", parsed: parsed, content: content, at: time.Now()}
 	if content == nil {
 		pf = prefetched{state: "failed", err: strings.Join(errs, "；"), at: time.Now()}
@@ -170,7 +215,11 @@ func (s *Server) buildImport(w http.ResponseWriter, b importBody, fetch bool) (m
 	}
 	o, err := b.options()
 	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error(), "code": "bad_selection"})
+		code := "bad_selection"
+		if strings.Contains(err.Error(), "accept") {
+			code = "bad_accept"
+		}
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error(), "code": code})
 		return t, nil, nil, false
 	}
 	p, plan := mihomo.Build(t, cfg, o, s.providerContent(t, fetch))
@@ -190,6 +239,12 @@ func (s *Server) buildImport(w http.ResponseWriter, b importBody, fetch bool) (m
 	}
 	for i := range p.Rows {
 		row := &p.Rows[i]
+		// A row whose target is not mapped yet already blocks; the
+		// validation finding (the service group points nowhere) is its
+		// consequence, shown once the mapping is complete.
+		if slices.ContainsFunc(row.Flags, func(f mihomo.Flag) bool { return f.Class == mihomo.ClassMapping }) {
+			continue
+		}
 		for _, is := range issues[row.RuleID] {
 			sev := mihomo.SevInfo
 			if is.Severity == validate.SeverityError {
@@ -265,13 +320,27 @@ func (s *Server) postImportConfirm(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Credentials split off provider URLs go to the credential store
+	// (never the topology).
+	var authErr []string
+	for id, a := range plan.Auth {
+		if err := s.storeRuleSetAuth(id, a); err != nil {
+			authErr = append(authErr, id)
+		}
+	}
 	for id, c := range plan.ActivateSets {
 		if es, ok := s.activeEntries(id); ok && string(ordered.MarshalEntries(es)) == string(ordered.MarshalEntries(c.Entries)) {
 			continue
 		}
 		_ = s.activateContent(id, ordered.MarshalEntries(c.Entries), c.Format, c.Counts, c.Unsupported, nil, "", "")
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"imported": plan.ImportedCount, "services": len(plan.Services), "rule_sets": len(plan.RuleSets), "default_group": plan.DefaultGroup, "digest": p.Digest})
+	out := map[string]any{"imported": plan.ImportedCount, "services": len(plan.Services), "rule_sets": len(plan.RuleSets), "default_group": plan.DefaultGroup, "digest": p.Digest}
+	if len(authErr) > 0 {
+		sort.Strings(authErr)
+		out["auth_not_stored"] = authErr
+		out["warning"] = "这些规则集的订阅认证没有存进凭据存储，请在规则集上重新设置：" + strings.Join(authErr, "、")
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ---------------------------------------------------------- services ---
@@ -580,6 +649,16 @@ func (s *Server) getRuleAnalysis(w http.ResponseWriter, r *http.Request) {
 			part = append(part, rules[j].ID)
 		}
 		row := map[string]any{"rule_id": r.ID, "entries": a.Entries, "shadowed": a.Shadowed, "fully_shadowed": a.FullyShadowed, "shadowed_by": by, "partly_by": part, "keywords": a.Keywords}
+		if a.LegacyLost > 0 {
+			var to []string
+			for _, j := range a.LegacyLostTo {
+				to = append(to, rules[j].ID)
+			}
+			// The migration difference: before the upgrade the resolver
+			// gave these names to this rule (longer name wins); now the
+			// earlier rule takes them.
+			row["legacy_lost"], row["legacy_lost_to"] = a.LegacyLost, to
+		}
 		if r.MatchType == model.MatchRuleSet {
 			if x := st[r.RuleSet]; x != nil {
 				row["rule_set"] = map[string]any{"state": x.State, "counts": x.Counts, "unsupported": x.Unsupported, "held": x.Held != nil}
@@ -591,5 +670,15 @@ func (s *Server) getRuleAnalysis(w http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rules": out, "notes": notes,
-		"shared_address": "网关按解析出的目的地址分流：两个指向不同目标的名字解析到同一个地址时，该地址按列表里更靠前的规则走。"})
+		"shared_address": "网关按解析出的目的地址分流：两个指向不同目标的名字解析到同一个地址时，该地址按列表里更靠前的规则走。",
+		"upgrade_notes":  upgradeNotes})
+}
+
+// upgradeNotes: how name resolution changed with the ordered list (shown
+// where the operator orders the rules; docs/architecture.md「升级后的 DNS
+// 行为变化」).
+var upgradeNotes = []string{
+	"升级后，苹果和各系统的联网检测域名不再内置直连：没有规则指向直连时，它们和其它境外域名一样由默认组（或命中规则的目标）的解析器解析并走隧道。需要直连就启用「Apple 直连」模板或加一条直连规则。",
+	"升级后，靠前的规则优先于更长的后缀：以前解析器按“最长的名字”在规则之间选，现在按列表顺序第一条命中。结果因此改变的规则在「遮蔽」列标为“升级后变化”。",
+	"「未列名单的域名也问国内 DNS」默认关闭，规则和国内名单都不依赖它。",
 }

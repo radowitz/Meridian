@@ -182,6 +182,9 @@ type index struct {
 	// SOCKSCredentials are the usernames and passwords of external SOCKS
 	// exits' proxies (socks.go). Metadata only here.
 	SOCKSCredentials []socksRecord `json:"socks_credentials,omitempty"`
+	// RuleSetAuth are the subscription credentials of rule-sets
+	// (ruleset_auth.go). Metadata only here.
+	RuleSetAuth []ruleSetAuthRecord `json:"ruleset_auth,omitempty"`
 }
 
 // secret is the content of one secret file.
@@ -195,6 +198,11 @@ type secret struct {
 	WSSValue   string `json:"wss_value,omitempty"`
 	SOCKSUser  string `json:"socks_user,omitempty"`
 	SOCKSPass  string `json:"socks_pass,omitempty"`
+	// Rule-set subscription credential (ruleset_auth.go).
+	RSToken string `json:"rs_token,omitempty"`
+	RSUser  string `json:"rs_user,omitempty"`
+	RSPass  string `json:"rs_pass,omitempty"`
+	RSQuery string `json:"rs_query,omitempty"`
 }
 
 // Store is the credential store. Methods are safe for concurrent use.
@@ -423,6 +431,9 @@ func (s *Store) cleanOrphans() {
 	for _, c := range s.idx.SOCKSCredentials {
 		want[filepath.Base(s.secretPath(c.ID, c.Gen))] = true
 	}
+	for _, c := range s.idx.RuleSetAuth {
+		want[filepath.Base(s.secretPath(c.ID, c.Gen))] = true
+	}
 	for _, d := range []string{s.dir, filepath.Join(s.dir, "secrets")} {
 		entries, err := os.ReadDir(d)
 		if err != nil {
@@ -514,6 +525,9 @@ func (s *Store) commit(next index, secrets map[string]secret) error {
 	for _, c := range next.SOCKSCredentials {
 		keep[s.secretPath(c.ID, c.Gen)] = true
 	}
+	for _, c := range next.RuleSetAuth {
+		keep[s.secretPath(c.ID, c.Gen)] = true
+	}
 	for _, c := range old.Credentials {
 		if p := s.secretPath(c.ID, c.Gen); !keep[p] {
 			_ = os.Remove(p)
@@ -535,6 +549,11 @@ func (s *Store) commit(next index, secrets map[string]secret) error {
 		}
 	}
 	for _, c := range old.SOCKSCredentials {
+		if p := s.secretPath(c.ID, c.Gen); !keep[p] {
+			_ = os.Remove(p)
+		}
+	}
+	for _, c := range old.RuleSetAuth {
 		if p := s.secretPath(c.ID, c.Gen); !keep[p] {
 			_ = os.Remove(p)
 		}
@@ -598,6 +617,11 @@ func (i *index) idTaken(id string) bool {
 		}
 	}
 	for _, x := range i.SOCKSCredentials {
+		if x.ID == id {
+			return true
+		}
+	}
+	for _, x := range i.RuleSetAuth {
 		if x.ID == id {
 			return true
 		}

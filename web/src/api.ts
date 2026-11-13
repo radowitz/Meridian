@@ -18,6 +18,7 @@ import type {
   RuleRef,
   RuleSet,
   RuleSetView,
+  RuleSetAuthInput,
   RuleTestResult,
   ServiceGroup,
   ApiErrorBody,
@@ -493,7 +494,9 @@ export const getLeakcheck = () => request<{ items: LeakItem[] }>("GET", "/api/le
 // ---------------------------------------------------- ordered rules ---
 
 export const listRuleSets = () => request<{ rule_sets: RuleSetView[]; formats: string[] }>("GET", "/api/rule-sets");
-export const createRuleSet = (input: Partial<RuleSet>) => request<RuleSetView>("POST", "/api/rule-sets", input);
+export const createRuleSet = (input: Partial<RuleSet> & { auth?: RuleSetAuthInput }) => request<RuleSetView>("POST", "/api/rule-sets", input);
+export const setRuleSetAuth = (id: string, auth: RuleSetAuthInput) => request<RuleSetView>("PUT", `/api/rule-sets/${enc(id)}/auth`, auth);
+export const clearRuleSetAuth = (id: string) => request<RuleSetView>("DELETE", `/api/rule-sets/${enc(id)}/auth`);
 export const updateRuleSetDef = (id: string, patch: Partial<RuleSet>) => request<RuleSetView>("PATCH", `/api/rule-sets/${enc(id)}`, patch);
 export const deleteRuleSet = (id: string) => request<{ deleted: string }>("DELETE", `/api/rule-sets/${enc(id)}`);
 export const fetchRuleSet = (id: string) => request<RuleSetView>("POST", `/api/rule-sets/${enc(id)}/update`, {});
@@ -507,4 +510,4 @@ export const importPreview = (body: ImportRequest) => request<ImportPreview>("PO
 export const importConfirm = (body: ImportRequest) =>
   request<{ imported: number; services: number; rule_sets: number; default_group: string; digest: string }>("POST", "/api/rules/import/confirm", body);
 export const testRule = (name: string, address: string) => request<RuleTestResult>("POST", "/api/rules/test", { name, address });
-export const ruleAnalysis = () => request<{ rules: RuleAnalysis[]; notes?: string[] | null; shared_address: string }>("GET", "/api/rules/analysis");
+export const ruleAnalysis = () => request<{ rules: RuleAnalysis[]; notes?: string[] | null; shared_address: string; upgrade_notes?: string[] }>("GET", "/api/rules/analysis");
