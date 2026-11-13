@@ -829,3 +829,36 @@ func TestProvisionMigratesLegacySmartDNSService(t *testing.T) {
 		t.Fatal("legacy smartdns.service must stay stopped and the package recorded")
 	}
 }
+
+// A node that needs no panel-delivered binary (a hub without a WSS listener
+// and without a resolver): the manifest's artifact list is empty. On a real
+// primary hub this made the commit step exit 1 and the whole first install
+// was compensated at the very end.
+func TestProvisionScriptCommitsWithoutArtifacts(t *testing.T) {
+	sb := newSandbox(t)
+	b := wsstest.StableCompile(t, defaults.DualHubExample())
+	files := FilesFor(b.Files, "ix")
+	if arts := fakeArtifacts(files); len(arts) != 0 {
+		t.Skipf("the dual-hub example's ix node now needs binaries (%d); pick another node without any", len(arts))
+	}
+	kp, _ := GenerateKeypair()
+	injected, err := InjectPrivateWSS(files, kp.Private, wsstest.StableSecrets())
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := Options{NodeID: "ix", Deployment: "dep-1", ServerID: "srv-1", Bundle: preflight.BundleDigest(files), Run: "run-1", Expect: "none"}
+	if err := CheckOptions(o); err != nil {
+		t.Fatal(err)
+	}
+	out, code := sb.run(ScriptWith("test", injected, o))
+	if code != 0 || !strings.Contains(out, "MERIDIAN_PROVISION_OK") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	man := sb.read("/var/lib/meridian/node/manifest")
+	if !strings.Contains(man, "node ix") || strings.Contains(man, "\nartifact ") {
+		t.Fatalf("manifest:\n%s", man)
+	}
+	if st := sb.read("/var/lib/meridian/node/journal"); !strings.Contains(st, "state done") {
+		t.Fatalf("journal:\n%s", st)
+	}
+}

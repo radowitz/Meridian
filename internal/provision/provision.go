@@ -719,7 +719,11 @@ m_commit() {
       grep '^pkg ' "$M_MANIFEST" || true
     fi
     printf '%s\n' "$M_ARTLINES" | while read -r p_name p_ver p_path p_sum; do
-      [ -n "$p_name" ] && echo "artifact $p_name $p_ver $p_path $p_sum"
+      # "|| true": a node that needs no panel-delivered binary has an empty
+      # list, and a loop whose last test is false would fail the script
+      # under "set -e" (seen on a real hub: the whole install was undone at
+      # the very last step).
+      if [ -n "$p_name" ]; then echo "artifact $p_name $p_ver $p_path $p_sum"; fi
     done
     for p in $M_IFACES; do echo "iface $p"; done
     for p in $M_UNITS; do echo "unit $p"; done
