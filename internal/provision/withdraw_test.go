@@ -37,6 +37,8 @@ case "$1" in
 esac
 exit 0`)
 	write("ip", `case "$*" in
+  "link show eth0") [ -f "$SANDBOX/no-eth0" ] && exit 1; exit 0 ;;
+`+ipRouteStub+`
   "link show "*) [ -f "$SANDBOX/link-$3" ] && exit 0; exit 1 ;;
   "-o link show") echo "1: lo: <UP>"; echo "2: eth0: <UP>"; for f in "$SANDBOX"/link-*; do [ -f "$f" ] && echo "9: ${f##*/link-}: <UP>"; done ;;
   "link del "*) [ "$FAIL_IPDEL" = 1 ] && exit 1; rm -f "$SANDBOX/link-$3" ;;

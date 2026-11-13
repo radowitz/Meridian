@@ -2,6 +2,9 @@
 Description=Meridian data plane restore (meridian-up.sh)
 Wants=network-online.target meridian-guard.service
 After=network-online.target docker.service meridian-guard.service
+# A host nftables.service (if enabled) loads /etc/nftables.conf at boot,
+# possibly flushing the whole ruleset: Meridian's tables load after it.
+After=nftables.service
 ConditionFileIsExecutable=/usr/local/sbin/meridian-up.sh
 # Bounds the boot-time retries below (20 starts in 30 minutes). An activation
 # through meridian-host runs "systemctl reset-failed" first, so a limit hit

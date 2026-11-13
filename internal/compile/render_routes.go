@@ -19,7 +19,7 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 	sb.WriteString("del_rule() {\n")
 	sb.WriteString("  while \"$@\" >/dev/null 2>&1; do :; done || true\n")
 	sb.WriteString("}\n")
-	writeHarden(&sb)
+	writeHarden(&sb, sysctlIfaces(t, n, tunnelsFor(tunnels, n.ID)))
 
 	switch n.Role {
 	case model.RoleGateway:
@@ -142,24 +142,33 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	fmt.Fprintf(sb, "# failover companions: udp=%s wss=%s direct_wss=%s\n", ifaceOrDash(udp), ifaceOrDash(wss), ifaceOrDash(direct))
 }
 
-func writeHarden(sb *strings.Builder) {
-	sb.WriteString(`# Per-interface values win over "all" for redirects (the kernel ORs them)
-# and rp_filter uses the max of all and the device. Set every device.
+// writeHarden sets rp_filter=2 and turns ICMP redirects off on exactly the
+// interfaces this node manages or the topology names (sysctlIfaces), after
+// the WireGuard interfaces exist. Per-interface values are what matter:
+// the kernel uses max(all, interface) for rp_filter, so an interface set to
+// 2 is loose whatever "all" is (2 is the maximum); for send_redirects it ORs
+// all and the interface, so the interface needs 0 and so does "all"
+// (99-meridian.conf); IPv4 accept_redirects is ANDed while forwarding, so
+// the interface value alone decides. Every other interface on the host
+// (Docker bridges and veths, WARP, an operator's own) is left as it is.
+// Earlier versions looped over every interface; values they set on other
+// interfaces stay until reboot (see docs/architecture.md「内核参数的范围」).
+func writeHarden(sb *strings.Builder, ifaces []string) {
+	sb.WriteString(`# rp_filter=2 and no ICMP redirects on Meridian's interfaces only (the
+# managed tunnels, the interface the topology names, mra/mmesh). The kernel
+# uses max(all, iface) for rp_filter and ORs send_redirects, so the
+# interface value is what matters here. Other interfaces are not touched.
 harden_sysctl() {
-  local d i
-  for d in /proc/sys/net/ipv4/conf/*; do
-    i=$(basename "$d")
+  local i
+  for i in "$@"; do
     sysctl -w "net.ipv4.conf.${i}.rp_filter=2" >/dev/null 2>&1 || true
     sysctl -w "net.ipv4.conf.${i}.send_redirects=0" >/dev/null 2>&1 || true
     sysctl -w "net.ipv4.conf.${i}.accept_redirects=0" >/dev/null 2>&1 || true
-  done
-  for d in /proc/sys/net/ipv6/conf/*; do
-    i=$(basename "$d")
     sysctl -w "net.ipv6.conf.${i}.accept_redirects=0" >/dev/null 2>&1 || true
   done
 }
-harden_sysctl
 `)
+	sb.WriteString("harden_sysctl " + strings.Join(ifaces, " ") + "\n")
 }
 
 func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) {

@@ -1673,6 +1673,92 @@ describe("deploy: install pre-check for remote nodes", () => {
     expect(await screen.findByText("脚本已在服务器上执行完毕")).toBeInTheDocument();
   });
 
+  it("shows the planned DOCKER-USER rules, the sysctl scope, a flushing nftables.service as blocking and WARP clues", async () => {
+    const tag = "meridian-fw-28d4deac";
+    const rec = preflightRec({
+      id: "pf-fw",
+      footprint: {
+        ...preflightRec().footprint,
+        units: ["meridian-node.service", "meridian-fwcompat.service"],
+        fw_chain: "DOCKER-USER",
+        fw_tag: tag,
+        fw_rules: ["-i m07 -o eth0", "-i eth0 -o m07 -m conntrack --ctstate RELATED,ESTABLISHED"],
+        sysctl_ifaces: ["eth0", "m07"],
+      },
+      findings: [
+        {
+          severity: "blocking",
+          code: "nftables_flush_on_reload",
+          resource: "nftables.service",
+          message: "nftables.service 已启用（开机启动），而且它的 ExecStop 是 nft flush ruleset：stop / restart 时清空整个规则集。",
+          action: "面板不改这台主机自己的 nftables 配置。① systemctl disable nftables.service（不要执行 systemctl stop nftables）",
+        },
+        {
+          severity: "blocking",
+          code: "wan_interface_missing",
+          resource: "eth0",
+          message: "「WAN 接口」没填，按默认的 eth0 在这台主机上不存在（IPv4 默认路由在 ens5 上；IPv6 默认路由在 ens5 上）。",
+          action: "在拓扑里把这个节点的「WAN 接口」改成主机上带默认路由的网卡（见上），保存后重新预检。",
+          fix: { kind: "node", id: "us", field: "wan_interface", label: "节点 us 的「WAN 接口」" },
+        },
+        { severity: "info", code: "ipv6_ra_kept", resource: "ens5", message: "meridian-up.sh 在打开 IPv6 转发之前把这些接口设为 accept_ra=2（转发打开时也接受通告）：ens5（默认路由）。" },
+        {
+          severity: "warning",
+          code: "forward_policy_drop",
+          resource: "ipv4 FORWARD",
+          message: `ipv4 转发会被 iptables filter 表 FORWARD 策略 DROP 丢弃。面板会在 iptables 的 DOCKER-USER 链顶部加 2 条 ACCEPT 规则，每条带注释 ${tag}。`,
+          action: "确认这些规则可以接受。",
+        },
+        { severity: "info", code: "forward_coexistence", resource: "DOCKER-USER", message: "转发共存：ipv4：FORWARD 策略 DROP；ipv6：FORWARD 策略 ACCEPT，不加规则。" },
+        { severity: "info", code: "cloudflare_warp", resource: "warp-svc", message: "检测到主机级 Cloudflare WARP 客户端：接口 CloudflareWARP。依赖线索：conn 127.0.0.1:40000 xray。Meridian 不碰它，也不会停用它。" },
+        { severity: "info", code: "sysctl_scope", resource: "sysctl", message: "内核参数：只改受管接口（eth0 m07）上的 rp_filter / ICMP 重定向，其它接口（Docker、WARP、你自己的）不碰。" },
+      ],
+      changes: [
+        { kind: "firewall", action: "add", resource: `iptables -I DOCKER-USER -i m07 -o eth0 -m comment --comment ${tag} -j ACCEPT`, detail: "ipv4 FORWARD 策略 DROP" },
+        { kind: "firewall", action: "add", resource: `iptables -I DOCKER-USER -i eth0 -o m07 -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment ${tag} -j ACCEPT`, detail: "ipv4 FORWARD 策略 DROP" },
+        { kind: "sysctl", action: "set", resource: "net.ipv4.conf.all.send_redirects", detail: "全局（影响所有接口），当前 1" },
+        { kind: "sysctl", action: "set", resource: "rp_filter=2、send_redirects=0、accept_redirects=0", detail: "只在这些接口：eth0 m07（受管隧道接口和拓扑里的网卡）；Docker、WARP 等其它接口不改" },
+        { kind: "unit", action: "enable", resource: "meridian-node.service" },
+      ],
+      counts: { blocking: 2, warning: 1, info: 4 },
+    });
+    const api = setup({ "POST /api/provision/preflight": () => ({ preflight: rec }) });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    await screen.findByTestId("preflight-report");
+    // The host firewall rules are visible without opening the change list.
+    const fw = screen.getByTestId("preflight-fwcompat");
+    expect(fw).toHaveTextContent("在 DOCKER-USER 里加的放行规则（2 条）");
+    expect(fw).toHaveTextContent(`-i m07 -o eth0 -m comment --comment ${tag} -j ACCEPT`);
+    expect(fw).toHaveTextContent("RELATED,ESTABLISHED");
+    expect(fw).toHaveTextContent("不改 Docker 的链和规则");
+    // The flushing nftables.service blocks, with the exact remedy.
+    const blocking = screen.getByTestId("preflight-blocking");
+    expect(blocking.querySelector('[data-code="nftables_flush_on_reload"]')).not.toBeNull();
+    expect(blocking).toHaveTextContent("不要执行 systemctl stop nftables");
+    // The WAN interface that does not exist links to the node's field.
+    expect(blocking.querySelector('[data-code="wan_interface_missing"]')).not.toBeNull();
+    expect(within(blocking).getByTestId("preflight-fix")).toHaveTextContent("去拓扑修改：节点 us 的「WAN 接口」");
+    expect(screen.getByTestId("preflight-info")).toHaveTextContent("accept_ra=2");
+    // Docker's DROP is a warning (handled), WARP and the sysctl scope are info.
+    expect(screen.getByTestId("preflight-warning").querySelector('[data-code="forward_policy_drop"]')).not.toBeNull();
+    const info = screen.getByTestId("preflight-info");
+    expect(info).toHaveTextContent("127.0.0.1:40000 xray");
+    expect(info).toHaveTextContent("ipv6：FORWARD 策略 ACCEPT，不加规则");
+    expect(info).toHaveTextContent("只改受管接口（eth0 m07）");
+    // Change list: the rules under their own kind, sysctl scope named.
+    await userEvent.click(screen.getByText(/拟执行的变更（5 项）/));
+    const changes = await screen.findByTestId("preflight-changes");
+    expect(changes).toHaveTextContent("转发放行规则（DOCKER-USER）");
+    expect(changes).toHaveTextContent("Docker、WARP 等其它接口不改");
+    expect(changes).toHaveTextContent("meridian-node.service");
+    await userEvent.click(screen.getByText(/受管资源/));
+    expect(await screen.findByTestId("preflight-managed-fw")).toHaveTextContent(`DOCKER-USER 里 2 条（注释 ${tag}`);
+    expect(screen.getByTestId("preflight-managed-sysctl")).toHaveTextContent("eth0 m07");
+    expect(screen.getByTestId("preflight-execute")).toBeDisabled();
+    expect(api.find("POST /api/provision")).toHaveLength(0);
+  });
+
   it("keeps the dialog open with the new result when the re-run before execution finds something", async () => {
     const api = setup({
       "POST /api/provision/preflight": () => ({ preflight: CLEAN() }),

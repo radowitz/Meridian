@@ -63,14 +63,15 @@ const (
 // notChecked is shown with every result: what the preflight does not
 // establish.
 var notChecked = []string{
-	"不检查放行规则是否覆盖 Meridian 的端口（只看 INPUT/FORWARD 的默认策略和别的表的 drop 链）",
+	"不检查放行规则是否覆盖 Meridian 的端口（只看 INPUT/FORWARD 的默认策略、DOCKER-USER 是否存在和 FORWARD 跳转的先后，以及别的表的 drop 链）",
 	"不检查云厂商安全组、上游防火墙或 NAT：端口能否从外面到达要在装好后看握手",
-	"不检查别的服务以后会不会改动网络（Docker 重启、WARP 重连、nftables 重载）",
+	"不预测别的服务以后的改动：Docker 重启时 meridian-fwcompat.service 会重新加上 DOCKER-USER 规则；WARP 重连、有人手动启动或重载 nftables.service 不在预检之内（会清空规则集的 nftables.service 已启用或在运行时直接拒绝）",
 	"不检查 SmartDNS 上游、wstunnel 证书和域名是否可用；面板下发的 wstunnel / SmartDNS 只核对架构、路径和 SHA-256，不在预检里执行它们",
-	"不检查 nft 规则能否被这台主机的 nft 版本接受（Ubuntu 20.04 是 0.9.3）：装机时 meridian-up.sh 先 nft -c，失败会在激活前停止并补偿",
-	"iptables-legacy 主机只看 filter 表 INPUT/FORWARD 的默认策略，不逐条检查 legacy 规则、nat 改写和 MARK",
+	"不在预检里执行 nft：远端规则集已避开 nft 0.9.3（Ubuntu 20.04）不确定的写法，装机时 meridian-up.sh 仍先 nft -c，失败会在激活前停止并补偿",
+	"iptables-legacy 主机只看 filter 表 INPUT/FORWARD 的默认策略、DOCKER-USER 和 FORWARD 的跳转，不逐条检查 legacy 规则、nat 改写和 MARK",
+	"WARP 只读进程名和地址作为依赖线索（连到它本地监听的进程、指向它的 resolv.conf），不读它的配置和账户",
 	"不检查 sudo：只接受 root 登录",
-	"不修改任何东西：发现的冲突要由你处理，面板这一版不会替你改 Docker 或别的防火墙规则（面板只下发并安装它自己的固定版本 wstunnel / SmartDNS 到 /usr/local/sbin/meridian-*，主机不需要自己下载）",
+	"面板只改它自己的东西：受管文件、接口、nft 表、路由，以及在 Docker 的 FORWARD DROP 可以安全共存时 DOCKER-USER 里带 Meridian 注释的放行规则；不改 Docker、ufw、firewalld、nftables.service 的配置和策略（面板只下发并安装它自己的固定版本 wstunnel / SmartDNS 到 /usr/local/sbin/meridian-*，主机不需要自己下载）",
 }
 
 // targetIdentity is what a preflight result is bound to.

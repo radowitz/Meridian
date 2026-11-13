@@ -67,8 +67,9 @@ func TestAgentPreflightReport(t *testing.T) {
 		"ss -Hlntup":               "tcp LISTEN 0 4096 192.168.100.88:8787 0.0.0.0:* users:((\"meridian\",pid=10,fd=3))\n",
 		"ss -Hlntu --cgroup":       "udp UNCONN 0 0 *:53 *:* cgroup:/system.slice/docker-" + strings.Repeat("ab", 32) + ".scope\n",
 		"docker inspect --format {{.Id}} {{.State.Running}} meridian-smartdns": strings.Repeat("ab", 32) + " true\n",
-		"nft list chains":                    "table ip filter {\n\tchain FORWARD {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n}\n",
-		"systemctl is-active docker.service": "active\n",
+		"nft list chains":                                     "table ip filter {\n\tchain FORWARD {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n}\n",
+		"systemctl is-active docker.service":                  "active\n",
+		"systemctl show -p ExecStop --value nftables.service": "{ path=/usr/sbin/nft ; argv[]=/usr/sbin/nft flush ruleset ; ignore_errors=no }\n",
 	}}
 	a := &Agent{Token: func() (string, error) { return "tok", nil }, Runner: run, PreflightRoot: pfRoot(t)}
 	res := a.Preflight(context.Background(), PreflightRequest{Paths: []string{"/etc/wireguard/m02.conf", "/etc/smartdns/smartdns.conf", "/etc/meridian/forwarding.conf"}})
@@ -90,6 +91,9 @@ func TestAgentPreflightReport(t *testing.T) {
 	}
 	if pi := r.Paths["/etc/meridian/forwarding.conf"]; pi.Exists {
 		t.Fatalf("forwarding %+v", pi)
+	}
+	if r.NFTStop != "flush" {
+		t.Fatalf("nftables.service ExecStop flush not reported: %q", r.NFTStop)
 	}
 	if len(r.Policies) != 1 || r.Policies[0].Policy != "DROP" || len(r.Chains) != 1 || r.Chains[0].Policy != "drop" {
 		t.Fatalf("firewall %+v %+v", r.Policies, r.Chains)
@@ -123,7 +127,8 @@ func TestAgentPreflightReport(t *testing.T) {
 		case "iptables", "ip6tables":
 			ok = c == f[0]+" -V" || strings.HasPrefix(c, f[0]+" -w 5 -S ")
 		case "systemctl":
-			ok = f[1] == "is-active" || f[1] == "is-enabled" || (f[1] == "show" && f[2] == "-p" && f[3] == "MainPID")
+			ok = f[1] == "is-active" || f[1] == "is-enabled" || (f[1] == "show" && f[2] == "-p" && f[3] == "MainPID") ||
+				c == "systemctl show -p ExecStop --value nftables.service"
 		case "wg":
 			ok = c == "wg show all listen-port"
 		case "docker":

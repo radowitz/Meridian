@@ -148,11 +148,11 @@ func (a *Agent) Preflight(ctx context.Context, req PreflightRequest) PreflightRe
 		w("iptables-version", firstLine(v))
 	}
 	for _, ch := range []string{"INPUT", "FORWARD"} {
-		if v := cmd("iptables", "-w", "5", "-S", ch); v != "" {
-			w("ipt", "ipv4", firstLine(v))
+		if v := policyLine(cmd("iptables", "-w", "5", "-S", ch)); v != "" {
+			w("ipt", "ipv4", v)
 		}
-		if v := cmd("ip6tables", "-w", "5", "-S", ch); v != "" {
-			w("ipt", "ipv6", firstLine(v))
+		if v := policyLine(cmd("ip6tables", "-w", "5", "-S", ch)); v != "" {
+			w("ipt", "ipv6", v)
 		}
 	}
 	for _, k := range []string{"net/ipv4/ip_forward", "net/ipv6/conf/all/forwarding", "net/ipv4/conf/all/rp_filter"} {
@@ -237,6 +237,16 @@ func (a *Agent) Preflight(ctx context.Context, req PreflightRequest) PreflightRe
 	for _, u := range preflightUnits {
 		unit(u)
 	}
+	// Whether nftables.service flushes the whole ruleset when it stops
+	// (Debian's unit does): with the service enabled or running, that
+	// wipes the guard table while forwarding is on.
+	if stop := strings.TrimSpace(cmd("systemctl", "show", "-p", "ExecStop", "--value", "nftables.service")); stop != "" {
+		if strings.Contains(stop, "flush") && strings.Contains(stop, "ruleset") {
+			w("nftables-stop", "flush")
+		} else {
+			w("nftables-stop", "noflush")
+		}
+	}
 	if conf := readFile("/etc/nftables.conf", 256<<10); conf != "" {
 		state := "noflush"
 		for _, l := range strings.Split(conf, "\n") {
@@ -269,6 +279,18 @@ func (a *Agent) Preflight(ctx context.Context, req PreflightRequest) PreflightRe
 		out = out[:preflight.MaxReport+1]
 	}
 	return PreflightResult{Report: out}
+}
+
+// policyLine is the "-P <chain> <policy>" line of iptables -S output (not
+// simply the first line: iptables-nft can print a "# Warning: …" comment
+// before it).
+func policyLine(out string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "-P ") {
+			return strings.TrimSpace(l)
+		}
+	}
+	return ""
 }
 
 func orGOARCH(a string) string {

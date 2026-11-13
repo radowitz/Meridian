@@ -36,6 +36,7 @@ addr lo 127.0.0.1/8
 addr eth0 203.0.113.50/24
 addr docker0 172.17.0.1/16
 route4 default via 203.0.113.1 dev eth0
+route6 default via fe80::1 dev eth0 metric 1024 pref medium
 route4 172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown
 route4 203.0.113.0/24 dev eth0 proto kernel scope link src 203.0.113.50
 rule4 0:	from all lookup local

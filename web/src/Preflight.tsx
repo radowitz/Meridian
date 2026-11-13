@@ -38,6 +38,7 @@ const CHANGE_KIND: Record<string, string> = {
   sysctl: "内核参数",
   state: "受管记录",
   binary: "面板下发的二进制",
+  firewall: "转发放行规则（DOCKER-USER）",
 };
 
 const CHANGE_ACTION: Record<string, string> = {
@@ -131,6 +132,35 @@ export function InstallPlan({ rec }: { rec: PreflightRecord }) {
   );
 }
 
+/**
+ * The firewall rules the install would add to the host (Docker FORWARD DROP
+ * coexistence), shown outside the collapsed change list: they change a
+ * chain on the host that is not Meridian's own table.
+ */
+export function ForwardRules({ rec }: { rec: PreflightRecord }) {
+  const rules = rec.changes.filter((c) => c.kind === "firewall");
+  if (rules.length === 0) return null;
+  return (
+    <div data-testid="preflight-fwcompat" style={{ marginTop: 12 }}>
+      <Typography.Text strong>主机防火墙：在 DOCKER-USER 里加的放行规则（{rules.length} 条）</Typography.Text>
+      <div>
+        <Typography.Text type="secondary">
+          只匹配 Meridian 自己的接口；不改 Docker 的链和规则、不改策略、不清空任何链。Docker 重启时自动重新加上，撤回和失败补偿按注释精确删除。
+        </Typography.Text>
+      </div>
+      <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+        {rules.map((c, i) => (
+          <li key={i} className="mono-small" data-action={c.action}>
+            <Tag color={c.action === "update" ? "gold" : "blue"}>{CHANGE_ACTION[c.action] ?? c.action}</Tag>
+            {c.resource}
+            {c.detail ? <Typography.Text type="secondary">（{c.detail}）</Typography.Text> : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** Why execution is not possible with this result, or null when it is. */
 export function preflightBlockedReason(rec: PreflightRecord | null | undefined, now = new Date()): string | null {
   if (!rec) return "还没有预检：先预检并审阅结果";
@@ -188,6 +218,7 @@ export function PreflightReport({ rec }: { rec: PreflightRecord }) {
         ]}
       />
       <InstallPlan rec={rec} />
+      <ForwardRules rec={rec} />
       {groups.map(({ sev, items }) =>
         items.length === 0 ? null : (
           <div key={sev} data-testid={`preflight-${sev}`} style={{ marginTop: 12 }}>
@@ -275,6 +306,20 @@ export function PreflightReport({ rec }: { rec: PreflightRecord }) {
                   ["nft 表", <span key="n" className="mono-small">{rec.footprint.nft_tables.join("  ") || "—"}</span>],
                   ["路由表", <span key="r" className="mono-small">{rec.footprint.route_tables.join("  ") || "—"}</span>],
                   ["服务", <span key="u" className="mono-small">{rec.footprint.units.join("  ") || "—"}</span>],
+                  [
+                    "转发放行规则",
+                    <span key="fw" className="mono-small" data-testid="preflight-managed-fw">
+                      {rec.footprint.fw_rules && rec.footprint.fw_rules.length > 0
+                        ? `${rec.footprint.fw_chain ?? "DOCKER-USER"} 里 ${rec.footprint.fw_rules.length} 条（注释 ${rec.footprint.fw_tag ?? "—"}，只在 FORWARD 策略为 DROP 的族里加）`
+                        : "—"}
+                    </span>,
+                  ],
+                  [
+                    "内核参数只改这些接口",
+                    <span key="sy" className="mono-small" data-testid="preflight-managed-sysctl">
+                      {(rec.footprint.sysctl_ifaces ?? []).join("  ") || "—"}
+                    </span>,
+                  ],
                   ["文件", `${rec.footprint.files.length} 个`],
                 ]}
               />

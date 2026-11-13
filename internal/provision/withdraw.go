@@ -21,7 +21,9 @@ import (
 //     the manifest has its file) is brought down, interfaces deleted, the
 //     rules pointing at the manifest's route tables deleted and the tables
 //     flushed, the main-table blackhole routes the manifest records deleted,
-//     the nft tables deleted, and every listed file removed only when its
+//     the nft tables deleted, the Docker FORWARD DROP coexistence rules
+//     (manifest "fw <family> DOCKER-USER") deleted by their Meridian tag
+//     and nothing else, and every listed file removed only when its
 //     SHA-256 still matches the manifest (a file changed since the install
 //     is kept and reported). SmartDNS is stopped and disabled only when the
 //     manifest records that Meridian installed the package. Packages, the
@@ -190,7 +192,7 @@ w_fam() { case "$1" in *:*) echo 6 ;; *) echo 4 ;; esac; }
 
 # w_load_manifest reads and validates every manifest entry. An entry this
 # script does not recognise refuses the whole withdraw.
-W_FILES=(); W_HASHES=(); W_ORPHANS=(); W_IFACES=(); W_UNITS=(); W_NFTS=(); W_TABLES=(); W_DSTS=(); W_PKGS=()
+W_FILES=(); W_HASHES=(); W_ORPHANS=(); W_IFACES=(); W_UNITS=(); W_NFTS=(); W_TABLES=(); W_DSTS=(); W_PKGS=(); W_FW=()
 w_load_manifest() {
   local kind a b rest bad=""
   while read -r kind a b rest; do
@@ -205,6 +207,9 @@ w_load_manifest() {
       prio) w_prio "$a" || bad="$bad prio:$a" ;;
       route) if w_dst "$a"; then W_DSTS+=("$a"); else bad="$bad route:$a"; fi ;;
       pkg) if w_pkg "$a"; then W_PKGS+=("$a"); else bad="$bad pkg:$a"; fi ;;
+      # Docker FORWARD DROP coexistence rules: Meridian-tagged rules of
+      # DOCKER-USER in that family (removed by tag, nothing else).
+      fw) case "$a $b" in "ipv4 DOCKER-USER"|"ipv6 DOCKER-USER") W_FW+=("${a#ipv}") ;; *) bad="$bad fw:$a/$b" ;; esac ;;
       # A panel-delivered binary: also listed as a "file" line (removed
       # there, with the same hash check); here only validated.
       artifact) case "$a $rest" in
@@ -302,13 +307,14 @@ w_plan_items() {
     echo "MERIDIAN_PLAN file $p $st"
   done
   for p in "${W_ORPHANS[@]}"; do st=absent; [ -e "$M_ROOT$p" ] && st=present; echo "MERIDIAN_PLAN orphan $p $st"; done
+  for p in "${W_FW[@]}"; do echo "MERIDIAN_PLAN fwrules IPv$p DOCKER-USER $(m_fw_tagged "$p" | grep -c . || true) tagged"; done
   for p in "${W_PKGS[@]}"; do echo "MERIDIAN_PLAN keep package $p"; done
 }
 
 w_keep_notes() {
   local p
   for p in "${W_PKGS[@]}"; do w_kept package "$p (installed by Meridian, kept on purpose)"; done
-  w_kept sysctl 'runtime forwarding / rp_filter values stay as they are until reboot or until you change them'
+  w_kept sysctl 'runtime values stay until reboot: net.ipv4.ip_forward / net.ipv6.conf.all.forwarding (other services such as Docker may depend on forwarding), net.ipv4.conf.all.send_redirects and the keys of the interface the topology names; the keys of the deleted tunnel interfaces are gone with them; 99-meridian.conf is removed, so nothing is set at the next boot'
   if w_has_file /etc/smartdns/smartdns.conf && ! w_has_pkg smartdns; then
     w_kept service 'smartdns.service (package not installed by Meridian): its Meridian config was removed; it keeps running with the old config until restarted'
   fi
@@ -356,6 +362,15 @@ w_remove_all() {
       if nft delete table inet "$t" >/dev/null 2>&1; then w_removed nft "inet $t"; else w_left nft "inet $t"; fi
     fi
   done
+  # The coexistence rules: only rules whose comment is a Meridian tag. The
+  # re-assert unit (meridian-fwcompat.service) was disabled and stopped
+  # with the other units above, so a Docker restart cannot bring them back.
+  for fam in "${W_FW[@]}"; do
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if m_fw_del_line "$fam" "$line"; then w_removed fwrule "IPv$fam ${line#-A }"; else w_left fwrule "IPv$fam ${line#-A }"; fi
+    done < <(m_fw_tagged "$fam")
+  done
   for i in "${!W_FILES[@]}"; do
     p=${W_FILES[$i]}; f=$M_ROOT$p
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -381,6 +396,12 @@ w_remove_all() {
     fi
   done
   if [ "$reload" = 1 ]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
+  # The list of interfaces meridian-up.sh switched to accept_ra=2. Their
+  # runtime value stays 2 (forwarding stays on; 1 would drop their IPv6).
+  if [ -f "$M_STATE/ra-accept" ]; then
+    w_kept sysctl "accept_ra=2 stays on $(tr '\n' ' ' < "$M_STATE/ra-accept" | tr -cd 'A-Za-z0-9_.@ -')(IPv6 forwarding is still on; 1 would let their router-advertised IPv6 route expire) until reboot"
+    if rm -f -- "$M_STATE/ra-accept"; then w_removed state "$M_STATE/ra-accept"; else w_left state "$M_STATE/ra-accept"; fi
+  fi
   rmdir -- "$M_ROOT/etc/meridian" 2>/dev/null || true
   # Verify: nothing named above may still be there.
   for u in "${W_UNITS[@]}"; do
@@ -388,6 +409,9 @@ w_remove_all() {
   done
   for p in "${W_IFACES[@]}"; do if w_has_link "$p"; then w_left iface "$p"; fi; done
   for t in "${W_NFTS[@]}"; do if w_has_nft "$t"; then w_left nft "inet $t"; fi; done
+  for fam in "${W_FW[@]}"; do
+    if [ -n "$(m_fw_tagged "$fam")" ]; then w_left fwrule "IPv$fam DOCKER-USER still has Meridian-tagged rules"; fi
+  done
 }
 
 w_journal_open() {

@@ -501,8 +501,8 @@ func TestGroupDNSExitDNAT(t *testing.T) {
 			members[e.Node.ID] = true
 		}
 	}
-	reDNAT := regexp.MustCompile(`(?m)^    iifname \{ ("[^"]+"(?:, "[^"]+")*) \} ip6 daddr (\S+) meta l4proto \{ tcp, udp \} th dport 53 dnat ip6 to (\S+) comment `)
-	reMesh := regexp.MustCompile(`(?m)^    iifname "mmesh" ip6 daddr (\S+) meta l4proto \{ tcp, udp \} th dport 53 dnat ip6 to (\S+) comment `)
+	reDNAT := regexp.MustCompile(`(?m)^    iifname \{ ("[^"]+"(?:, "[^"]+")*) \} ip6 daddr (\S+) (udp|tcp) dport 53 dnat ip6 to (\S+) comment `)
+	reMesh := regexp.MustCompile(`(?m)^    iifname "mmesh" ip6 daddr (\S+) (udp|tcp) dport 53 dnat ip6 to (\S+) comment `)
 	meshExits := 0
 	for _, e := range exits {
 		nft := b.File("nodes/" + e.Node.ID + "/etc/nftables.d/meridian.nft")
@@ -531,12 +531,14 @@ func TestGroupDNSExitDNAT(t *testing.T) {
 			wantMesh = 1
 			meshExits++
 		}
-		if len(ms) != wantHub || len(mm) != wantMesh || strings.Count(nft, " dnat ") != wantHub+wantMesh {
-			t.Fatalf("exit %s: want %d hub-tunnel and %d Mesh DNAT rules:\n%s", e.Node.ID, wantHub, wantMesh, nft)
+		// One UDP and one TCP rule per ingress (no transport-header
+		// expression: nft 0.9.3 on Ubuntu 20.04).
+		if len(ms) != 2*wantHub || len(mm) != 2*wantMesh || strings.Count(nft, " dnat ") != 2*(wantHub+wantMesh) || strings.Contains(nft, "th dport") {
+			t.Fatalf("exit %s: want %d hub-tunnel and %d Mesh DNAT rule pairs:\n%s", e.Node.ID, wantHub, wantMesh, nft)
 		}
-		for _, m := range ms {
-			if m[2] != validate.GroupResolverNet.String() || m[3] != e.DNSULA {
-				t.Fatalf("exit %s DNAT %s -> %s, want %s -> %s", e.Node.ID, m[2], m[3], validate.GroupResolverNet, e.DNSULA)
+		for i, m := range ms {
+			if m[2] != validate.GroupResolverNet.String() || m[4] != e.DNSULA || m[3] != []string{"udp", "tcp"}[i%2] {
+				t.Fatalf("exit %s DNAT %s %s -> %s, want %s -> %s", e.Node.ID, m[3], m[2], m[4], validate.GroupResolverNet, e.DNSULA)
 			}
 			want := `"` + hubDirect(tunnels, e.Node.ID).Iface() + `"`
 			if m[1] != want || strings.Contains(m[1], `"`+e.Node.WANInterface+`"`) {
@@ -548,9 +550,9 @@ func TestGroupDNSExitDNAT(t *testing.T) {
 				t.Fatalf("exit %s does not route the transit prefix back into its hub tunnel", e.Node.ID)
 			}
 		}
-		for _, m := range mm {
-			if m[1] != validate.GroupResolverNet.String() || m[2] != e.DNSULA {
-				t.Fatalf("exit %s Mesh DNAT %s -> %s, want %s -> %s", e.Node.ID, m[1], m[2], validate.GroupResolverNet, e.DNSULA)
+		for i, m := range mm {
+			if m[1] != validate.GroupResolverNet.String() || m[3] != e.DNSULA || m[2] != []string{"udp", "tcp"}[i%2] {
+				t.Fatalf("exit %s Mesh DNAT %s %s -> %s, want %s -> %s", e.Node.ID, m[2], m[1], m[3], validate.GroupResolverNet, e.DNSULA)
 			}
 		}
 		if !strings.Contains(dns, "bind ["+e.DNSULA+"]:53\n") || !strings.Contains(dns, "bind-tcp ["+e.DNSULA+"]:53\n") {
@@ -567,8 +569,10 @@ func TestGroupDNSExitDNAT(t *testing.T) {
 			continue
 		}
 		for _, line := range []string{
-			"    type filter hook prerouting priority mangle; policy accept;\n    iifname \"mmesh\" ip6 daddr " + validate.GroupResolverNet.String() + " meta l4proto { tcp, udp } th dport 53 ct mark set " + mark + " comment ",
-			"    type nat hook input priority 100; policy accept;\n    iifname \"mmesh\" ct mark " + mark + " ip6 daddr " + e.DNSULA + " meta l4proto { tcp, udp } th dport 53 snat ip6 to " + meshDNSAnchor + " comment ",
+			"    type filter hook prerouting priority mangle; policy accept;\n    iifname \"mmesh\" ip6 daddr " + validate.GroupResolverNet.String() + " udp dport 53 ct mark set " + mark + " comment ",
+			"\n    iifname \"mmesh\" ip6 daddr " + validate.GroupResolverNet.String() + " tcp dport 53 ct mark set " + mark + " comment ",
+			"    type nat hook input priority 100; policy accept;\n    iifname \"mmesh\" ct mark " + mark + " ip6 daddr " + e.DNSULA + " udp dport 53 snat ip6 to " + meshDNSAnchor + " comment ",
+			"\n    iifname \"mmesh\" ct mark " + mark + " ip6 daddr " + e.DNSULA + " tcp dport 53 snat ip6 to " + meshDNSAnchor + " comment ",
 			"    type route hook output priority mangle; policy accept;\n    ct direction reply ct mark " + mark + " meta mark set " + mark + " comment ",
 		} {
 			if !strings.Contains(nft, line) {
@@ -576,9 +580,10 @@ func TestGroupDNSExitDNAT(t *testing.T) {
 			}
 		}
 		// The mark and the anchor rewrite are only ever applied to what
-		// arrived on mmesh: every rule naming the mark is one of the three.
-		if n := strings.Count(nft, mark); n != 4 {
-			t.Fatalf("exit %s names the Mesh mark %d times, want 4:\n%s", e.Node.ID, n, nft)
+		// arrived on mmesh: every rule naming the mark is one of the five
+		// (set on UDP and TCP ingress, anchor on UDP and TCP, the reply).
+		if n := strings.Count(nft, mark); n != 6 {
+			t.Fatalf("exit %s names the Mesh mark %d times, want 6:\n%s", e.Node.ID, n, nft)
 		}
 	}
 	if meshExits == 0 {

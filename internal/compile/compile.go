@@ -200,6 +200,16 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		meshDNS := n.Role == model.RoleExit && len(meshDNSGroups(groups, n.ID)) > 0
 		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels, meshDNS))
 		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, groups, mss4, mss6, decisions, clamps))
+		if n.Role != model.RoleGateway {
+			// Remote nodes: the boot unit (the gateway has
+			// deploy/debian/meridian.service) and the Docker FORWARD DROP
+			// coexistence rules with their re-assert unit.
+			add(prefix+"etc/systemd/system/"+NodeUnit, renderNodeUnit())
+			if rules := fwRules(t, n, nodeTunnels); len(rules) > 0 {
+				add(prefix+strings.TrimPrefix(FWCompatPath, "/"), renderFWCompat(rules))
+				add(prefix+"etc/systemd/system/"+FWCompatUnit, renderFWCompatUnit())
+			}
+		}
 		if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
 			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels, exits, groups))
 			add(prefix+"etc/systemd/system/meridian-failover.service", renderFailoverUnit())

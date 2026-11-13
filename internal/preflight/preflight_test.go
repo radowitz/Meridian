@@ -318,7 +318,9 @@ func TestArtifactPerArch(t *testing.T) {
 // of the pinned SmartDNS, the legacy backend is reported with how the two
 // coexist; Docker's FORWARD DROP still blocks (handled in a later step).
 func TestUbuntu2004Arm64Supported(t *testing.T) {
-	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	// The host's NIC is enp0s6 (S1: the WAN interface is checked); the
+	// node names it.
+	fp := FootprintOf(filesWAN(t, "hk-resi", "enp0s6"))
 	ev := Evaluate(fixture(t, "ubuntu2004-arm64.txt", fp, nil, ""), fp, remote("hk-resi"))
 	checkShape(t, ev)
 	if strings.Join(codes(ev, Blocking), ",") != CodeForwardDrop {
@@ -836,11 +838,13 @@ func TestGatewayMode(t *testing.T) {
 
 func TestEnvironmentWarnings(t *testing.T) {
 	fp := FootprintOf(nodeFiles(t, "ali"))
-	extra := "unit nftables.service inactive enabled 0\nunit ufw.service active enabled 1\nipt ipv4 -P INPUT DROP\ncmd wstunnel yes\n" +
+	// nftables.service enabled with a flushing config is blocking since S1
+	// (TestNFTFlushBlocks); this test keeps the service disabled.
+	extra := "unit ufw.service active enabled 1\nipt ipv4 -P INPUT DROP\ncmd wstunnel yes\n" +
 		"rule4 18100:	from 10.9.0.0/24 lookup 99\n"
 	r := fixture(t, "clean-debian13.txt", fp, nil, extra)
 	ev := Evaluate(r, fp, remote("ali"))
-	for _, c := range []string{CodeNFTFlush, CodeFirewallManager, CodeInputDrop, CodeRulePriority} {
+	for _, c := range []string{CodeFirewallManager, CodeInputDrop, CodeRulePriority} {
 		if !has(ev, Warning, c) {
 			t.Fatalf("missing warning %s: %v", c, codes(ev, ""))
 		}
@@ -1310,6 +1314,19 @@ func TestRemoteUpdateOfOwnInstallIsNotBlocked(t *testing.T) {
 	if pu := find(ev, CodePortInUse); len(pu) != 1 || !strings.Contains(pu[0].Message, "nginx") {
 		t.Fatalf("foreign 443 next to ours %+v", pu)
 	}
+}
+
+// filesWAN is nodeFiles of the example with the node's wan_interface set
+// ("" = unset).
+func filesWAN(t *testing.T, id, wan string) map[string]string {
+	t.Helper()
+	topo := defaults.Example()
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == id {
+			topo.Nodes[i].WANInterface = wan
+		}
+	}
+	return filesOf(t, topo, id)
 }
 
 // filesOf is nodeFiles for any topology.

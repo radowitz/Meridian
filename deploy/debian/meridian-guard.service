@@ -6,7 +6,11 @@ Description=Meridian LAN fail-closed guard (early boot, before forwarding)
 # Forwarding itself is off at boot (99-meridian.conf) and is turned on by
 # meridian-up.sh only after the full ruleset and the guard are verified.
 DefaultDependencies=no
-After=systemd-modules-load.service
+# After nftables.service: if the host enables it, its boot-time load of
+# /etc/nftables.conf (a stock one starts by flushing the whole ruleset)
+# runs before the guard is loaded, never after it. The panel refuses to
+# install while nftables.service is enabled or running and would flush.
+After=systemd-modules-load.service nftables.service
 Before=systemd-sysctl.service network-pre.target docker.service meridian.service shutdown.target
 Wants=network-pre.target
 Conflicts=shutdown.target

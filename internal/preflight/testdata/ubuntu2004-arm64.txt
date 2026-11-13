@@ -41,6 +41,7 @@ addr lo 127.0.0.1/8
 addr enp0s6 198.51.100.40/24
 addr docker0 172.17.0.1/16
 route4 default via 198.51.100.1 dev enp0s6 proto dhcp src 198.51.100.40 metric 100
+route6 default via fe80::1 dev enp0s6 proto ra metric 100 expires 1795sec pref medium
 route4 172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown
 route4 198.51.100.0/24 dev enp0s6 proto kernel scope link src 198.51.100.40
 rule4 0:	from all lookup local

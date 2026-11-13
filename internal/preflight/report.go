@@ -148,6 +148,15 @@ type NodeManifest struct {
 	NFTTables  []string           `json:"nft_tables"`
 	Tables     []int              `json:"route_tables"`
 	Packages   []string           `json:"packages,omitempty"`
+	// FWChains are the iptables chains the install keeps Meridian-tagged
+	// coexistence rules in ("ipv4 DOCKER-USER").
+	FWChains []string `json:"fw_chains,omitempty"`
+}
+
+// RAState is one interface that depends on router advertisements.
+type RAState struct {
+	AcceptRA string `json:"accept_ra"` // as read; "" when unreadable
+	Default  bool   `json:"default"`   // an RA-learned default route
 }
 
 // ManifestArtifact is one panel-delivered binary in a node manifest.
@@ -183,20 +192,37 @@ type Report struct {
 	Notes     []string `json:"notes,omitempty"`
 	Ignored   int      `json:"ignored_lines,omitempty"`
 
-	UID          int             `json:"uid"`
-	Arch         string          `json:"arch,omitempty"`
-	Kernel       string          `json:"kernel,omitempty"`
-	OSID         string          `json:"os_id,omitempty"`
-	OSVersion    string          `json:"os_version,omitempty"`
-	OSCodename   string          `json:"os_codename,omitempty"`
-	OSPretty     string          `json:"os_pretty,omitempty"`
-	Systemd      string          `json:"systemd,omitempty"` // yes | no
-	MemTotalKB   int64           `json:"mem_total_kb"`
-	MemAvailKB   int64           `json:"mem_avail_kb"`
-	DiskAvailKB  int64           `json:"disk_avail_kb"`
-	Commands     map[string]bool `json:"commands"`
-	Iptables     string          `json:"iptables_version,omitempty"`
-	Policies     []Policy        `json:"policies"`
+	UID         int             `json:"uid"`
+	Arch        string          `json:"arch,omitempty"`
+	Kernel      string          `json:"kernel,omitempty"`
+	OSID        string          `json:"os_id,omitempty"`
+	OSVersion   string          `json:"os_version,omitempty"`
+	OSCodename  string          `json:"os_codename,omitempty"`
+	OSPretty    string          `json:"os_pretty,omitempty"`
+	Systemd     string          `json:"systemd,omitempty"` // yes | no
+	MemTotalKB  int64           `json:"mem_total_kb"`
+	MemAvailKB  int64           `json:"mem_avail_kb"`
+	DiskAvailKB int64           `json:"disk_avail_kb"`
+	Commands    map[string]bool `json:"commands"`
+	Iptables    string          `json:"iptables_version,omitempty"`
+	Policies    []Policy        `json:"policies"`
+	// IptChains: whether a chain exists, keyed "<family> <chain>" ("ipv4
+	// DOCKER-USER"); absent from older reports. IptForward: the jump
+	// targets of the filter FORWARD rules in order, per family. IptOurs:
+	// how many Meridian-tagged rules DOCKER-USER holds, per family.
+	IptChains  map[string]bool     `json:"ipt_chains,omitempty"`
+	IptForward map[string][]string `json:"ipt_forward,omitempty"`
+	IptOurs    map[string]int      `json:"ipt_ours,omitempty"`
+	// NFTStop: whether nftables.service flushes the whole ruleset when it
+	// stops ("flush" | "noflush"; "" when not reported).
+	NFTStop string `json:"nftables_stop,omitempty"`
+	// WARPDeps are safe dependency clues on a host-level WARP client:
+	// processes holding connections to its local listeners, a resolv.conf
+	// that points at it. Names and addresses only, never contents.
+	WARPDeps []string `json:"warp_deps,omitempty"`
+	// RA6: interfaces with main-table IPv6 routes learned from router
+	// advertisements ("ra6 <iface> <accept_ra|-> <default|prefix>").
+	RA6          map[string]RAState `json:"ra6,omitempty"`
 	Sysctl       map[string]string
 	Links        []string             `json:"links"`
 	WGLinks      []string             `json:"wg_links"`
@@ -231,6 +257,7 @@ func newReport() Report {
 		RTNames: map[int]string{}, TableRoutes: map[string]bool{}, TableDefault: map[string]bool{},
 		Units: map[string]UnitState{}, Procs: map[string]bool{}, Paths: map[string]PathInfo{},
 		Versions: map[string]string{}, Packages: map[string]PkgState{}, Containers: map[string]Container{}, Policies: []Policy{}, Links: []string{}, WGLinks: []string{},
+		IptChains: map[string]bool{}, IptForward: map[string][]string{}, IptOurs: map[string]int{}, RA6: map[string]RAState{},
 		Addrs: []Addr{}, Routes: []Route{}, Rules: []Rule{}, Listeners: []Listener{}, NFTTables: []string{}, Chains: []Chain{},
 	}
 }
@@ -355,6 +382,44 @@ func Parse(text string) Report {
 			// "ipt ipv4 -P FORWARD DROP"
 			if len(f) == 4 && (f[0] == "ipv4" || f[0] == "ipv6") && f[1] == "-P" && len(r.Policies) < 16 {
 				r.Policies = append(r.Policies, Policy{Family: f[0], Chain: f[2], Policy: strings.ToUpper(f[3])})
+			}
+		case "iptchain":
+			// "iptchain ipv4 DOCKER-USER yes|no"
+			if len(f) == 3 && (f[0] == "ipv4" || f[0] == "ipv6") && validName(f[1]) && len(r.IptChains) < 16 {
+				r.IptChains[f[0]+" "+f[1]] = f[2] == "yes"
+			}
+		case "iptfwd":
+			// "iptfwd ipv4 <n> <target> <plain|match>", in rule order.
+			if len(f) >= 3 && (f[0] == "ipv4" || f[0] == "ipv6") && validName(f[2]) && len(r.IptForward[f[0]]) < 64 {
+				r.IptForward[f[0]] = append(r.IptForward[f[0]], f[2])
+			}
+		case "iptours":
+			if len(f) == 2 && (f[0] == "ipv4" || f[0] == "ipv6") {
+				r.IptOurs[f[0]] = atoi(f[1], 0)
+			}
+		case "nftables-stop":
+			if w := word(rest); w == "flush" || w == "noflush" {
+				r.NFTStop = w
+			}
+		case "ra6":
+			if len(f) == 3 && validIface(f[0]) && len(r.RA6) < 64 {
+				st := r.RA6[f[0]]
+				if f[1] != "-" && validName(f[1]) {
+					st.AcceptRA = f[1]
+				}
+				st.Default = st.Default || f[2] == "default"
+				r.RA6[f[0]] = st
+			}
+		case "warpdep":
+			// "warpdep conn <peer> <process>" | "warpdep resolv <address>"
+			if len(f) >= 2 && validName(f[0]) && len(r.WARPDeps) < 32 {
+				ok := true
+				for _, x := range f[1:] {
+					ok = ok && validName(x)
+				}
+				if ok {
+					r.WARPDeps = appendCapped(r.WARPDeps, strings.Join(f, " "))
+				}
 			}
 		case "sysctl":
 			if len(f) == 2 && validSysctl(f[0]) && len(r.Sysctl) < 64 {
@@ -617,6 +682,11 @@ func parseManifestLine(m *NodeManifest, f []string) {
 	case "pkg":
 		if validName(f[1]) && len(m.Packages) < 32 {
 			m.Packages = append(m.Packages, f[1])
+		}
+	case "fw":
+		// "fw <ipv4|ipv6> <chain>"
+		if len(f) >= 3 && (f[1] == "ipv4" || f[1] == "ipv6") && validName(f[2]) && len(m.FWChains) < 4 {
+			m.FWChains = append(m.FWChains, f[1]+" "+f[2])
 		}
 	case "artifact":
 		// "artifact <name> <version> <path> <sha256>"

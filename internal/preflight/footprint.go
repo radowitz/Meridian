@@ -3,6 +3,7 @@ package preflight
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/netip"
 	"regexp"
 	"sort"
@@ -35,8 +36,34 @@ type Footprint struct {
 	Forward4 bool `json:"forward4"`
 	Forward6 bool `json:"forward6"`
 	// SysctlAll: the routes script sets rp_filter=2 and disables redirects
-	// on every interface.
+	// (since S1 on SysctlIfaces only, never on every interface).
 	SysctlAll bool `json:"sysctl_all"`
+	// SysctlIfaces are the interfaces the routes script hardens: the
+	// managed tunnels, the interface the topology names, mra / mmesh.
+	SysctlIfaces []string `json:"sysctl_ifaces"`
+	// SysctlKeys is every kernel key the install may write, as /proc/sys
+	// dotted names: the managed sysctl files and the hardened interfaces'
+	// keys. The provision records their values before the run and restores
+	// them when a run fails.
+	SysctlKeys []string `json:"sysctl_keys"`
+	// FWChain / FWTag / FWRules: the Docker FORWARD DROP coexistence rules
+	// (meridian-fwcompat.sh): ACCEPT rules at the top of FWChain, each
+	// with the comment FWTag. Empty on the gateway.
+	FWChain string   `json:"fw_chain,omitempty"`
+	FWTag   string   `json:"fw_tag,omitempty"`
+	FWRules []string `json:"fw_rules"`
+	// Mesh: the bundle carries the Mesh sidecar files.
+	Mesh bool `json:"mesh"`
+	// WAN is a remote node's WAN interface as its scripts name it (NAT, the
+	// IPv6 drop, DOCKER-USER, sysctls); WANSet: it comes from the topology's
+	// wan_interface (false: the eth0 default); WANNeed: the default routes
+	// it must carry ("4", "6", or "any").
+	WAN     string   `json:"wan,omitempty"`
+	WANSet  bool     `json:"wan_set,omitempty"`
+	WANNeed []string `json:"wan_need,omitempty"`
+	// RAKeep: meridian-up.sh keeps router advertisements on the host's
+	// RA-dependent interfaces (accept_ra=2) before turning IPv6 forwarding on.
+	RAKeep bool `json:"ra_keep,omitempty"`
 	// Docker: the bundle runs containers (Mesh sidecar, unlock probe); they
 	// are optional and need Docker already installed.
 	Docker bool `json:"docker"`
@@ -103,7 +130,19 @@ var (
 	reForward4   = regexp.MustCompile(`(?m)^\s*net\.ipv4\.ip_forward\s*=\s*1`)
 	reForward6   = regexp.MustCompile(`(?m)^\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1`)
 	reArtifact   = regexp.MustCompile(`(?m)^\s*ExecStart=/usr/local/sbin/meridian-(wstunnel|smartdns)(\s|$)`)
+	reHarden     = regexp.MustCompile(`(?m)^harden_sysctl((?: [A-Za-z0-9_.@-]{1,15})*)\s*$`)
+	reFWTag      = regexp.MustCompile(`(?m)^FW_TAG=(meridian-fw-[0-9a-f]{8})$`)
+	reFWChain    = regexp.MustCompile(`(?m)^FW_CHAIN=([A-Za-z0-9_-]{1,28})$`)
+	reFWRule     = regexp.MustCompile(`(?m)^  "(-i [A-Za-z0-9_.@-]{1,15} -o [A-Za-z0-9_.@-]{1,15}(?: -m conntrack --ctstate RELATED,ESTABLISHED)?)"$`)
+	reWAN        = regexp.MustCompile(`(?m)^# meridian-wan: ([A-Za-z0-9_.@-]{1,15}) (set|default) need=((?:4|6|any)(?:,(?:4|6))?)$`)
+	reSysctlLine = regexp.MustCompile(`(?m)^\s*-?\s*(net\.[a-z0-9_.@-]+)\s*=`)
 )
+
+// FWCompatPath is the coexistence script (internal/compile.FWCompatPath).
+const FWCompatPath = "/usr/local/sbin/meridian-fwcompat.sh"
+
+// hardenKeys are the keys the routes script sets on each hardened interface.
+var hardenKeys = []string{"net.ipv4.conf.%s.rp_filter", "net.ipv4.conf.%s.send_redirects", "net.ipv4.conf.%s.accept_redirects", "net.ipv6.conf.%s.accept_redirects"}
 
 // ArtifactNames are the panel-delivered binaries (internal/artifacts).
 var ArtifactNames = []string{"smartdns", "wstunnel"}
@@ -150,7 +189,8 @@ func (fp Footprint) PreflightPaths() []string {
 func FootprintOf(files map[string]string) Footprint {
 	fp := Footprint{TableNames: map[int]string{}, Files: []string{}, Interfaces: []IfacePlan{}, Listens: []ListenPlan{},
 		Routes: []RoutePlan{}, Rules: []RulePlan{}, Tables: []int{}, NFTTables: []string{}, Marks: []string{}, Units: []string{},
-		Packages: []PackagePlan{}, Binaries: []string{}, LoAddrs: []netip.Prefix{}}
+		Packages: []PackagePlan{}, Binaries: []string{}, LoAddrs: []netip.Prefix{}, SysctlIfaces: []string{}, SysctlKeys: []string{}, FWRules: []string{}}
+	keys := map[string]bool{}
 	paths := make([]string, 0, len(files))
 	for p := range files {
 		paths = append(paths, p)
@@ -230,8 +270,26 @@ func FootprintOf(files map[string]string) Footprint {
 		case p == "/etc/meridian/forwarding.conf":
 			fp.Forward4 = fp.Forward4 || reForward4.MatchString(body)
 			fp.Forward6 = fp.Forward6 || reForward6.MatchString(body)
+			for _, m := range reSysctlLine.FindAllStringSubmatch(body, -1) {
+				keys[m[1]] = true
+			}
+		case p == "/etc/sysctl.d/99-meridian.conf":
+			for _, m := range reSysctlLine.FindAllStringSubmatch(body, -1) {
+				keys[m[1]] = true
+			}
 		case p == "/etc/meridian/mesh-sidecar.compose.yml":
 			fp.Docker = true
+			fp.Mesh = true
+		case p == FWCompatPath:
+			if m := reFWTag.FindStringSubmatch(body); m != nil {
+				fp.FWTag = m[1]
+			}
+			if m := reFWChain.FindStringSubmatch(body); m != nil {
+				fp.FWChain = m[1]
+			}
+			for _, m := range reFWRule.FindAllStringSubmatch(body, -1) {
+				fp.FWRules = append(fp.FWRules, m[1])
+			}
 		}
 		if strings.HasSuffix(p, ".nft") || strings.HasSuffix(p, ".sh") {
 			for _, m := range reNFTTable.FindAllStringSubmatch(body, -1) {
@@ -252,6 +310,22 @@ func FootprintOf(files map[string]string) Footprint {
 			}
 			if strings.Contains(body, "harden_sysctl") {
 				fp.SysctlAll = true
+			}
+			if p == "/usr/local/sbin/meridian-up.sh" {
+				if m := reWAN.FindStringSubmatch(body); m != nil {
+					fp.WAN, fp.WANSet, fp.WANNeed = m[1], m[2] == "set", strings.Split(m[3], ",")
+				}
+				fp.RAKeep = strings.Contains(body, "MERIDIAN_RA_STATE=")
+			}
+			for _, m := range reHarden.FindAllStringSubmatch(body, -1) {
+				for _, i := range strings.Fields(m[1]) {
+					if !containsStr(fp.SysctlIfaces, i) {
+						fp.SysctlIfaces = append(fp.SysctlIfaces, i)
+					}
+					for _, k := range hardenKeys {
+						keys[fmt.Sprintf(k, i)] = true
+					}
+				}
 			}
 			if strings.Contains(body, "docker run") || strings.Contains(body, "docker compose") {
 				fp.Docker = true
@@ -294,6 +368,10 @@ func FootprintOf(files map[string]string) Footprint {
 		fp.Marks = append(fp.Marks, m)
 	}
 	sort.Strings(fp.Marks)
+	for k := range keys {
+		fp.SysctlKeys = append(fp.SysctlKeys, k)
+	}
+	sort.Strings(fp.SysctlKeys)
 	for n := range tables {
 		fp.Tables = append(fp.Tables, n)
 	}
@@ -457,4 +535,25 @@ func BundleDigest(files map[string]string) string {
 		h.Write([]byte(p + "\x00" + hex.EncodeToString(sum[:]) + "\n"))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SysctlProcPath maps a dotted key to its /proc/sys path; the interface
+// part of net.ipv{4,6}.conf.<if>.<param> keeps its dots (eth0.100).
+func SysctlProcPath(key string) string {
+	parts := strings.Split(key, ".")
+	if len(parts) >= 5 && parts[0] == "net" && (parts[1] == "ipv4" || parts[1] == "ipv6") && (parts[2] == "conf" || parts[2] == "neigh") {
+		return "/proc/sys/" + strings.Join(parts[:3], "/") + "/" + strings.Join(parts[3:len(parts)-1], ".") + "/" + parts[len(parts)-1]
+	}
+	return "/proc/sys/" + strings.Join(parts, "/")
+}
+
+// IsGlobalSysctl: the key is not bound to one interface (all, default, or
+// outside net.*.conf), so changing it affects every interface on the host.
+func IsGlobalSysctl(key string) bool {
+	parts := strings.Split(key, ".")
+	if len(parts) >= 5 && parts[0] == "net" && (parts[1] == "ipv4" || parts[1] == "ipv6") && parts[2] == "conf" {
+		i := strings.Join(parts[3:len(parts)-1], ".")
+		return i == "all" || i == "default"
+	}
+	return true
 }

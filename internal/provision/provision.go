@@ -139,6 +139,9 @@ var (
 	ifaceNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,14}$`)
 	unitNameRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9@.-]{0,80}\.(service|timer)$`)
 	nftNameRe   = regexp.MustCompile(`^inet [a-z][a-z0-9_]{0,40}$`)
+	// sysctlPathRe: a /proc/sys path of a forwarding or per-interface key.
+	ifaceNameAnyRe = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,15}$`)
+	sysctlPathRe   = regexp.MustCompile(`^/proc/sys/net/ipv[46]/(ip_forward|conf/[A-Za-z0-9_.@-]{1,15}/[a-z_]{1,32})$`)
 )
 
 // ScriptWith writes the node's rendered files and reloads WireGuard with
@@ -226,6 +229,26 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		}
 	}
 	sort.Strings(dsts)
+	// The kernel keys this bundle may write (scoped: the managed sysctl
+	// files and the hardened interfaces), as /proc/sys paths. Their values
+	// are recorded before anything changes and restored by a failed run's
+	// compensation; no other key is read or written.
+	var sysPaths []string
+	for _, k := range fp.SysctlKeys {
+		if p := preflight.SysctlProcPath(k); sysctlPathRe.MatchString(p) {
+			sysPaths = append(sysPaths, p)
+		}
+	}
+	fw := "0"
+	if _, ok := files[compile.FWCompatPath]; ok {
+		fw = "1"
+	}
+	var bootUnits []string
+	for _, u := range []string{compile.NodeUnit, compile.FWCompatUnit} {
+		if _, ok := files["/etc/systemd/system/"+u]; ok {
+			bootUnits = append(bootUnits, u)
+		}
+	}
 	var artPaths, artLines []string
 	for _, a := range o.Artifacts {
 		artPaths = append(artPaths, artifacts.HostPath(a.Name))
@@ -237,6 +260,19 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		shellQuote(strings.Join(ifaces, " ")), shellQuote(strings.Join(units, " ")), shellQuote(strings.Join(nfts, " ")),
 		shellQuote(strings.Join(tables, " ")), shellQuote(strings.Join(prios, " ")), shellQuote(strings.Join(dsts, " ")))
 	fmt.Fprintf(&sb, "M_STAGE=%s\nM_ARTPATHS=%s\nM_ARTLINES=%s\n", shellQuote(artifacts.StageDir), shellQuote(strings.Join(artPaths, " ")), shellQuote(strings.Join(artLines, "\n")))
+	fmt.Fprintf(&sb, "M_SYSCTL=%s\nM_FW=%s\n", shellQuote(strings.Join(sysPaths, " ")), fw)
+	// The WAN interface the scripts name and the default routes it must
+	// carry: re-checked on the host before anything changes.
+	wan, need := "", ""
+	if ifaceNameAnyRe.MatchString(fp.WAN) {
+		wan = fp.WAN
+		for _, n := range fp.WANNeed {
+			if n == "4" || n == "6" || n == "any" {
+				need += n + " "
+			}
+		}
+	}
+	fmt.Fprintf(&sb, "M_WAN=%s\nM_WAN_NEED=%s\n", shellQuote(wan), shellQuote(strings.TrimSpace(need)))
 	sb.WriteString(provisionPrelude)
 	_, hasDNS := files["/etc/smartdns/smartdns.conf"]
 	if hasDNS && !resolverBindsTunnelOnly(fp) {
@@ -257,6 +293,9 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 	sb.WriteString("m_begin\n")
 	sb.WriteString("export DEBIAN_FRONTEND=noninteractive\n")
 	sb.WriteString(packageInstall)
+	// Installing nftables must not leave a service that flushes the
+	// ruleset (the preflight saw none; a package could have enabled it).
+	sb.WriteString("if m_nft_flush_risk; then echo 'meridian: nftables.service is enabled or running and flushes the whole ruleset (stop/reload); refusing to activate (see the preflight finding nftables_flush_on_reload)' >&2; exit 1; fi\n")
 	for _, a := range o.Artifacts {
 		if a.Staged {
 			fmt.Fprintf(&sb, "m_art_install %s %s %s\n", shellQuote(a.Name), shellQuote(artifacts.HostPath(a.Name)), shellQuote(a.SHA256))
@@ -297,6 +336,22 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 	sb.WriteString("if [ -x /usr/local/sbin/meridian-up.sh ]; then\n")
 	sb.WriteString("  /usr/local/sbin/meridian-up.sh\n")
 	sb.WriteString("fi\n")
+	// The boot unit and the Docker re-assert unit are enabled, not started:
+	// meridian-up.sh just ran, and meridian-node.service runs it again at
+	// boot (it must never be started from meridian-up.sh itself).
+	if len(bootUnits) > 0 {
+		var q []string
+		for _, u := range bootUnits {
+			q = append(q, shellQuote(u))
+		}
+		sb.WriteString("if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then\n")
+		sb.WriteString("  systemctl daemon-reload\n")
+		fmt.Fprintf(&sb, "  systemctl enable %s\n", strings.Join(q, " "))
+		sb.WriteString("else\n")
+		sb.WriteString("  echo 'meridian: no systemd; the boot unit cannot be enabled' >&2\n")
+		sb.WriteString("  exit 1\n")
+		sb.WriteString("fi\n")
+	}
 	// A replaced binary only takes effect when its units restart (enable
 	// --now in meridian-up.sh leaves a running unit alone).
 	for _, a := range o.Artifacts {
@@ -340,8 +395,38 @@ m_refuse() {
   echo "meridian: $2; nothing was changed" >&2
   exit 3
 }
+# m_nft_flush_risk: nftables.service is enabled or running and would flush
+# the whole ruleset (Meridian's tables with it) on reload (/etc/nftables.conf
+# starts with a whole-ruleset flush) or on stop/restart (its ExecStop flushes).
+m_nft_flush_risk() {
+  local stop
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl is-enabled --quiet nftables.service 2>/dev/null || systemctl is-active --quiet nftables.service 2>/dev/null || return 1
+  if [ -f /etc/nftables.conf ] && grep -qE '^[[:space:]]*flush[[:space:]]+ruleset' /etc/nftables.conf 2>/dev/null; then return 0; fi
+  stop=$(systemctl show -p ExecStop --value nftables.service 2>/dev/null | tr -d '\n')
+  case "$stop" in *flush*ruleset*) return 0 ;; esac
+  return 1
+}
 # Re-validate, immediately before changing anything, what the preflight saw.
 [ "$(id -u)" = 0 ] || m_refuse not_root 'provisioning needs root'
+if m_nft_flush_risk; then
+  m_refuse nftables_flush_on_reload 'nftables.service is enabled or running and flushes the whole ruleset on reload/stop; fix that first (see the preflight)'
+fi
+# The WAN interface the node's NAT, IPv6 drop, DOCKER-USER rules and sysctls
+# name must exist and carry the default route(s) the node needs.
+if [ -n "$M_WAN" ]; then
+  ip link show "$M_WAN" >/dev/null 2>&1 || m_refuse wan_interface_missing "the WAN interface $M_WAN does not exist on this host; set wan_interface in the topology"
+  for m_fam in $M_WAN_NEED; do
+    case "$m_fam" in
+      4|6) m_out=$(ip -"$m_fam" route show default 2>/dev/null | tr '\n' ' ') || m_out="" ;;
+      *) m_out="$(ip -4 route show default 2>/dev/null | tr '\n' ' ') $(ip -6 route show default 2>/dev/null | tr '\n' ' ')" ;;
+    esac
+    case " $m_out " in
+      *" dev $M_WAN "*) ;;
+      *) m_refuse wan_no_default_route "the WAN interface $M_WAN does not carry the default route (IPv$m_fam) this node needs; set wan_interface in the topology" ;;
+    esac
+  done
+fi
 if [ -f "$M_JOURNAL" ] && ! grep -qx 'state done' "$M_JOURNAL" && ! grep -qx 'state compensated' "$M_JOURNAL" && ! grep -qx 'state withdrawn' "$M_JOURNAL"; then
   if grep -qx 'kind withdraw' "$M_JOURNAL"; then
     m_refuse withdraw_incomplete "an earlier withdraw did not finish (see $M_JOURNAL); finish it from the panel's deploy page"
@@ -373,7 +458,19 @@ esac
 // M_EXPECT, M_IFACES, M_UNITS, M_NFT, M_TABLES, M_PRIOS, M_DSTS and M_ROOT
 // (empty on a host). Every step is idempotent: running it again after a
 // partial compensation only retries what is still there.
-const compensateLib = `m_note() { printf '%s\n' "$*" >> "$M_WORK/actions"; }
+const compensateLib = compile.FWShellLib + `# m_fw_del_line FAM LINE: delete one tagged rule as -S printed it.
+m_fw_del_line() {
+  local tool
+  local -a args
+  tool=$(m_fw_tool "$1")
+  case "$2" in "-A DOCKER-USER "*--comment*meridian-fw-*) ;; *) return 1 ;; esac
+  set -f
+  read -r -a args <<< "$2"
+  set +f
+  args[0]=-D
+  "$tool" -w 5 "${args[@]}" >/dev/null 2>&1
+}
+m_note() { printf '%s\n' "$*" >> "$M_WORK/actions"; }
 m_jot() { printf '%s\n' "$*" >> "$M_JOURNAL"; }
 m_left() { echo "MERIDIAN_LEFTOVER $*"; m_jot "leftover $*"; M_LEFT=1; }
 m_kept() { echo "MERIDIAN_KEPT $*"; m_jot "leftover $* (kept on purpose)"; }
@@ -440,6 +537,18 @@ m_compensate() {
       ip -"$fam" route del $line >/dev/null 2>&1 || m_left route "IPv$fam $line"
     done
   done
+  # Coexistence rules this run added (tagged, not there before it). An
+  # update's previous rules are re-asserted by the restored meridian-up.sh.
+  for fam in 4 6; do
+    [ -f "$M_WORK/pre-fw$fam" ] || continue
+    m_fw_tagged "$fam" | while IFS= read -r line; do
+      grep -qxF -- "$line" "$M_WORK/pre-fw$fam" && continue
+      m_fw_del_line "$fam" "$line" || m_left firewall "IPv$fam ${line#-A }"
+    done
+  done
+  # A first install's record of the interfaces it switched to accept_ra=2
+  # goes with it (their values are restored just below).
+  if [ "$M_EXPECT" = none ]; then rm -f -- "$M_STATE/ra-accept"; fi
   while read -r p v; do
     [ -w "$p" ] || continue
     if [ "$(head -c 32 "$p")" != "$v" ]; then printf '%s\n' "$v" > "$p" 2>/dev/null || m_left sysctl "$p"; fi
@@ -485,9 +594,20 @@ const provisionTxn = `m_begin() {
     { ip -"$fam" rule show 2>/dev/null || true; } > "$M_WORK/pre-rule$fam"
     { ip -"$fam" route show table all 2>/dev/null || true; } > "$M_WORK/pre-route$fam"
   done
-  for f in /proc/sys/net/ipv4/ip_forward /proc/sys/net/ipv6/conf/all/forwarding /proc/sys/net/ipv4/conf/*/rp_filter /proc/sys/net/ipv4/conf/*/send_redirects /proc/sys/net/ipv4/conf/*/accept_redirects /proc/sys/net/ipv6/conf/*/accept_redirects; do
+  # Only the keys this bundle may write (M_SYSCTL): the global forwarding
+  # and redirect keys and the managed interfaces' keys. Interfaces created
+  # by this run have nothing to record (they are deleted on failure).
+  for f in $M_SYSCTL; do
     if [ -r "$f" ]; then printf '%s %s\n' "$f" "$(head -c 32 "$f")"; fi
   done > "$M_WORK/pre-sysctl"
+  for fam in 4 6; do m_fw_tagged "$fam" > "$M_WORK/pre-fw$fam"; done
+  # accept_ra of every interface meridian-up.sh may switch to 2 (RA-learned
+  # routes now, or recorded by an earlier run).
+  { ip -6 route show table main proto ra 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="dev") print $(i+1)}'; cat "$M_STATE/ra-accept" 2>/dev/null || true; } | sort -u | while read -r d; do
+    case "$d" in ''|*[!A-Za-z0-9_.@-]*) continue ;; esac
+    f=/proc/sys/net/ipv6/conf/$d/accept_ra
+    if [ -r "$f" ]; then printf '%s %s\n' "$f" "$(head -c 32 "$f")"; fi
+  done >> "$M_WORK/pre-sysctl" || true
   for u in $M_UNITS smartdns.service; do
     printf '%s %s %s\n' "$u" "$(systemctl is-enabled "$u" 2>/dev/null || true)" "$(systemctl is-active "$u" 2>/dev/null || true)"
   done > "$M_WORK/pre-units"
@@ -555,6 +675,7 @@ m_commit() {
     for p in $M_TABLES; do echo "table $p"; done
     for p in $M_PRIOS; do echo "prio $p"; done
     for p in $M_DSTS; do echo "route $p"; done
+    if [ "$M_FW" = 1 ]; then echo 'fw ipv4 DOCKER-USER'; echo 'fw ipv6 DOCKER-USER'; fi
     awk '$1=="pkg" {print "pkg " $2}' "$M_WORK/actions"
   } > "$next"
   chmod 600 "$next"

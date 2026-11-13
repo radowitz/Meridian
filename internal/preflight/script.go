@@ -90,7 +90,8 @@ func Args(paths []string) ([]string, error) {
 func Script() string { return script }
 
 // The script is read-only. It runs only commands that print state (id,
-// uname, ip … show, ss -l, nft list, iptables -S, systemctl is-*/show,
+// uname, ip … show, ss -l / ss state established, nft list, iptables -S,
+// systemctl is-*/show,
 // dpkg-query, apt-cache policy, nft/wg/wstunnel --version, sha256sum,
 // head, grep) with stdin from
 // /dev/null and a 15 s bound each, writes nothing, never prints file
@@ -128,16 +129,27 @@ meridian_preflight() {
   echo "mem-total-kb $(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)"
   echo "mem-avail-kb $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)"
   echo "disk-avail-kb $(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}')"
-  for c in wg wg-quick nft ip ss iptables ip6tables apt-get dpkg-query systemctl smartdns wstunnel docker curl python3 sha256sum timeout; do
+  for c in wg wg-quick nft ip ss iptables ip6tables apt-get dpkg-query systemctl smartdns wstunnel docker curl python3 sha256sum timeout flock warp-cli; do
     echo "cmd $c $(yn have "$c")"
   done
   if have iptables; then
     echo "iptables-version $(q iptables -V | first)"
     for ch in INPUT FORWARD; do
-      q iptables -w 5 -S "$ch" | first | sed 's/^/ipt ipv4 /'
-      q ip6tables -w 5 -S "$ch" | first | sed 's/^/ipt ipv6 /'
+      q iptables -w 5 -S "$ch" | grep -m 1 -E -- '^-P ' | sed 's/^/ipt ipv4 /'
+      q ip6tables -w 5 -S "$ch" | grep -m 1 -E -- '^-P ' | sed 's/^/ipt ipv6 /'
     done
   fi
+  # Docker FORWARD DROP coexistence: does DOCKER-USER exist, what does
+  # FORWARD jump to (targets only, in order), how many Meridian-tagged
+  # rules are there already.
+  for t in iptables ip6tables; do
+    have "$t" || continue
+    n=ipv4; [ "$t" = ip6tables ] && n=ipv6
+    if q "$t" -w 5 -S DOCKER-USER >/dev/null; then echo "iptchain $n DOCKER-USER yes"; else echo "iptchain $n DOCKER-USER no"; fi
+    q "$t" -w 5 -S FORWARD | awk '$1=="-A" {t="-"; for (i=1;i<NF;i++) if ($i=="-j" || $i=="-g") t=$(i+1); print t, (NF<5 ? "plain" : "match")}' | head -n 40 | awk -v n="$n" '{print "iptfwd", n, NR, $1, $2}'
+    c=$(q "$t" -w 5 -S DOCKER-USER | grep -cE -- '--comment "?meridian-fw-[0-9a-f]{8}"?( |$)')
+    echo "iptours $n ${c:-0}"
+  done
   for k in net/ipv4/ip_forward net/ipv6/conf/all/forwarding net/ipv4/conf/all/rp_filter; do
     if [ -r "/proc/sys/$k" ]; then echo "sysctl $(echo "$k" | tr / .) $(head -c 32 "/proc/sys/$k")"; fi
   done
@@ -151,6 +163,15 @@ meridian_preflight() {
     q ip -6 rule show | head -n 300 | sed 's/^/rule6 /'
     q ip -4 route show table all | awk '{t=""; for (i=1;i<NF;i++) if ($i=="table") t=$(i+1); if (t!="") print t, ($1=="default" ? "default" : "route")}' | sort -u | head -n 400 | sed 's/^/rtable4 /'
     q ip -6 route show table all | awk '{t=""; for (i=1;i<NF;i++) if ($i=="table") t=$(i+1); if (t!="") print t, ($1=="default" ? "default" : "route")}' | sort -u | head -n 400 | sed 's/^/rtable6 /'
+  fi
+  # Interfaces whose IPv6 routes come from router advertisements, with
+  # their accept_ra: with IPv6 forwarding on, accept_ra=1 stops RA.
+  if have ip; then
+    q ip -6 route show table main proto ra | awk '{d=""; for (i=1;i<NF;i++) if ($i=="dev") d=$(i+1); if (d!="") print d, ($1=="default" ? "default" : "prefix")}' | sort -u | head -n 50 | while read -r d k; do
+      case "$d" in *[!A-Za-z0-9_.@-]*) continue ;; esac
+      a=$(head -c 8 "/proc/sys/net/ipv6/conf/$d/accept_ra" 2>/dev/null)
+      echo "ra6 $d ${a:--} $k"
+    done
   fi
   if have wg; then q wg show all listen-port | head -n 200 | sed 's/^/wgport /'; fi
   for f in /usr/share/iproute2/rt_tables /etc/iproute2/rt_tables /etc/iproute2/rt_tables.d/*.conf; do
@@ -168,6 +189,20 @@ meridian_preflight() {
     q systemctl list-units --type=service --state=active --no-legend --plain 'wg-quick@*' | awk '{print $1}' | head -n 50 | while read -r u; do
       echo "unit $u active enabled 0"
     done
+  fi
+  # Whether nftables.service flushes the whole ruleset when it stops
+  # (Debian's unit runs a whole-ruleset flush as its ExecStop).
+  if have systemctl; then
+    s=$(q systemctl show -p ExecStop --value nftables.service | tr -d '\n')
+    case "$s" in *flush*ruleset*) echo 'nftables-stop flush' ;; '') ;; *) echo 'nftables-stop noflush' ;; esac
+  fi
+  # Host WARP dependency clues (names and addresses only): processes with
+  # connections to its local listeners, a resolv.conf pointing at it.
+  if have ss; then
+    q ss -Htnp state established | awk '$4 ~ /^127[.]0[.]2[.][23]:/ || $4 ~ /:40000$/ {p="-"; if (match($0, /users:[(][(]"[^"]+"/)) p=substr($0, RSTART+9, RLENGTH-10); print $4, p}' | sort -u | head -n 30 | sed 's/^/warpdep conn /'
+  fi
+  if [ -r /etc/resolv.conf ]; then
+    grep -E '^[[:space:]]*nameserver[[:space:]]+127[.]0[.]2[.][23]([[:space:]]|$)' /etc/resolv.conf 2>/dev/null | awk '{print "warpdep resolv", $2}' | head -n 4
   fi
   if [ -f /etc/nftables.conf ]; then
     if grep -qE '^[[:space:]]*flush[[:space:]]+ruleset' /etc/nftables.conf 2>/dev/null; then echo 'nftables-conf flush'; else echo 'nftables-conf noflush'; fi

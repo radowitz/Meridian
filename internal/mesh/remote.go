@@ -54,7 +54,8 @@ const scriptHead = `#!/bin/bash
 `
 
 // PreflightScript checks a host before anything is written: tools, the
-// home gateway guard, existing Mesh state that the run would not own, and
+// home gateway guard, a host-level WARP client (refused: coexistence with
+// the sidecar is not confirmed), existing Mesh state that the run would not own, and
 // IPv4/IPv6 address or route conflicts with the veth addressing. On the hub
 // it also refuses policy-route scripts that still use "default dev mmesh".
 func PreflightScript(run string, role model.Role, a Addressing) (string, error) {
@@ -75,6 +76,14 @@ if command -v docker >/dev/null 2>&1; then
   docker volume inspect meridian_mesh_lib >/dev/null 2>&1 && c registration_exists "volume meridian_mesh_lib holds an existing Mesh registration"
 fi
 [ -e /dev/net/tun ] || c missing_tun "/dev/net/tun is missing"
+# A host-level Cloudflare WARP client (its own policy rule ahead of main,
+# nft table, routing table and DNS listeners) next to the sidecar: their
+# coexistence is not confirmed, so the sidecar is not deployed here.
+# Retiring the old client is a separate step the operator confirms; this
+# script never stops it and never touches the Cloudflare account.
+if pgrep -x warp-svc >/dev/null 2>&1 || ip link show CloudflareWARP >/dev/null 2>&1 || systemctl is-active --quiet warp-svc.service 2>/dev/null; then
+  c host_warp "a host-level Cloudflare WARP client runs here (warp-svc / CloudflareWARP); coexistence with the Mesh sidecar is not confirmed: retire it first (a separate, confirmed step), then deploy again"
+fi
 if ip -4 addr show 2>/dev/null | grep -q 'inet 192.168.100.88/'; then
   c home_gateway "this is the home gateway; Mesh never runs here"
 fi

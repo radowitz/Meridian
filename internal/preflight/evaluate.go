@@ -68,6 +68,31 @@ const (
 	CodeHostSummary     = "host_summary"
 	CodeForwardEnable   = "forwarding_enable"
 	CodeGatewayDNS      = "gateway_dns_runtime"
+	// CodeFWCompat (info): what the Docker FORWARD DROP coexistence does
+	// per address family on this host.
+	CodeFWCompat = "forward_coexistence"
+	// CodeWARPSidecar: the bundle carries the Mesh sidecar while a
+	// host-level WARP client runs; the Mesh deployment refuses this host
+	// until the old client is retired (a separate, confirmed step).
+	CodeWARPSidecar = "warp_sidecar_conflict"
+	// CodeSysctlScope (info): which kernel keys the install sets, which of
+	// them are global, and the rp_filter semantics.
+	CodeSysctlScope = "sysctl_scope"
+	// CodeWANMissing: the node's WAN interface (wan_interface, or eth0
+	// when unset) does not exist on the host. CodeWANRoute: it does not
+	// carry the default route of a family the node needs. Both blocking,
+	// with a fix pointing at the node's wan_interface. CodeWAN (info): the
+	// WAN interface was checked.
+	CodeWANMissing = "wan_interface_missing"
+	CodeWANRoute   = "wan_no_default_route"
+	CodeWAN        = "wan_interface"
+	// CodeRAKept (info): interfaces whose IPv6 comes from router
+	// advertisements get accept_ra=2 before IPv6 forwarding is turned on.
+	// CodeRAUnmanaged (blocking): RA-learned routes on an interface with
+	// accept_ra 0 or unreadable (a userspace RA client): kept alive safely
+	// with forwarding on cannot be confirmed.
+	CodeRAKept      = "ipv6_ra_kept"
+	CodeRAUnmanaged = "ipv6_ra_unmanaged"
 
 	// CodePlatform (info) names the supported platform the host matched
 	// and what that means for the install (packages, legacy iptables).
@@ -296,6 +321,7 @@ var fieldLabels = map[string]string{
 	"listen_port":     "「WireGuard 监听端口」",
 	"wss_listen_port": "「WSS 监听端口」",
 	"wss_local_port":  "「wstunnel 本地端口」",
+	"wan_interface":   "「WAN 接口」",
 }
 
 // portFix finds the topology field behind a planned listener.
@@ -334,12 +360,15 @@ func Evaluate(r Report, fp Footprint, ctx Context) Evaluation {
 	e.memory()
 	e.paths()
 	e.interfaces()
+	e.wan()
 	e.listens()
 	e.routes()
 	e.rules()
 	e.nft()
 	e.firewall()
+	e.fwCompatSummary()
 	e.environment()
+	e.ra()
 	e.plan()
 	sort.SliceStable(e.out.Findings, func(i, j int) bool {
 		return sevRank(e.out.Findings[i].Severity) < sevRank(e.out.Findings[j].Severity)
@@ -589,7 +618,7 @@ func (e *eval) platform() {
 			e.out.Platform = p.Name
 			detail := ""
 			if p.OSID == "ubuntu" {
-				detail = "Ubuntu 20.04 自带的 nftables（0.9.3）和 wireguard-tools 由装机经 apt 安装（--no-install-recommends，不会装 wireguard-dkms，也不改 iptables 的 alternatives）；生成的 nft 规则在这个版本上是否全部被接受只能在装机时由 meridian-up.sh 的 nft -c 检查，失败会在激活前停止并补偿。"
+				detail = "Ubuntu 20.04 自带的 nftables（0.9.3）和 wireguard-tools 由装机经 apt 安装（--no-install-recommends，不会装 wireguard-dkms，也不改 iptables 的 alternatives）；远端规则集已按 nft 0.9.3 复核并避开了传输层头表达式（th dport），但没有在 0.9.3 上执行过：装机时 meridian-up.sh 先 nft -c，失败会在激活前停止并补偿。"
 			}
 			e.add(Info, CodePlatform, "platform", "支持的平台："+p.Name+"（"+name+"）。"+detail, "")
 			return
@@ -1371,13 +1400,15 @@ func (e *eval) firewall() {
 		if !fam.on {
 			continue
 		}
-		var src []string
+		tool := "iptables"
+		if fam.name == "ipv6" {
+			tool = "ip6tables"
+		}
+		var src, other []string
+		iptDrop := false
 		for _, p := range e.r.Policies {
 			if p.Family == fam.name && p.Chain == "FORWARD" && (p.Policy == "DROP" || p.Policy == "REJECT") {
-				tool := "iptables"
-				if fam.name == "ipv6" {
-					tool = "ip6tables"
-				}
+				iptDrop = true
 				src = append(src, fmt.Sprintf("%s filter 表 FORWARD 策略 %s", tool, p.Policy))
 			}
 		}
@@ -1386,15 +1417,18 @@ func (e *eval) firewall() {
 			if c.Hook != "forward" || c.Policy != "drop" || !containsStr(fam.nft, fam0) || containsStr(e.fp.NFTTables, c.Table) {
 				continue
 			}
-			if fam0 == "ip" || fam0 == "ip6" {
+			if (c.Table == "ip filter" || c.Table == "ip6 filter") && c.Name == "FORWARD" {
 				// iptables-nft shows the same policy as table ip filter.
-				if c.Table == "ip filter" || c.Table == "ip6 filter" {
-					if len(src) > 0 {
-						continue
-					}
+				if iptDrop {
+					continue
 				}
+				iptDrop = true
+				src = append(src, fmt.Sprintf("%s filter 表 FORWARD 策略 DROP（nft 表 %s）", tool, c.Table))
+				continue
 			}
-			src = append(src, fmt.Sprintf("nft 表 %s 的链 %s（hook forward，policy drop）", c.Table, c.Name))
+			s := fmt.Sprintf("nft 表 %s 的链 %s（hook forward，policy drop）", c.Table, c.Name)
+			src = append(src, s)
+			other = append(other, s)
 		}
 		if len(src) == 0 {
 			continue
@@ -1404,16 +1438,123 @@ func (e *eval) firewall() {
 		if docker {
 			cause = "（Docker 在运行，这通常是 Docker 设置的）"
 		}
+		why := e.fwCompatBlockers(fam.name, iptDrop, other)
+		if len(why) == 0 {
+			e.fwCompatPlan(fam.name, tool, strings.Join(src, "；")+cause)
+			continue
+		}
 		ifaces := []string{}
 		for _, ip := range e.fp.Interfaces {
 			ifaces = append(ifaces, ip.Name)
 		}
 		e.add(Blocking, CodeForwardDrop, fam.name+" FORWARD",
-			fmt.Sprintf("%s 转发会被丢弃：%s%s。Meridian 自己的 nft 转发链是 policy accept，但不能救回被别的表丢掉的包；从隧道进来、经 WAN 网卡转发出去的流量会被丢弃，节点装上也不通。",
-				fam.name, strings.Join(src, "；"), cause),
-			"这一版面板不会替你改 Docker 或别的防火墙的规则。可选做法（自行评估对已有容器的影响）：在 DOCKER-USER 链里放行隧道接口（"+strings.Join(ifaces, "、")+"）的双向转发，"+
-				"或换一台没有这类策略的服务器。处理后重新预检。")
+			fmt.Sprintf("%s 转发会被丢弃：%s%s。Meridian 自己的 nft 转发链是 policy accept，但不能救回被别的表丢掉的包；从隧道进来、经 WAN 网卡转发出去的流量会被丢弃，节点装上也不通。面板不能在这台主机上安全地共存：%s。",
+				fam.name, strings.Join(src, "；"), cause, strings.Join(why, "；")),
+			"这一版面板不会替你改 Docker、ufw、firewalld 或别的防火墙的规则和策略。只有在 FORWARD 的 DROP 来自 iptables 的默认策略、主机上有 Docker 的 DOCKER-USER 链（FORWARD 先跳到它）、没有 ufw / firewalld、也没有别的 nft 表丢弃转发时，面板才会在 DOCKER-USER 里加只匹配隧道接口（"+strings.Join(ifaces, "、")+"）的放行规则。"+
+				"按上面的原因处理（例如停用 ufw / firewalld 或把隧道接口的转发加进它们的放行规则），或换一台没有这类策略的服务器，然后重新预检。")
 	}
+}
+
+// fwCompatBlockers says why the DOCKER-USER coexistence rules cannot be
+// relied on for this family (empty: they can).
+func (e *eval) fwCompatBlockers(fam string, iptDrop bool, other []string) []string {
+	var why []string
+	if e.ctx.Gateway {
+		why = append(why, "网关不使用这套共存规则（deploy/debian/install.sh 让 Docker 不碰 iptables；网关上出现 FORWARD DROP 说明 daemon.json 没有按安装文档设置）")
+		return why
+	}
+	if len(e.fp.FWRules) == 0 {
+		why = append(why, "这个节点的配置里没有共存规则（meridian-fwcompat.sh）")
+		return why
+	}
+	if len(other) > 0 {
+		why = append(why, "丢弃来自别的 nft 表（"+strings.Join(other, "、")+"），DOCKER-USER 里的放行救不回它")
+	}
+	for _, u := range []string{"ufw.service", "firewalld.service"} {
+		if e.r.Units[u].Active == "active" {
+			why = append(why, strings.TrimSuffix(u, ".service")+" 在运行：它自己管理 FORWARD（重载时会重排或清掉规则），面板不与它共存")
+		}
+	}
+	if !iptDrop {
+		return why
+	}
+	chain, reported := e.r.IptChains[fam+" DOCKER-USER"]
+	switch {
+	case !reported:
+		why = append(why, "预检没有报告 DOCKER-USER 链是否存在（旧版预检或 iptables 读不到）")
+	case !chain:
+		why = append(why, "没有 DOCKER-USER 链：这个 DROP 不是 Docker 设的，或 Docker 没有管理 iptables")
+	default:
+		jumped := false
+		for _, t := range e.r.IptForward[fam] {
+			if t == "DOCKER-USER" {
+				jumped = true
+				break
+			}
+			if t == "DROP" || t == "REJECT" {
+				why = append(why, "FORWARD 链在跳到 DOCKER-USER 之前就有 "+t+" 规则")
+				break
+			}
+		}
+		if !jumped && len(why) == 0 {
+			why = append(why, "FORWARD 链不跳到 DOCKER-USER（或预检没有读到 FORWARD 的规则）")
+		}
+	}
+	return why
+}
+
+// fwCompatPlan: the drop is Docker's iptables policy and DOCKER-USER can
+// carry the coexistence rules. Not blocking; the rules are part of the
+// change list.
+func (e *eval) fwCompatPlan(fam, tool, src string) {
+	have := e.r.IptOurs[fam]
+	state := "这台主机上还没有 Meridian 的规则，装机时加入"
+	if have > 0 {
+		state = fmt.Sprintf("DOCKER-USER 里已有 %d 条带 Meridian 注释的规则（之前的安装）：补齐缺的，删掉旧规则集的", have)
+	}
+	e.add(Warning, CodeForwardDrop, fam+" FORWARD",
+		fmt.Sprintf("%s 转发会被 %s 丢弃。面板会在 %s 的 DOCKER-USER 链（Docker 留给管理员、FORWARD 最先跳到的链）顶部加 %d 条 ACCEPT 规则，只匹配 Meridian 自己的接口（隧道进、WAN 出及其回程；节点做中转时隧道之间），每条带注释 %s。"+
+			"不改 Docker 的链和规则、不改任何策略、不清空任何链；Docker 重启重建链时由 meridian-fwcompat.service 重新加上，开机由 meridian-node.service 在 Docker 之后加上；撤回和失败补偿按注释精确删除，只删带 Meridian 注释的规则。%s。",
+			fam, src, tool, len(e.fp.FWRules), e.fp.FWTag, state),
+		"确认这些规则（「拟执行的变更」里的「转发放行规则」）可以接受。netfilter-persistent 之类的工具若把当前规则保存下来，这些规则也会被保存：撤回后请重新保存一次。")
+	for _, r := range e.fp.FWRules {
+		action := "add"
+		if have > 0 {
+			action = "update"
+		}
+		e.change("firewall", action, fmt.Sprintf("%s -I %s %s -m comment --comment %s -j ACCEPT", tool, e.fp.FWChain, r, e.fp.FWTag), fam+" FORWARD 策略 DROP")
+	}
+}
+
+// fwCompatSummary says, per family, what meridian-fwcompat.sh will do on
+// this host as reported (it decides again at every run).
+func (e *eval) fwCompatSummary() {
+	if e.ctx.Gateway || len(e.fp.FWRules) == 0 {
+		return
+	}
+	var parts []string
+	for _, fam := range []struct{ name, tool string }{{"ipv4", "iptables"}, {"ipv6", "ip6tables"}} {
+		if c, ok := e.r.Commands[fam.tool]; ok && !c {
+			parts = append(parts, fam.name+"：没有 "+fam.tool+"，不加规则")
+			continue
+		}
+		pol := ""
+		for _, p := range e.r.Policies {
+			if p.Family == fam.name && p.Chain == "FORWARD" {
+				pol = p.Policy
+			}
+		}
+		switch pol {
+		case "DROP", "REJECT":
+			parts = append(parts, fmt.Sprintf("%s：FORWARD 策略 %s，在 DOCKER-USER 加 %d 条（能否共存见上）", fam.name, pol, len(e.fp.FWRules)))
+		case "ACCEPT":
+			parts = append(parts, fam.name+"：FORWARD 策略 ACCEPT，不加规则（之前加过的 Meridian 规则会删掉）")
+		default:
+			parts = append(parts, fam.name+"：读不到 FORWARD 策略")
+		}
+	}
+	e.add(Info, CodeFWCompat, e.fp.FWChain,
+		"转发共存（meridian-fwcompat.sh）："+strings.Join(parts, "；")+"。每次运行（装机、开机、Docker 重启）按当时的策略决定：以后某个族变成 DROP 时，它在下一次 Docker 启动或 meridian-up.sh 时自动补上；FORWARD 是 DROP 却没有 DOCKER-USER 时它不改任何东西，让 meridian-up.sh 失败（服务显示 failed），隧道不会起来。", "")
 }
 
 func (e *eval) dockerRunning() bool {
@@ -1429,39 +1570,12 @@ func (e *eval) environment() {
 	} else if e.fp.Docker && !r.Commands["docker"] {
 		e.add(Info, CodeDockerMissing, "docker", "这个节点的解锁探测或 Mesh 备路要用 Docker，主机上没有 Docker：这两项会跳过并如实报告，不影响隧道。", "需要它们时先装 Docker。")
 	}
-	var warp []string
-	if r.Procs["warp-svc"] || r.Units["warp-svc.service"].Active == "active" {
-		warp = append(warp, "进程 warp-svc")
-	}
-	for _, l := range r.Links {
-		if strings.EqualFold(l, "CloudflareWARP") {
-			warp = append(warp, "接口 "+l)
-		}
-	}
-	for _, t := range r.NFTTables {
-		if strings.Contains(t, "cloudflare") {
-			warp = append(warp, "nft 表 "+t)
-		}
-	}
-	cgnat := netip.MustParsePrefix("100.96.0.0/12")
-	for _, a := range r.Addrs {
-		if cgnat.Overlaps(a.Prefix.Masked()) {
-			warp = appendCapped(warp, "地址 "+a.Prefix.String()+"（"+a.Iface+"）")
-		}
-	}
-	if len(warp) > 0 {
-		e.add(Info, CodeWARP, "warp-svc",
-			"检测到主机级 Cloudflare WARP 客户端："+strings.Join(warp, "、")+"。它在回环和自己的叠加地址上监听 53，有自己的 nft 表和策略路由；Meridian 不碰它，冲突项（端口、规则顺序）已单独检查。",
-			"若 WARP 的规则把出口流量引走，会在「规则排在前面」一项里提示。")
-	}
+	e.warp()
 	if st := r.Units["netfilter-persistent.service"]; st.Active == "active" || st.Enabled == "enabled" {
-		e.add(Info, CodeNetfilterPersis, "netfilter-persistent", "netfilter-persistent 已启用：开机时会恢复保存的 iptables 规则。它不管理 Meridian 的 nft 表；如果保存的规则里 FORWARD 是 DROP，上面会报告。", "")
+		e.add(Info, CodeNetfilterPersis, "netfilter-persistent", "netfilter-persistent 已启用：开机时会恢复保存的 iptables 规则。它不管理 Meridian 的 nft 表；如果保存的规则里 FORWARD 是 DROP，上面会报告。"+
+			"注意：有人执行 netfilter-persistent save 时，Meridian 在 DOCKER-USER 里带注释的放行规则也会被存下来；撤回只删运行中的规则，撤回后请再保存一次。", "")
 	}
-	if st := r.Units["nftables.service"]; st.Enabled == "enabled" && r.NFTConf == "flush" {
-		e.add(Warning, CodeNFTFlush, "/etc/nftables.conf",
-			"nftables.service 已启用，/etc/nftables.conf 以 flush ruleset 开头：任何人执行 systemctl restart/reload nftables 都会清掉整个规则集，包括 Meridian 的表，直到下次下发或重新执行 meridian-up.sh。",
-			"不要在这台机器上重载 nftables.service；需要时改用只操作自己表的配置。")
-	}
+	e.nftFlush()
 	for _, u := range []string{"ufw.service", "firewalld.service"} {
 		if r.Units[u].Active == "active" {
 			e.add(Warning, CodeFirewallManager, u, fmt.Sprintf("%s 在运行：它管理主机防火墙，可能拦截隧道端口或转发，也可能在重载时改动规则。", strings.TrimSuffix(u, ".service")),
@@ -1496,6 +1610,154 @@ func (e *eval) environment() {
 	e.add(Info, CodeHostSummary, "host", "主机："+summary+"。", "")
 }
 
+// nftFlush: nftables.service would wipe Meridian's tables. Debian's and
+// Ubuntu's unit flush the whole ruleset when they stop (ExecStop), and a
+// stock /etc/nftables.conf starts with "flush ruleset", so a reload does
+// too. Neither can be made fail-closed from outside the host's own
+// configuration (on the gateway forwarding would stay on without the
+// guard until meridian-up.sh runs again), so an enabled or running service
+// that flushes refuses the install before anything changes. The panel does
+// not edit the host's config.
+func (e *eval) nftFlush() {
+	r := e.r
+	st, ok := r.Units["nftables.service"]
+	if !ok || st.Enabled == "not-found" || st.Enabled == "masked" || (st.Enabled == "" || st.Enabled == "-") && st.Active != "active" {
+		return
+	}
+	var how []string
+	if r.NFTConf == "flush" {
+		how = append(how, "/etc/nftables.conf 里有 flush ruleset：reload / restart 时清空整个规则集")
+	}
+	if r.NFTStop == "flush" {
+		how = append(how, "它的 ExecStop 是 nft flush ruleset：stop / restart 时清空整个规则集")
+	}
+	if len(how) == 0 {
+		return
+	}
+	enabled := strings.HasPrefix(st.Enabled, "enabled")
+	what := "Meridian 的表（以及 Docker 写进 nft 的 iptables 规则）"
+	if e.ctx.Gateway {
+		what = "Meridian 的表，包括局域网兜底表 inet meridian_guard（转发仍开着，局域网流量会不经分类直接经 ROS 出去）"
+	}
+	if enabled || st.Active == "active" {
+		state := []string{}
+		if enabled {
+			state = append(state, "已启用（开机启动）")
+		}
+		if st.Active == "active" {
+			state = append(state, "正在运行")
+		}
+		e.add(Blocking, CodeNFTFlush, "nftables.service",
+			"nftables.service "+strings.Join(state, "、")+"，而且"+strings.Join(how, "；")+"。任何人或任何软件执行 systemctl reload / restart / stop nftables 都会清掉"+what+"，直到下次下发或重新执行 meridian-up.sh。这在主机自己的配置之外无法做到失败关闭，所以在改动任何东西之前拒绝。",
+			"面板不改这台主机自己的 nftables 配置。任选其一后重新预检：① 主机不靠 nftables.service 加载自己的规则：systemctl disable nftables.service，然后在合适的时候重启主机（不要执行 systemctl stop nftables：它停止时会清空整个规则集，连 Docker 的规则一起清掉）；"+
+				"② 主机需要它：把 /etc/nftables.conf 里的 flush ruleset 换成只删除它自己定义的表（例如在 table inet filter { … } 之前写 table inet filter 和 delete table inet filter 两行），并用 systemctl edit nftables.service 加一个 drop-in，在 [Service] 下写一行空的 ExecStop= 去掉停止时的整表清空，然后 systemctl daemon-reload。")
+		return
+	}
+	// Disabled and not running is the distribution default (Debian ships
+	// nftables.service disabled with a flushing /etc/nftables.conf): not
+	// reported, docs/architecture.md names the manual start as a limit.
+}
+
+// warp recognises a host-level Cloudflare WARP client, shows what it is
+// and the dependency clues that could be read safely, and checks that
+// Meridian's marks, tables and rule priorities do not collide with it.
+func (e *eval) warp() {
+	r := e.r
+	var warp []string
+	if r.Procs["warp-svc"] || r.Units["warp-svc.service"].Active == "active" {
+		warp = append(warp, "进程 warp-svc")
+	}
+	for _, l := range r.Links {
+		if strings.EqualFold(l, "CloudflareWARP") {
+			warp = append(warp, "接口 "+l)
+		}
+	}
+	for _, t := range r.NFTTables {
+		if strings.Contains(t, "cloudflare") {
+			warp = append(warp, "nft 表 "+t)
+		}
+	}
+	cgnat := netip.MustParsePrefix("100.96.0.0/12")
+	warp6 := netip.MustParsePrefix("2606:4700:cf1::/48")
+	for _, a := range r.Addrs {
+		if cgnat.Overlaps(a.Prefix.Masked()) || warp6.Overlaps(a.Prefix.Masked()) {
+			warp = appendCapped(warp, "地址 "+a.Prefix.String()+"（"+a.Iface+"）")
+		}
+	}
+	if len(warp) == 0 {
+		return
+	}
+	// WARP's policy rule: "not fwmark 0x100cf lookup 65743" ahead of main.
+	var rules, collide []string
+	warpTables := map[string]bool{}
+	for _, x := range r.Rules {
+		if x.Not && x.Fwmark != "" && normMark(x.Fwmark) == "0x100cf" {
+			rules = appendCapped(rules, fmt.Sprintf("IPv%d 优先级 %d：%s", x.Family, x.Priority, strings.TrimSpace(x.Raw[strings.Index(x.Raw, ":")+1:])))
+			warpTables[x.Table] = true
+			for _, ru := range e.fp.Rules {
+				if ru.Family == x.Family && ru.Priority == x.Priority {
+					collide = appendCapped(collide, fmt.Sprintf("Meridian 也用优先级 %d", x.Priority))
+				}
+			}
+		}
+	}
+	for _, m := range e.fp.Marks {
+		if normMark(m) == "0x100cf" {
+			collide = appendCapped(collide, "Meridian 的标记 0x100cf 与 WARP 相同")
+		}
+	}
+	for t := range warpTables {
+		if n, err := strconv.Atoi(t); err == nil && containsInt(e.fp.Tables, n) {
+			collide = appendCapped(collide, "Meridian 也用路由表 "+t)
+		}
+		for _, nt := range e.fp.NFTTables {
+			if strings.Contains(nt, "cloudflare") {
+				collide = appendCapped(collide, "nft 表 "+nt)
+			}
+		}
+	}
+	minPrio := 32766
+	for _, ru := range e.fp.Rules {
+		if ru.Priority < minPrio {
+			minPrio = ru.Priority
+		}
+	}
+	route := "Meridian 节点上的出口流量走 main 表：WARP 的规则排在 main 之前，未带 0x100cf 标记的包先查 WARP 的表"
+	for t := range warpTables {
+		if r.TableDefault[t] {
+			route += "；表 " + t + " 有默认路由（全局模式），经隧道进来的流量会从 WARP 出去而不是本机 WAN（下面「规则排在前面」一项另有提示）"
+		} else {
+			route += "；表 " + t + " 没有默认路由，只有它自己的网段（例如 Mesh 的 100.96.0.0/12）会进 WARP，其余落回 main"
+		}
+	}
+	if len(e.fp.Rules) > 0 {
+		route += fmt.Sprintf("。Meridian 自己的策略规则从优先级 %d 起，都排在 WARP 的规则之前，它们查的 Meridian 路由表不受 WARP 影响", minPrio)
+	}
+	deps := "没有读到依赖线索"
+	if len(r.WARPDeps) > 0 {
+		deps = "依赖线索：" + strings.Join(r.WARPDeps, "、")
+	}
+	collision := "Meridian 的标记、路由表、nft 表和规则优先级与它不冲突"
+	if len(collide) > 0 {
+		collision = "冲突：" + strings.Join(collide, "、")
+	}
+	msg := "检测到主机级 Cloudflare WARP 客户端：" + strings.Join(warp, "、") + "。"
+	if len(rules) > 0 {
+		msg += "它的策略规则：" + strings.Join(rules, "；") + "。"
+	}
+	msg += route + "。它在 127.0.2.2 / 127.0.2.3 和自己的叠加地址上监听 53，Meridian 的出口解析器只绑定受管隧道地址，不与它冲突。" + collision + "。" + deps + "（只读进程名和地址：连到它本地监听的进程、指向它的 resolv.conf）。Meridian 不碰它，也不会停用它。"
+	sev := Info
+	if len(collide) > 0 {
+		sev = Blocking
+	}
+	e.add(sev, CodeWARP, "warp-svc", msg, "冲突时换一台服务器，或先按 WARP 的文档调整它的设置后重新预检。若 WARP 的规则把出口流量引走，会在「规则排在前面」一项里提示。")
+	if e.fp.Mesh {
+		e.add(Warning, CodeWARPSidecar, "warp-svc",
+			"这个节点的配置带 Cloudflare Mesh sidecar 的文件，而主机上已有 WARP 客户端：两者的策略规则、路由表、标记和 53 端口能否共存没有被确认，面板的 Mesh 部署会拒绝这台主机（Mesh 预检报 host_warp）。节点包本身照常安装，sidecar 没有令牌时不会启动。",
+			"停用主机上的旧 WARP 客户端是一个要你单独确认的步骤（后续版本提供），面板不会在部署时顺带停用它，也不会清理 Cloudflare 账户里的旧设备；在那之前这台主机不走 Mesh 备路。")
+	}
+}
+
 // ----------------------------------------------------------------- plan ---
 
 func (e *eval) plan() {
@@ -1516,13 +1778,202 @@ func (e *eval) plan() {
 	if e.fp.Forward6 && r.Sysctl["net.ipv6.conf.all.forwarding"] != "1" {
 		e.change("sysctl", "set", "net.ipv6.conf.all.forwarding=1", "当前 "+orDash(r.Sysctl["net.ipv6.conf.all.forwarding"])+"；打开后这台主机不再接受 IPv6 路由通告（除非 accept_ra=2）")
 	}
-	if e.fp.SysctlAll {
-		e.change("sysctl", "set", "rp_filter=2、send_redirects=0、accept_redirects=0", "所有接口")
-	}
+	e.sysctlPlan()
 	for _, u := range e.fp.Units {
 		e.change("unit", "enable", u, "")
 	}
 	if !e.ctx.Gateway {
 		e.change("state", "create", "/var/lib/meridian/node/manifest", "受管清单：记录这次装的文件、接口、服务、表")
 	}
+}
+
+// sysctlPlan previews the kernel keys: every global key the install sets
+// (it affects every interface on the host) one by one, and the
+// per-interface hardening once, with the interfaces it is limited to.
+func (e *eval) sysctlPlan() {
+	r := e.r
+	var global []string
+	for _, k := range e.fp.SysctlKeys {
+		if !IsGlobalSysctl(k) || k == "net.ipv4.ip_forward" || k == "net.ipv6.conf.all.forwarding" {
+			continue
+		}
+		global = append(global, k)
+		cur := "当前未知"
+		if v, ok := r.Sysctl[k]; ok {
+			cur = "当前 " + v
+		}
+		e.change("sysctl", "set", k, "全局（影响所有接口），"+cur)
+	}
+	if len(e.fp.SysctlIfaces) > 0 {
+		e.change("sysctl", "set", "rp_filter=2、send_redirects=0、accept_redirects=0", "只在这些接口："+strings.Join(e.fp.SysctlIfaces, " ")+"（受管隧道接口和拓扑里的网卡）；Docker、WARP 等其它接口不改")
+	}
+	if len(e.fp.SysctlKeys) == 0 {
+		return
+	}
+	rp := "当前 net.ipv4.conf.all.rp_filter=" + orDash(r.Sysctl["net.ipv4.conf.all.rp_filter"])
+	allRP := containsStr(e.fp.SysctlKeys, "net.ipv4.conf.all.rp_filter")
+	msg := "内核参数：只改受管接口（" + strings.Join(e.fp.SysctlIfaces, " ") + "）上的 rp_filter / ICMP 重定向，其它接口（Docker、WARP、你自己的）不碰。"
+	if len(global) > 0 {
+		msg += "会改的全局参数：" + strings.Join(global, "、") + "。"
+	}
+	msg += "内核对 rp_filter 取 max(all, 接口)：受管接口设为 2 后不论 all 是多少都是宽松模式；"
+	if allRP {
+		msg += "这台是网关，all/default 也设为 2（" + rp + "）。"
+	} else {
+		msg += "这里不改 all/default（" + rp + "），其它接口保持原样。send_redirects 是 all 与接口取或，所以 all.send_redirects=0 是必需的全局项（只影响自身值为 0 的接口）。"
+	}
+	msg += "转发（ip_forward / all.forwarding）是全局开关，见上一项；第一次装机失败时，补偿把这些键恢复成装机前读到的值；撤回不改运行中的值（Docker 等也依赖转发），重启后不再设置。"
+	e.add(Info, CodeSysctlScope, "sysctl", msg, "")
+}
+
+// wan checks a remote node's WAN interface against the host: it must exist
+// and carry the default route of every family the node needs (an exit's
+// egress families; any default route for a hub or relay). An unset
+// wan_interface means eth0 in the compiled scripts: the panel does not
+// adopt another interface silently, it blocks and names the interface the
+// host's default route uses, with a link to the node's wan_interface.
+func (e *eval) wan() {
+	fp := e.fp
+	if e.ctx.Gateway || fp.WAN == "" {
+		return
+	}
+	defs := map[int][]string{}
+	for _, rt := range e.r.Routes {
+		if rt.Dst.Bits() != 0 || rt.Type != "" {
+			continue
+		}
+		dev := rt.Dev
+		if dev == "" {
+			dev = "（未知接口）"
+		}
+		if !containsStr(defs[rt.Family], dev) {
+			defs[rt.Family] = append(defs[rt.Family], dev)
+		}
+	}
+	where := func(fam int) string {
+		if len(defs[fam]) == 0 {
+			return fmt.Sprintf("这台主机没有 IPv%d 默认路由", fam)
+		}
+		return fmt.Sprintf("IPv%d 默认路由在 %s 上", fam, strings.Join(defs[fam], "、"))
+	}
+	src := "拓扑里的「WAN 接口」"
+	if !fp.WANSet {
+		src = "「WAN 接口」没填，按默认的"
+	}
+	fix := &Fix{Kind: "node", ID: e.ctx.NodeID, Field: "wan_interface", Label: "节点 " + e.ctx.NodeID + " 的" + fieldLabels["wan_interface"]}
+	why := "这个名字用在出口的 NAT、没有 IPv6 出口时的 IPv6 丢弃、DOCKER-USER 放行规则和内核参数里：名字不对时它们都静默落空（NAT 不生效、转发被丢弃）。"
+	action := "在拓扑里把这个节点的「WAN 接口」改成主机上带默认路由的网卡（见上），保存后重新预检。面板不会自己换成别的网卡。"
+	if !containsStr(e.r.Links, fp.WAN) {
+		e.addFix(Blocking, CodeWANMissing, fp.WAN,
+			fmt.Sprintf("%s %s 在这台主机上不存在（%s；%s）。%s", src, fp.WAN, where(4), where(6), why), action, fix)
+		return
+	}
+	var bad []string
+	for _, n := range fp.WANNeed {
+		switch n {
+		case "4", "6":
+			fam := 4
+			if n == "6" {
+				fam = 6
+			}
+			if !containsStr(defs[fam], fp.WAN) {
+				bad = append(bad, fmt.Sprintf("这个节点要从 WAN 出 IPv%d，但%s，不在 %s 上", fam, where(fam), fp.WAN))
+			}
+		case "any":
+			if !containsStr(defs[4], fp.WAN) && !containsStr(defs[6], fp.WAN) {
+				bad = append(bad, fmt.Sprintf("%s 上没有任何默认路由（%s；%s）", fp.WAN, where(4), where(6)))
+			}
+		}
+	}
+	if len(bad) > 0 {
+		split := ""
+		if len(defs[4]) == 1 && len(defs[6]) == 1 && defs[4][0] != defs[6][0] && len(fp.WANNeed) == 2 {
+			split = "IPv4 和 IPv6 的默认路由在两块不同的网卡上，而 Meridian 的出口只用一块 WAN 网卡做两种协议的 NAT：把「WAN 接口」设成其中一块，并在这个节点上关掉另一种协议的出口（例如关掉 IPv6 出口），或换一台服务器。"
+		}
+		e.addFix(Blocking, CodeWANRoute, fp.WAN,
+			fmt.Sprintf("%s %s：%s。%s", src, fp.WAN, strings.Join(bad, "；"), why), split+action, fix)
+		return
+	}
+	msg := fmt.Sprintf("WAN 接口 %s 存在并带着这个节点需要的默认路由（%s；%s）。", fp.WAN, where(4), where(6))
+	if !fp.WANSet {
+		msg += "拓扑里没填「WAN 接口」，按 eth0，与这台主机一致；建议在拓扑里明确填上。"
+	}
+	e.add(Info, CodeWAN, fp.WAN, msg, "")
+}
+
+// ra previews keeping router advertisements alive. With
+// net.ipv6.conf.all.forwarding=1 the kernel ignores RAs on interfaces with
+// accept_ra=1; an RA-learned default route then expires and the host loses
+// IPv6 minutes or hours after the install. The criterion is read-only:
+// main-table IPv6 routes with "proto ra" on an interface (ra6 lines) and
+// that interface's accept_ra. meridian-up.sh applies the same rule before
+// the forwarding switch (and records the interfaces so a late RA at boot
+// is covered).
+func (e *eval) ra() {
+	if e.ctx.Gateway || len(e.r.RA6) == 0 {
+		return
+	}
+	var names []string
+	for n := range e.r.RA6 {
+		if !e.plannedIface(n) {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return
+	}
+	if !e.fp.Forward6 {
+		e.add(Info, CodeRAKept, strings.Join(names, " "),
+			"这些接口的 IPv6 来自路由通告（RA）："+strings.Join(names, "、")+"。这个节点不转发 IPv6（没有 IPv6 出口、也不中转 IPv6），不会打开 IPv6 转发，所以它们照常接受 RA，什么都不改。", "")
+		return
+	}
+	fwd := orDash(e.r.Sysctl["net.ipv6.conf.all.forwarding"])
+	var kept, already []string
+	for _, n := range names {
+		st := e.r.RA6[n]
+		what := "前缀路由"
+		if st.Default {
+			what = "默认路由"
+		}
+		switch st.AcceptRA {
+		case "1":
+			kept = append(kept, n+"（"+what+"）")
+			e.change("sysctl", "set", "net.ipv6.conf."+n+".accept_ra=2", "在打开 IPv6 转发之前；当前 1，IPv6 "+what+"来自 RA；非受管接口")
+		case "2":
+			already = append(already, n)
+		default:
+			cur := st.AcceptRA
+			if cur == "" {
+				cur = "读不到"
+			}
+			e.add(Blocking, CodeRAUnmanaged, n,
+				fmt.Sprintf("%s 的 IPv6 %s来自路由通告，但它的 accept_ra 是 %s：通告由用户态程序（systemd-networkd、NetworkManager 等）处理，打开 IPv6 转发后它是否还接受通告无法确认。这个节点要转发 IPv6，装上后这台主机的 IPv6 可能在几分钟或几小时后静默断掉，影响已有的服务。", n, what, cur),
+				"任选其一后重新预检：在这个节点上关掉 IPv6 出口（拓扑里的「IPv6 出口」，不再中转 IPv6 时面板不打开 IPv6 转发）；或让这块网卡的 IPv6 不依赖通告（静态地址和默认路由）；或把内核处理通告的方式改回内核（accept_ra=1，并在网络管理程序里关掉它自己的 RA 处理）。面板不改网络管理程序的配置。")
+		}
+	}
+	if len(kept) == 0 && len(already) == 0 {
+		return
+	}
+	msg := "IPv6 转发（当前 net.ipv6.conf.all.forwarding=" + fwd + "）打开后，内核不再处理 accept_ra=1 的接口上的路由通告，靠通告学来的默认路由到期后这台主机就没有 IPv6 了。"
+	if len(kept) > 0 {
+		msg += "meridian-up.sh 在打开 IPv6 转发之前把这些接口设为 accept_ra=2（转发打开时也接受通告）：" + strings.Join(kept, "、") + "；每次运行（含开机）都在转发之前做，并记在 /var/lib/meridian/node/ra-accept 里，开机时通告晚到也照样设置。"
+	}
+	if len(already) > 0 {
+		msg += "已经是 accept_ra=2：" + strings.Join(already, "、") + "。"
+	}
+	msg += "第一次装机失败时补偿恢复原值；撤回不改（转发仍开着，改回 1 会让 IPv6 断掉），重启后两者都回到主机自己的设置。"
+	if fwd == "1" && len(kept) > 0 {
+		msg += "注意：这台主机现在已经打开了 IPv6 转发，这些接口的通告可能已经被忽略，默认路由也许正在倒计时。"
+	}
+	e.add(Info, CodeRAKept, strings.Join(names, " "), msg, "")
+}
+
+func (e *eval) plannedIface(n string) bool {
+	for _, ip := range e.fp.Interfaces {
+		if ip.Name == n {
+			return true
+		}
+	}
+	return n == "mmesh" || n == "mmesh-c"
 }

@@ -206,7 +206,13 @@ Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧
 | --- | --- | --- |
 | `not_root` | 登录用户不是 root | 服务器改用 root（这一版不支持 sudo） |
 | `os_unsupported`、`arch_unsupported`、`no_systemd` | 不是 Debian 12 / 13、不是 x86_64 / aarch64，或没有 systemd | 换系统；面板不会在别的环境上装 |
-| `forward_policy_drop` | iptables FORWARD 策略是 DROP（通常是 Docker） | 确认没有别的程序依赖后 `iptables -P FORWARD ACCEPT`，或在没有 Docker 时重启；有 Docker 的主机**目前没有共存方案**，预检会一直拒绝 |
+| `forward_policy_drop`（警告） | Docker 把 FORWARD 策略设成了 DROP，主机上有 DOCKER-USER，可以共存 | 看「主机防火墙：在 DOCKER-USER 里加的放行规则」那一栏：面板会在 DOCKER-USER 顶部加几条只匹配隧道接口的 ACCEPT（注释 `meridian-fw-…`），不改 Docker 的链和策略；Docker 重启时自动加回，撤回时按注释删除。用 `netfilter-persistent save` 的主机撤回后要再保存一次 |
+| `forward_policy_drop`（阻断） | FORWARD 是 DROP，但不能安全共存：没有 DOCKER-USER、ufw 或 firewalld 在运行、FORWARD 在跳到 DOCKER-USER 之前就有 DROP、别的 nft 表（例如 `inet filter`）有 policy drop 的转发链，或这是网关 | 按结论里写的那一条处理：停用 ufw / firewalld，或把隧道接口的转发加进它们自己的放行规则，或换服务器；网关上按第 2 节写好 `daemon.json` 后重启 |
+| `nftables_flush_on_reload`（阻断） | nftables.service 已启用或在运行，而它的 reload / restart / stop 会清空整个规则集（`/etc/nftables.conf` 的 `flush ruleset`，或 Debian 单元的 `ExecStop=nft flush ruleset`），连 Meridian 的表一起 | 不需要它：`systemctl disable nftables.service`，然后找时间重启主机（**不要** `systemctl stop nftables`：它会清空所有规则，包括 Docker 的）。需要它：把 `flush ruleset` 改成只删它自己的表（`table inet filter` + `delete table inet filter` 放在定义之前），再 `systemctl edit nftables.service` 写 `[Service]` 和一行空的 `ExecStop=`，`systemctl daemon-reload` 后重新预检 |
+| `wan_interface_missing`、`wan_no_default_route` | 节点的 WAN 接口（没填时按 `eth0`）在主机上不存在，或默认路由不在它上面；结论写出默认路由实际所在的网卡（例如 `ens5`、`enp0s6`） | 点「去拓扑修改」，把节点的「WAN 接口」填成那块网卡，保存后重新预检。面板不会自己换名字 |
+| `ipv6_ra_unmanaged` | 这个节点要转发 IPv6，而主机的 IPv6 默认路由来自路由通告、由 systemd-networkd 之类的程序处理（`accept_ra=0`）；打开转发后可能断掉 IPv6 | 在拓扑里关掉这个节点的 IPv6 出口，或给网卡配静态 IPv6，或把通告交回内核处理，然后重新预检 |
+| `ipv6_ra_kept`（信息） | 主机的 IPv6 来自路由通告（`accept_ra=1`）：装机会在打开 IPv6 转发之前把那块网卡设为 `accept_ra=2`，否则几分钟到几小时后 IPv6 会断 | 不用处理；撤回不会改回去（转发仍开着），重启后回到原样 |
+| `cloudflare_warp`、`warp_sidecar_conflict` | 主机上有 WARP 客户端：预检列出它的规则、表 65743 有没有默认路由、谁在用它（进程名、resolv.conf） | 不冲突时只是信息；规则优先级或标记撞上时阻断。这台主机上 Mesh 部署会被拒绝（`host_warp`），直到旧客户端停用（后续版本的单独步骤） |
 | `port_in_use` | WireGuard 端口（例如 51820 被已有的 `wg0` 占用）、WSS 的 443（nginx、另一个 wstunnel）、wstunnel 本地端口或解析器的 :53 已被别的进程占用 | 点结论里的「去拓扑修改」，按它说的改链路的「WireGuard 端口」/「wstunnel 本地端口」或节点的「WireGuard 监听端口」/「WSS 监听端口」（WSS 在节点的「WSS 入口（高级）」里），保存后重新预检；对端的 `Endpoint` 随之更新，已装好的对端节点要重新下发、网关要重新安装。解析器的 53/853 不能改：让占用者只绑它自己的地址。端口规则见 [架构](architecture.md)「端口从哪里来」 |
 | `interface_exists`、`address_overlap`、`route_overlap`、`route_table_in_use`、`fwmark_in_use`、`nft_table_exists` | 主机上已有同名接口，或重叠的地址 / 路由 / 路由表 / 标记 / `inet meridian` | 改拓扑里的名字或前缀，或移走主机上的旧配置 |
 | `path_occupied`：要写的路径上有不属于 Meridian 的文件 | 例如另一份 `/etc/smartdns/smartdns.conf` | 先自己备份并移走；面板不覆盖 |
@@ -218,6 +224,8 @@ Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧
 | 「服务器暂时拒绝面板的来源地址（限速）」（`ssh_rate_limited`） | 服务器（OpenSSH 9.8+ 的 PerSourcePenalties）在 SSH 握手前回了 `Not allowed at this time`：短时间内来自同一地址的连接太多或有没登录完的连接；经端口转发的服务器上所有连接都来自转发器的地址 | 不是密码或指纹问题，什么都不用改。面板 60 秒内不再连接这台服务器，按钮显示倒计时；之后仍被拒就再多等几分钟（连续尝试会延长限速）。少点「重新获取指纹」（只读指纹的连接没有登录，最容易触发限速） |
 
 警告不阻止执行，但执行前复核时出现的**新**警告会让这次执行被拒（`preflight_changed`），要重新审阅。
+
+装好之后远端节点上多了两个单元：`meridian-node.service`（开机在网络、nftables.service 和 Docker 之后执行 `meridian-up.sh`；装完是 enabled、inactive，重启后应是 active）和有 Docker FORWARD DROP 时用的 `meridian-fwcompat.service`（Docker 每次启动后重新加 DOCKER-USER 规则）。`meridian-up.sh` 只改受管接口和拓扑网卡上的 rp_filter / 重定向，不再碰 Docker、WARP 的接口。这些只在自动化测试里跑过，没有在真实服务器上运行过；第一次在真实服务器上装完后，按 [验收清单](verification.md)「与已有业务共存」里的只读命令核对。
 
 同一流程里面板只登录一次：连接测试之后紧接着的预检、一次装机里的预检重跑和脚本、撤回的计划和执行共用一条已认证的连接（空闲 60 秒或存在 5 分钟就关闭；改服务器、指纹或凭据会立即关闭）。这一点和限速识别一样，只在自动化测试里验证过，没有在真实服务器上运行过。完整的检查列表和它不检查的东西见 [架构](architecture.md)「装机前预检」。
 
@@ -293,7 +301,7 @@ sudo docker compose -f deploy/docker-compose.yml --profile dns up -d
 1. 「生成撤回计划」：面板经已固定指纹的 SSH 在**部署时的那台主机**上只读运行固定的撤回脚本，列出服务器上清单记录的服务、接口、路由表、nft 表和文件，以及要保留的东西。清单属于别的节点、别的面板部署或别的服务器时直接拒绝并说明原因；服务器的地址或指纹和部署时不同也拒绝。
 2. 输入节点 ID 确认后执行。计划生成之后服务器上的状态变了会被拒绝（重新生成计划即可）。
 3. 结果分三列：已移除 / 保留（有意）/ 没能移除。装机后被你改过的文件不会被删除，会列在「没能移除」里；处理后再撤回一次（可以重复执行，已经不在的东西跳过）。
-4. 有意保留：装上的软件包（wireguard-tools、nftables，以前的版本装的 smartdns）、运行中的转发和 rp_filter 值（到重启前不变）、清单之外的一切（Docker、WARP、别的 WireGuard 接口和 nft 表）。
+4. 有意保留：装上的软件包（wireguard-tools、nftables，以前的版本装的 smartdns）、运行中的转发（Docker 也依赖它）、`all.send_redirects` 和拓扑网卡的 rp_filter / 重定向值（到重启前不变；`99-meridian.conf` 已删，重启后不再设置）、清单之外的一切（Docker 和它的链与策略、WARP、别的 WireGuard 接口和 nft 表、DOCKER-USER 里你自己的规则）。DOCKER-USER 里带 `meridian-fw-` 注释的规则会被删除（先停用 `meridian-fwcompat.service`，Docker 之后重启也不会加回来）。
 
 节点上还部署着 Mesh 时先在 Mesh 部署卡片撤回 Mesh（它按部署时的主机和 Cloudflare 账户撤回），再撤回节点。服务器已经不存在（VPS 已删除）时可以「放弃」：记录标为已放弃并解除绑定，面板明确说明它**没有核实**服务器上是否还有东西。
 

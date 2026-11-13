@@ -33,6 +33,29 @@ func renderSysctl(t model.Topology, n model.Node) string {
 		sb.WriteString("net.ipv4.ip_forward=0\n")
 		sb.WriteString("net.ipv6.conf.all.forwarding=0\n")
 	}
+	if n.Role != model.RoleGateway {
+		// A remote node shares its host with other services (Docker,
+		// WARP, the operator's own). Only what Meridian needs: the
+		// interface the topology names, plus all.send_redirects=0, which
+		// the kernel ORs with each interface's value (without it no
+		// interface can be kept from sending redirects). rp_filter is
+		// max(all, interface): the interface value 2 is loose whatever
+		// "all" is, so "all" and "default" are not changed here. The
+		// WireGuard interfaces do not exist at boot; meridian-routes.sh
+		// sets the same keys on them (and on this interface) once they are
+		// up. Older versions wrote all/default keys into this file: the
+		// file is rewritten whole on every install, so they are gone from
+		// the next boot on.
+		sb.WriteString("# Remote node: only the topology's interface and the one global that is\n")
+		sb.WriteString("# required (send_redirects is ORed with all). all/default rp_filter and\n")
+		sb.WriteString("# accept_redirects are left to the host.\n")
+		sb.WriteString("net.ipv4.conf.all.send_redirects=0\n")
+		fmt.Fprintf(&sb, "net.ipv4.conf.%s.rp_filter=2\n", ifName)
+		fmt.Fprintf(&sb, "net.ipv4.conf.%s.send_redirects=0\n", ifName)
+		fmt.Fprintf(&sb, "net.ipv4.conf.%s.accept_redirects=0\n", ifName)
+		fmt.Fprintf(&sb, "net.ipv6.conf.%s.accept_redirects=0\n", ifName)
+		return sb.String()
+	}
 	sb.WriteString("net.ipv4.conf.all.rp_filter=2\n")
 	sb.WriteString("net.ipv4.conf.default.rp_filter=2\n")
 	fmt.Fprintf(&sb, "net.ipv4.conf.%s.rp_filter=2\n", ifName)
@@ -61,7 +84,14 @@ func renderForwarding(t model.Topology, n model.Node) string {
 	sb.WriteString("# Meridian forwarding. Applied by meridian-up.sh after the nft batch (and\n")
 	sb.WriteString("# on the gateway the LAN guard) is loaded. Not in /etc/sysctl.d on purpose.\n")
 	sb.WriteString("net.ipv4.ip_forward=1\n")
-	sb.WriteString("net.ipv6.conf.all.forwarding=1\n")
+	if forwards6(n) {
+		sb.WriteString("net.ipv6.conf.all.forwarding=1\n")
+	} else {
+		// An exit without IPv6 egress and without IPv6 transit forwards no
+		// IPv6 at all: the switch stays as the host has it, so the host's
+		// own router-advertisement handling is never affected.
+		sb.WriteString("# No IPv6 forwarding: this exit has no IPv6 egress and relays no IPv6.\n")
+	}
 	if n.Role == model.RoleGateway {
 		fmt.Fprintf(&sb, "net.ipv6.conf.%s.forwarding=1\n", sysctlIface(t, n))
 	}
@@ -76,12 +106,21 @@ func sysctlIface(t model.Topology, n model.Node) string {
 	if n.Role == model.RoleGateway {
 		return gatewayLAN(t)
 	}
-	for _, v := range []string{n.LANInterface, n.WANInterface, t.Settings.LANInterface} {
-		if v != "" {
-			return v
-		}
+	// A remote node's interface is its WAN, the same name its nft NAT, its
+	// IPv6 drop and its DOCKER-USER rules use (nodeWAN); the preflight checks
+	// that it exists and carries the default route.
+	return nodeWAN(n)
+}
+
+// forwards6 says whether the node forwards IPv6: the gateway, hubs and
+// relays (ULA transit and the LAN prefix), and exits with IPv6 egress or
+// acting as the dual-stack relay. Every other exit only terminates IPv6
+// (group-resolver queries are DNATed to a local socket) or drops it.
+func forwards6(n model.Node) bool {
+	if n.Role != model.RoleExit {
+		return true
 	}
-	return "eth0"
+	return n.EgressV6 || n.DualstackRelay
 }
 
 // renderGuardNFT is the gateway LAN guard alone, loaded at early boot by
@@ -234,6 +273,9 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool) st
 	sb.WriteString("# A bad line in sysctl is skipped so a wrong interface name cannot abort SSH.\n")
 	sb.WriteString("# Normally run by meridian.service (boot, and activation via meridian-host).\n")
 	sb.WriteString("set -euo pipefail\n")
+	if n.Role != model.RoleGateway {
+		sb.WriteString(wanMarker(n))
+	}
 	sb.WriteString(nftLoadCommands(n.Role == model.RoleGateway))
 	if n.Role == model.RoleGateway {
 		// Firewall and guard are loaded; nothing has been forwarded or
@@ -257,6 +299,19 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool) st
 	sb.WriteString("else\n")
 	sb.WriteString("  echo \"meridian-sysctl: /etc/sysctl.d/99-meridian.conf missing; host sysctls not applied\" >&2\n")
 	sb.WriteString("fi\n")
+	if n.Role != model.RoleGateway {
+		// Docker's FORWARD DROP: the coexistence rules go in before
+		// forwarding is turned on and before any tunnel exists. A host whose
+		// DROP cannot be worked around fails here, visibly, with the
+		// interfaces still down (the preflight refuses such a host before
+		// the first install).
+		sb.WriteString(fwCompatCommands)
+		if forwards6(n) {
+			// Before the IPv6 forwarding switch: interfaces whose IPv6
+			// comes from router advertisements keep accepting them.
+			sb.WriteString(raKeepCommands)
+		}
+	}
 	sb.WriteString(forwardingCommands())
 	if n.Role == model.RoleGateway {
 		sb.WriteString(dnsSeedCommands(t))
@@ -457,6 +512,62 @@ until lan_ready; do
 done
 `)
 }
+
+// raKeepCommands keeps router advertisements working on the host's own
+// interfaces once IPv6 forwarding is on. With net.ipv6.conf.all.forwarding=1
+// the kernel ignores RAs on an interface whose accept_ra is 1, so an
+// RA-learned default route expires and the host silently loses IPv6. Before
+// the switch, every interface that has an RA-learned route in the main
+// table now (ip -6 route … proto ra), or that an earlier run recorded in
+// RAState (so a late RA at boot is covered too), gets accept_ra=2 when it
+// is 1. An interface with RA routes and accept_ra 0 is served by a
+// userspace RA client (systemd-networkd, NetworkManager) whose behaviour
+// with forwarding on is not known here: the script stops before forwarding
+// (fail closed: the host keeps its IPv6), as the preflight already refuses.
+// Values are written with the slash form so interface names with dots work.
+const raKeepCommands = `MERIDIAN_RA_STATE=` + RAState + `
+ra_now=$(ip -6 route show table main proto ra 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="dev") print $(i+1)}' | sort -u) || ra_now=""
+ra_old=""
+if [ -f "$MERIDIAN_RA_STATE" ]; then ra_old=$(cat "$MERIDIAN_RA_STATE"); fi
+for ra_if in $(printf '%s\n%s\n' "$ra_now" "$ra_old" | sort -u); do
+  case "$ra_if" in ''|*[!A-Za-z0-9_.@-]*) continue ;; esac
+  ra_f=/proc/sys/net/ipv6/conf/$ra_if/accept_ra
+  [ -r "$ra_f" ] || continue
+  ra_cur=$(head -c 8 "$ra_f")
+  case "$ra_cur" in
+    2) ;;
+    1)
+      if ! sysctl -w "net/ipv6/conf/$ra_if/accept_ra=2" >/dev/null; then
+        echo "meridian-ra-failed: could not set accept_ra=2 on $ra_if; IPv6 forwarding not enabled" >&2
+        exit 1
+      fi
+      echo "meridian-ra: $ra_if accept_ra 1 -> 2 (keeps its router advertisements with IPv6 forwarding on)" ;;
+    *)
+      case " $(printf '%s ' $ra_now) " in
+        *" $ra_if "*)
+          echo "meridian-ra-unmanaged: $ra_if has RA-learned IPv6 routes but accept_ra=$ra_cur (a userspace RA client); IPv6 forwarding could break it, so forwarding is not enabled" >&2
+          exit 1 ;;
+      esac
+      continue ;;
+  esac
+  install -d -m 700 "${MERIDIAN_RA_STATE%/*}"
+  grep -qx -- "$ra_if" "$MERIDIAN_RA_STATE" 2>/dev/null || printf '%s\n' "$ra_if" >> "$MERIDIAN_RA_STATE"
+done
+`
+
+// RAState lists the interfaces whose accept_ra meridian-up.sh set to 2
+// (host state, not a bundle file; removed by withdraw and by a failed first
+// install's compensation).
+const RAState = "/var/lib/meridian/node/ra-accept"
+
+// fwCompatCommands runs meridian-fwcompat.sh apply when the bundle has it.
+const fwCompatCommands = `if [ -x ` + FWCompatPath + ` ]; then
+  if ! ` + FWCompatPath + ` apply; then
+    echo "meridian-fwcompat-failed: the host's FORWARD policy drops tunnel traffic and Meridian's DOCKER-USER rules could not be ensured; forwarding not enabled, tunnels not brought up" >&2
+    exit 1
+  fi
+fi
+`
 
 // forwardingCommands turns forwarding on from /etc/meridian/forwarding.conf.
 // It runs after nftLoadCommands, so on the gateway the guard is already

@@ -454,6 +454,12 @@ export interface PreflightRecord {
     units: string[];
     packages: { package: string; command: string }[];
     binaries: string[];
+    /** Docker FORWARD DROP coexistence: ACCEPT rules for Meridian's own interfaces at the top of this chain, each with the tag as comment. */
+    fw_chain?: string;
+    fw_tag?: string;
+    fw_rules?: string[];
+    /** The only interfaces whose rp_filter / redirect settings the install changes. */
+    sysctl_ifaces?: string[];
   };
   not_checked: string[];
   /** none | same | other | legacy | unknown */

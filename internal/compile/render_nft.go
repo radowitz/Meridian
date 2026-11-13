@@ -368,17 +368,25 @@ func writeGroupResolverDNAT(sb *strings.Builder, n model.Node, tunnels []Tunnel,
 	}
 	sortStrings(ifs)
 	sb.WriteString("  chain group_dns {\n    type nat hook prerouting priority dstnat; policy accept;\n")
+	// One rule per protocol ("udp dport 53", "tcp dport 53"), never
+	// "meta l4proto { tcp, udp } th dport 53": exits run on Ubuntu 20.04
+	// too, whose nft 0.9.3 is older than the transport-header expression
+	// is known to be accepted; the two rules match exactly the same packets.
 	if len(ifs) > 0 {
-		fmt.Fprintf(sb, "    iifname { %s } ip6 daddr %s meta l4proto { tcp, udp } th dport 53 dnat ip6 to %s comment \"region-group resolver addresses: this exit's tunnel resolver\"\n",
-			strings.Join(ifs, ", "), validate.GroupResolverNet, e.DNSULA)
+		for _, proto := range []string{"udp", "tcp"} {
+			fmt.Fprintf(sb, "    iifname { %s } ip6 daddr %s %s dport 53 dnat ip6 to %s comment \"region-group resolver addresses: this exit's tunnel resolver\"\n",
+				strings.Join(ifs, ", "), validate.GroupResolverNet, proto, e.DNSULA)
+		}
 	}
 	if len(meshGroups) > 0 {
 		var ids []string
 		for _, g := range meshGroups {
 			ids = append(ids, verifyLabel(g.Group.ID))
 		}
-		fmt.Fprintf(sb, "    iifname \"%s\" ip6 daddr %s meta l4proto { tcp, udp } th dport 53 dnat ip6 to %s comment \"region-group resolver addresses over the Mesh backup (groups %s)\"\n",
-			mesh.HostIface, validate.GroupResolverNet, e.DNSULA, strings.Join(ids, " "))
+		for _, proto := range []string{"udp", "tcp"} {
+			fmt.Fprintf(sb, "    iifname \"%s\" ip6 daddr %s %s dport 53 dnat ip6 to %s comment \"region-group resolver addresses over the Mesh backup (groups %s)\"\n",
+				mesh.HostIface, validate.GroupResolverNet, proto, e.DNSULA, strings.Join(ids, " "))
+		}
 	}
 	sb.WriteString("  }\n")
 	if len(meshGroups) == 0 {
@@ -386,11 +394,13 @@ func writeGroupResolverDNAT(sb *strings.Builder, n model.Node, tunnels []Tunnel,
 	}
 	fmt.Fprintf(sb, `  chain group_dns_mesh_in {
     type filter hook prerouting priority mangle; policy accept;
-    iifname "%[1]s" ip6 daddr %[2]s meta l4proto { tcp, udp } th dport 53 ct mark set %#[3]x comment "Mesh ingress of region-group queries: reply on mmesh"
+    iifname "%[1]s" ip6 daddr %[2]s udp dport 53 ct mark set %#[3]x comment "Mesh ingress of region-group queries: reply on mmesh"
+    iifname "%[1]s" ip6 daddr %[2]s tcp dport 53 ct mark set %#[3]x comment "Mesh ingress of region-group queries: reply on mmesh"
   }
   chain group_dns_mesh_anchor {
     type nat hook input priority 100; policy accept;
-    iifname "%[1]s" ct mark %#[3]x ip6 daddr %[4]s meta l4proto { tcp, udp } th dport 53 snat ip6 to %[5]s comment "the reply has a route at the socket: table %[6]d"
+    iifname "%[1]s" ct mark %#[3]x ip6 daddr %[4]s udp dport 53 snat ip6 to %[5]s comment "the reply has a route at the socket: table %[6]d"
+    iifname "%[1]s" ct mark %#[3]x ip6 daddr %[4]s tcp dport 53 snat ip6 to %[5]s comment "the reply has a route at the socket: table %[6]d"
   }
   chain group_dns_mesh_reply {
     type route hook output priority mangle; policy accept;

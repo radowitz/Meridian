@@ -67,10 +67,7 @@
 
 **已知限制（未解决，也未在真实主机上观察过）：**
 
-- 远端节点的下发包里没有开机时重新运行 `meridian-up.sh` 的单元：远端节点重启之后，它的数据面很可能不会自己恢复（网关有 `meridian.service`，远端没有对应物）。
-- `meridian-up.sh` 把 rp_filter / 重定向相关的 sysctl 设到每一个接口上，包括 Docker 和 WARP 的接口。
-- 主机上的 nftables 配置是发行版默认的 `flush ruleset` 时，`systemctl reload nftables`（或重启 nftables.service）会清掉 Meridian 的表；预检会提示（`nftables_flush_on_reload`），但不阻止也不修改那份配置。
-- Docker 把 iptables FORWARD 策略改成 DROP 的主机会被预检识别并拒绝（`forward_policy_drop`），但还没有与 Docker 共存的方案。
+- （S1 已改，未实机）远端节点的开机恢复单元 `meridian-node.service`、只改受管接口的 sysctl、nftables.service 会清空规则集时阻断、Docker FORWARD DROP 时在 DOCKER-USER 加带注释的放行规则：见下面「与已有业务共存」。都只有自动化证据。仍然存在的：有人手动启动或重载一个**没启用**的 nftables.service 会清掉 Meridian 的表（预检不阻断这种默认状态）；旧版本写到别的接口上的 sysctl 运行值保留到重启。
 - 被攻破的远端主机可以打印伪造的成功标记（`MERIDIAN_PROVISION_OK`、`MERIDIAN_WITHDRAW_OK` 等）；面板只能如实转述远端的回答。
 - Mesh 的数据和 DNS 回程依赖 Cloudflare 连接器对进入 Mesh 的流量做源地址转换，这一点没有验证。
 - 从 Mesh 进入枢纽 sidecar 的流量没有过滤。
@@ -235,7 +232,7 @@ sudo MERIDIAN_ROS_SSH=admin@192.168.100.1 /usr/local/sbin/meridian-verify.sh
 
 面板「防泄露」页对生成配置做同样的文本检查，那是自动化回归，不替代上面的运行结果。下面这些打勾项里，标了「实机」的没法在仓库的单元测试里做。
 
-- [ ] `sysctl net.ipv4.conf.all.rp_filter` 和每个接口（含 `eth0`）都是 2。生成配置和 `meridian-verify.sh` 会查；实机上再看一遍运行值。
+- [ ] `sysctl net.ipv4.conf.all.rp_filter` 和局域网口、隧道接口、`mra` 都是 2（网关的路由脚本只设这些接口，Docker 等别的接口不再设；all=2 使它们的有效值仍是 2）。生成配置和 `meridian-verify.sh` 会查；实机上再看一遍运行值。
 - [ ] `net.ipv4.conf.all.send_redirects` 以及对应接口都是 0。IPv6 没有这个开关，见下面「已知边界」。
 - [ ] `accept_redirects` 为 0。ROS 自己仍可能对客户端发重定向，这不由本机控制，实机上在测试机抓包确认。
 - [ ] 网关地址不是 `192.168.100.1`，两者在 `192.168.100.0/24`。
@@ -440,13 +437,33 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 - 自动化回归（`go test ./internal/provision`）：装机脚本在本机沙箱里（主机路径挪到临时目录，`ip`、`nft`、`systemctl`、`wg-quick`、`apt-get` 等换成有状态的桩）真跑：成功写受管清单并能被预检读回；同一节点的更新通过复核、别的节点被 `manifest_changed` 拒绝、第一次装机遇到已有清单被 `manifest_appeared` 拒绝；`systemctl` 失败时补偿（新文件和目录删除、被替换的文件恢复、新接口和 nft 表删除、单元停用、sysctl 恢复、软件包保留并列出、journal 为 `compensated`）；接口删不掉时列为残留、journal 为 `incomplete`，再跑被脚本自己拒绝；没有绑定目标的脚本拒绝运行。
 - 自动化回归（`go test ./internal/api -run 'Preflight|Provision|LoginHelp|Gateway'`）：计划视图里的目标身份、受管资源和变更；第一次装机缺 `preflight_id`、过期、记录被替换、包摘要变化、目标身份变化（换凭据）、审阅结果有阻断、执行前重跑出现阻断、出现新警告都被拒绝，且都没有生成密钥、没有发送装机脚本；通过时脚本绑定到预检（`M_EXPECT`、`M_BUNDLE`）；之后的更新照样重跑预检；补偿 / 残留 / 远端复核拒绝 / 没有成功标记各自的代码和 `outcome`；响应、日志和数据目录里没有密码和私钥；登录方式不被接受时给出公钥；网关安装的第一次必须预检、阻断时不激活、宿主代理不支持预检时 503。`go test ./internal/hostexec -run Preflight`：网关预检动作只运行固定的只读命令、不回传文件内容、拒绝坏路径和未知字段、输出触顶时报告不完整。
 - 自动化回归（`npm --prefix web test`）：远端节点的预检对话框（目标、按严重度分组的发现和处理办法、变更清单、阻断时执行按钮不可用并写明原因、重新预检后带 `preflight_id` 执行、执行前复核出现新问题时留在对话框里显示新结果、残留与保留项、登录帮助里的公钥）；网关第一次安装前必须预检、带 `preflight_id` 安装；服务器页连接测试失败时显示可复制的公钥。
-- [ ] 实机（主会话）：对每台真实服务器先「预检」，核对报告与 `ss -lntup`、`ip rule`、`nft list tables`、`iptables -S FORWARD` 手工结果一致；有 Docker 的出口被 `forward_policy_drop` 拒绝、Ubuntu 20.04 被 `os_unsupported` 拒绝；没有阻断的服务器装机成功并写出 `/var/lib/meridian/node/manifest`；之后的预检显示 `existing_install`。
+- [ ] 实机（主会话）：对每台真实服务器先「预检」，核对报告与 `ss -lntup`、`ip rule`、`nft list tables`、`iptables -S FORWARD` 手工结果一致；有 Docker 的出口：`forward_policy_drop` 在有 DOCKER-USER、没有 ufw / firewalld 时为警告并列出规则（否则阻断）；没有阻断的服务器装机成功并写出 `/var/lib/meridian/node/manifest`；之后的预检显示 `existing_install`。
 - [ ] 实机（主会话）：在一台可以随意重装的服务器上制造一次失败的第一次装机（例如先让 `smartdns.service` 起不来），确认补偿后主机回到装机前（接口、nft 表、规则、文件、sysctl），journal 为 `compensated`；断开 SSH 中途的情形单独验证。
 - 自动化回归（`go test ./internal/preflight -run 'UpdateOfOwnInstall'`、`go test ./internal/api -run TestGatewayUpdateGateOnOwnInstall`）：脱敏的实机网关报告（已有安装、SmartDNS 是 compose 容器、wstunnel 客户端是安装的单元、lo 上的中转地址，进程名不可见、按 cgroup 归属）评估为非阻断，更新安装经重新预检后通过；旁边多一个别人的 :53、别的容器、清单外的单元、读不到 cgroup、没有清单（第一次）都仍然阻断；远端「本节点、本面板」更新（枢纽、中继、出口）非阻断，换成别的部署 ID 全部阻断。
 - [ ] 实机（主会话）：网关上「安装前预检」经 `meridian-host` 的 `/v1/preflight` 得到完整报告（需要先升级宿主上的 meridian-host）。
 - 已发生的实机运行（主会话，2026-11-13，只读）：预检从面板对 11 台真实服务器和网关各执行过一次，拦下了 Docker 把 FORWARD 设为 DROP 的主机、51820 被已有 WireGuard 占用的主机、Ubuntu 20.04、缺 wstunnel 的中继，并对低内存主机给出提示；暴露的「网关把自己的资源报为冲突」随后修复并在网关上复跑为非阻断（归属 `same`）。没有在任何真实主机上装机、补偿或撤回。
 - 自动化回归（`go test ./internal/preflight -run 'Port'`、`go test ./internal/validate`、`go test ./internal/api -run TestGatewayPortConflictNamesTheField`）：每个示例节点的端口计划与它编译出的包读回的监听完全一致；`existing-wireguard` 夹具上 51820/51821 被占时结论带指向链路 `wg_port` 的 `fix`，把端口改掉后监听端的配置、拨号端的 `Endpoint` 和预检读出的监听一起变化，冲突消失；节点 `listen_port` 只在唯一一条没设 `wg_port` 的链路上生效；同一节点自己的端口冲突、保留端口、`listen_port` 二义都被校验拒绝；网关的 wstunnel 本地端口被占时结论指向链路 `wss_local_port`，改掉后包摘要变化、不再阻断。
 - [ ] 实机（主会话）：在一台 51820 已被占用的真实服务器上，按预检结论的「去拓扑修改」换端口，重新预检不再报 `port_in_use`，对端（网关或枢纽）重新安装 / 下发后握手成功。
+
+## 与已有业务共存（Docker FORWARD DROP、开机恢复、内核参数范围、nftables 整表清空、WARP）
+
+以下机制**没有在任何真实主机上执行过**；只有仓库里的自动化证据。Linux 网络命名空间测试 `TestNetnsFWCompatDockerUser` 写好了但**没有执行过**（这里不能运行；它只保证能编译：`GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /dev/null ./internal/compile`）。
+
+- 自动化回归（`go test ./internal/provision -run 'FWCompat|SysctlScope|Flushing'`）：沙箱里用有状态的假 `iptables` / `ip6tables` 真跑装机：IPv4 FORWARD DROP + DOCKER-USER（iptables-nft 的空链和 legacy 的 `-j RETURN` 两种形状）时 Meridian 的两条规则插在链顶、你自己的规则和 RETURN 原样在后面，IPv6（策略 ACCEPT、没有链）什么都不加，没有任何 `-F` / `-P` / `-X` / `-N` 或对 FORWARD、Docker 链的调用；清单有 `fw ipv4|ipv6 DOCKER-USER`、两个新单元和脚本；开机单元和 Docker 单元只 `enable`，不启动；模拟 Docker 重启（链里只剩 Docker 的东西）后 `meridian-fwcompat.sh apply` 加回、再跑一次不重复；IPv6 后来变成 DROP 时加上、变回 ACCEPT 时删掉；撤回只删带 Meridian 注释的规则（你的规则、RETURN 和注释形状不对的「像」规则都在）、先停用 `meridian-fwcompat.service`；旧规则集（另一个注释）被替换；DROP 而没有 DOCKER-USER 时 `meridian-up.sh` 在打开转发和建隧道之前失败，装机补偿；第一次装机失败时补偿删掉这次加的规则、规则删不掉时列为残留（journal `incomplete`）；用记录调用的假 `sysctl` 跑编译出的脚本，写到的键**正好**是受管接口（m14）、拓扑网卡（eth0）、`all.send_redirects` 和两个转发键，沙箱里另放的 `docker0`、`CloudflareWARP`、`veth…` 一个都没碰，补偿只恢复记录过的键；`/etc/nftables.conf` 有 `flush ruleset` 而服务启用时脚本在改动任何东西之前拒绝（`nftables_flush_on_reload`）。
+- 自动化回归（`go test ./internal/preflight -run 'DockerUser|NFTFlush|WARP|SysctlPreview'`）：iptables-nft 和 legacy 夹具上 Docker 的 IPv4 DROP 变为警告、规则逐条列进变更、IPv6 ACCEPT 说明不加规则；两族都 DROP 时两族都加；IPv6 DROP 没有 ip6 DOCKER-USER 时 IPv6 阻断；没有 DOCKER-USER、没报告、ufw / firewalld 在运行、跳转之前有 DROP、不跳到 DOCKER-USER、别的 nft 表丢弃、网关：都阻断且写明原因；已有本节点规则的更新是「更新」不阻断；nftables.service 启用 + 配置清空、运行 + ExecStop 清空（远端和网关）阻断，启用但都不清空、没启用没运行、masked、未安装不报告；WARP 夹具列出优先级 32765、表 65743 有默认路由、依赖线索（进程名、resolv.conf）、`2606:4700:cf1::/48` 地址，不冲突时为信息、Meridian 规则同优先级时阻断、带 Mesh sidecar 的包警告 `warp_sidecar_conflict`；sysctl 预览逐项列出全局键（含当前值）和只改的接口，没有「所有接口」。
+- 自动化回归（`go test ./internal/compile -run 'NodeBootUnit|FWRules|SysctlScope|TransportHeader|GroupDNSExitDNAT'`）：每个远端节点的开机单元 `After=network-online.target nftables.service docker.service`、`Wants=network-online.target`、`WantedBy=multi-user.target`、oneshot；`meridian-up.sh` 不启动它自己，内部顺序是 nft → sysctl → DOCKER-USER 规则 → 转发 → WireGuard → 路由；Docker 单元 `BindsTo` / `After` / `WantedBy=docker.service`；规则只提到受管接口（出口才有 WAN，且 WAN 进只放行已建立的连接）；路由脚本的 `harden_sysctl` 是写死的接口表，不再遍历 `/proc/sys/.../conf/*`；远端 `99-meridian.conf` 除 `all.send_redirects` 外不写 all/default；远端规则集里没有 `th dport` / `meta l4proto {`（出口地区组 DNAT 和 Mesh 回程改成同义的 udp / tcp 两条）。`go test ./internal/mesh -run HostWARP`：主机上有 WARP 时 Mesh 部署预检报 `host_warp` 并拒绝。`go test ./internal/hostexec`：网关预检报告 nftables.service 的 ExecStop 是否清空；`meridian-guard.service` 和 `meridian.service` 排在 nftables.service 之后。
+- 自动化回归（`npm --prefix web test`）：预检对话框单独列出要加进 DOCKER-USER 的规则、阻断的 nftables.service 带处理办法、WARP 依赖线索、sysctl 只改的接口，「受管资源」里有规则条数和注释、内核参数接口。
+- [ ] 实机（主会话），装机前（只读）：`iptables -V`；`iptables -S FORWARD`、`ip6tables -S FORWARD`（第一行是策略，`-A FORWARD -j DOCKER-USER` 应在任何 DROP 之前）；`iptables -S DOCKER-USER`、`ip6tables -S DOCKER-USER`；`systemctl is-active ufw firewalld nftables docker`；`systemctl is-enabled nftables`；`systemctl show -p ExecStop nftables.service`；`grep -n 'flush ruleset' /etc/nftables.conf`；`nft list chains | grep -B2 'hook forward'`。和预检报告逐项对照。
+- [ ] 实机（主会话），装机后：`iptables -S DOCKER-USER | grep meridian-fw-`（条数等于预检列出的，在链顶）、`ip6tables -S DOCKER-USER | grep -c meridian-fw-`（IPv6 策略 ACCEPT 时为 0）、`/usr/local/sbin/meridian-fwcompat.sh status`；`systemctl is-enabled meridian-node.service meridian-fwcompat.service`；`systemctl cat meridian-node.service`；从隧道另一端（枢纽）经这台出口访问外网能通（`wg show` 有握手、出口 WAN 上 `tcpdump -ni <wan> host <测试目的地>` 看到 NAT 后的包）；`sysctl -a 2>/dev/null | grep -E 'conf\.(docker0|CloudflareWARP|veth[^.]*)\.(rp_filter|send_redirects|accept_redirects)'` 的值与装机前一样。
+- [ ] 实机（主会话），Docker 重启：`systemctl restart docker` 后 `systemctl status meridian-fwcompat.service`（active (exited)，日志里没有 failed）、`iptables -S DOCKER-USER | grep -c meridian-fw-` 不变、隧道转发仍通。
+- [ ] 实机（主会话），重启主机：`systemctl is-active meridian-node.service`（active）、`systemctl is-failed meridian-node.service`（不应是 failed）、`journalctl -b -u meridian-node.service -u meridian-fwcompat.service -u docker.service -o short-monotonic` 里 meridian-node 在 docker 之后启动、`meridian-up-complete` 出现；`systemd-analyze critical-chain meridian-node.service`；`wg show` 有握手、规则在。
+- [ ] 实机（主会话），撤回：之后 `iptables -S DOCKER-USER`、`ip6tables -S DOCKER-USER` 没有 `meridian-fw-`，Docker 自己的规则、你自己的规则、`-P FORWARD DROP` 都在；`systemctl list-unit-files 'meridian*'` 为空；`systemctl restart docker` 之后规则也没有回来。
+- [ ] 实机（主会话），nftables：在一台 nftables.service 启用的测试机上预检应阻断；按处理办法改完（`systemctl disable nftables` + 重启，或改配置 + 空 `ExecStop=`）后预检放行。
+- [ ] 实机（主会话），WARP：在三台跑主机 WARP 的出口上，预检列出的规则优先级和 `ip rule`、`ip route show table 65743 | head` 一致，依赖线索与 `ss -tnp state established '( dport = :40000 )'`、`grep nameserver /etc/resolv.conf` 一致；装机后 `ss -lunp 'sport = :53'` 里 meridian-smartdns 只在隧道地址上；在这些主机上部署 Mesh 被 `host_warp` 拒绝。
+- 自动化回归（`go test ./internal/provision -run 'RAKept|KeepsAcceptRA|RechecksWAN'`、`go test ./internal/preflight -run 'RAPlan|WANInterface'`、`go test ./internal/compile -run IPv6ForwardingScope`）：IPv6 默认路由来自 RA、`accept_ra=1`、转发为 0 的沙箱里，记录调用的假 `sysctl` 看到 `net/ipv6/conf/eth0/accept_ra=2` 排在两个转发键之前，写到的键正好是受管键加这一个；记录文件让「重启时 RA 还没到」也先设 2；第一次装机失败恢复成 1 并删掉记录；`accept_ra=0` 时不打开任何转发；没有 RA 时不碰 `accept_ra`；不转发 IPv6 的出口（tw）既不碰 `accept_ra` 也不碰 IPv6 转发；撤回删记录、保留 2。预检计划里 `accept_ra=2` 排在 IPv6 转发之前，`accept_ra` 为 0 / 读不到时阻断。WAN：名字不对、没填而主机是 eth0（通过）、没填而主机是 enp0s6（阻断并写出 enp0s6）、IPv4 和 IPv6 默认路由分在两块网卡上（阻断），都带 `wan_interface` 的 `fix`；装机脚本对缺接口、默认路由不在它上面都在动手前拒绝。
+- [ ] 实机（主会话），RA：在靠路由通告拿 IPv6 的出口上，装机前 `ip -6 route show table main proto ra`、`sysctl net.ipv6.conf.<网卡>.accept_ra net.ipv6.conf.all.forwarding`；装机后 `accept_ra` 为 2、`cat /var/lib/meridian/node/ra-accept`；过了路由通告的有效期（`ip -6 route show default` 里的 `expires`，或至少几小时）之后 `ip -6 route show default` 仍在、`ping -6 -c 3 2001:4860:4860::8888` 能通；重启后同样。
+- [ ] 实机（主会话），WAN：网卡不叫 eth0 的主机上预检给出 `wan_interface_missing` 并写出真实网卡名；按链接填好后通过，装机后 `nft list table inet meridian` 里的 `oifname` 和 `iptables -S DOCKER-USER` 里的 `-o` 都是那块网卡。
+- [ ] 实机（主会话），Ubuntu 20.04（legacy）：装机后 `nft -v` 为 0.9.3、`nft list table inet meridian` 加载成功（规则集被 0.9.3 接受的第一份真实证据）、`iptables -V` 仍是 legacy、`update-alternatives --display iptables` 未变。
 
 ## 撤回与恢复
 

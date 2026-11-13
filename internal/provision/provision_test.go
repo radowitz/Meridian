@@ -289,6 +289,8 @@ func newSandbox(t *testing.T) *sandbox {
 	// Interfaces exist while $SANDBOX/link-<name> exists: wg-quick up
 	// creates the marker, ip link del removes it (unless FAIL_IPDEL=1).
 	stub("ip", `case "$*" in
+  "link show eth0") [ -f "$SANDBOX/no-eth0" ] && exit 1; exit 0 ;;
+`+ipRouteStub+`
   "link show "*) [ -f "$SANDBOX/link-$3" ] && exit 0; exit 1 ;;
   "-o link show") echo "1: lo: <UP>"; echo "2: eth0: <UP>"; for f in "$SANDBOX"/link-*; do [ -f "$f" ] && echo "9: ${f##*/link-}: <UP>"; done ;;
   "link del "*) [ "$FAIL_IPDEL" = 1 ] && exit 1; rm -f "$SANDBOX/link-$3" ;;
@@ -308,6 +310,14 @@ exit 0`)
 	for _, n := range []string{"systemctl", "wg", "sysctl", "apt-get", "docker", "smartdns"} {
 		stub(n, failable)
 	}
+	// iptables / ip6tables keep state in the sandbox: the FORWARD policy in
+	// ipt<fam>-policy (ACCEPT when absent), the FORWARD rules in
+	// ipt<fam>-FORWARD, and every other chain as ipt<fam>-<chain> holding
+	// its rules in "iptables -S" form (the chain exists while the file
+	// does). Only -S, -C, -I <chain> 1 and -D are understood.
+	for _, n := range []string{"iptables", "ip6tables"} {
+		stub(n, iptablesStub)
+	}
 	// GNU tools the script relies on, for BSD userlands.
 	if out, err := exec.Command("sed", "--version").CombinedOutput(); err != nil || !strings.Contains(string(out), "GNU") {
 		os.WriteFile(filepath.Join(sb.bin, "sed"), []byte("#!/bin/bash\nif [ \"$1\" = -i ]; then shift; exec /usr/bin/sed -i '' \"$@\"; fi\nexec /usr/bin/sed \"$@\"\n"), 0o755)
@@ -320,6 +330,41 @@ exit 0`)
 	}
 	return sb
 }
+
+// ipRouteStub answers the default-route and RA-route reads: the files
+// route4-default / route6-default / ra6 in the sandbox, with eth0 defaults.
+const ipRouteStub = `  "-4 route show default") cat "$SANDBOX/route4-default" 2>/dev/null || echo "default via 192.0.2.1 dev eth0 proto static" ;;
+  "-6 route show default") cat "$SANDBOX/route6-default" 2>/dev/null || echo "default via fe80::1 dev eth0 metric 1024 pref medium" ;;
+  "-6 route show table main proto ra") cat "$SANDBOX/ra6" 2>/dev/null; exit 0 ;;`
+
+const iptablesStub = `fam=4; [ "$(basename "$0")" = ip6tables ] && fam=6
+args=("$@")
+[ "${args[0]}" = -w ] && args=("${args[@]:2}")
+op=${args[0]}; chain=${args[1]}
+f="$SANDBOX/ipt$fam-$chain"
+case "$op" in
+  -S)
+    if [ "$chain" = FORWARD ]; then
+      echo "-P FORWARD $(cat "$SANDBOX/ipt$fam-policy" 2>/dev/null || echo ACCEPT)"
+      [ -f "$f" ] && cat "$f"
+      exit 0
+    fi
+    [ -f "$f" ] || exit 1
+    echo "-N $chain"; cat "$f"; exit 0 ;;
+  -C) [ -f "$f" ] || exit 1; grep -qxF -- "-A $chain ${args[*]:2}" "$f"; exit $? ;;
+  -I)
+    [ -f "$f" ] || exit 1
+    [ "$FAIL_IPT_INSERT" = 1 ] && exit 1
+    { echo "-A $chain ${args[*]:3}"; cat "$f"; } > "$f.new"; mv "$f.new" "$f" ;;
+  -D)
+    [ -f "$f" ] || exit 1
+    [ "$FAIL_IPT_DELETE" = 1 ] && exit 1
+    line="-A $chain ${args[*]:2}"
+    grep -qxF -- "$line" "$f" || exit 1
+    awk -v l="$line" 'BEGIN {d=0} $0==l && !d {d=1; next} {print}' "$f" > "$f.new"; mv "$f.new" "$f" ;;
+  *) exit 2 ;;
+esac
+exit 0`
 
 // rooted moves the script's host paths under the sandbox root.
 func (sb *sandbox) rooted(script string) string {

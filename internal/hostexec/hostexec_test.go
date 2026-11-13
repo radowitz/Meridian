@@ -697,6 +697,11 @@ func TestDeployWiring(t *testing.T) {
 	if !strings.Contains(read("deploy/debian/meridian.service"), "After=network-online.target docker.service meridian-guard.service\n") {
 		t.Error("meridian.service must order after the guard")
 	}
+	// A host nftables.service that flushes the ruleset at boot runs before
+	// the guard and before meridian.service, never after them.
+	if !strings.Contains(guard, "After=systemd-modules-load.service nftables.service\n") || !strings.Contains(read("deploy/debian/meridian.service"), "\nAfter=nftables.service\n") {
+		t.Error("the guard and meridian.service must order after nftables.service")
+	}
 	install := stripComments(read("deploy/debian/install.sh"))
 	for _, want := range []string{"net.ipv4.ip_forward=0", "\"ip-forward\": false", "meridian-host.service", "meridian-guard.service", "/etc/meridian-host/agent.token"} {
 		if !strings.Contains(install, want) {

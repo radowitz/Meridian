@@ -28,6 +28,7 @@ addr eth0 192.0.2.80/24
 addr CloudflareWARP 100.96.0.12/32
 addr CloudflareWARP 2001:db8:4700::12/128
 route4 default via 192.0.2.1 dev eth0
+route6 default via fe80::1 dev eth0 metric 1024 pref medium
 route4 192.0.2.0/24 dev eth0 proto kernel scope link src 192.0.2.80
 rule4 0:	from all lookup local
 rule4 32765:	not from all fwmark 0x100cf lookup 65743
