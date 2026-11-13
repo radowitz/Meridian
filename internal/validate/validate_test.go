@@ -209,6 +209,55 @@ func TestULAMustNotCollideWithLAN(t *testing.T) {
 	assertError(t, Run(topo), "prefix_conflict")
 }
 
+// A ULA LAN prefix is classified domestic ahead of the gateway's ULA drop,
+// so it must be one exact network clear of tunnel and transit space; a
+// global prefix is not touched, and nothing may contain all of fc00::/7.
+func TestLANIPv6PrefixLimits(t *testing.T) {
+	errs := func(lan string, mut func(*model.Topology)) []Issue {
+		topo := raTopo()
+		topo.Settings.LANIPv6Prefix = lan
+		if mut != nil {
+			mut(&topo)
+		}
+		var out []Issue
+		for _, i := range Run(topo).Issues {
+			if i.Severity == SeverityError {
+				out = append(out, i)
+			}
+		}
+		return out
+	}
+	for _, ok := range []string{"2001:db8:100::/64", "2001:db8:100::/56", "fd12:3456:789a:1::/64", "fd12:3456:789a::/48", "fc00:1:2:3::/64"} {
+		if e := errs(ok, nil); len(e) != 0 {
+			t.Errorf("%s: unexpected errors %+v", ok, e)
+		}
+	}
+	for _, c := range []struct {
+		lan, code, why string
+		mut            func(*model.Topology)
+	}{
+		{"::/0", "prefix_conflict", "contains fc00::/7 (and fd66::/48)", nil},
+		{"fc00::/6", "prefix_conflict", "contains fc00::/7", nil},
+		{"8000::/1", "prefix_conflict", "contains fc00::/7", nil},
+		{"fd00::/8", "prefix_conflict", "covers fd66::/48", nil},
+		{"fc00::/8", "prefix_conflict", "a ULA LAN wider than /48", nil},
+		{"fd12:3456:789a:1::1/64", "prefix_conflict", "host bits set", nil},
+		{"192.168.0.0/16", "prefix_conflict", "not IPv6", nil},
+		{"fd66:0:0:ff::/64", "prefix_conflict", "the transit /64", func(tp *model.Topology) { tp.Settings.ULAPrefix = "fd66:1::/48" }},
+		{"fd66::/64", "prefix_conflict", "fd66::/48 although ula_prefix is elsewhere", func(tp *model.Topology) { tp.Settings.ULAPrefix = "fd66:1::/48" }},
+		{"fd12:3456:789a:1::/64", "prefix_conflict", "the configured transit prefix", func(tp *model.Topology) { tp.Settings.TransitV6Prefix = "fd12:3456:789a::/48" }},
+		{"fd67::/64", "remote_prefix_conflict", "the device pool", nil},
+	} {
+		found := false
+		for _, i := range errs(c.lan, c.mut) {
+			found = found || (i.Code == c.code && strings.Contains(i.Message, "局域网 IPv6"))
+		}
+		if !found {
+			t.Errorf("%s (%s): no %s error", c.lan, c.why, c.code)
+		}
+	}
+}
+
 func TestAAAAFilterIsWarningNotACountryChange(t *testing.T) {
 	res := Run(defaults.Example())
 	found := false
@@ -580,5 +629,135 @@ func TestRemoteAccessConflicts(t *testing.T) {
 		if !found {
 			t.Errorf("%s: want %s/%s, got %+v", c.name, c.code, c.field, errs)
 		}
+	}
+}
+
+// A gateway LAN inside 10.66.0.0/16 is dropped by the classify chain
+// before the private-range rule; it must be refused even when no tunnel
+// address happens to fall inside it.
+func TestGatewayLANIPv4OutsideTunnelSpace(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mut  func(*model.Topology)
+		want bool
+	}{
+		{"default", func(*model.Topology) {}, false},
+		{"lan in 10.66", func(t *model.Topology) { t.Settings.GatewayLANIP = "10.66.5.2/24" }, true},
+		{"lan covers 10.66", func(t *model.Topology) { t.Settings.GatewayLANIP = "10.0.0.2/8" }, true},
+		{"lan in custom transit", func(t *model.Topology) {
+			t.Settings.TransitV4Prefix = "10.70.0.0/24"
+			t.Settings.GatewayLANIP = "10.70.0.5/16"
+		}, true},
+		{"other 10/8 lan", func(t *model.Topology) { t.Settings.GatewayLANIP = "10.67.5.2/24" }, false},
+		{"gateway node lan", func(t *model.Topology) {
+			for i := range t.Nodes {
+				if t.Nodes[i].Role == model.RoleGateway {
+					t.Nodes[i].LANIPv4 = "10.66.5.2/24"
+				}
+			}
+		}, true},
+	} {
+		topo := defaults.Example()
+		tc.mut(&topo)
+		res := Run(topo)
+		got := false
+		for _, i := range res.Issues {
+			if i.Code == "prefix_conflict" && strings.Contains(i.Message, "10.66.0.0/16") && i.Severity == SeverityError {
+				got = true
+			}
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %v want %v: %+v", tc.name, got, tc.want, res.Issues)
+		}
+	}
+}
+
+// CIDR rules whose whole destination the classify chain settles before the
+// rule sets never apply: they are errors naming the rule and the reason.
+func TestRuleShadowedByClassifyChain(t *testing.T) {
+	for _, tc := range []struct {
+		name, dst, lan6, reason string
+	}{
+		{"tunnel space", "10.66.3.0/24", "", "10.66.0.0/16"},
+		{"tunnel host", "10.66.1.1", "", "10.66.0.0/16"},
+		{"ula outside lan", "fd12:3456::/64", "", "fc00::/7"},
+		{"ula outside ula lan", "fd12:3456::/64", "fd00:1:2:3::/64", "fc00::/7"},
+		{"inside ula lan", "fd00:1:2:3::/80", "fd00:1:2:3::/64", "局域网 ULA 前缀"},
+		{"underlay endpoint", "203.0.113.10/32", "", "隧道端点"},
+		{"link-local", "fe80::/64", "", "链路本地"},
+		{"multicast", "239.1.0.0/16", "", "组播"},
+		{"public ok", "198.51.100.0/24", "", ""},
+		{"covers tunnel ok", "10.0.0.0/8", "", ""},
+		{"covers ula ok", "fc00::/6", "", ""},
+		{"global v6 ok", "2001:db8:1::/48", "", ""},
+	} {
+		topo := defaults.Example()
+		if tc.lan6 != "" {
+			topo.Settings.LANIPv6Prefix = tc.lan6
+		}
+		topo.Rules = append(topo.Rules, model.Rule{ID: "shadow", Name: "被遮住的规则", Manual: true, Enabled: true,
+			MatchType: model.MatchCIDR, MatchValue: tc.dst, TargetGroup: topo.Settings.DefaultGroup})
+		var got *Issue
+		for _, i := range Run(topo).Issues {
+			if i.Code == "rule_unreachable" && i.RuleID == "shadow" {
+				i := i
+				got = &i
+			}
+		}
+		switch {
+		case tc.reason == "" && got != nil:
+			t.Errorf("%s: unexpected %+v", tc.name, *got)
+		case tc.reason != "" && got == nil:
+			t.Errorf("%s: no rule_unreachable", tc.name)
+		case got != nil && (got.Severity != SeverityError || !strings.Contains(got.Message, "被遮住的规则") || !strings.Contains(got.Message, tc.reason)):
+			t.Errorf("%s: message %+v lacks %q", tc.name, *got, tc.reason)
+		}
+	}
+	// A disabled rule is not reported.
+	topo := defaults.Example()
+	topo.Rules = append(topo.Rules, model.Rule{ID: "off", Name: "off", Manual: true, Enabled: false, MatchType: model.MatchCIDR, MatchValue: "10.66.3.0/24", TargetGroup: topo.Settings.DefaultGroup})
+	if hasCode(Run(topo), "rule_unreachable") {
+		t.Fatal("disabled rule reported")
+	}
+}
+
+// fd66::/64 holds the region-group resolver addresses (fd66::53:0/112):
+// no tunnel address and no configured transit or NAT64 prefix may use it.
+func TestGroupResolverReserved(t *testing.T) {
+	if GroupResolverAddr(0).String() != "fd66::53:1" || GroupResolverAddr(19).String() != "fd66::53:14" {
+		t.Fatalf("resolver addresses moved: %s %s", GroupResolverAddr(0), GroupResolverAddr(19))
+	}
+	if !GroupResolverNet.Contains(GroupResolverAddr(239)) {
+		t.Fatal("the last mark index is outside the resolver range")
+	}
+	for _, iss := range Run(defaults.Example()).Issues {
+		if iss.Code == "group_resolver_conflict" {
+			t.Fatalf("example: %+v", iss)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		mut  func(*model.Topology)
+		bad  bool
+	}{
+		{"link address on a resolver address", func(tp *model.Topology) { tp.Links[0].FromULA = "fd66::53:1" }, true},
+		{"link address elsewhere in fd66::/64", func(tp *model.Topology) { tp.Links[0].ToULA = "fd66::2" }, true},
+		{"link address in fd66:0:0:1::/64", func(tp *model.Topology) { tp.Links[0].ToULA = "fd66:0:0:1::9" }, false},
+		{"transit prefix over fd66::/64", func(tp *model.Topology) { tp.Settings.TransitV6Prefix = "fd66::/64" }, true},
+		{"transit prefix covering fd66::/48", func(tp *model.Topology) { tp.Settings.TransitV6Prefix = "fd66::/48" }, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			topo := defaults.Example()
+			c.mut(&topo)
+			got := false
+			for _, iss := range Run(topo).Issues {
+				if iss.Code == "group_resolver_conflict" && iss.Severity == SeverityError {
+					got = true
+				}
+			}
+			if got != c.bad {
+				t.Fatalf("group_resolver_conflict = %v, want %v", got, c.bad)
+			}
+		})
 	}
 }

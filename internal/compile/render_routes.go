@@ -120,17 +120,19 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	fmt.Fprintf(sb, "ip rule add fwmark %#x lookup 100 priority %d\n", markDomestic, prioDomestic)
 	fmt.Fprintf(sb, "del_rule ip -6 rule del fwmark %#x lookup 100\n", markDomestic)
 	fmt.Fprintf(sb, "ip -6 rule add fwmark %#x lookup 100 priority %d\n", markDomestic, prioDomestic)
-	// IPv4 only. An IPv6 interface blackhole would also have to be proven
-	// not to eat RA or ND, so there is no IPv6 counterpart here: unmarked
-	// IPv6 from the LAN can still match the main-table default via ROS. That
-	// path is closed by the forward-hook guard in table inet meridian_guard
-	// (render_nft.go), which drops every forwarded LAN packet, v4 and v6,
-	// that does not carry the domestic mark on the LAN NIC or an exit mark
-	// on a WireGuard interface. This IPv4 rule stays as a second, routing
-	// level layer. SSH to this host is in the local table (priority 0) and
-	// is not matched by this rule.
-	fmt.Fprintf(sb, "del_rule ip rule del iif %s unreachable\n", lanQ)
-	fmt.Fprintf(sb, "ip rule add iif %s unreachable priority %d\n", lanQ, prioLANDrop)
+	// No "iif <LAN> unreachable" rule, v4 or v6. The kernel validates the
+	// source of a forwarded packet (rp_filter is 2) with a reverse lookup
+	// whose iif is the packet's OUTPUT interface and whose mark is 0, so
+	// such a rule failed that lookup for every IPv4 packet forwarded OUT of
+	// the LAN NIC (domestic hairpin to ROS, tunnel replies to LAN clients)
+	// and the kernel dropped it with EXDEV. Unclassified forwarded traffic
+	// is dropped instead by the forward-hook guard in table inet
+	// meridian_guard (render_nft.go), for v4 and v6 alike, and the per-mark
+	// "fwmark X unreachable" rules above stop classified foreign traffic
+	// from falling through to main (reverse lookups carry mark 0, so those
+	// are not affected). Installs from before this change carry the rules
+	// at 17850/17851: remove them so an upgrade heals without a reboot.
+	removeStaleIIFRules(sb, lanQ)
 	if rp := planRemote(t); rp != nil {
 		remoteRouteCommands(sb, rp)
 	}
@@ -150,7 +152,6 @@ harden_sysctl() {
   done
   for d in /proc/sys/net/ipv6/conf/*; do
     i=$(basename "$d")
-    sysctl -w "net.ipv6.conf.${i}.send_redirects=0" >/dev/null 2>&1 || true
     sysctl -w "net.ipv6.conf.${i}.accept_redirects=0" >/dev/null 2>&1 || true
   done
 }
@@ -621,6 +622,9 @@ func renderHubFailover(t model.Topology, tunnels []Tunnel, exits []ExitPlan, gro
 	fmt.Fprintf(&sb, "IX_PEER=%q\nALI_PEER=%q\nHOME_PEER=%q\n", ix.WestV4, aliWSS.WestV4, home.WestV4)
 	fmt.Fprintf(&sb, "LAN=%q\nTRANSIT4=%q\nTRANSIT6=%q\nLAN6=%q\n", lanNet(t), transitV4Net(), transitV6Net(), t.Settings.LANIPv6Prefix)
 	fmt.Fprintf(&sb, "FAILS_NEED=%d\nRECOVERS_NEED=%d\nCOOLDOWN=%d\n", pool.FailsNeed, pool.RecoversNeed, int(pool.Cooldown/time.Second))
+	// GROUP_PLAN identifies the group plan this script runs (see
+	// GroupPlanID); it is written to the hub's state reports.
+	fmt.Fprintf(&sb, "GROUP_PLAN=%s\n", GroupPlanID(groups))
 	sb.WriteString(renderGroupChecks(groups))
 	sb.WriteString(failoverLoopHub)
 	return sb.String()
@@ -692,6 +696,7 @@ func renderGroupChecks(groups []GroupPlan) string {
 	var sb strings.Builder
 	sb.WriteString(groupHopPrelude(groups))
 	sb.WriteString(groupStepShell)
+	sb.WriteString(groupReportShell)
 	sb.WriteString("reset_groups() {\n")
 	for _, g := range groups {
 		if !g.Dynamic {
@@ -700,6 +705,7 @@ func renderGroupChecks(groups []GroupPlan) string {
 		fmt.Fprintf(&sb, "  rm -rf -- %s\n", shQuote("/run/meridian/group/"+g.Group.ID))
 		fmt.Fprintf(&sb, "  group_hop %d %s || true\n", g.Table, shQuote(hopDev(g.Target)))
 	}
+	sb.WriteString("  group_plan_record || true\n")
 	sb.WriteString("  :\n}\n")
 	sb.WriteString("check_groups() {\n")
 	for _, g := range groups {
@@ -787,11 +793,12 @@ group_step() {
   shift 7
   local dir="/run/meridian/group/${gid}"
   mkdir -p "$dir" /run/meridian/group-iface
-  local now id iface peer fails goods state okst lastok ids="" t_up=0 alt_id=""
+  local now id iface peer fails goods state okst lastok ids="" t_up=0 alt_id="" pairs=""
   now=$(date +%s)
   while [ $# -ge 3 ]; do
     id="$1"; iface="$2"; peer="$3"; shift 3
     ids="$ids $id"
+    pairs="$pairs $id=$iface"
     echo "$iface" > "/run/meridian/group-iface/${id}"
     fails=$(cat "$dir/$id.fails" 2>/dev/null || echo 0)
     goods=$(cat "$dir/$id.goods" 2>/dev/null || echo 0)
@@ -825,7 +832,7 @@ group_step() {
     if [ "$id" = "$target" ] && [ "$state" = "up" ]; then t_up=1; fi
     if [ "$id" != "$target" ] && [ "$state" = "up" ] && [ -z "$alt_id" ]; then alt_id="$id"; fi
   done
-  local active want last ast dev reason
+  local active want last ast dev reason hfail=""
   active=$(cat "$dir/active" 2>/dev/null || true)
   [ -n "$active" ] || active="$target"
   if [ "$active" != "mmesh" ]; then
@@ -856,6 +863,8 @@ group_step() {
       active="$want"
       echo "$active" > "$dir/active"
       echo "$now" > "$dir/switched"
+    else
+      hfail="$want"
     fi
   fi
   if [ "$active" = "$target" ]; then
@@ -875,6 +884,7 @@ group_step() {
   fi
   [ -f "$dir/active" ] || echo "$active" > "$dir/active"
   echo "$reason" > "$dir/reason"
+  group_record "$dir" "$gid" "$table" "$now" "$active" "$reason" "$hfail" "$pairs"
 }
 `
 

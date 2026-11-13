@@ -19,6 +19,8 @@ WireGuard 不携带 fwmark。家宽到阿里云只有一条逻辑隧道，枢纽
 
 `fd66::/48` 的路由不会指向 ROS。误送到 ROS 的 ULA 即使撞上可选的 `fd00::/8` 黑洞，也不该从 Meridian 送出去。
 
+网关的 `classify` 链对受管入口（局域网口，打开远程接入时再加 `mra`）进来的包，按这个顺序处理 IPv6 目的地址：先把设备池（打开远程接入时）标成国内 mark；如果局域网 IPv6 前缀（`settings.lan_ipv6_prefix`）本身是 ULA（在 `fc00::/7` 里），紧接着把**恰好这个前缀**标成国内 mark（`ip6 daddr <局域网 ULA 前缀> meta mark set 0x64 return comment "ULA LAN prefix: home hosts only"`）；然后 `ip6 daddr fc00::/7 drop` 丢掉其余所有 ULA（隧道 `fd66::/48`、中转 `fd66:0:0:ff::/64`、`ula_prefix`、设备池之外和其他任何 ULA）。国内 mark 查表 100，表 100 里局域网前缀是 `dev <局域网口>` 的直连路由，兜底表只放国内 mark 从局域网口出去，所以这条只通往家里的主机，不会走 ROS 的默认路由。没有它时，从 `mra` 访问家里的 ULA 主机、家里主机回给网关地址（设备访问家里主机时的 masquerade 地址）的包，以及发往网关自己 ULA 地址的包（DNS 等），都会在这条 ULA 丢弃里被丢掉。局域网前缀是 GUA（常见情况，也是示例拓扑）时不生成这一条，局域网前缀那条仍在私有 IPv4 段之后、编译结果与之前逐字节相同。校验相应收紧：局域网 IPv6 前缀必须是 IPv6；不能包含整个 `fc00::/7`（`::/0`、`fc00::/6` 之类直接拒绝）；是 ULA 时必须写成网络地址、长度 /48–/128，并且不能与 `fd66::/48`（含中转 /64，即使 `ula_prefix` 改在别处）、`ula_prefix`、`transit_v6_prefix`、NAT64 前缀和设备池重叠。
+
 ## 每一跳
 
 | 跳 | 传输 | MTU |
@@ -37,8 +39,8 @@ WireGuard 不携带 fwmark。家宽到阿里云只有一条逻辑隧道，枢纽
 SmartDNS 只绑在网关的局域网地址上。
 
 - `223.5.5.5` 和 `1.12.12.12` 的 DoT 解析国内名单，结果写入 `direct4` / `direct6`，走 ROS。
-- 各服务名单经对应出口隧道上的解析器查询，再写入该规则的 nftset。
-- 没命中的名字走香港 IX 出口，写入默认集合。
+- 各服务名单经对应出口隧道上的解析器查询，再写入该规则的 nftset。规则指向枢纽可切换的地区组时，问的是组自己的解析地址，跟着枢纽当前选中的成员走，见「地区组的解析」。
+- 没命中的名字走默认组（示例里是香港机房组），写入默认集合；默认组可切换时同样经组的解析地址。
 - 出口没有 `egress_v6` 时，该规则加 `-address #6`，不返回 AAAA，也不改到别的国家。
 - nftables 把测试设备发往任意地址的 UDP/TCP 53 和 TCP 853 重定向到本机。
 - 已知 DoH 域名返回 SOA，已知 DoH 地址的 443 在转发链上被拒绝。这只覆盖清单，不能说绝对防住了 DoH。
@@ -139,7 +141,31 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 4. 阿里云
 5. 家宽网关
 
-差分看的是上一份已应用文本和这一份编译结果。面板不在宿主上直接执行命令：安装和运行态回滚写入 Meridian 自己的文件后，经宿主上的 `meridian-host`（固定的 activate / health / rollback 三个动作，只接受受管资源名；另有名单更新 `/v1/lists`、只读的名单状态 `/v1/lists/status`、解锁探测 `/v1/probe` 和远程接入运行状态 `/v1/remote-access/status`，见「名单源」「解锁」「远程接入」）完成 daemon-reload、启动 `meridian.service` 和相关 unit、健康检查，以及删除旧清单独有的接口、unit、nft 表和路由表。每次安装都记录受管清单（文件、接口、unit、nft 表、路由表、sidecar 和版本），回滚按清单求差并只激活目标清单里的接口，不再扫描 `/etc/wireguard/m*.conf`。数据目录快照和宿主网络在同一份持久事务里，失败即补偿，进程重启时恢复；面板的回滚必须明确选择「含宿主网络」或「只回滚数据目录」（后者在已安装时需要显式 `snapshot_only`）。开机时转发保持关闭，`meridian-guard.service` 先装兜底表，`meridian-up.sh` 在防火墙就绪后才打开转发。`meridian.nft` 是单个 nft 事务，只替换 `inet meridian`（网关上还有 `inet meridian_guard` 兜底表），加载失败时旧表原样保留；`meridian-up.sh` 先 `nft -c` 再 `nft -f`，并且在打开转发和装路由之前完成。网关的 IPv6 在路由层没有局域网入口的 unreachable 规则，从局域网转发、既没有国内 mark 也没有出口 mark 的包由兜底表在 forward 上丢弃。细节和尚未在 Linux 上验证的部分见 [验收清单](verification.md#防火墙原子替换与-lan-兜底)。
+以后改拓扑也按这个顺序：先下发受影响的远端节点，再安装网关。地区组的解析要求成员出口已经装上应答组解析地址的规则（「地区组的解析」），新地区组的中转地址要求枢纽已经有那张组表；网关先装，组内的名字在出口更新前解析不了（不会改问国内或别的出口），组流量在枢纽更新前进黑洞。`APPLY_ORDER.txt` 在有可切换地区组时也写明这一点。
+
+差分看的是上一份已应用文本和这一份编译结果。面板不在宿主上直接执行命令：安装和运行态回滚写入 Meridian 自己的文件后，经宿主上的 `meridian-host`（固定的 activate / health / rollback 三个动作，只接受受管资源名；另有名单更新 `/v1/lists`、只读的名单状态 `/v1/lists/status`、解锁探测 `/v1/probe` 和远程接入运行状态 `/v1/remote-access/status`，见「名单源」「解锁」「远程接入」）完成 daemon-reload、启动 `meridian.service` 和相关 unit、健康检查，以及删除旧清单独有的接口、unit、nft 表和路由表。每次安装都记录受管清单（文件、接口、unit、nft 表、路由表、sidecar 和版本），回滚按清单求差并只激活目标清单里的接口，不再扫描 `/etc/wireguard/m*.conf`。数据目录快照和宿主网络在同一份持久事务里，失败即补偿，进程重启时恢复；面板的回滚必须明确选择「含宿主网络」或「只回滚数据目录」（后者在已安装时需要显式 `snapshot_only`）。开机时转发保持关闭，`meridian-guard.service` 先装兜底表，`meridian-up.sh` 在防火墙就绪后才打开转发。`meridian.nft` 是单个 nft 事务，只替换 `inet meridian`（网关上还有 `inet meridian_guard` 兜底表），加载失败时旧表原样保留；`meridian-up.sh` 先 `nft -c` 再 `nft -f`，并且在打开转发和装路由之前完成。网关在路由层没有按入口接口的 `iif … unreachable` 规则（IPv4 和 IPv6 都没有）：从局域网（或 `mra`）转发、既没有国内 mark 也没有出口 mark 的包由兜底表在 forward 上丢弃，原因见下面「局域网兜底」。细节和尚未在 Linux 上验证的部分见 [验收清单](verification.md#防火墙原子替换与-lan-兜底)。
+
+### 局域网兜底
+
+两层，IPv4 和 IPv6 相同：
+
+- **`inet meridian_guard`**（独立的 nft 表，forward 钩子，优先级 -200）：在打开转发之前加载，开机时由 `meridian-guard.service` 先于主表加载。从受管入口（局域网口，打开远程接入时再加 `mra`）转发的包，只有「国内 mark 从局域网口出」和「出口/地区组 mark 进网关自己的 WireGuard 接口」两种放行，其余（未分类或走错接口）全部丢弃。
+- **每个出口和地区组 mark 的 `fwmark X unreachable`**（查完表 102 之后）：隧道路由不在时，已分类的境外流量不会落到主表经 ROS 出去；表 102 和表 100 末尾还有 metric 32767 的黑洞。
+
+旧版本在 IPv4 上另有 `17850: iif <局域网口> unreachable`（打开远程接入时还有 `17851: iif mra unreachable`），想做第二道路由层兜底。它是错的：`rp_filter=2` 时内核校验转发包的源地址，反查用的是 iif = 这个包的**出接口**、mark = 0（`src_valid_mark=0`），于是所有从局域网口（或 `mra`）转发**出去**的 IPv4 包都会命中这条规则、反查失败，被以 `EXDEV`（`ip route get` 显示 `Invalid cross-device link`）丢掉——国内直连的回绕、隧道回到局域网客户端的回程、设备的国内流量和回程都不通。以前的测试只数出去的包、国内只测了 IPv6，所以没发现。这两条规则已删除，`meridian-routes.sh` 每次运行都按优先级、接口和动作删掉旧版本留下的那两条（升级不用重启就恢复）；`meridian-verify.sh` 发现它们时报 `FAIL no_stale_iif_rule`，并用 `ip route get … iif …` 让内核实际判一次这些路径（`route_*` 各项）。`fwmark X unreachable` 不受影响（反查的 mark 是 0），保留。`rp_filter` 仍是 2。
+
+没选的两种做法：保留规则、把每个接口的 `rp_filter` 设成 0（能通，但正确性依赖每个接口的 sysctl 都是 0，漏一个接口 IPv4 就静默黑洞）；保留规则、开 `src_valid_mark=1` 再给回程打 mark（在防泄露的关键路径上多出几处耦合的部件）。
+
+代价：IPv4 对**没有 mark** 的局域网转发流量不再有路由层兜底，和 IPv6 一样只靠 nft。两张 Meridian 表都被删掉而转发仍开着时（例如有人执行 `nft flush ruleset`，或启用了 Debian 自带、配置以清空整个规则集开头的 `nftables.service`），IPv4 会和 IPv6 一样直接经 ROS 出去。`meridian-up.sh` 不会在兜底表缺失时打开转发；`meridian-verify.sh` 在兜底表缺失时 FAIL，在 `nftables.service` 已启用且 `/etc/nftables.conf` 会清空规则集时打印 `WARN nftables_service_flush`。这些都不是强制手段：运行中有人删表，只能靠检查发现。
+
+### 分类链先决定的目的地址（校验）
+
+网关的 `classify` 链在查规则集合之前就决定了几类目的地址：远程接入设备池（交给设备）、隧道端点集合 `underlay4`（丢弃）、`10.66.0.0/16`（丢弃）、ULA 局域网前缀（判为国内）、`fc00::/7`（丢弃）、链路本地 / 组播 / 环回 / 广播（不打标记）。因此：
+
+- 网关局域网 IPv4（`settings.gateway_lan_ipv4`、网关节点的 `lan_ipv4`）与 `10.66.0.0/16` 或自定义的 `transit_v4_prefix` 重叠时是 `prefix_conflict` 错误——否则发往局域网主机的包在私有地址那一行之前就被 `ip daddr 10.66.0.0/16 drop` 丢掉，与有没有隧道地址落在局域网里无关。
+- 启用的 CIDR 规则，整个目的范围都落在上面某一类里时是 `rule_unreachable` 错误（`rule_id`、`field: match_value`），文字给出规则名和原因；它永远不会命中。只部分重叠（例如 `10.0.0.0/8`）不报，其余部分照常生效。隧道端点按「启用的 WireGuard 链路两端节点的 `endpoint_v4`，IX 端换成专线邻居」推算，与编译器的 `underlay4` 一致（`TestUnderlayRulesReportedUnreachable` 交叉核对）。
+
+这两项都只是校验，编译出的 `meridian.nft` 不变。
 
 ### 面板状态（`GET /api/status`）
 
@@ -152,8 +178,33 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 | `install.state` | 存储的拓扑与**已安装清单**比较（`Manifest.canonical_sha256`，不是已应用快照）：`in_sync`、`changed`、`not_installed`（宿主上什么都没装）、`invalid`（拓扑无法编译，附 `error` 和错误级 `issues`）、`unknown`（接管的旧版安装没有摘要，无法比较） |
 | `install.installed_version` / `installed_at` / `origin` | 已安装清单的版本、时间、来源；未安装为 `null` |
 | `install.applied` / `applied_matches` | 是否应用过，以及存储的拓扑是否等于上一次应用的快照。`changed` 且 `applied_matches=true` 即「已应用（写入数据目录）但未安装」——`/api/diff` 在这种情况下显示没有变化 |
+| `previous_available` | 数据目录里有上一份快照，回滚有东西可回；为 `false` 时面板不提供回滚 |
 | `pending` | 未完成的宿主事务（同 `GET /api/host`） |
 | `jobs.lists` / `jobs.unlock` / `jobs.mesh` | `{state, running, id, started_at, finished_at, error}`：名单任务、解锁探测（运行中的或最近一轮）和 Mesh 部署记录的状态；没有时 `state: "none"`，记录损坏时 `state: "error"` |
+
+`POST /api/diff` 除了与上一次应用的快照逐行比较的 `diff`，还返回 `installed`：安装会让网关的**已安装清单**新增、修改、删除哪些文件和资源（`files_added` / `files_changed` / `files_removed`、接口、unit、nft 表、路由表，按清单里的文件哈希比较；没有安装时为 `null`）。已应用但未安装时 `diff` 为空，面板据此列出安装会改的文件；这种情况下没有逐行内容差分（已安装副本不经 API 读出）。
+
+### 安装与回滚的错误码（`POST /api/apply`、`POST /api/rollback`、`POST /api/host/recover`）
+
+错误体是 `{"error","code",…}`，面板只按 `code` 判断，不匹配文字。HTTP 状态不变。
+
+| `code` | 状态 | 含义 |
+| --- | --- | --- |
+| `host_unavailable` | 503 / 500 | 没有宿主执行通道（503），或 host agent 的健康检查失败（500）；什么都没写 |
+| `legacy_install_refused` | 409 | 宿主上有旧版数据面，无法可靠接管（见下节）；宿主、快照、数据目录都没改 |
+| `transaction_pending` | 409 | 上一次宿主事务没有完成，先 `POST /api/host/recover` |
+| `peer_keys_missing` | 422 | 网关的 WireGuard 配置里有对端没有可用公钥；带 `peer_key_problems[]`（`peer`、`file`、`problem`），在生成网关密钥之前拒绝 |
+| `topology_invalid` | 422 | 存储的拓扑校验不通过；带 `issues`，安装时在生成网关密钥之前拒绝 |
+| `lan_interface_mismatch` | 422 | 同上，错误里有网关节点与 `settings.lan_interface` 不一致 |
+| `activation_failed_compensated` | 500 | 激活或健康检查失败，已补偿回事务前；带 `host` 报告和 `compensated: true` |
+| `activation_failed_uncompensated` | 500 | 激活失败且补偿也失败；事务日志保留，之后的安装和回滚都是 `transaction_pending`，直到恢复 |
+| `commit_failed` | 500 | 宿主已生效、只有提交记录失败；恢复会完成提交 |
+| `nothing_to_rollback` | 409 | 没有上一份快照（`GET /api/status` 的 `previous_available=false`） |
+| `rollback_mode_required` | 409 | 网关已安装，回滚必须 `install=true`，或显式 `snapshot_only=true` |
+| `gateway_key_unavailable` | 409 | 网关私钥无法取得或生成 |
+| `host_state_malformed` | 500 | 宿主事务状态文件损坏 |
+| `bad_request` | 400 | 请求体格式错误，或同时设置了 `install` 和 `snapshot_only` |
+| `apply_failed` | 按情况 | 以上之外的失败，原文在 `error` |
 
 ### 旧版安装的接管
 
@@ -193,7 +244,7 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 - **执行**（`RunScript`、`Test`）：连接前要求服务器状态是 `trusted`（`mismatch` 返回 `host_key_mismatch`，其余返回 `host_key_untrusted`），要求选了凭据（`no_credential`）。握手时主机密钥回调再调一次 `ObserveHostKey`：指纹不同就记为 `mismatch`、保留原固定值并断开——这一步发生在认证之前，密码或私钥根本不会被读取。只请求固定指纹那种主机密钥算法，避免多密钥主机换出另一把。
 - **秘密只在认证回调里读取**：`ssh.PasswordCallback` / `KeyboardInteractive`（只回答不回显的提示）或 `ssh.PublicKeysCallback`（带口令的私钥在这里解密），都在主机密钥通过之后才调用 `ResolveSSHWith`，读的是凭据的当前一代，所以原地轮换后立即生效。
 - **脚本走标准输入**：`bash -s`，WireGuard 私钥、Mesh 节点令牌不出现在远端进程列表里。输出最多 1 MiB。输出和所有错误文本都用 `credentials.Scrub` 去掉这次用到的密码、私钥（含逐行）和口令，长度再短也替换。
-- 拨号 10 秒、握手 20 秒超时；执行超时由调用方的 context 决定（装机 15 分钟，Mesh 每个动作 10 分钟），超时会发 SIGKILL 并断开。错误码：`unreachable`、`timeout`、`auth_failed`、`command_failed`、`not_ssh`、`host_key_untrusted`、`host_key_mismatch`、`host_key_not_pinned_by_deployment`、`target_changed`、`no_credential`、`not_found`。
+- 拨号 10 秒、握手 20 秒超时；执行超时由调用方的 context 决定（装机 15 分钟，Mesh 每个动作 10 分钟），超时会发 SIGKILL 并断开。错误码：`unreachable`、`timeout`、`auth_failed`（服务器尝试并拒绝了这份凭据）、`auth_method_unavailable`（服务器根本不提供这份凭据的登录方式，例如 `PasswordAuthentication no` 时的密码凭据；凭据没有被尝试，错误文字列出服务器提供的方式并说明改用密钥/密码或在服务器上开启对应方式。客户端在自己的方式之后附加只探测、不发送任何凭据的方式来得知服务器提供哪些）、`command_failed`、`not_ssh`、`host_key_untrusted`、`host_key_mismatch`、`host_key_not_pinned_by_deployment`、`target_changed`、`no_credential`、`not_found`。
 - **连接测试**：登录后只运行固定命令 `sshexec.TestCommand`（`uname -m`、`uname -r`、`/etc/os-release` 的 `PRETTY_NAME`），30 秒超时；结果（时间、成功与否、认证方式、系统、内核、架构、耗时、错误码与脱敏后的错误）记在服务器的 `last_test` 上。改地址、端口、用户、认证方式、凭据或原地轮换凭据都会清掉 `last_test`。
 
 服务器从「已添加」到「就绪」：建凭据 → 建服务器并选凭据 → `POST …/host-key/discover` → 用户核对指纹后 `POST …/host-key/trust`（提交同一个指纹）→ `POST …/test` 成功。视图里 `operable`（凭据 + 已确认指纹，装机和 Mesh 部署要求的条件）和 `ready`（再加上最近一次测试成功）。
@@ -238,7 +289,7 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 | `POST /api/servers/{id}/host-key/trust` | `fingerprint` | `{"server"}`；409 `host_key_not_discovered` / `host_key_changed` |
 | `DELETE /api/servers/{id}/host-key` | | `{"server"}`（回到 `unknown`） |
 | `POST /api/servers/{id}/host-key/discover` | 无 | `{"discovery":{"key_type","fingerprint","matches_pinned"},"server"}`；502 `unreachable` / `timeout` / `not_ssh` |
-| `POST /api/servers/{id}/test` | 无 | `{"test":连接测试结果,"server"}`（测试执行了就是 200，看 `test.ok`）；409 `host_key_untrusted` / `no_credential` |
+| `POST /api/servers/{id}/test` | 无 | `{"test":连接测试结果,"server"}`（测试执行了就是 200，看 `test.ok`；失败时 `test.code` 是 SSH 错误码之一，例如 `auth_failed` 与 `auth_method_unavailable` 要分开处理）；409 `host_key_untrusted` / `no_credential` |
 | `GET /api/cloudflare/requirements` | | `{"permissions":[{"name","scope","why"}],"how_to":[…],"check":{"does":[…],"does_not":[…]}}` |
 | `POST /api/cloudflare/accounts/{id}/check` | 无 | `{"check":权限检查结果,"account"}` |
 | `GET /api/ssh-credentials`、`GET …/{id}` | | `{"credentials":[…]}` / `{"credential"}` |
@@ -340,7 +391,7 @@ API 同时返回 `effective_order` 和每个成员的 `reasons`，界面直接�
 - 手动 + `hold`：永远停在 `chosen`，不切到别的成员也不切到 Mesh。`chosen` 判死时状态是 `held`，`alert: true`。
 - 手动 + `fallback`：试探顺序是 `chosen` 在前，然后是有效顺序里的其余成员。行为与自动完全相同（包括 Mesh 和切回条件），只是首选换成 `chosen`；离开 `chosen` 期间状态是 `fallback`，`alert: true`，回到 `chosen` 后告警消失。
 
-状态原因（`state.reason`）：`preferred`、`chosen`、`failover`、`fallback`、`held`、`mesh`、`constraint`、`none`。每个组记录实际成员（`active`）、原因、上次切换时间（`last_switch`）和每个成员的健康。
+状态原因（`actual.reason`、`model.reason`）：`preferred`、`chosen`、`failover`、`fallback`、`held`、`mesh`、`constraint`、`none`。枢纽为每个组记录切换器选中的成员（`active`）、路由表里实际的下一跳（`hop`）、原因、上次切换时间和每个成员的计数；面板的推算记录同样的字段和每个成员的健康。两者怎样分开见下面「实际状态与面板推算」。
 
 界面必须显示：
 
@@ -348,7 +399,66 @@ API 同时返回 `effective_order` 和每个成员的 `reasons`，界面直接�
 - 手动 + 保持：实际成员永远是指定成员；它判死时显示红色告警「指定成员不可用，按设置保持不切换」，并给出改成回落或换成员的入口。
 - 手动 + 回落：正常时同「手动」；回落期间显示告警「指定成员不可用，临时使用 X」，以及切回所需条件。
 
-面板里的状态是面板用 `POST /api/region-groups/health` 收到的样本按同一规则算出来的（`state.source: "panel_model"`）；枢纽自己的判断写在枢纽的 `/run/meridian/group/<id>/{active,reason,switched}`，两边规则相同但输入不同步，这一版面板不去读枢纽上的文件。
+「实际成员」只能来自枢纽报告（`actual.state == "ok"`）；读不到、过期、版本不一致或切换失败时显示「未知」和原因。告警以枢纽报告为准；「首选为什么还没切回」和剩余时间只有面板推算能给出，界面上写作「面板推算还没有切回 …」。
+
+### 实际状态与面板推算（两个来源，分开显示）
+
+每个组的视图（`GET /api/region-groups`、`GET /api/region-groups/{id}`）有两块，互不混用：
+
+- **`actual`：枢纽报告的实际状态。** 只有它能显示成「实际使用」。来自枢纽自己写下的记录，经面板读回（见下）。
+- **`model`：面板推算。** 面板用 `POST /api/region-groups/health` 收到的样本按同一规则（`pool.StepGroup`）算出来的（`model.source: "panel_model"`）。输入和枢纽不同步，它从来不是观测结果，界面上一律标「面板推算」；没有样本时是「按配置应使用」+「未验证」。成员行上 `model_active` 是推算的成员，`actual_active` 只在 `actual.state == "ok"` 时为真。
+
+**枢纽写什么。** 枢纽 `meridian-failover.sh` 的 `group_step` 每一轮（循环间隔 `sleep 5`，`compile.HubLoopInterval`）在切换判断之后调用 `group_record`，它只读内核、只写 `/run/meridian`，不改路由，切换行为与以前完全相同。每个可切换组写 `/run/meridian/group/<id>/report`，先写临时文件再 `mv`（读的人不会看到半个文件）：
+
+```
+meridian-group-report 1
+group <组 ID>
+plan <部署标识>            运行中的脚本的 GROUP_PLAN
+beat <epoch>               本轮时间（心跳）
+hop <成员 ID | mmesh | blackhole | none | other | split | unreadable>
+active <成员 ID | mmesh>   切换器的选择
+reason <preferred|chosen|constraint|failover|fallback|held|mesh>
+alert <0|1>
+switched <epoch | 0>       上次成功切换；0 = 启动以来没有切换
+result <ok | failed | diverged>
+want <成员 ID | mmesh>     只在 result=failed 时：想切到谁
+lastfail <成员 ID | mmesh> <epoch>   最近一次切换失败（有过才写）
+end
+```
+
+`hop` 每轮从内核读（`ip -4/-6 route show table <组表>`）：不算 metric 32767 兜底黑洞的那条默认路由，按它的接口对回成员（`mmesh` 是 Mesh veth）；黑洞默认或只剩兜底是 `blackhole`，表里没有默认路由是 `none`，接口不是成员是 `other`，v4 与 v6 不一致是 `split`。所以它描述的是路由表里真实的内容，不是脚本想要的。`result=failed`：本轮决定切换但 `group_hop` 失败（`active`、`switched` 不变，`hop` 仍是表里原来的成员）；`result=diverged`：表里的内容与切换器的选择不一致（选 Mesh 而 Mesh 未封装、表是黑洞，这是设计行为，不算不一致）。另外服务启动时 `reset_groups` 装好编译目标后写一次 `/run/meridian/group-plan`：`plan <部署标识> <epoch>`。安装时 `meridian-up.sh` 会重启这个服务。
+
+**部署标识。** `compile.GroupPlanID`：枢纽编译出的地区组切换段（组表、成员接口与对端、试探顺序、策略标志和脚本本身）的 SHA-256 前 24 位十六进制，作为 `GROUP_PLAN=` 写进枢纽的 `meridian-failover.sh`。不含任何秘密。面板对当前存储的拓扑算同一个值来比较；与组无关的改动（规则、名单等）不改变它。
+
+**面板怎么读。** `POST /api/region-groups/runtime/refresh` 不接受任何参数（请求体被忽略），目标是拓扑里的枢纽节点，经它关联的受管服务器、用已有的 SSH 连接器（主机指纹必须已确认并固定，凭据在执行边界从凭据库取出，输出去敏）执行一条固定的只读命令 `sshexec.GroupStateCommand`：
+
+```
+{ printf 'meridian-group-state 1\nnow %s\n' "$(date +%s)"; cat /run/meridian/group-plan; for f in /run/meridian/group/*/report; do if [ -f "$f" ]; then cat "$f"; fi; done; echo meridian-group-state-end; } 2>/dev/null | head -c 65537
+```
+
+总超时 30 秒，输出在枢纽上截到 64 KiB + 1 字节，超过 64 KiB 即判为过大。同一时间只允许一次读取（并发返回 409 `refresh_in_progress`）。结果（或读不到的原因）连同读取时间存进面板数据库，页面重新加载后仍显示，并标明读取时间。枢纽打出来的东西只按含义采信（`internal/hubstate`）：逐行严格语法、只允许可打印 ASCII、值是受限字符的短标记、时间必须晚于 2020-01-01 且不晚于枢纽自己的 `now` 5 秒、`switched` 不晚于心跳；任何一行不合格整份拒绝（`parse_error`）。拓扑里没有的组 ID 不显示（`hub_state.last_read.ignored`）；成员 ID 必须在该组编译出的切换顺序里（`mmesh` 只在组有 Mesh 边时），否则这个组是 `invalid_report`。
+
+**每个组的 `actual.state`**（按顺序判定）：
+
+| 状态 | 条件 | 界面 |
+| --- | --- | --- |
+| `not_switchable` | 组不由枢纽切换（静态选择只能经中继或纯 Mesh 到达，或没有可用成员），枢纽上没有它的状态 | 「不适用 · 枢纽不切换」 |
+| `never_read` | 还没有读过 | 未知 · 未验证 |
+| `unavailable` | `code`：`no_hub`、`hub_no_server`、`server_not_ready`（指纹未确认 / 不一致、没有凭据，带 `ssh_code`）、`ssh_failed`（带 `ssh_code`）、`parse_error`、`state_missing`（枢纽上没有这个组的记录或没有 `group-plan`）、`invalid_report`、`plan_unavailable`（面板编译不出当前计划） | 未知 · 未验证，原因和修复入口 |
+| `version_mismatch` | 枢纽的 `group-plan` 或该组报告的 `plan` 不等于面板现在编译出的部署标识（`deployed_matches: false`）：枢纽还没按当前拓扑装机 | 未知 · 未验证，链到部署页 |
+| `stale` | `heartbeat_old`：枢纽的 `now` 减心跳超过 `compile.HubStaleAfter`；或 `read_old`：读取已超过 10 分钟 | 未知 · 未验证，重新读取 |
+| `switch_failed` | `hop_failed`（`result=failed`）或 `table_diverged`（`result=diverged`，或面板自己核对 `hop` 与 `active` 不一致） | 失败；`reported` 里给出枢纽报告的表内容和想切到的成员，标「枢纽报告（未确认）」 |
+| `ok` | 以上都不是 | 「实际使用 X · 原因 · 上次切换 · 读取于」 |
+
+只有 `ok` 带 `active`、`hop`、`reason`、`alert`、`last_switch`、`running_since`；`active` 是成员 ID、`mmesh`，或表是黑洞时为空（`hop: "blackhole"`，界面写明流量被丢弃）。
+
+**过期阈值。** `HubStaleAfter` = 3 × 一轮最坏耗时，至少 60 秒；一轮最坏耗时 = 循环间隔 5 秒 + 每次 ping 至多 2 秒 ×（3 条西向隧道 + 所有可切换组的成员数）+ 10 秒（Mesh 封装检查）。示例拓扑（`defaults.Example`）是 135 秒。阈值和循环间隔在 `hub_state` 里返回给界面。
+
+**时钟。** 心跳和枢纽 `now` 来自同一次读取、同一个时钟，过期判断不受两边时钟差影响。显示的时间按读取时刻换算到面板时钟（枢纽时间 + 读取时刻 − 枢纽 `now`），差值作为 `clock_skew_sec` 返回；超过 300 秒时界面提示。时间合理性检查用的是枢纽自己的 `now`。
+
+**页面。** 「出口」页顶部的「枢纽运行状态」条显示枢纽、服务器、上次读取和「读取枢纽状态」按钮；枢纽读不了时说明原因并链到修复处（拓扑、服务器页）。打开页面时，如果枢纽可读且上次读取早于 1 分钟，自动读一次（每次进入页面最多一次，不轮询）。概览的地区组卡片同样只在 `ok` 时写成员名，其余显示「实际未知 · …」。解锁矩阵里实心圆点只表示枢纽报告在用，空心圆点是面板推算。
+
+**只有真实枢纽能证明的**：枢纽真的按报告切换了流量（报告只说明枢纽内核里组表的内容）；`ip` 在真实内核上的输出被正确解析（隔离 Linux 测试 `TestNetnsGroupDNSFailover` 会核对报告里的 `hop`）；真实 SSH 登录到枢纽和读取路径。见[验收清单](verification.md#地区组和-mesh)。
 
 ### 静态编译与动态切换一致
 
@@ -357,7 +467,24 @@ API 同时返回 `effective_order` 和每个成员的 `reasons`，界面直接�
 - 网关：组 mark 和出口 mark 一样进表 102、SNAT 到组的中转地址；`inet meridian_guard` 的出口 mark 范围按实际最大的 mark（出口加组）计算，选择器清理循环也覆盖到同一上限，所以增删组成员和组时兜底表的 mark 范围随编译更新。允许的接口集合是网关自己的 WireGuard 接口，与组成员无关；它不包含 `mmesh`。
 - 枢纽：静态路由脚本把组表的默认路由装到编译时的选择上，并清掉该组的运行时状态；切换脚本启动时同样清掉状态并重新装一遍编译时的选择，之后只改组表。两边用同一个 `group_hop` 函数和同一组每成员下一跳（直连 WireGuard 用 `dev <接口>`；Mesh 用 `via $MESH_NH4` / `via $MESH_NH6 dev $MESH_DEV`，并且要先有密封标记，否则黑洞）。表 100、102、150、main 以及任何出口自己的表都会被拒绝。
 - 下发：改组只改拓扑，生效要经安装事务（`meridian-up.sh` 会重启 `meridian-failover.service`，让切换脚本拿到新的策略）。枢纽上的切换是安装好的脚本自己做的，地区组没有给 `meridian-host` 增加任何动作。
-- DNS 跟随静态选择：规则的解析器是编译时选中的成员的隧道解析器。组切换到别的成员后 DNS 仍问原成员（同一地区）；原成员整个不可用时解析也会失败，这和以前的池一样，未在这一版解决。
+- DNS 跟随实际成员：可切换组的规则（和可切换的默认组）问组自己的解析地址，查询走组的数据路径，枢纽切到哪个成员就由哪个成员解析，见下一节。钉死出口的规则、被解锁映射移到某个成员的规则、不可切换的组，仍问那个成员自己的隧道解析器。
+
+### 地区组的解析
+
+以前可切换组的规则用编译时首选成员的隧道解析器（`server <首选的 DNSULA> -group g_<首选>`），网关按目的地址把查询送到首选。首选整机或隧道故障时枢纽把组表切到备成员，数据能走，但新名字仍问已失效的首选，切换等于没用。现在组的 DNS 和组的数据走同一条路，网关上不需要任何运行时状态：
+
+1. **保留地址。** `fd66::53:0/112`（在 `fd66::/64` 里）不属于任何节点。组的解析地址是 `fd66::53:<组索引+1>`（组索引就是给组的 mark、中转地址和枢纽表编号的那个；示例里 `us` 组是 `fd66::53:13`，mark `0x113`）。每组一个地址，是为了不让两个 SmartDNS 上游只差 mark、地址相同（SmartDNS 会不会把它们当成同一个服务器，没有核实，干脆避开）。隧道地址分配器从不分配 `fd66::/64`（链路是 `fd66:0:0:<n>::/64`，n ≥ 1；WSS 备腿 `fd66:0:0:<0x80+i>::/64`；中转 `fd66:0:0:ff::/64`），校验（`group_resolver_conflict`）拒绝落在 `fd66::/64` 里的链路隧道地址、中转前缀和 NAT64 前缀；局域网 IPv6 前缀和远程接入地址池本来就不能碰 `fd66::/48`，Mesh 路由由 Mesh 计划拒绝。
+2. **网关 SmartDNS。** 每个可切换组一行 `server fd66::53:<k> -group rg_<组> -exclude-default-group -set-mark <组 mark 的十进制>`；只有默认组可切换时它那一行不带 `-exclude-default-group`，成为没命中规则的名字的唯一上游（这时默认组首选出口自己的那行改带 `-exclude-default-group`）。规则指向可切换组时 `-nameserver rg_<组>`。mark 必须写十进制：在真实网关上用 `pymumu/smartdns:latest`（1.2026.11.09）实测，`-set-mark 19824` 和 `server-tcp` 形式都给每个上游包打上了 0x4d70，写成 `-set-mark 0x4d70` 时 SmartDNS 不报错、也一个 mark 都不打。SmartDNS 容器有 `NET_ADMIN`、用宿主网络（`deploy/docker-compose.yml`）。国内 DoT 只在 `domestic` 组里，任何 `rg_` 组只有组自己的解析地址。
+3. **网关的出路（本机发出，兜底表不管）。** 兜底表只挂 forward，本机发出的包靠路由层。带组 mark 的查询：`fwmark <组 mark> lookup 102`（v4/v6 都有）→ 表 102 的 IPv6 只有局域网前缀（不含 `fd66`，校验保证）、`default dev <西向隧道>` 和 metric 32767 的黑洞；隧道路由不在时落到黑洞，再后面还有 `fwmark <组 mark> unreachable`。所以带 mark 的组查询只能进西向隧道或被拒，不会查到表 100 或 main，不会经 ROS。没带 mark 的（例如 SmartDNS 没打上 mark）查 main：`fd66::/48 dev <西向隧道>` 加 metric 32767 的黑洞，同样进不了 ROS；它不会被改写源地址，枢纽也就不会把它送进任何组表（运行时测试里它在隧道里绕到跳数用完），所以表现为解析失败，而不是问错成员。
+4. **网关的源地址。** 枢纽按源地址选组表，本机查询的源地址是隧道接口地址。`transit_snat` 加一条：`ip6 daddr fd66::53:<k> meta mark <组 mark> meta l4proto { tcp, udp } th dport 53 snat ip6 to <组的中转 IPv6>`。只认组 mark、组自己的解析地址、53。能带组 mark 的只有两种包：分类链打的（只在局域网口和 `mra` 入口上跑，而分类链在任何规则之前就丢弃 `fc00::/7` 目的地址，所以转发流量不可能带着组 mark 去解析地址；兜底表也丢弃转发的 53/853）和本机套接字自己设的。回包由 conntrack 改回原来的隧道接口地址，入站链只限制目的端口 53/853，回包不受影响。`internal/probe` 的探测走另一条路（直接绑在 `lo` 的中转地址上，不需要 SNAT），组的中转地址同样在 `lo` 上，不冲突。
+5. **枢纽（没改）。** 组的中转 IPv6 有 `from <中转>/128 lookup <组表>`（优先级 18200+索引，在它前面只有其他中转地址的同类规则）；组表里只有局域网、中转前缀（`fd66:0:0:ff::/64`，不含解析地址）、`group_hop` 装的 `default dev <成员接口>`（v4/v6 一起切）和黑洞。所以发往 `fd66::53:<k>` 的查询进当前成员；回包目的地址是组的中转地址，枢纽 main 里 `fd66:0:0:ff::/64 dev <西向>`，原路回网关。枢纽的 nft 不过滤转发。WireGuard 的 AllowedIPs：西侧对东侧是 `::/0`，东侧对西侧含 `fd66::/48`，正反方向都放行。
+6. **出口。** 每个能被枢纽切换到的出口（枢纽直连 WireGuard），在拓扑里有可切换组时，`table inet meridian` 多一个 `group_dns` 链：`iifname { <枢纽隧道> } ip6 daddr fd66::53:0/112 meta l4proto { tcp, udp } th dport 53 dnat ip6 to <本出口隧道解析地址>`（nat prerouting）。目标就是出口 SmartDNS 绑定的 `[<DNSULA>]:53`；回包源地址由 conntrack 改回组解析地址，不依赖解析器怎么选源地址，也不加第二个监听（在 `[::]` 之外再绑具体地址在这个 SmartDNS 上会失败）。出口没有 input 过滤；回包发往组的中转地址，出口路由 `fd66:0:0:ff::/64 dev <隧道>`，与组数据的回程相同。整个 `/112` 都应答，所以出口加入别的组时不用改出口配置；从 WAN 或 Mesh 进来的不改写。
+7. **组在 Mesh 或黑洞时。** 组表指向 `mmesh`（或因未密封而黑洞）时，组的解析地址后面没有解析器：查询进 Mesh 后没有任何节点应答，或在枢纽被黑洞。解析失败，不改问国内、别的成员或别的国家——这时组的数据也只有 Mesh 或无路可走，失败是如实的。要让 Mesh 路径也能解析，需要 Mesh 对端出口在它的 Mesh 入口上做同样的 DNAT，并让 Mesh 路由带上 `fd66::53:0/112` 和组的中转前缀的回程；这一版没做。
+8. **手动组。** `hold`：组表永远指向 `chosen`，DNS 也只问它，它坏了解析和数据一起失败。`fallback`：和自动组一样跟随切换。
+9. **远程接入设备** 的 DNS 被劫持到同一个网关 SmartDNS，行为与局域网客户端相同。
+10. **升级顺序。** 网关装上这一版后，组的查询发往只有重新下发过的出口才会应答的地址；还没更新的出口不应答，组内名字解析失败（不会回落到旧的「问首选成员」的做法——那正是要修的不一致）。所以先下发出口和枢纽，再安装网关（「下发顺序」，面板「部署」页的推荐顺序同样写了）。编译无法知道远端已经是哪一版，所以不出校验问题；`APPLY_ORDER.txt` 在有可切换组时写明这一点，`meridian-verify.sh` 的 `PENDING-HUMAN group_dns_failover` 要求实测。
+
+没有可切换组的拓扑，编译结果里没有这些行（测试 `TestGroupDNSAbsentWithoutSwitchableGroup`）。运行时测试 `TestNetnsGroupDNSFailover`（见[验收清单](verification.md#地区组的解析)）在网络命名空间里用编译出的网关、阿里云、枢纽、两个成员出口的 nft 和路由以及枢纽的 `group_step` 跑完整条路径；2026-11-13 跑通过一次（见 `docs/evidence/2026-11-13-debian13/netns-group-dns.log`）。成员出口上的解析器在测试里是替身，真实出口和真实枢纽上的行为仍是待人工签收。
 
 ### 兼容
 
@@ -419,7 +546,7 @@ Mesh 的 Compose 只生成在枢纽和对应出口上。镜像默认是官方的
 | 上限 | 最多 64 台设备。 |
 | 设备之间 | 不互通：从 `mra` 进、再从 `mra` 出的包被守卫丢弃。 |
 | 零设备 | 打开功能就创建接口并监听端口（没有 peer，什么都进不来）；这样端口转发可以先验证，加设备只改 peer。 |
-| 关闭功能 | 下一次安装删除 `mra.conf`、接口（经受管清单由 host agent 删除）、全部 `mra` 相关 nft 规则、入站端口放行和启动脚本里的那一段。设备记录、网关私钥和预共享密钥留在面板，重新打开后原配置继续可用。旧池的黑洞路由和 `iif mra unreachable` 规则留到下次重启，它们只作用于已经不存在的接口和不再使用的私有前缀。 |
+| 关闭功能 | 下一次安装删除 `mra.conf`、接口（经受管清单由 host agent 删除）、全部 `mra` 相关 nft 规则、入站端口放行和启动脚本里的那一段。设备记录、网关私钥和预共享密钥留在面板，重新打开后原配置继续可用。旧池的黑洞路由留到下次重启，它只作用于不再使用的私有前缀。旧版本装的 `iif mra unreachable` 规则不论开关都由路由脚本删除（见「局域网兜底」）。 |
 | Endpoint 与端口 | 必须由用户填写（DDNS 名或地址），面板不猜公网地址，也不碰路由器。端口不得与网关上任何隧道监听端口、WSS 失败切换腿端口、wstunnel 本地端口、WSS 监听端口、面板端口、22/53/67/68/123/546/547/853/5353 冲突。API 返回需要在路由器上做的转发说明（UDP、外部端口、网关局域网地址、内部端口），IPv6 直连则需要路由器防火墙放行到网关全局地址的同一 UDP 端口。 |
 | 客户端模式 | `full`（全隧道）：`AllowedIPs = 0.0.0.0/0, ::/0`，DNS 指向网关。`home`（仅家网）：`AllowedIPs` 只有局域网 v4/v6 前缀和网关的两个 DNS 地址，DNS 仍写网关。仅家网模式不接管客户端的公网流量，也不保证接管它的全部 DNS（是否把所有查询交给隧道 DNS 取决于客户端系统），所以 Meridian 的分流和防泄漏规则对那部分流量不起作用。默认 `MTU = 1380`、`PersistentKeepalive = 25`。 |
 | 运行时状态 | 每台设备的最近握手和流量经 host agent 无参数的只读动作 `/v1/remote-access/status` 读取（见下面 API 表）；读不到时 API 给出原因，不伪造数值。 |
@@ -429,12 +556,12 @@ Mesh 的 Compose 只生成在枢纽和对应出口上。镜像默认是官方的
 只在打开时出现，全部写在网关的 `meridian.nft`（一个 nft 事务）、早启动的 `meridian-guard.nft`、`meridian-routes.sh` 和 `meridian-up.sh` 里：
 
 - **守卫**（`inet meridian_guard`，forward，优先级 -200）：入口集合从 `iifname "<LAN>"` 变成 `iifname { "<LAN>", "mra" }`，规则不变——DNS/DoT 转发一律丢；国内 mark 只能从局域网口出去；出口与地区组 mark 只能进网关的 WireGuard 隧道接口（`mra` 不在其中）；其余全丢。之前多两条窄放行：`iifname "<LAN>" oifname "mra" ip daddr <设备 v4 池> return` 和 v6 同样一条，用于家里主机访问设备以及国内直连流量的回程。设备访问家里主机走的是「国内 mark 从局域网口出」那条，不需要额外放行。设备之间、设备到 `mra` 都没有放行。`iifname` 按名字匹配，接口还不存在时规则照样加载，不会失败也不会放行任何东西。
-- **分类**：`prerouting` 对两个入口都 `jump classify`。`classify` 开头先把目的地是设备池的包标成国内 mark（于是走表 100 里那条 `dev mra` 路由，守卫只在入口是局域网口时放行），然后与局域网完全相同。
+- **分类**：`prerouting` 对两个入口都 `jump classify`。`classify` 开头先把目的地是设备池的包标成国内 mark（于是走表 100 里那条 `dev mra` 路由，守卫只在入口是局域网口时放行），然后与局域网完全相同：局域网 IPv6 前缀是 ULA 时，它在 `fc00::/7` 丢弃之前被标成国内 mark（只这一个前缀），所以设备访问家里的 ULA 主机和家里主机的回程都不会被 ULA 丢弃挡住；其他 ULA 照旧丢弃（见「为什么网关要做一次中转地址改写」后面的分类顺序）。
 - **DNS**：`dns_hijack` 对 `mra` 进来的 53/853 做同样的重定向（目标是 `mra` 上的网关地址，SmartDNS 已经绑在 `[::]`）；`input` 链「DNS 只给局域网」的源地址白名单加上两个设备池；DoH 地址的 443 在转发链上同样拒绝。面板端口仍只对局域网开放，设备不能访问面板。
 - **入站端口**：`input` 链 `iifname "<LAN>" udp dport <端口> accept`，随后 `udp dport <端口> drop`（只在局域网口接受，包括经 ROS 转进来的 IPv6）。
 - **地址改写**：境外：`transit_snat` 对设备池源地址按每个出口/地区组 mark 改写到同一中转地址（v4 和 v6），上游只见中转地址。国内直连和访问家里主机：`oifname "<LAN>" ip saddr <设备 v4 池> masquerade`、v6 同理（ROS 没有回设备池的路由；局域网客户端本来就在 ROS 的子网上，所以对它们不加改写，行为不变）。
 - **MSS**：`mss` 链对进出 `mra` 的 SYN 按 `mra` 的 MTU 夹到 MTU-40 / MTU-60。
-- **路由**：主表和表 100 各有 `<池> dev mra` 与同前缀的 `blackhole … metric 32767`（接口不在时不会落到 ROS）；IPv4 `iif mra unreachable`（优先级 17851，与局域网那条同理的路由层兜底）。策略规则不变：国内 mark → 表 100，境外 mark → 表 102，之后 unreachable。
+- **路由**：主表和表 100 各有 `<池> dev mra` 与同前缀的 `blackhole … metric 32767`（接口不在时不会落到 ROS）；没有 `iif mra unreachable`（它会让经 `mra` 转发出去的 IPv4 过不了源地址校验，见「局域网兜底」），来自 `mra` 的未分类流量由守卫丢弃。策略规则不变：国内 mark → 表 100，境外 mark → 表 102，之后 unreachable。
 - **启动顺序**：`meridian-up.sh` 不变的顺序——先 `nft -c` 再 `nft -f`（守卫和主表同一批）、确认守卫在、等局域网、开转发，然后才拉 WireGuard。`mra` 放在接口列表第一个（先占住监听端口），存在就 `wg syncconf`（删掉的 peer 立即从运行接口上消失），不存在就 `wg-quick up`；随后把 `mra` 的地址和 MTU 对齐到配置（`syncconf` 不改地址）、打开 `mra` 的 IPv6 转发，最后跑路由脚本。早启动的 `meridian-guard.service` 加载的守卫文件里已经带 `mra`，所以开机时在主表加载之前，设备流量同样只会被丢弃。
 - **加载失败**：两张表在同一批里，失败时内核整批回退，旧守卫和旧分类都在；启动脚本在此停下，不碰路由、转发和接口。
 
@@ -460,7 +587,7 @@ Mesh 的 Compose 只生成在枢纽和对应出口上。镜像默认是官方的
 
 ### 验证状态
 
-结构测试在 `internal/compile/remote_access_test.go`（守卫按包逐条求值、分类、DNS、入站端口、地址改写、路由、启动顺序、关闭时逐字节相同）、`internal/apply/txn_test.go`（peer 随事务增删、失败补偿回到上一份 peer 集合、关闭功能删除接口、缺密钥在写文件前失败）和 API 测试里。`TestNetnsReloadNoLeak` 加了远程设备命名空间（`mra` 用 veth 代替 WireGuard），还加了地区组切换阶段（G），只能在 Linux 上以 root 运行；在新的运行日志归档之前，远程接入的运行时行为没有被验证，`docs/evidence/2026-11-12-debian13/netns-reload.log` 只覆盖加入远程接入之前的版本。网关上的 `meridian-verify.sh` 打开时核对 `mra`、对端公钥、守卫入口、DNS、端口、规则、路由和地址改写，关闭时确认没有 `mra` 接口；手机实测和路由器转发是人工签收项，步骤见 [remote-access.md](remote-access.md)。
+结构测试在 `internal/compile/remote_access_test.go`（守卫按包逐条求值、分类、DNS、入站端口、地址改写、路由、启动顺序、关闭时逐字节相同）、`internal/apply/txn_test.go`（peer 随事务增删、失败补偿回到上一份 peer 集合、关闭功能删除接口、缺密钥在写文件前失败）和 API 测试里。`internal/compile/ula_lan_test.go` 对 ULA 局域网前缀按包求值分类链和守卫（设备 ↔ 家里主机双向放行，`fd66::/48`、中转 /64、相邻的 ULA 和其他 ULA 仍丢弃，规则恰好等于配置的前缀；GUA 前缀时分类链不变）。`TestNetnsULALANHomeAccess`（Linux、root、`MERIDIAN_NETNS_TEST=1`，与 `TestNetnsReloadNoLeak` 共用同一套命名空间搭建）在真实内核上检查同一件事，2026-11-13 跑通过一次（见 `docs/evidence/2026-11-13-debian13/`）。`TestNetnsReloadNoLeak` 加了远程设备命名空间（`mra` 用 veth 代替 WireGuard），还加了地区组切换阶段（G），只能在 Linux 上以 root 运行；这一版的运行日志已于 2026-11-13 归档在 `docs/evidence/2026-11-13-debian13/`（`netns-reload.log`、`netns-ula-lan.log`）；`docs/evidence/2026-11-12-debian13/netns-reload.log` 是加入远程接入之前的版本，不覆盖它。命名空间里的通过记录不等于真实设备拨入的证据，那仍是待人工签收。网关上的 `meridian-verify.sh` 打开时核对 `mra`、对端公钥、守卫入口、DNS、端口、规则、路由和地址改写，关闭时确认没有 `mra` 接口；手机实测和路由器转发是人工签收项，步骤见 [remote-access.md](remote-access.md)。
 
 ## 面板信息架构
 

@@ -13,11 +13,13 @@ import {
   SyncOutlined,
   UserOutlined,
   CloudUploadOutlined,
+  EllipsisOutlined,
 } from "@ant-design/icons";
 import {
   Alert,
   App as AntApp,
   Button,
+  Dropdown,
   Empty,
   Input,
   Modal,
@@ -226,7 +228,8 @@ export const ERROR_TEXT: Record<string, string> = {
   unreachable: "连不上这台服务器",
   timeout: "连接超时",
   not_ssh: "对端不是 SSH 服务",
-  auth_failed: "SSH 登录被拒绝",
+  auth_failed: "SSH 登录被拒绝：服务器不接受这份凭据",
+  auth_method_unavailable: "服务器不接受这种登录方式",
   command_failed: "远端命令执行失败",
   account_locked: "账户被未撤回完的 Mesh 部署绑定",
   check_failed: "权限检查无法进行",
@@ -247,6 +250,20 @@ export const ERROR_TEXT: Record<string, string> = {
   unknown_server: "节点引用的服务器不存在",
   server_shared: "两个节点不能共用一台服务器",
   ssh_fields_moved: "SSH 地址已移到服务器管理",
+  // install / rollback (POST /api/apply, /api/rollback, /api/host/recover)
+  legacy_install_refused: "网关上的旧版 Meridian 无法可靠接管",
+  transaction_pending: "上一次宿主事务没有完成，先恢复",
+  peer_keys_missing: "有对端节点还没有可用的公钥",
+  topology_invalid: "拓扑校验没有通过",
+  lan_interface_mismatch: "网关的局域网接口不一致",
+  activation_failed_compensated: "启动失败，已补偿回事务前",
+  activation_failed_uncompensated: "启动失败，补偿也失败了",
+  commit_failed: "网关已生效，但提交记录失败",
+  nothing_to_rollback: "没有上一份配置可以回滚",
+  rollback_mode_required: "网关已安装，回滚必须包含宿主网络",
+  gateway_key_unavailable: "网关私钥无法取得",
+  host_state_malformed: "宿主事务状态文件损坏",
+  apply_failed: "安装或回滚没有完成",
 };
 
 export function errorTitle(e: ApiError): string {
@@ -683,6 +700,51 @@ export function useConfirmDanger() {
       });
     },
     [modal],
+  );
+}
+
+// =================================================================== tables ===
+
+/**
+ * Table props every list in the panel uses: the table is as wide as its
+ * content and scrolls sideways inside its own box when the page is narrower
+ * (never clipping columns). Give the name column `className: "cell-name"`
+ * (no wrapping), long free text `className: "cell-text"` with a width, and
+ * the action column `fixed: "right"` with `className: "cell-actions"`.
+ */
+export const TABLE_SCROLL = { x: "max-content" } as const;
+
+export interface MoreAction {
+  key: string;
+  label: ReactNode;
+  icon?: ReactNode;
+  danger?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}
+
+/**
+ * Row actions in a table: the one or two actions used most stay as buttons,
+ * the rest go into a "…" menu, so the column stays narrow and nothing is cut.
+ * `label` names the row for the menu button ("<name> 的更多操作").
+ */
+export function RowActions({ children, more, label }: { children?: ReactNode; more?: MoreAction[]; label: string }) {
+  const items = (more ?? []).filter(Boolean);
+  return (
+    <Space size={2} className="table-actions">
+      {children}
+      {items.length > 0 ? (
+        <Dropdown
+          trigger={["click"]}
+          menu={{
+            items: items.map((m) => ({ key: m.key, label: m.label, icon: m.icon, danger: m.danger, disabled: m.disabled })),
+            onClick: ({ key }) => items.find((m) => m.key === key)?.onClick(),
+          }}
+        >
+          <Button type="text" size="small" icon={<EllipsisOutlined />} aria-label={`${label} 的更多操作`} />
+        </Dropdown>
+      ) : null}
+    </Space>
   );
 }
 

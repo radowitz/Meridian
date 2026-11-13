@@ -1,0 +1,30 @@
+=== RUN   TestNetnsGroupDNSFailover
+    netns_group_dns_linux_test.go:84: path: gw m02 ali m13 hub m11 us / m12 us-2; group us mark 0x113 transit fd66:0:0:ff::1c resolver fd66::53:13 table 219
+    netns_group_dns_linux_test.go:360: EVIDENCE before: UDP query via group us: 198.18.1.1
+    netns_group_dns_linux_test.go:361: EVIDENCE before: TCP query via group us: 198.18.1.1
+    netns_group_dns_linux_test.go:362: EVIDENCE before: LAN client connection via group us (source seen by the server): 100.64.1.2
+    netns_group_dns_linux_test.go:367: EVIDENCE before counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=6 snatted=6 at_us=6 at_us2=0
+    netns_group_dns_linux_test.go:374: EVIDENCE us down, hub not yet switched: UDP query via group us: TIMEOUT
+    netns_group_dns_linux_test.go:417: EVIDENCE failover: hub active member of group us: us-2
+    netns_group_dns_linux_test.go:418: EVIDENCE failover: hub report: hop in table us: us-2
+    netns_group_dns_linux_test.go:419: EVIDENCE failover: hub report: result: ok
+    netns_group_dns_linux_test.go:430: EVIDENCE after failover: UDP query via group us: 198.18.1.2
+    netns_group_dns_linux_test.go:431: EVIDENCE after failover: TCP query via group us: 198.18.1.2
+    netns_group_dns_linux_test.go:432: EVIDENCE after failover: LAN client connection via group us: 100.64.2.2
+    netns_group_dns_linux_test.go:437: EVIDENCE after failover counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=13 snatted=13 at_us=6 at_us2=6
+    netns_group_dns_linux_test.go:445: EVIDENCE all members down: hub active hop of group us: mmesh
+    netns_group_dns_linux_test.go:446: EVIDENCE all members down: hub report: hop in table us (Mesh unsealed): blackhole
+    netns_group_dns_linux_test.go:447: EVIDENCE all members down: UDP query via group us: TIMEOUT
+    netns_group_dns_linux_test.go:448: EVIDENCE all members down counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=14 snatted=14 at_us=6 at_us2=6
+    netns_group_dns_linux_test.go:457: EVIDENCE control: unmarked query: TIMEOUT
+    netns_group_dns_linux_test.go:290: DIAG us-resolver.py.log:
+        udp query from fd66:0:0:ff::1c
+        tcp query from fd66:0:0:ff::1c
+    netns_group_dns_linux_test.go:290: DIAG us2-resolver.py.log:
+        udp query from fd66:0:0:ff::1c
+        tcp query from fd66:0:0:ff::1c
+    netns_group_dns_linux_test.go:290: DIAG net-server.py.log:
+        connection from 100.64.1.2
+        connection from 100.64.2.2
+meridian-netns-group-dns-test-ok
+--- PASS: TestNetnsGroupDNSFailover (46.96s)

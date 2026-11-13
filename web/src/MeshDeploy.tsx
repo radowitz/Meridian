@@ -9,6 +9,7 @@ import type { ApiError } from "./api";
 import { href } from "./state";
 import type { CloudflareAccountView, MeshJournal, MeshNodeReadiness, MeshRunResult, MeshStatus, PermissionCheck } from "./types";
 import {
+  TABLE_SCROLL,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -63,12 +64,13 @@ function ReadinessTable({ rows }: { rows: MeshNodeReadiness[] }) {
       rowKey="node_id"
       pagination={false}
       dataSource={rows}
-      scroll={{ x: 760 }}
+      scroll={TABLE_SCROLL}
       columns={[
-        { title: "节点", render: (_, r) => <Link to={href("topology", r.node_id)}>{r.name || r.node_id}</Link> },
-        { title: "角色", width: 80, render: (_, r) => (r.role === "hub" ? "枢纽" : r.role === "exit" ? "出口" : r.role) },
+        { title: "节点", className: "cell-name", render: (_, r) => <Link to={href("topology", r.node_id)}>{r.name || r.node_id}</Link> },
+        { title: "角色", className: "nowrap", render: (_, r) => (r.role === "hub" ? "枢纽" : r.role === "exit" ? "出口" : r.role) },
         {
           title: "服务器",
+          className: "nowrap",
           render: (_, r) =>
             r.server_id ? (
               <Link to={href("servers", r.server_id)}>{r.server_name || r.server_id}</Link>
@@ -78,6 +80,7 @@ function ReadinessTable({ rows }: { rows: MeshNodeReadiness[] }) {
         },
         {
           title: "就绪",
+          className: "nowrap",
           render: (_, r) =>
             r.ready ? (
               <StatusTag kind="ok">就绪</StatusTag>
@@ -213,9 +216,9 @@ function JournalView({ journal, status }: { journal: MeshJournal; status: MeshSt
           rowKey="node_id"
           pagination={false}
           dataSource={journal.hosts ?? []}
-          scroll={{ x: 760 }}
+          scroll={TABLE_SCROLL}
           columns={[
-            { title: "节点", render: (_, h) => h.name || h.node_id },
+            { title: "节点", className: "cell-name", render: (_, h) => h.name || h.node_id },
             { title: "服务器", render: (_, h) => (h.server_id ? <Link to={href("servers", h.server_id)}>{h.server_id}</Link> : <StatusTag kind="attention">记录里没有</StatusTag>) },
             { title: "密钥", render: (_, h) => (h.credential_id ? <Link to={href("keys", h.credential_id)}>{h.credential_id}</Link> : "—") },
             { title: "目标", render: (_, h) => <Mono>{`${h.ssh_user}@${h.ssh_host}:${h.ssh_port}`}</Mono> },

@@ -26,18 +26,38 @@ type gView struct {
 	MeshBackup         bool     `json:"mesh_backup"`
 	Fwmark             string   `json:"fwmark"`
 	MemberStatus       []struct {
-		ID       string `json:"id"`
-		Position int    `json:"position"`
-		Eligible bool   `json:"eligible"`
-		Active   bool   `json:"active"`
-		Reasons  []struct {
+		ID           string `json:"id"`
+		Position     int    `json:"position"`
+		Eligible     bool   `json:"eligible"`
+		ModelActive  bool   `json:"model_active"`
+		ActualActive bool   `json:"actual_active"`
+		Reasons      []struct {
 			Code string `json:"code"`
 		} `json:"reasons"`
 		Health *struct {
 			Up bool `json:"up"`
 		} `json:"health"`
 	} `json:"member_status"`
-	State struct {
+	Actual struct {
+		State           string  `json:"state"`
+		Code            string  `json:"code"`
+		Message         string  `json:"message"`
+		Active          string  `json:"active"`
+		Hop             string  `json:"hop"`
+		Reason          string  `json:"reason"`
+		Alert           bool    `json:"alert"`
+		AlertMessage    string  `json:"alert_message"`
+		LastSwitch      *string `json:"last_switch"`
+		ReadAt          *string `json:"read_at"`
+		HubReportedAt   *string `json:"hub_reported_at"`
+		DeployedMatches *bool   `json:"deployed_matches"`
+		ClockSkewSec    *int64  `json:"clock_skew_sec"`
+		Reported        *struct {
+			Hop  string `json:"hop"`
+			Want string `json:"want"`
+		} `json:"reported"`
+	} `json:"actual"`
+	Model struct {
 		Active          string  `json:"active"`
 		Reason          string  `json:"reason"`
 		Alert           bool    `json:"alert"`
@@ -46,7 +66,7 @@ type gView struct {
 		Observed        bool    `json:"observed"`
 		Source          string  `json:"source"`
 		ReturnBlockedBy string  `json:"return_blocked_by"`
-	} `json:"state"`
+	} `json:"model"`
 	InUseBy []struct {
 		Kind string `json:"kind"`
 		ID   string `json:"id"`
@@ -118,8 +138,15 @@ func TestRegionGroupListAndViews(t *testing.T) {
 	if strings.Join(hk.EffectiveOrder, ",") != "hk-ix,hk-2" || strings.Join(hk.SwitchOrder, ",") != "hk-ix,hk-2" {
 		t.Fatalf("hk order %v / %v", hk.EffectiveOrder, hk.SwitchOrder)
 	}
-	if hk.State.Observed || hk.State.Active != "hk-ix" || hk.State.Source != "panel_model" || hk.State.LastSwitch != nil {
-		t.Fatalf("hk state %+v", hk.State)
+	if hk.Model.Observed || hk.Model.Active != "hk-ix" || hk.Model.Source != "panel_model" || hk.Model.LastSwitch != nil {
+		t.Fatalf("hk state %+v", hk.Model)
+	}
+	// Never read: the hub's state is unknown, and the model is not it.
+	if hk.Actual.State != "never_read" || hk.Actual.Active != "" || hk.Actual.ReadAt != nil {
+		t.Fatalf("hk actual %+v", hk.Actual)
+	}
+	if v6 := gs["v6"]; v6.Actual.State != "not_switchable" || v6.Actual.Active != "" {
+		t.Fatalf("v6 actual %+v", v6.Actual)
 	}
 	refs := map[string]bool{}
 	for _, r := range hk.InUseBy {
@@ -293,17 +320,17 @@ func TestRegionGroupHealthState(t *testing.T) {
 		gs[g.ID] = g
 	}
 	hk := gs["hk"]
-	if !hk.State.Observed || hk.State.Active != "hk-2" || hk.State.Reason != "failover" || hk.State.Alert || hk.State.LastSwitch == nil || hk.State.ReturnBlockedBy != "target_down" {
-		t.Fatalf("hk state %+v", hk.State)
+	if !hk.Model.Observed || hk.Model.Active != "hk-2" || hk.Model.Reason != "failover" || hk.Model.Alert || hk.Model.LastSwitch == nil || hk.Model.ReturnBlockedBy != "target_down" {
+		t.Fatalf("hk state %+v", hk.Model)
 	}
 	for _, m := range hk.MemberStatus {
-		if m.Health == nil || (m.ID == "hk-ix") == m.Health.Up || m.Active != (m.ID == "hk-2") {
+		if m.Health == nil || (m.ID == "hk-ix") == m.Health.Up || m.ModelActive != (m.ID == "hk-2") || m.ActualActive {
 			t.Fatalf("member %+v", m)
 		}
 	}
 	hold := gs["jp-hold"]
-	if hold.State.Active != "jp" || hold.State.Reason != "held" || !hold.State.Alert || !strings.Contains(hold.State.AlertMessage, "保持不切换") {
-		t.Fatalf("hold state %+v", hold.State)
+	if hold.Model.Active != "jp" || hold.Model.Reason != "held" || !hold.Model.Alert || !strings.Contains(hold.Model.AlertMessage, "保持不切换") {
+		t.Fatalf("hold state %+v", hold.Model)
 	}
 	if !containsStr(body.Flipped, "hk-ix") || !containsStr(body.Flipped, "jp") {
 		t.Fatalf("flipped %v", body.Flipped)
@@ -317,8 +344,8 @@ func TestRegionGroupHealthState(t *testing.T) {
 		do(s, http.MethodPost, "/api/region-groups/health", obs)
 	}
 	fb := groupsOf(t, s)["jp-hold"]
-	if fb.State.Active != "sg" || fb.State.Reason != "fallback" || !fb.State.Alert || !strings.Contains(fb.State.AlertMessage, "临时使用") {
-		t.Fatalf("fallback state %+v", fb.State)
+	if fb.Model.Active != "sg" || fb.Model.Reason != "fallback" || !fb.Model.Alert || !strings.Contains(fb.Model.AlertMessage, "临时使用") {
+		t.Fatalf("fallback state %+v", fb.Model)
 	}
 }
 

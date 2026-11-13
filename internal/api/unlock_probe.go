@@ -54,6 +54,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/hostexec"
+	"github.com/radowitz/meridian/internal/hubstate"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/probe"
 	"github.com/radowitz/meridian/internal/unlock"
@@ -393,7 +394,7 @@ func planProbe(t model.Topology, sel probeSelection) ([]probeGroup, []probeJobIt
 					skipped = append(skipped, it)
 				case !probe.SupportsFamily(svc, fam):
 					it := newItem(byID[svc], ex, fam, itemSkipped)
-					it.Category, it.Grade, it.Signal = probe.CatUnknown, probe.GradeUnknown, probe.SigFamily
+					it.Category, it.Grade, it.Signal = probe.CatNotApplicable, probe.GradeNotApplicable, probe.SigFamily
 					it.Error, it.Ingest = "该服务的公开检测方法只支持 IPv4，未探测 IPv6", "not_ingested:family_not_supported"
 					skipped = append(skipped, it)
 				default:
@@ -756,8 +757,13 @@ func sanitizeReport(rep probe.Report, spec probe.Spec) probe.Report {
 			continue
 		}
 		a, _ := probe.Lookup(r.Service)
+		notApplicable := r.Category == probe.CatNotApplicable && !probe.SupportsFamily(r.Service, spec.Family)
 		r.Category, r.Signal = sanitizeCategory(a, r.Category, r.Signal)
 		switch {
+		case notApplicable && !wrongExit:
+			// Nothing was sent for a family the check does not support: not a
+			// platform result, whatever the egress check said.
+			r.Category, r.Region, r.Signal, r.Parts = probe.CatNotApplicable, "", probe.SigFamily, nil
 		case wrongExit:
 			r.Category, r.Region, r.Signal, r.Error = probe.CatFailed, "", probe.SigEgressChanged, "agent 报告的出口或地址族与请求不符，不作为平台结果"
 		case !rep.Egress.Confirmed && r.Category != probe.CatFailed:
@@ -797,6 +803,8 @@ func sanitizeReport(rep probe.Report, spec probe.Spec) probe.Report {
 // sanitizeCategory: unknown categories become unknown, and a category the
 // adapter did not declare (an "unlocked" from a reachability adapter, say)
 // is downgraded: platform verdicts to unknown, reachability to unknown.
+// not_applicable is accepted only by sanitizeReport, for a family the
+// service's check does not support; here it is an unknown category.
 func sanitizeCategory(a probe.Adapter, c probe.Category, sig string) (probe.Category, string) {
 	switch c {
 	case probe.CatNetworkOK, probe.CatUnlocked, probe.CatNotUnlocked, probe.CatFailed, probe.CatUnknown:
@@ -954,8 +962,8 @@ func (s *Server) getUnlockCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"catalog": catalogView(t), "available": s.Prober != nil,
 		"validation": probe.Validation, "validation_text": probe.ValidationText,
-		"grades":      []probe.Grade{probe.GradePlatform, probe.GradeReachability, probe.GradeUnknown, probe.GradeError},
-		"ingest_rule": "unlocked = 成功，not_unlocked = 失败；network_ok / unknown / failed 不是解锁结论，按 inconclusive 入库，既不降级也不恢复",
+		"grades":      []probe.Grade{probe.GradePlatform, probe.GradeReachability, probe.GradeUnknown, probe.GradeError, probe.GradeNotApplicable},
+		"ingest_rule": "unlocked = 成功，not_unlocked = 失败；network_ok / unknown / failed 不是解锁结论，按 inconclusive 入库，既不降级也不恢复；not_applicable（检测方法不支持这个地址族，没有发出请求）不入库",
 	})
 }
 
@@ -1022,8 +1030,11 @@ type exitGroupRef struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Mode string `json:"mode"`
-	// Active is the group's member currently selected (link health view).
-	Active string `json:"active,omitempty"`
+	// ActualActive is the member the hub reported in use (actual state ok
+	// only); ModelActive is the panel's computation (面板推算), never an
+	// observation.
+	ActualActive string `json:"actual_active,omitempty"`
+	ModelActive  string `json:"model_active,omitempty"`
 }
 
 type resultRow struct {
@@ -1052,11 +1063,16 @@ func (s *Server) getUnlockResults(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	plans := plansOf(t)
+	hub := s.groupHub()
 	groupsOf := map[string][]exitGroupRef{}
 	for _, g := range sortedGroups(t) {
-		v := viewGroup(t, g, plans, runtime)
+		v := viewGroup(t, g, plans, runtime, hub)
+		ref := exitGroupRef{ID: g.ID, Name: g.Name, Mode: string(g.Mode), ModelActive: v.Model.Active}
+		if v.Actual.State == hubstate.StateOK {
+			ref.ActualActive = v.Actual.Active
+		}
 		for _, m := range g.Members {
-			groupsOf[m] = append(groupsOf[m], exitGroupRef{ID: g.ID, Name: g.Name, Mode: string(g.Mode), Active: v.State.Active})
+			groupsOf[m] = append(groupsOf[m], ref)
 		}
 	}
 	svcs := map[string]unlock.Service{}

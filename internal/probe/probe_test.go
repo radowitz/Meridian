@@ -381,7 +381,7 @@ func TestRunForcedFamilyNoFallback(t *testing.T) {
 	if !rep.Egress.Confirmed || resultOf(rep, "auto-perplexity").Category != CatNetworkOK {
 		t.Fatalf("v6: %+v %+v", rep.Egress, rep.Results)
 	}
-	if k := resultOf(rep, "auto-kktv"); k.Category != CatUnknown || k.Signal != SigFamily || p6.count("api.kktv.me") != 0 {
+	if k := resultOf(rep, "auto-kktv"); k.Category != CatNotApplicable || k.Grade != GradeNotApplicable || k.Signal != SigFamily || p6.count("api.kktv.me") != 0 {
 		t.Fatalf("an IPv4-only adapter must not send on IPv6: %+v", k)
 	}
 	for _, d := range n6.dials {

@@ -38,9 +38,8 @@ func renderSysctl(t model.Topology, n model.Node) string {
 	sb.WriteString("net.ipv4.conf.all.send_redirects=0\n")
 	sb.WriteString("net.ipv4.conf.default.send_redirects=0\n")
 	fmt.Fprintf(&sb, "net.ipv4.conf.%s.send_redirects=0\n", ifName)
-	sb.WriteString("net.ipv6.conf.all.send_redirects=0\n")
-	sb.WriteString("net.ipv6.conf.default.send_redirects=0\n")
-	fmt.Fprintf(&sb, "net.ipv6.conf.%s.send_redirects=0\n", ifName)
+	// Linux has no net.ipv6.conf.*.send_redirects: IPv6 redirects are sent
+	// by the forwarding path without a sysctl switch, so none is written.
 	fmt.Fprintf(&sb, "net.ipv6.conf.%s.accept_redirects=0\n", ifName)
 	sb.WriteString("net.ipv4.conf.all.accept_redirects=0\n")
 	sb.WriteString("net.ipv6.conf.all.accept_redirects=0\n")

@@ -344,13 +344,15 @@ func TestRemoteRoutesAndUpOrder(t *testing.T) {
 		"ip route replace blackhole 10.67.0.0/24 metric 32767 table 100\n",
 		"ip -6 route replace fd67::/64 dev 'mra' table 100\n",
 		"ip -6 route replace blackhole fd67::/64 metric 32767\n",
-		"ip rule add iif 'mra' unreachable priority 17851\n",
-		"ip rule add iif 'eth0' unreachable priority 17850\n",
 	} {
 		if !strings.Contains(routes, need) {
 			t.Errorf("routes missing %q", need)
 		}
 	}
+	// No "iif mra unreachable" any more (it dropped every IPv4 packet
+	// forwarded out of mra); the stale one is deleted, and the guard drops
+	// unclassified traffic from mra.
+	assertNoIIFRules(t, routes)
 	if strings.Contains(routes, "table 102") && strings.Contains(routes, "10.67.0.0/24 dev 'mra' table 102") {
 		t.Fatal("the device pool must not be in the foreign table")
 	}

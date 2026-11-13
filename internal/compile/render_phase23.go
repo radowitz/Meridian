@@ -375,6 +375,12 @@ func renderVerifyScript(t model.Topology, tunnels []Tunnel, exits []ExitPlan, gr
 	for _, g := range groups {
 		marks = append(marks, fmt.Sprintf("%#x:%d:%d:group/%s", g.Mark, prioExitBase+g.Index, prioExitDrop+g.Index, verifyLabel(g.Group.ID)))
 	}
+	var grpDNS []string
+	for _, g := range groups {
+		if g.Dynamic {
+			grpDNS = append(grpDNS, fmt.Sprintf("%s %s %#x %d %s %s", verifyLabel(g.Group.ID), g.Resolver, g.Mark, g.Mark, g.TransitV6, g.DNSGroup))
+		}
+	}
 	guardExit := "0"
 	if len(gatewayTunnelIfaces(tunnels)) > 0 {
 		guardExit = "1"
@@ -384,11 +390,38 @@ func renderVerifyScript(t model.Topology, tunnels []Tunnel, exits []ExitPlan, gr
 	if t.Settings.LANIPv6Prefix != "" || rp != nil {
 		chn6 = "1"
 	}
-	ra, raPort, raPool4, raPool6, raPeers := "0", "", "", "", ""
+	// Route probes: "ip route get … iif …" runs the kernel's forwarding
+	// decision, source validation included, for the paths an
+	// "iif … unreachable" rule once broke. The LAN client is a host of the
+	// LAN prefix that is neither the gateway nor ROS; the domestic IPv4
+	// destination is ROS itself (marked 0x64 it is looked up in table 100
+	// and leaves on the LAN NIC); the foreign side uses documentation
+	// addresses only.
+	lanClient4 := verifyLANClient4(lanNet(t), gwAddr, ros)
+	lan6, lanClient6 := "0", ""
+	if p, err := netip.ParsePrefix(t.Settings.LANIPv6Prefix); err == nil && p.Addr().Is6() {
+		lan6 = "1"
+		b := p.Masked().Addr().As16()
+		b[14], b[15] = 0xff, 0xfe
+		lanClient6 = netip.AddrFrom16(b).String()
+	}
+	// A ULA LAN prefix: the classifier marks it ahead of the ULA drop, and
+	// its on-link routes on the LAN NIC are not a ULA leak. The script gets
+	// it as text (to compare with nft's listing) and as 32 hex digits plus
+	// a length (to test route destinations against it).
+	lan6ULA, lan6ULAHex, lan6ULABits := "", "", "0"
+	if p, ok := lanULAPrefix(t); ok {
+		lan6ULA = p.String()
+		lan6ULAHex = fmt.Sprintf("%x", p.Addr().AsSlice())
+		lan6ULABits = fmt.Sprint(p.Bits())
+	}
+	ra, raPort, raPool4, raPool6, raPeers, raDev4, raDev6 := "0", "", "", "", "", "", ""
 	if rp != nil {
 		ra = "1"
 		raPort = fmt.Sprint(rp.Port)
 		raPool4, raPool6 = rp.V4.String(), rp.V6.String()
+		// A device address of the pool (the one after the gateway's).
+		raDev4, raDev6 = rp.GW4.Next().String(), rp.GW6.Next().String()
 		var peers []string
 		for _, d := range rp.Devices {
 			// Public keys only; ValidWGKey keeps anything odd out of the script.
@@ -414,7 +447,40 @@ func renderVerifyScript(t model.Topology, tunnels []Tunnel, exits []ExitPlan, gr
 		"@RAPOOL6@", shQuote(raPool6),
 		"@RAPEERS@", shQuote(raPeers),
 		"@RAIF@", model.RemoteAccessIface,
+		"@RADEV4@", shQuote(raDev4),
+		"@RADEV6@", shQuote(raDev6),
+		"@LANCLIENT4@", shQuote(lanClient4),
+		"@LAN6@", lan6,
+		"@LANCLIENT6@", shQuote(lanClient6),
+		"@LAN6ULA@", shQuote(lan6ULA),
+		"@LAN6ULAHEX@", shQuote(lan6ULAHex),
+		"@LAN6ULABITS@", lan6ULABits,
+		"@TUNIFS@", shQuote(strings.Join(gatewayTunnelIfaces(tunnels), " ")),
+		"@GRPDNS@", shQuote(strings.Join(grpDNS, "\n")),
 	).Replace(verifyScriptBody)
+}
+
+// verifyLANClient4 is a host address of the LAN prefix that is neither the
+// gateway nor ROS, counting down from the last host (a source address the
+// gateway owns would be rejected as martian by the route probe).
+func verifyLANClient4(lan, gw, ros string) string {
+	p, err := netip.ParsePrefix(lan)
+	if err != nil || !p.Addr().Is4() || p.Bits() > 30 {
+		return "192.168.100.254"
+	}
+	p = p.Masked()
+	b := p.Addr().As4()
+	host := uint32(1)<<(32-p.Bits()) - 1
+	v := (uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])) | host
+	for v--; ; v-- {
+		a := netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
+		if a == p.Addr() {
+			return "192.168.100.254"
+		}
+		if s := a.String(); s != gw && s != ros {
+			return s
+		}
+	}
 }
 
 // verifyLabel keeps an ID printable in the verify script's output.
@@ -446,7 +512,9 @@ const verifyScriptBody = `#!/bin/bash
 # remote access on — that mra, its peers (public keys only), its guard
 # ingress, DNS, port, rules, routes and NAT are what was compiled; with it
 # off, that no mra exists. Every command's raw output is saved under the
-# evidence directory. INFO lines (list versions) are information, not checks.
+# evidence directory. INFO lines (list versions) are information, not checks;
+# WARN lines are risks the operator should act on and do not change the
+# exit status.
 #
 # What it cannot establish: that a real client does not leak. DNS leak and
 # WebRTC tests need a browser on the test device; ICMP redirects and tunnel
@@ -456,6 +524,13 @@ const verifyScriptBody = `#!/bin/bash
 # (docs/verification.md). The ROS fd00::/8 check only runs when
 # MERIDIAN_ROS_SSH=user@host is set (one read-only "/ipv6 route print");
 # otherwise it is PENDING-HUMAN as well.
+#
+# Route probes ("ip route get … iif … [mark …]") execute the kernel's own
+# forwarding decision, source validation (rp_filter) included, for: a LAN
+# client to a domestic destination, a reply from each tunnel to a LAN
+# client and, with remote access on, a device to a domestic destination,
+# a domestic reply to a device and a tunnel reply to a device. An answer
+# such as "Invalid cross-device link" is a FAIL with the raw output kept.
 #
 # Exit status: 0 every local check passed (meridian-verify-local-ok),
 # 1 at least one FAIL, 2 no FAIL but something could not be checked.
@@ -475,6 +550,27 @@ ra_if=@RAIF@
 ra_port=@RAPORT@
 ra_pool4=@RAPOOL4@
 ra_pool6=@RAPOOL6@
+ra_dev4=@RADEV4@
+ra_dev6=@RADEV6@
+# Route-probe addresses: a LAN client that is neither the gateway nor ROS,
+# the gateway's tunnel interfaces, and documentation addresses (RFC 5737,
+# RFC 3849) for the foreign side and the domestic IPv6 destination. The
+# domestic IPv4 destination is ROS itself, looked up with the domestic mark.
+lan_client4=@LANCLIENT4@
+has_lan6=@LAN6@
+lan_client6=@LANCLIENT6@
+# The LAN IPv6 prefix when it is a ULA (empty otherwise), as nft lists it,
+# and as 32 hex digits and a length for route-destination tests.
+lan6_ula=@LAN6ULA@
+lan6_ula_hex=@LAN6ULAHEX@
+lan6_ula_bits=@LAN6ULABITS@
+tun_ifaces=@TUNIFS@
+# Region groups the hub switches, one per line:
+# label resolver-address mark-hex mark-decimal transit-v6 smartdns-group
+grp_dns=@GRPDNS@
+foreign4=192.0.2.1
+foreign6=2001:db8:ffff::2
+domestic6=2001:db8:ffff::1
 # One "public-key device-id" per line: public keys only, never key material.
 ra_peers=@RAPEERS@
 # Installed files are read under this root (tests point it elsewhere).
@@ -497,6 +593,7 @@ unknown() { emit "UNKNOWN $1: $2"; unknowns=$((unknowns + 1)); }
 pending() { emit "PENDING-HUMAN $1: $2"; }
 notrun() { emit "NOT-RUN-HERE $1: $2"; }
 info() { emit "INFO $1: $2"; }
+warn() { emit "WARN $1: $2"; }
 # set_has_elements FILE SET: the listed nft set has an elements line.
 set_has_elements() {
   local in=0 l re="^[[:space:]]*set $2 [{]\$" end='^[[:space:]]*[}]$'
@@ -521,6 +618,95 @@ guard_block() {
     fi
   done < "$1"
   return 1
+}
+# ip6_hex ADDR: the 32 hex digits of a plain IPv6 address (lower case, no
+# embedded IPv4); fails on anything else.
+ip6_hex() {
+  local a=$1 head tail g hex="" n i
+  local -a H=() T=()
+  case "$a" in ""|*[!0-9a-f:]*|*::*::*) return 1 ;; esac
+  case "$a" in
+    *::*)
+      head=${a%%::*} tail=${a#*::}
+      [ -z "$head" ] || IFS=: read -r -a H <<< "$head"
+      [ -z "$tail" ] || IFS=: read -r -a T <<< "$tail"
+      n=$((8 - ${#H[@]} - ${#T[@]}))
+      [ "$n" -ge 1 ] || return 1 ;;
+    *)
+      IFS=: read -r -a H <<< "$a"
+      n=0
+      [ "${#H[@]}" = 8 ] || return 1 ;;
+  esac
+  for g in ${H[@]+"${H[@]}"}; do
+    [ -n "$g" ] && [ ${#g} -le 4 ] || return 1
+    hex="$hex$(printf '%04x' "0x$g")"
+  done
+  for ((i = 0; i < n; i++)); do hex="${hex}0000"; done
+  for g in ${T[@]+"${T[@]}"}; do
+    [ -n "$g" ] && [ ${#g} -le 4 ] || return 1
+    hex="$hex$(printf '%04x' "0x$g")"
+  done
+  printf '%s\n' "$hex"
+}
+# in_lan6_ula DST: DST (an address or prefix, as ip -6 route prints it) lies
+# inside the ULA LAN prefix. Always false when the LAN prefix is not a ULA.
+in_lan6_ula() {
+  local addr=${1%%/*} len=128 hex n r
+  [ -n "$lan6_ula" ] || return 1
+  case "$1" in */*) len=${1#*/} ;; esac
+  case "$len" in ""|*[!0-9]*) return 1 ;; esac
+  [ "$len" -ge "$lan6_ula_bits" ] || return 1
+  hex=$(ip6_hex "$addr") || return 1
+  n=$((lan6_ula_bits / 4)) r=$((lan6_ula_bits % 4))
+  [ "${hex:0:n}" = "${lan6_ula_hex:0:n}" ] || return 1
+  [ "$r" = 0 ] && return 0
+  [ $((0x${hex:n:1} >> (4 - r))) = $((0x${lan6_ula_hex:n:1} >> (4 - r))) ]
+}
+# route_probe NAME DEV ARGS...: "ip ARGS" (a route lookup) with its raw
+# output kept as NAME.txt; succeeds only when the kernel resolved it to a
+# unicast route leaving on DEV. Otherwise probe_why says what it answered.
+route_probe() {
+  local first re=" dev $2( |\$)"
+  probe_why=""
+  run "$1" ip "${@:3}"
+  IFS= read -r first < "$evdir/$1.txt"
+  if [ "$rc" != 0 ]; then
+    case "$first" in
+      *"cross-device"*) probe_why="$first (source validation failed: a policy rule makes the kernel's reverse lookup fail)" ;;
+      exit=*) probe_why="ip exited $rc without output" ;;
+      *) probe_why="$first (ip exited $rc)" ;;
+    esac
+    return 1
+  fi
+  case "$first" in
+    exit=*) probe_why="no output" ;;
+    unreachable*|blackhole*|prohibit*|throw*|local*) probe_why="$first" ;;
+    *) [[ $first =~ $re ]] || probe_why="$first (not via $2)" ;;
+  esac
+  [ -z "$probe_why" ]
+}
+# probe_check ID WHAT DEV ARGS...: one route probe as a PASS or FAIL.
+probe_check() {
+  local id=$1 what=$2 dev=$3 n="rtget-$1"; shift 3
+  if route_probe "$n" "$dev" "$@"; then
+    pass "$id" "$what resolves out of $dev (ip $*)"
+  else
+    fail "$id" "$what: ip $* answered: $probe_why (evidence $n.txt)"
+  fi
+}
+# probe_tunnels ID WHAT DEV FAMILY DST SRC: a reply from every gateway tunnel
+# interface to DST must leave on DEV.
+probe_tunnels() {
+  local id=$1 what=$2 dev=$3 fam=$4 dst=$5 src=$6 tun bad="" n
+  for tun in $tun_ifaces; do
+    n="rtget-$id-$tun"
+    route_probe "$n" "$dev" "$fam" route get "$dst" from "$src" iif "$tun" || bad="$bad $tun: $probe_why (evidence $n.txt);"
+  done
+  if [ -z "$bad" ]; then
+    pass "$id" "$what from each tunnel ($tun_ifaces) resolves out of $dev"
+  else
+    fail "$id" "$what does not resolve out of $dev for:$bad"
+  fi
 }
 # out_of FILE: the command output without the exit= line run appends.
 out_of() { grep -v '^exit=[0-9]*$' "$1"; }
@@ -580,13 +766,32 @@ else
   fi
   if run ip6-routes ip -6 route show table all; then
     grep -E '^((unreachable|blackhole|prohibit|throw|local|anycast) )?f[cd][0-9a-f]{0,2}:' "$evdir/ip6-routes.txt" > "$evdir/ula-routes.txt" || true
+    # A ULA LAN prefix is on-link on $iface by design (its addresses and
+    # routes go to ula-routes-lan.txt); every other ULA route must not use
+    # $iface. No ULA route at all, the LAN prefix included, may point at ROS.
+    : > "$evdir/ula-routes-lan.txt"
+    : > "$evdir/ula-routes-other.txt"
+    while IFS= read -r l; do
+      d=$l
+      case "$d" in unreachable\ *|blackhole\ *|prohibit\ *|throw\ *|local\ *|anycast\ *) d=${d#* } ;; esac
+      d=${d%% *}
+      if in_lan6_ula "$d"; then
+        printf '%s\n' "$l" >> "$evdir/ula-routes-lan.txt"
+      else
+        printf '%s\n' "$l" >> "$evdir/ula-routes-other.txt"
+      fi
+    done < "$evdir/ula-routes.txt"
     bad=""
-    if grep -qE " dev $iface( |\$)" "$evdir/ula-routes.txt"; then bad="leaves via $iface"; fi
+    if grep -qE " dev $iface( |\$)" "$evdir/ula-routes-other.txt"; then bad="leaves via $iface"; fi
     if [ -n "$ros6" ] && grep -qF "via $ros6 " "$evdir/ula-routes.txt"; then bad="points at ROS $ros6"; fi
     if [ -n "$bad" ]; then
       fail ula_not_via_ros "a ULA route $bad (evidence ula-routes.txt)"
     else
-      pass ula_not_via_ros "no ULA route in any table uses $iface or ROS (evidence ula-routes.txt)"
+      if [ -n "$lan6_ula" ]; then
+        pass ula_not_via_ros "no ULA route in any table points at ROS, and none outside the LAN prefix $lan6_ula uses $iface (evidence ula-routes.txt ula-routes-lan.txt)"
+      else
+        pass ula_not_via_ros "no ULA route in any table uses $iface or ROS (evidence ula-routes.txt)"
+      fi
     fi
   else
     fail ula_not_via_ros "ip -6 route show table all failed (evidence ip6-routes.txt)"
@@ -618,11 +823,33 @@ else
       fail policy_marks "loaded policy rules miss:$missing (evidence ip-rules4.txt ip-rules6.txt)"
     fi
   fi
+  # Older versions installed "iif <LAN> unreachable" (17850) and "iif mra
+  # unreachable" (17851). With rp_filter on, the kernel's source validation
+  # of a forwarded packet looks the source up with iif = the OUTPUT
+  # interface and mark 0, so those rules dropped every IPv4 packet forwarded
+  # out of the LAN NIC or mra. meridian-routes.sh deletes them.
   if [ "$rules_ok" = 1 ]; then
-    if grep -qE "^17850:[[:space:]]+from all iif $iface unreachable([[:space:]]|\$)" "$evdir/ip-rules4.txt"; then
-      pass lan_iif_unreachable "IPv4 from $iface without a Meridian mark is unreachable (priority 17850)"
+    stale=$(grep -E "^1785[01]:[[:space:]]+from all iif [^[:space:]]+( \[detached\])? unreachable" "$evdir/ip-rules4.txt" )
+    stale=${stale//$'\t'/ }
+    stale=${stale//$'\n'/; }
+    if [ -n "$stale" ]; then
+      fail no_stale_iif_rule "a stale IPv4 'iif … unreachable' rule is loaded ($stale); it breaks source validation of IPv4 forwarded out of that interface (domestic and tunnel replies are dropped); re-run meridian-routes.sh (evidence ip-rules4.txt)"
     else
-      fail lan_iif_unreachable "no 'iif $iface unreachable' rule at priority 17850 (evidence ip-rules4.txt)"
+      pass no_stale_iif_rule "no IPv4 'iif … unreachable' rule at 17850/17851"
+    fi
+  fi
+
+  # The kernel's own decision for the paths that must forward.
+  probe_check route_lan_domestic4 "a LAN client ($lan_client4) to a domestic destination ($ros4, mark 0x64)" "$iface" \
+    -4 route get "$ros4" from "$lan_client4" iif "$iface" mark 0x64
+  if [ -n "$tun_ifaces" ]; then
+    probe_tunnels route_tunnel_reply4 "a reply from $foreign4 to the LAN client $lan_client4" "$iface" -4 "$lan_client4" "$foreign4"
+  fi
+  if [ "$has_lan6" = 1 ]; then
+    probe_check route_lan_domestic6 "a LAN client ($lan_client6) to a domestic destination ($domestic6, mark 0x64)" "$iface" \
+      -6 route get "$domestic6" from "$lan_client6" iif "$iface" mark 0x64
+    if [ -n "$tun_ifaces" ]; then
+      probe_tunnels route_tunnel_reply6 "a reply from $foreign6 to the LAN client $lan_client6" "$iface" -6 "$lan_client6" "$foreign6"
     fi
   fi
 
@@ -646,10 +873,19 @@ else
     else
       fail remote_iface "$ra_if is missing or down (evidence mra-link.txt)"
     fi
-    if [ "$rules_ok" = 1 ] && grep -qE "^17851:[[:space:]]+from all iif $ra_if( \[detached\])? unreachable([[:space:]]|\$)" "$evdir/ip-rules4.txt"; then
-      pass remote_iif_unreachable "IPv4 from $ra_if without a Meridian mark is unreachable (priority 17851)"
-    else
-      fail remote_iif_unreachable "no 'iif $ra_if unreachable' rule at priority 17851 (evidence ip-rules4.txt)"
+    probe_check route_remote_domestic4 "a device ($ra_dev4) to a domestic destination ($ros4, mark 0x64)" "$iface" \
+      -4 route get "$ros4" from "$ra_dev4" iif "$ra_if" mark 0x64
+    probe_check route_remote_reply4 "a domestic reply ($ros4, mark 0x64) to a device ($ra_dev4)" "$ra_if" \
+      -4 route get "$ra_dev4" from "$ros4" iif "$iface" mark 0x64
+    probe_check route_remote_reply6 "a domestic reply ($domestic6, mark 0x64) to a device ($ra_dev6)" "$ra_if" \
+      -6 route get "$ra_dev6" from "$domestic6" iif "$iface" mark 0x64
+    if [ "$has_lan6" = 1 ]; then
+      probe_check route_remote_domestic6 "a device ($ra_dev6) to a domestic destination ($domestic6, mark 0x64)" "$iface" \
+        -6 route get "$domestic6" from "$ra_dev6" iif "$ra_if" mark 0x64
+    fi
+    if [ -n "$tun_ifaces" ]; then
+      probe_tunnels route_tunnel_reply_device4 "a reply from $foreign4 to the device $ra_dev4" "$ra_if" -4 "$ra_dev4" "$foreign4"
+      probe_tunnels route_tunnel_reply_device6 "a reply from $foreign6 to the device $ra_dev6" "$ra_if" -6 "$ra_dev6" "$foreign6"
     fi
     p4re=${ra_pool4//./\\.}
     if run ra-route4-main ip -4 route show table main && run ra-route6-main ip -6 route show table main && run ra-route6-100 ip -6 route show table 100 &&
@@ -662,16 +898,12 @@ else
       fail remote_pool_routes "a device-pool route to $ra_if is missing in main or table 100 (evidence ra-route4-main.txt route4-100.txt ra-route6-main.txt ra-route6-100.txt)"
     fi
   else
-    # A stale interface would forward outside the guard's ingress; a
-    # leftover "iif mra unreachable" rule after switching the feature off
-    # only drops (it stays until reboot by design) and is reported as INFO.
+    # A stale interface would forward outside the guard's ingress. A
+    # leftover "iif mra unreachable" rule is no_stale_iif_rule's FAIL.
     if run mra-link ip link show dev "$ra_if"; then
       fail remote_absent "remote access is off but interface $ra_if exists; the guard does not cover it (evidence mra-link.txt)"
     else
       pass remote_absent "remote access is off and there is no $ra_if interface"
-    fi
-    if [ "$rules_ok" = 1 ] && grep -qE "iif $ra_if( |\$)" "$evdir/ip-rules4.txt"; then
-      info remote_leftover "a leftover 'iif $ra_if unreachable' rule from when remote access was on; it only drops and goes away at the next reboot"
     fi
   fi
 fi
@@ -736,7 +968,34 @@ else
     if grep -q 'redirect to :53' "$m"; then pass dns_hijack_53 "LAN 53 is redirected to the local resolver"; else fail dns_hijack_53 "no 53 redirect in inet meridian"; fi
     if grep -q 'redirect to :853' "$m"; then pass dns_hijack_853 "LAN 853 is redirected locally"; else fail dns_hijack_853 "no 853 redirect in inet meridian"; fi
     if grep -q 'DNS only from the LAN' "$m"; then pass dns_input_drop "non-LAN 53/853 is dropped on input"; else fail dns_input_drop "no non-LAN DNS drop on input"; fi
-    if grep -q 'ip6 daddr fc00::/7 drop' "$m"; then pass ula_drop "forwarded ULA is dropped"; else fail ula_drop "no fc00::/7 drop in inet meridian"; fi
+    # The ULA drop must be in classify, and nothing ahead of it may classify
+    # an IPv6 destination except the device pool and, when the LAN prefix
+    # is a ULA, exactly that prefix (which must be there).
+    in_cls=0 seen_drop=0 seen_lan=0 ula_bad=""
+    while IFS= read -r l; do
+      case "$l" in *"chain classify {"*) in_cls=1; continue ;; esac
+      [ "$in_cls" = 1 ] || continue
+      case "$l" in *"ip6 daddr fc00::/7 drop"*) seen_drop=1; break ;; esac
+      [[ $l =~ ^[[:space:]]*[}][[:space:]]*$ ]] && break
+      case "$l" in *ip6*|*ipv6*) ;; *) continue ;; esac
+      d=""
+      case "$l" in *"ip6 daddr "*) d=${l#*ip6 daddr }; d=${d%% *} ;; esac
+      case "$l" in *"meta mark set "*" return"*) ;; *) d="" ;; esac
+      if [ -n "$d" ] && [ "$ra_enabled" = 1 ] && [ "$d" = "$ra_pool6" ]; then continue; fi
+      if [ -n "$d" ] && [ -n "$lan6_ula" ] && [ "$d" = "$lan6_ula" ]; then seen_lan=1; continue; fi
+      [ -n "$ula_bad" ] || ula_bad=$l
+    done < "$m"
+    if [ "$seen_drop" != 1 ]; then
+      fail ula_drop "no fc00::/7 drop in the classify chain of inet meridian"
+    elif [ -n "$ula_bad" ]; then
+      fail ula_drop "an IPv6 rule ahead of the fc00::/7 drop lets other addresses past it: ${ula_bad#"${ula_bad%%[![:space:]]*}"}"
+    elif [ -n "$lan6_ula" ] && [ "$seen_lan" != 1 ]; then
+      fail ula_drop "the ULA LAN prefix $lan6_ula is not classified ahead of the fc00::/7 drop: home IPv6 hosts are unreachable through the gateway"
+    elif [ -n "$lan6_ula" ]; then
+      pass ula_drop "forwarded ULA is dropped, except the ULA LAN prefix $lan6_ula (home hosts, LAN NIC only)"
+    else
+      pass ula_drop "forwarded ULA is dropped"
+    fi
     # Domestic split: chnroute (and chnroute6 when clients have IPv6) must
     # hold elements. They are filled only by a list update and re-added
     # from the saved batch on every reload; empty means every domestic
@@ -777,6 +1036,20 @@ else
   else
     fail nft_meridian "table inet meridian is not loaded (or not readable; run as root) (evidence nft-meridian.txt)"
   fi
+fi
+
+# --- another loader that flushes the whole ruleset ------------------------
+# Without both Meridian tables, forwarded LAN traffic is unguarded: IPv4 and
+# IPv6 alike would leave via ROS (there is no routing-level backstop for
+# unmarked traffic). Debian's stock nftables.service loads
+# /etc/nftables.conf, which normally begins by flushing the whole ruleset;
+# whenever it runs after Meridian's tables are loaded (a restart or reload,
+# or a boot order that puts it later) it deletes them while forwarding is on.
+# This is a warning, not a check: whether and when it runs is the host's.
+if command -v systemctl >/dev/null 2>&1 && run nftables-service systemctl is-enabled nftables.service &&
+  [ "$(out_of "$evdir/nftables-service.txt")" = enabled ] &&
+  grep -qE '^[[:space:]]*flush[[:space:]]+ruleset' "$root/etc/nftables.conf" 2>/dev/null; then
+  warn nftables_service_flush "nftables.service is enabled and $root/etc/nftables.conf flushes the whole ruleset: if it runs after Meridian loaded its tables it deletes inet meridian and inet meridian_guard with forwarding on, and LAN IPv4 and IPv6 then leave via ROS unguarded. Disable it (systemctl disable nftables.service) or remove the flush (evidence nftables-service.txt)"
 fi
 
 # --- installed files: the early-boot guard is the main ruleset's guard -----
@@ -831,6 +1104,74 @@ elif run ss-udp ss -H -lnu && run ss-tcp ss -H -lnt; then
   fi
 else
   fail dns_listener "ss failed (evidence ss-udp.txt ss-tcp.txt)"
+fi
+
+# --- region-group DNS (docs/architecture.md「地区组的解析」) -----------------
+# Each group the hub switches is resolved at its own resolver address with
+# its own mark. What this host can show: the SNAT of its own marked queries
+# is loaded, SmartDNS's config asks each group's resolver with the mark in
+# decimal, and a marked lookup of each resolver address goes into a tunnel
+# (never the LAN port). Whether a member answers, and whether the answer
+# follows a failover, is only visible end to end (PENDING-HUMAN below).
+if [ -n "$grp_dns" ]; then
+  nm="$evdir/nft-meridian.txt"
+  if [ -f "$nm" ] && grep -qx 'exit=0' "$nm"; then
+    missing=""
+    while read -r lbl res mhex mdec transit dg; do
+      [ -n "$lbl" ] || continue
+      grep -F "ip6 daddr $res " "$nm" | grep -F "snat ip6 to $transit" | grep -qE "meta mark 0x0*${mhex#0x}( |\$)" || missing="$missing $lbl"
+    done <<< "$grp_dns"
+    if [ -z "$missing" ]; then
+      pass group_dns_snat "this host's marked queries to each group resolver are SNATed to the group's transit address"
+    else
+      fail group_dns_snat "no resolver SNAT loaded for group(s):$missing (evidence nft-meridian.txt)"
+    fi
+  else
+    fail group_dns_snat "table inet meridian could not be listed; the group resolver SNAT was not checked (evidence nft-meridian.txt)"
+  fi
+  conf="$root/etc/smartdns/smartdns.conf"
+  if [ ! -r "$conf" ]; then
+    unknown group_dns_upstream "$conf is not readable; the group resolver upstreams were not checked"
+  else
+    missing=""
+    while read -r lbl res mhex mdec transit dg; do
+      [ -n "$lbl" ] || continue
+      grep -E "^server $res -group $dg( |\$)" "$conf" | grep -qE " -set-mark $mdec( |\$)" || missing="$missing $lbl"
+    done <<< "$grp_dns"
+    if grep -qE '^server .*-set-mark 0[xX]' "$conf"; then
+      fail group_dns_upstream "$conf writes a -set-mark in hex: SmartDNS accepts it and applies no mark"
+    elif [ -z "$missing" ]; then
+      pass group_dns_upstream "$conf asks each group's resolver address with the group mark (decimal)"
+    else
+      fail group_dns_upstream "$conf has no marked resolver upstream for group(s):$missing"
+    fi
+  fi
+  if ! command -v ip >/dev/null 2>&1; then
+    unknown group_dns_route "ip not found; the marked route to the group resolvers was not checked"
+  else
+    bad=""
+    while read -r lbl res mhex mdec transit dg; do
+      [ -n "$lbl" ] || continue
+      n="rtget-group-dns-$lbl"
+      run "$n" ip -6 route get "$res" mark "$mhex"
+      IFS= read -r first < "$evdir/$n.txt"
+      dev=""
+      [[ $first =~ \ dev\ ([^ ]+) ]] && dev=${BASH_REMATCH[1]}
+      ok=0
+      if [ "$rc" = 0 ] && [ -n "$dev" ]; then
+        case "$first" in
+          unreachable*|blackhole*|prohibit*) ;;
+          *) case " $tun_ifaces " in *" $dev "*) ok=1 ;; esac ;;
+        esac
+      fi
+      [ "$ok" = 1 ] || bad="$bad $lbl: $first (evidence $n.txt);"
+    done <<< "$grp_dns"
+    if [ -z "$bad" ]; then
+      pass group_dns_route "a lookup of each group resolver address with the group mark resolves into a tunnel ($tun_ifaces), not $iface"
+    else
+      fail group_dns_route "a marked lookup of a group resolver address does not enter a tunnel:$bad"
+    fi
+  fi
 fi
 
 # --- remote access: WireGuard state of mra (public keys only) --------------
@@ -892,9 +1233,13 @@ fi
 # --- not executable from this script ---------------------------------------
 pending dns_leak_client "dnsleaktest.com and ipleak.net on the test device (v4 and v6), plus a WAN capture with no 53/853 from it; this script runs no browser"
 pending webrtc_srflx "browserleaks/ipleak WebRTC on the test device: srflx must be the exit address; a host GUA is a known limitation"
-pending redirect_on_wire "capture on the test device while browsing: no ICMP redirect from $gw_addr pointing at $ros4"
+pending redirect_on_wire "capture on the test device while browsing: no ICMP redirect from $gw_addr pointing at $ros4, and no ICMPv6 redirect from the gateway (Linux has no sysctl that stops IPv6 redirects)"
 pending tunnel_cut "take the exit tunnel down while the test device keeps browsing; capture on $iface: nothing foreign leaves towards $ros4, and the device gets no answer instead of a home-WAN answer"
-notrun netns_reload_no_leak "isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsReloadNoLeak (archive the log)"
+notrun netns_reload_no_leak "isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run 'TestNetnsReloadNoLeak|TestNetnsULALANHomeAccess' (archive the log)"
+if [ -n "$grp_dns" ]; then
+  pending group_dns_failover "with a member of a switchable group stopped completely (tunnel and resolver): the hub moves the group, a new name of a group rule resolves and connects through the next member, and a capture on $iface shows no query to a domestic resolver or ROS for it (docs/verification.md)"
+  notrun netns_group_dns "isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsGroupDNSFailover (archive the log)"
+fi
 notrun smartdns "sudo bash deploy/verify-smartdns.sh (archive the output)"
 notrun host_exec "sudo bash deploy/verify-host-exec.sh and --boot after a reboot (archive the output)"
 notrun mesh_veth "isolated Linux integration: sudo bash deploy/verify-mesh-veth.sh (dual-stack forwarding through the mmesh next-hops; archive the output). Mesh stays unverified until then"

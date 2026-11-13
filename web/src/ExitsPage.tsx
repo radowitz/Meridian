@@ -1,6 +1,9 @@
 // 出口: region groups are the main view of exits. A region (香港, 美国 …)
 // holds one or more groups; each group has an ordered member list, a mode
-// (自动 / 手动) and a live line computed by the panel from health samples.
+// (自动 / 手动) and two live lines kept apart: 实际使用, only from the hub's
+// own report (actual.state "ok", read over SSH with a fixed command), and
+// 面板推算, the panel's computation from health samples, never shown as the
+// member in use.
 // Every change edits the stored topology only (apply_required): the top bar
 // and an inline notice say so until it is installed.
 
@@ -12,6 +15,7 @@ import {
   HolderOutlined,
   InfoCircleOutlined,
   PlusOutlined,
+  ReloadOutlined,
   StarOutlined,
 } from "@ant-design/icons";
 import {
@@ -36,8 +40,20 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
 import { href, useRouter, useStatus, useTopologyDoc } from "./state";
-import type { GroupMemberView, GroupThresholds, Node, RegionGroup, RegionGroupInput, RegionGroupView, Topology } from "./types";
+import type {
+  GroupActualView,
+  GroupHubState,
+  GroupMemberView,
+  GroupThresholds,
+  Node,
+  RegionGroup,
+  RegionGroupInput,
+  RegionGroupView,
+  RegionGroupsView,
+  Topology,
+} from "./types";
 import {
+  type StatusKind,
   ApiErrorAlert,
   ApplyRequiredNotice,
   DataView,
@@ -90,6 +106,83 @@ export const ON_FAILURE: Record<"hold" | "fallback", { title: string; desc: stri
 };
 
 const MESH_ACTIVE = "mmesh";
+
+// ------------------------------------------------------- actual (hub) ---
+
+/** Machine reasons of a non-ok actual state, in words. */
+export const ACTUAL_CODE: Record<string, string> = {
+  no_hub: "拓扑里没有枢纽节点",
+  hub_no_server: "枢纽节点没有关联服务器",
+  server_not_ready: "枢纽服务器还不能登录（指纹未确认或没有凭据）",
+  ssh_failed: "登录枢纽读取状态失败",
+  state_missing: "枢纽上没有这个组的运行记录",
+  parse_error: "枢纽返回的内容无法解析",
+  invalid_report: "枢纽报告的成员不属于这个组",
+  plan_unavailable: "面板无法编译当前的地区组计划",
+  heartbeat_old: "枢纽的心跳已过期",
+  read_old: "上次读取太久了",
+  plan_differs: "枢纽运行的不是当前配置",
+  hop_failed: "枢纽切换路由失败",
+  table_diverged: "枢纽路由表与切换器的选择不一致",
+  static_only: "枢纽不切换这个组",
+  not_read: "还没有读取枢纽状态",
+};
+
+/** Tag for a group's actual state: never "ok"-coloured unless the hub reported it. */
+export function actualTag(a: GroupActualView): { kind: StatusKind; label: string } {
+  switch (a.state) {
+    case "ok":
+      return { kind: "ok", label: "枢纽报告" };
+    case "switch_failed":
+      return { kind: "failed", label: "切换失败" };
+    case "stale":
+      return { kind: "unverified", label: "未验证 · 状态过期" };
+    case "version_mismatch":
+      return { kind: "unverified", label: "未验证 · 枢纽不是当前配置" };
+    case "not_switchable":
+      return { kind: "neutral", label: "枢纽不切换" };
+    case "never_read":
+      return { kind: "unverified", label: "未验证 · 未读取" };
+    default:
+      return { kind: "unverified", label: "未验证 · 读不到" };
+  }
+}
+
+/** The fix for a non-ok actual state: a link or the refresh button. */
+function ActualFix({ a, hub, onRefresh, refreshing }: { a: GroupActualView; hub?: GroupHubState; onRefresh?: () => void; refreshing?: boolean }) {
+  const refresh = onRefresh ? (
+    <Button size="small" icon={<ReloadOutlined />} loading={refreshing} onClick={onRefresh} disabled={hub ? !hub.readable : false}>
+      重新读取
+    </Button>
+  ) : null;
+  switch (a.code) {
+    case "no_hub":
+      return <Link to={href("topology")}>在拓扑里添加枢纽</Link>;
+    case "hub_no_server":
+      return <Link to={href("topology", hub?.hub_node)}>为枢纽节点选择服务器</Link>;
+    case "server_not_ready":
+      return hub?.server_id ? <Link to={href("servers", hub.server_id)}>到服务器页确认指纹和凭据</Link> : <Link to={href("servers")}>到服务器页</Link>;
+    case "plan_differs":
+    case "state_missing":
+      return (
+        <Space size={4}>
+          <Link to={href("deploy")}>到部署页为枢纽装机</Link>
+          {refresh}
+        </Space>
+      );
+    case "static_only":
+    case "plan_unavailable":
+      return null;
+    default:
+      return refresh;
+  }
+}
+
+/** Hub-reported hop in words (member name, Mesh, or no member). */
+function hopName(name: (id: string) => string, a: GroupActualView): string {
+  if (a.active) return name(a.active);
+  return a.hop === "blackhole" ? "无（路由表为黑洞，流量被丢弃）" : "—";
+}
 
 function stripView(g: RegionGroupView): RegionGroup {
   const out: RegionGroup = { id: g.id, name: g.name, members: [...g.members], mode: g.mode };
@@ -160,10 +253,16 @@ function GroupCard({
   onChanged,
   onDeleted,
   onEdit,
+  hub,
+  onRefresh,
+  refreshing,
 }: {
   g: RegionGroupView;
   names: Map<string, string>;
   thresholds: GroupThresholds | undefined;
+  hub?: GroupHubState;
+  onRefresh?: () => void;
+  refreshing?: boolean;
   highlighted: boolean;
   onChanged: (g: RegionGroupView, what: string) => void;
   onDeleted: (id: string) => void;
@@ -204,13 +303,17 @@ function GroupCard({
       void patch({ mode: "auto" }, "已改成自动模式", "mode");
       return;
     }
-    const chosen = g.state.active && g.state.active !== MESH_ACTIVE ? g.state.active : g.target || eligible[0]?.id;
+    const inUse = g.actual.state === "ok" && g.actual.active !== MESH_ACTIVE ? g.actual.active : "";
+    const chosen = inUse || g.target || eligible[0]?.id;
     if (!chosen) return;
     void patch({ mode: "manual", chosen, on_failure: "hold" }, `已改成手动模式，指定 ${name(chosen)}`, "mode");
   };
 
-  const st = g.state;
+  const st = g.model;
   const observed = st.observed;
+  const a = g.actual;
+  const aok = a.state === "ok";
+  const tag = actualTag(a);
   const thresholdText = thresholds
     ? `连续 ${thresholds.fails_need} 次检测失败判定不可用；恢复后连续 ${thresholds.recovers_need} 次成功、并且距上次切换满 ${Math.round(thresholds.cooldown_sec / 60)} 分钟才切回。`
     : "";
@@ -266,43 +369,116 @@ function GroupCard({
         </Typography.Text>
       </Space>
 
-      {/* Live line: what the group uses, why, since when; honestly labelled. */}
-      <div className={`group-live${st.alert ? " alert" : ""}`} data-testid="group-live">
-        <Space size={[6, 4]} wrap>
-          <Typography.Text type="secondary">{observed ? "实际使用" : "按配置应使用"}</Typography.Text>
-          <Typography.Text strong>{st.active ? name(st.active) : "—"}</Typography.Text>
-          <Typography.Text type="secondary">·</Typography.Text>
-          <span>{GROUP_REASON[st.reason] ?? st.reason}</span>
-          <Typography.Text type="secondary">· 上次切换</Typography.Text>
-          <TimeText value={st.last_switch} empty="未切换过" />
-          {observed ? (
-            <Tooltip title="面板按网关送来的健康样本自行推算的状态（source: panel_model），不是从枢纽读回的实际路由。">
-              <Tag icon={<InfoCircleOutlined />}>面板推算</Tag>
-            </Tooltip>
+      {/* Live lines. 实际使用 comes only from the hub's report (actual.state
+          "ok"); otherwise it is unknown with the reason and the fix. The
+          panel's model is a separate, labelled line. */}
+      <div className={`group-live${aok && a.alert ? " alert" : ""}`} data-testid="group-live">
+        <Space size={[6, 4]} wrap data-testid="group-actual" data-state={a.state}>
+          <Typography.Text type="secondary">实际使用</Typography.Text>
+          {aok ? (
+            <>
+              <Typography.Text strong>{hopName(name, a)}</Typography.Text>
+              <Typography.Text type="secondary">·</Typography.Text>
+              <span>{GROUP_REASON[a.reason ?? ""] ?? a.reason}</span>
+              <Typography.Text type="secondary">· 上次切换</Typography.Text>
+              <TimeText value={a.last_switch} empty="启动以来未切换" />
+              <Typography.Text type="secondary">· 读取于</Typography.Text>
+              <TimeText value={a.read_at} />
+              <StatusTag kind={tag.kind} title="枢纽切换服务记录的实际路由（从枢纽路由表读出），经 SSH 固定命令读回。">
+                {tag.label}
+              </StatusTag>
+            </>
           ) : (
-            <StatusTag kind="unverified" title="还没有收到这个组的健康样本：上面是按配置计算的目标，不代表枢纽上实际在用。">
-              未验证 · 无健康样本
-            </StatusTag>
+            <>
+              <Typography.Text strong>{a.state === "not_switchable" ? "不适用" : "未知"}</Typography.Text>
+              <StatusTag kind={tag.kind} title={a.message}>
+                {tag.label}
+              </StatusTag>
+              {a.read_at && a.state !== "not_switchable" ? (
+                <>
+                  <Typography.Text type="secondary">读取于</Typography.Text>
+                  <TimeText value={a.read_at} />
+                </>
+              ) : null}
+            </>
           )}
         </Space>
-        {st.alert ? (
+        {!aok ? (
+          <div className="group-actual-why" data-testid="group-actual-why">
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {ACTUAL_CODE[a.code ?? ""] ?? a.code}
+              {a.message ? `：${a.message}` : ""}
+            </Typography.Text>{" "}
+            <ActualFix a={a} hub={hub} onRefresh={onRefresh} refreshing={refreshing} />
+            {a.state === "switch_failed" && a.reported ? (
+              <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }}>
+                枢纽报告（未确认）：路由表 {a.reported.hop === "blackhole" ? "黑洞" : name(a.reported.hop)}
+                {a.reported.want ? `，想切到 ${name(a.reported.want)}` : ""}
+                {a.reported.failed_at ? (
+                  <>
+                    ，失败于 <TimeText value={a.reported.failed_at} />
+                  </>
+                ) : null}
+              </Typography.Paragraph>
+            ) : null}
+          </div>
+        ) : null}
+        {aok && a.clock_skew_sec !== undefined && hub && Math.abs(a.clock_skew_sec) > hub.skew_warn_sec ? (
+          <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            枢纽时钟与面板相差 {Math.abs(a.clock_skew_sec)} 秒；上面的时间已按读取时刻换算。
+          </Typography.Paragraph>
+        ) : null}
+        {aok && a.alert ? (
           <Alert
             type="warning"
             showIcon
             style={{ marginTop: 8 }}
-            message={<span data-testid="group-alert">{st.alert_message || "这个组需要处理"}</span>}
+            message={<span data-testid="group-alert">{a.alert_message || "这个组需要处理"}</span>}
           />
         ) : null}
-        {st.return_blocked_by ? (
-          <Typography.Paragraph type="secondary" style={{ margin: "6px 0 0", fontSize: 12 }}>
-            还没有切回 {name(g.target)}：{RETURN_BLOCK[st.return_blocked_by] ?? st.return_blocked_by}
-            {st.return_not_before ? (
+
+        <div className="group-model" data-testid="group-model">
+          <Space size={[6, 4]} wrap>
+            <Tooltip title="面板按网关送来的健康样本自行推算的状态（source: panel_model），不是从枢纽读回的实际路由。">
+              <Tag icon={<InfoCircleOutlined />}>面板推算</Tag>
+            </Tooltip>
+            {observed ? (
               <>
-                ，最早 <TimeText value={st.return_not_before} />
+                <Typography.Text>{st.active ? name(st.active) : "无可用成员"}</Typography.Text>
+                <Typography.Text type="secondary">· {GROUP_REASON[st.reason] ?? st.reason}</Typography.Text>
+                {st.last_switch ? (
+                  <>
+                    <Typography.Text type="secondary">· 推算切换于</Typography.Text>
+                    <TimeText value={st.last_switch} />
+                  </>
+                ) : null}
               </>
-            ) : null}
-          </Typography.Paragraph>
-        ) : null}
+            ) : (
+              <>
+                <Typography.Text type="secondary">按配置应使用</Typography.Text>
+                <Typography.Text>{st.active ? name(st.active) : "—"}</Typography.Text>
+                <StatusTag kind="unverified" title="还没有收到这个组的健康样本：这是按配置计算的目标，不代表枢纽上实际在用。">
+                  未验证 · 无健康样本
+                </StatusTag>
+              </>
+            )}
+          </Space>
+          {observed && st.alert ? (
+            <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }} data-testid="group-model-alert">
+              面板推算：{st.alert_message || "这个组需要处理"}
+            </Typography.Paragraph>
+          ) : null}
+          {observed && st.return_blocked_by ? (
+            <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }}>
+              面板推算还没有切回 {name(g.target)}：{RETURN_BLOCK[st.return_blocked_by] ?? st.return_blocked_by}
+              {st.return_not_before ? (
+                <>
+                  ，最早 <TimeText value={st.return_not_before} />
+                </>
+              ) : null}
+            </Typography.Paragraph>
+          ) : null}
+        </div>
       </div>
 
       {g.mode === "manual" ? (
@@ -396,8 +572,17 @@ function GroupCard({
                   <Space size={[4, 2]} wrap>
                     <Link to={href("topology", id)}>{m?.name || id}</Link>
                     {m ? <MemberAttrs m={m} /> : null}
-                    {m && observed && st.active === id ? <Tag color="success">使用中</Tag> : null}
-                    {m && g.target === id && (!observed || st.active !== id) ? (
+                    {m?.actual_active ? (
+                      <Tooltip title="枢纽报告这个组的路由表正在使用它">
+                        <Tag color="success">使用中</Tag>
+                      </Tooltip>
+                    ) : null}
+                    {m && !m.actual_active && observed && m.model_active ? (
+                      <Tooltip title="面板按健康样本推算组在用它，未经枢纽确认">
+                        <Tag>推算在用</Tag>
+                      </Tooltip>
+                    ) : null}
+                    {m && g.target === id && !m.actual_active ? (
                       <Tooltip title="按配置应使用的成员">
                         <Tag>目标</Tag>
                       </Tooltip>
@@ -531,6 +716,65 @@ function GroupCard({
     </div>
   );
 }
+
+// ------------------------------------------------------------- hub bar ---
+
+/**
+ * Where the 实际使用 lines come from: the hub's server, the last read and a
+ * refresh button. A hub that cannot be read says why and links to the fix.
+ */
+function HubStateBar({ hub, onRefresh, refreshing }: { hub: GroupHubState | undefined; onRefresh: () => void; refreshing: boolean }) {
+  if (!hub) return null;
+  const lr = hub.last_read;
+  const rules = `枢纽切换服务每 ${hub.loop_interval_sec} 秒记录一次；心跳超过 ${hub.stale_after_sec} 秒或读取超过 ${Math.round(hub.read_max_age_sec / 60)} 分钟即视为过期。`;
+  return (
+    <div className="hub-state-bar" data-testid="hub-state-bar">
+      <Space size={[6, 4]} wrap>
+        <Typography.Text strong>枢纽运行状态</Typography.Text>
+        {hub.hub_node ? (
+          <Typography.Text type="secondary">
+            {hub.hub_name || hub.hub_node}
+            {hub.server_name ? ` · 服务器 ${hub.server_name}` : ""}
+          </Typography.Text>
+        ) : null}
+        {lr ? (
+          <>
+            <Typography.Text type="secondary">· 上次读取</Typography.Text>
+            <TimeText value={lr.read_at} />
+            {lr.ok ? (
+              <StatusTag kind="ok">读取成功</StatusTag>
+            ) : (
+              <StatusTag kind="failed" title={lr.error}>
+                读取失败
+              </StatusTag>
+            )}
+          </>
+        ) : (
+          <StatusTag kind="unverified">未读取</StatusTag>
+        )}
+        <Tooltip title={`经服务器管理的 SSH 通道（已确认的主机指纹、保存的凭据）执行一条固定的只读命令。${rules}`}>
+          <Button size="small" icon={<ReloadOutlined />} loading={refreshing || hub.refreshing} disabled={!hub.readable} onClick={onRefresh}>
+            读取枢纽状态
+          </Button>
+        </Tooltip>
+      </Space>
+      {!hub.readable ? (
+        <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }} data-testid="hub-not-readable">
+          {ACTUAL_CODE[hub.not_readable_code ?? ""] ?? hub.not_readable_code}
+          {hub.not_readable_message ? `：${hub.not_readable_message}` : ""}{" "}
+          <ActualFix a={{ state: "unavailable", code: hub.not_readable_code, active: "", alert: false, last_switch: null, read_at: null, hub_reported_at: null, deployed_matches: null }} hub={hub} />
+        </Typography.Paragraph>
+      ) : lr && !lr.ok && lr.error ? (
+        <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }}>
+          {lr.error}
+        </Typography.Paragraph>
+      ) : null}
+    </div>
+  );
+}
+
+/** Reads the hub once when the page opens, if it is readable and the last read is older than a minute. */
+const AUTO_REFRESH_AFTER_MS = 60_000;
 
 // ---------------------------------------------------------------- drawer ---
 
@@ -735,7 +979,27 @@ export default function ExitsPage() {
   const [editing, setEditing] = useState<RegionGroupView | null | "new">(null);
   const [changed, setChanged] = useState(false);
   const act = useAction();
+  const hubAct = useAction();
   const focus = route.params[0];
+  const refreshing = hubAct.busy === "hub";
+  const refreshHub = () =>
+    void hubAct.run(async () => {
+      const d: RegionGroupsView = await api.refreshGroupRuntime();
+      groups.setData(d);
+    }, "hub");
+  // One automatic read per visit, bounded: only when the hub can be read
+  // and nothing recent is stored. No polling.
+  const autoRead = useRef(false);
+  useEffect(() => {
+    const h = groups.data?.hub_state;
+    if (!h || autoRead.current) return;
+    autoRead.current = true;
+    if (!h.readable || h.refreshing) return;
+    const last = h.last_read ? Date.parse(h.last_read.read_at) : 0;
+    if (Date.now() - last < AUTO_REFRESH_AFTER_MS) return;
+    refreshHub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups.data]);
 
   const exits = useMemo(() => (doc.topo?.nodes ?? []).filter((n) => n.role === "exit"), [doc.topo]);
   const names = useMemo(() => new Map((doc.topo?.nodes ?? []).map((n) => [n.id, n.name || n.id])), [doc.topo]);
@@ -784,6 +1048,8 @@ export default function ExitsPage() {
     >
       {changed ? <ApplyRequiredNotice what="地区组已修改" /> : null}
       <ApiErrorAlert error={act.error} onClose={act.clear} />
+      <ApiErrorAlert error={hubAct.error} onClose={hubAct.clear} />
+      <HubStateBar hub={groups.data?.hub_state} onRefresh={refreshHub} refreshing={refreshing} />
       <DataView
         state={groups}
         rows={8}
@@ -811,6 +1077,9 @@ export default function ExitsPage() {
                       g={g}
                       names={names}
                       thresholds={d.thresholds}
+                      hub={d.hub_state}
+                      onRefresh={refreshHub}
+                      refreshing={refreshing}
                       highlighted={focus === g.id}
                       onEdit={() => setEditing(g)}
                       onChanged={(ng, what) => afterChange(putGroup(ng), what)}

@@ -75,6 +75,10 @@ type Server struct {
 	listsJob *listsJob
 	// mu covers read-modify-write of the unlock, pool and probe-job documents.
 	mu sync.Mutex
+	// groupHubMu guards groupHubBusy: one read of the hub's group state
+	// at a time.
+	groupHubMu   sync.Mutex
+	groupHubBusy bool
 	// jobMu guards job, the one probe job that may run at a time.
 	jobMu sync.Mutex
 	job   *jobHandle
@@ -371,12 +375,22 @@ func (s *Server) postDiff(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	diff, err := s.applier(false).Diff(b.Canonical())
+	ap := s.applier(false)
+	diff, err := ap.Diff(b.Canonical())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"diff": diff, "order": b.Order, "issues": b.Issues})
+	// installed: the gateway files an install would add, change or remove
+	// compared with what is installed now (by hash; null when nothing is
+	// installed). It answers "what will an install change" when the text
+	// diff above is empty because the change was applied but not installed.
+	inst, err := ap.InstalledDiff(b)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"diff": diff, "order": b.Order, "issues": b.Issues, "installed": inst})
 }
 
 type applyBody struct {
@@ -384,10 +398,55 @@ type applyBody struct {
 	Install bool `json:"install"`
 }
 
+// Error codes of POST /api/apply, POST /api/rollback and POST /api/host/recover.
+// Every refusal and failure carries one in "code"; the panel decides on the
+// code, never on the message text. A missing or unhealthy host agent is
+// codeHostUnavailable ("host_unavailable", 503 when there is none).
+const (
+	codeLegacyRefused          = "legacy_install_refused" // 409: an old install without a manifest cannot be adopted
+	codeTxnPending             = "transaction_pending"    // 409: an unfinished host transaction must be recovered first
+	codePeerKeysMissing        = "peer_keys_missing"      // 422: peers in the gateway's WireGuard configs have no usable public key
+	codeTopologyInvalid        = "topology_invalid"       // 422: the stored topology does not validate (issues)
+	codeLANMismatch            = "lan_interface_mismatch" // 422: as topology_invalid, the gateway LAN interface disagrees
+	codeActivationCompensated  = "activation_failed_compensated"
+	codeActivationUncompensate = "activation_failed_uncompensated"
+	codeCommitFailed           = "commit_failed"           // 500: host converged, bookkeeping failed; recover finishes it
+	codeNothingToRollback      = "nothing_to_rollback"     // 409
+	codeRollbackModeRequired   = "rollback_mode_required"  // 409: installed host, neither install nor snapshot_only
+	codeGatewayKey             = "gateway_key_unavailable" // 409: the gateway private key cannot be resolved
+	codeHostStateMalformed     = "host_state_malformed"    // 500
+	codeApplyFailed            = "apply_failed"            // fallback
+)
+
+func writeCoded(w http.ResponseWriter, status int, code, msg string, extra map[string]any) {
+	body := map[string]any{"error": msg, "code": code}
+	for k, v := range extra {
+		body[k] = v
+	}
+	writeJSON(w, status, body)
+}
+
+// refuseInvalid answers 422 topology_invalid (or lan_interface_mismatch
+// when that is among the errors) for a validation failure.
+func refuseInvalid(w http.ResponseWriter, err error) bool {
+	var ve *compile.ValidationError
+	if !errors.As(err, &ve) {
+		return false
+	}
+	code := codeTopologyInvalid
+	for _, iss := range ve.Result.Issues {
+		if iss.Severity == validate.SeverityError && iss.Code == "lan_interface_mismatch" {
+			code = codeLANMismatch
+		}
+	}
+	writeCoded(w, http.StatusUnprocessableEntity, code, err.Error(), map[string]any{"issues": ve.Result.Issues})
+	return true
+}
+
 func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 	var body applyBody
 	if err := decodeOptional(r, &body); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeCoded(w, http.StatusBadRequest, codeBadRequest, err.Error(), nil)
 		return
 	}
 	install := body.Install && !body.DryRun
@@ -400,7 +459,11 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 		// key is generated, before any file is written or snapshot moves.
 		// Compile, preview and diff keep accepting such a topology.
 		if pre, err := s.topology(); err == nil {
-			if pb, err := s.compileTopo(pre); err == nil && refusePeerKeys(w, pb) {
+			pb, err := s.compileTopo(pre)
+			if err == nil && refusePeerKeys(w, pb) {
+				return
+			}
+			if err != nil && refuseInvalid(w, err) {
 				return
 			}
 		}
@@ -409,24 +472,22 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 		// matching public key, and before any host file is written.
 		t, key, err = s.resolveKey(localNodeID, provision.KeyGenerateIfMissing)
 		if err != nil {
-			writeErr(w, http.StatusConflict, err)
+			writeCoded(w, http.StatusConflict, codeGatewayKey, err.Error(), nil)
 			return
 		}
 	} else {
 		t, err = s.topology()
 		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
+			writeCoded(w, http.StatusInternalServerError, credentials.CodeStorage, err.Error(), nil)
 			return
 		}
 	}
 	b, err := s.compileTopo(t)
 	if err != nil {
-		var ve *compile.ValidationError
-		if errors.As(err, &ve) {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error(), "issues": ve.Result.Issues})
+		if refuseInvalid(w, err) {
 			return
 		}
-		writeErr(w, http.StatusBadRequest, err)
+		writeCoded(w, http.StatusBadRequest, codeTopologyInvalid, err.Error(), nil)
 		return
 	}
 	if install && refusePeerKeys(w, b) {
@@ -465,6 +526,7 @@ func refusePeerKeys(w http.ResponseWriter, b *compile.Bundle) bool {
 		}
 	}
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"code": codePeerKeysMissing,
 		"error": fmt.Sprintf("拒绝安装：本机 WireGuard 配置里这些对端节点没有可用的公钥（缺失、仍是占位符或格式不对）：%s。"+
 			"先在对端生成密钥（「生成脚本」/ provision 的 generate_keys）或在拓扑里填入 44 字符的 base64 公钥；宿主上没有写入任何文件。",
 			strings.Join(peers, "、")),
@@ -485,11 +547,11 @@ type rollbackBody struct {
 func (s *Server) postRollback(w http.ResponseWriter, r *http.Request) {
 	var body rollbackBody
 	if err := decodeOptional(r, &body); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeCoded(w, http.StatusBadRequest, codeBadRequest, err.Error(), nil)
 		return
 	}
 	if body.Install && body.SnapshotOnly {
-		writeErr(w, http.StatusBadRequest, errors.New("install 与 snapshot_only 不能同时设置"))
+		writeCoded(w, http.StatusBadRequest, codeBadRequest, "install 与 snapshot_only 不能同时设置", nil)
 		return
 	}
 	ap := s.applier(body.Install)
@@ -497,7 +559,7 @@ func (s *Server) postRollback(w http.ResponseWriter, r *http.Request) {
 	if body.Install {
 		_, key, err := s.resolveKey(localNodeID, provision.KeyReuse)
 		if err != nil {
-			writeErr(w, http.StatusConflict, err)
+			writeCoded(w, http.StatusConflict, codeGatewayKey, err.Error(), nil)
 			return
 		}
 		ap.PrivateKey = key
@@ -516,8 +578,9 @@ func (s *Server) postRollback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "rolled_back", "mode": mode, "host": rep})
 }
 
-// writeTxnErr maps install/rollback failures. A failed host transaction
-// carries its report (steps, diff, whether it was compensated).
+// writeTxnErr maps install/rollback failures to a status and a stable code.
+// A failed host transaction carries its report (steps, diff, whether it was
+// compensated).
 func writeTxnErr(w http.ResponseWriter, err error, key string, fallback int, secrets ...map[string]string) {
 	msg := apply.RedactSecret(err.Error(), key)
 	for _, m := range secrets {
@@ -526,17 +589,33 @@ func writeTxnErr(w http.ResponseWriter, err error, key string, fallback int, sec
 	var te *apply.TxnError
 	switch {
 	case errors.Is(err, apply.ErrNoHostExec):
-		writeErr(w, http.StatusServiceUnavailable, errors.New(msg))
-	case errors.Is(err, apply.ErrPending), errors.Is(err, apply.ErrRuntimeRollbackRequired), errors.Is(err, apply.ErrLegacyInstall):
-		writeErr(w, http.StatusConflict, errors.New(msg))
+		writeCoded(w, http.StatusServiceUnavailable, codeHostUnavailable, msg, nil)
+	case errors.Is(err, apply.ErrHostAgentFailed):
+		writeCoded(w, fallback, codeHostUnavailable, msg, nil)
+	case errors.Is(err, apply.ErrPending):
+		writeCoded(w, http.StatusConflict, codeTxnPending, msg, nil)
+	case errors.Is(err, apply.ErrRuntimeRollbackRequired):
+		writeCoded(w, http.StatusConflict, codeRollbackModeRequired, msg, nil)
+	case errors.Is(err, apply.ErrLegacyInstall):
+		writeCoded(w, http.StatusConflict, codeLegacyRefused, msg, nil)
+	case errors.Is(err, apply.ErrNoPrevious):
+		writeCoded(w, http.StatusConflict, codeNothingToRollback, msg, nil)
 	case errors.As(err, &te):
-		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"error":       msg,
+		code := codeActivationUncompensate
+		switch {
+		case te.Compensated:
+			code = codeActivationCompensated
+		case te.CompErr == nil:
+			code = codeCommitFailed
+		}
+		writeCoded(w, http.StatusInternalServerError, code, msg, map[string]any{
 			"compensated": te.Compensated,
 			"host":        te.Report,
 		})
+	case errors.Is(err, apply.ErrMalformedState):
+		writeCoded(w, http.StatusInternalServerError, codeHostStateMalformed, msg, nil)
 	default:
-		writeErr(w, fallback, errors.New(msg))
+		writeCoded(w, fallback, codeApplyFailed, msg, nil)
 	}
 }
 

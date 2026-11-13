@@ -99,10 +99,10 @@ func TestCompileExample(t *testing.T) {
 	}
 
 	dns := b.File("nodes/gw/etc/smartdns/smartdns.conf")
-	if !strings.Contains(dns, "domain-rules /ani.gamer.com.tw/ -nameserver g_tw -address #6") {
+	if !strings.Contains(dns, "domain-rules /ani.gamer.com.tw/ -nameserver rg_tw -address #6") {
 		t.Fatalf("TW rule should filter AAAA:\n%s", dns)
 	}
-	if !strings.Contains(dns, "domain-rules /netflix.com/ -nameserver g_hk_resi ") || strings.Contains(lineWith(dns, "netflix.com"), "-address #6") {
+	if !strings.Contains(dns, "domain-rules /netflix.com/ -nameserver rg_hk_residential ") || strings.Contains(lineWith(dns, "netflix.com"), "-address #6") {
 		t.Fatalf("residential netflix should keep AAAA:\n%s", lineWith(dns, "netflix.com"))
 	}
 }

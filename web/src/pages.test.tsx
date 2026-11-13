@@ -10,8 +10,12 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { effectiveOrder, moveRule } from "./RulesPage";
 import { fakeApi, panelStatus, renderAt, reply, webStorageDump } from "./testing";
+import { deleteNode } from "./TopologyPage";
 import type {
+  GroupActualView,
+  GroupHubState,
   GroupMemberView,
   Node,
   ProbeCatalogEntry,
@@ -50,6 +54,18 @@ async function pick(label: string, option: string | RegExp, scope: HTMLElement =
     return hit;
   });
   fireEvent.click(opt);
+}
+
+/** Opens a "…" menu and clicks the item with this text. */
+async function menuItem(trigger: HTMLElement, text: string) {
+  await userEvent.click(trigger);
+  const item = await waitFor(() => {
+    const els = [...document.querySelectorAll<HTMLElement>(".ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item")];
+    const hit = els.find((e) => e.textContent?.includes(text));
+    if (!hit) throw new Error(`no menu item ${text}`);
+    return hit;
+  });
+  await userEvent.click(item);
 }
 
 // ------------------------------------------------------------ fixtures ---
@@ -132,8 +148,56 @@ function member(id: string, name: string, over: Partial<GroupMemberView> = {}): 
     egress_v6: true,
     reasons: [],
     target: false,
-    active: false,
+    actual_active: false,
+    model_active: false,
     health: null,
+    ...over,
+  };
+}
+
+const NEVER_READ: GroupActualView = {
+  state: "never_read",
+  code: "not_read",
+  message: "还没有读取过枢纽的运行状态",
+  active: "",
+  alert: false,
+  last_switch: null,
+  read_at: null,
+  hub_reported_at: null,
+  deployed_matches: null,
+};
+
+function actualOK(active: string, over: Partial<GroupActualView> = {}): GroupActualView {
+  return {
+    state: "ok",
+    active,
+    hop: active,
+    reason: "failover",
+    alert: false,
+    last_switch: "2026-11-12T09:50:00Z",
+    running_since: "2026-11-12T08:00:00Z",
+    read_at: NOW,
+    hub_reported_at: NOW,
+    deployed_matches: true,
+    clock_skew_sec: 0,
+    ...over,
+  };
+}
+
+function hubState(over: Partial<GroupHubState> = {}): GroupHubState {
+  return {
+    hub_node: "hk-hub",
+    hub_name: "香港枢纽",
+    server_id: "srv-hub",
+    server_name: "枢纽服务器",
+    readable: true,
+    last_read: { read_at: NOW, ok: true, clock_skew_sec: 0, ignored: [] },
+    refreshing: false,
+    loop_interval_sec: 5,
+    stale_after_sec: 135,
+    read_max_age_sec: 600,
+    skew_warn_sec: 300,
+    counts: {},
     ...over,
   };
 }
@@ -155,10 +219,11 @@ function group(over: Partial<RegionGroupView> = {}): RegionGroupView {
     mesh_backup: false,
     member_status: [
       member("hk-2", "香港二号", { user_position: 0, position: 1, reasons: [{ code: "after_ix", message: "前面插入了 IX 绑定的出口，位置后移。" }] }),
-      member("hk-ix", "香港 IX", { user_position: 1, position: 0, ix_bound: true, target: true, active: true, reasons: [{ code: "ix_first", message: "IX 绑定的出口排在用户顺序之前。" }] }),
+      member("hk-ix", "香港 IX", { user_position: 1, position: 0, ix_bound: true, target: true, model_active: true, reasons: [{ code: "ix_first", message: "IX 绑定的出口排在用户顺序之前。" }] }),
       member("hk-resi", "香港家宽", { user_position: 2, position: -1, eligible: false, residential: true, reasons: [{ code: "residential_excluded", message: "组排除家宽，这个出口是家宽。" }] }),
     ],
-    state: { active: "hk-ix", reason: "preferred", alert: false, last_switch: null, observed: false, source: "panel_model" },
+    actual: NEVER_READ,
+    model: { active: "hk-ix", reason: "preferred", alert: false, last_switch: null, observed: false, source: "panel_model" },
     in_use_by: [
       { kind: "settings", id: "default_group", name: "默认境外组" },
       { kind: "rule", id: "auto-netflix", name: "Netflix" },
@@ -216,7 +281,7 @@ describe("region groups", () => {
       "GET /api/region-groups": () => ({ groups: [g], default_group: "hk", thresholds: THRESHOLDS }),
       "PATCH /api/region-groups/:id": (req) => {
         const b = req.body as Partial<RegionGroupView>;
-        g = group({ ...g, ...b, on_failure_effective: b.on_failure ?? g.on_failure_effective, state: { ...g.state, reason: "chosen", active: b.chosen ?? g.chosen ?? "hk-ix" } });
+        g = group({ ...g, ...b, on_failure_effective: b.on_failure ?? g.on_failure_effective, model: { ...g.model, reason: "chosen", active: b.chosen ?? g.chosen ?? "hk-ix" } });
         return { group: g, apply_required: true };
       },
     });
@@ -257,7 +322,7 @@ describe("region groups", () => {
       target: "us",
       is_default: false,
       in_use_by: [],
-      state: {
+      model: {
         active: "",
         reason: "none",
         alert: true,
@@ -274,14 +339,20 @@ describe("region groups", () => {
     renderAt("#/exits");
     const hk = await screen.findByTestId("group-hk");
     const hkLive = within(hk).getByTestId("group-live");
-    expect(hkLive).toHaveTextContent("按配置应使用");
-    expect(hkLive.querySelector('[data-status="unverified"]')).toHaveTextContent("未验证");
+    expect(within(hk).getByTestId("group-model")).toHaveTextContent("按配置应使用");
+    expect(within(hk).getByTestId("group-model").querySelector('[data-status="unverified"]')).toHaveTextContent("未验证");
+    // Without a hub read the member in use is unknown, not the target.
+    expect(within(hk).getByTestId("group-actual")).toHaveTextContent("实际使用未知");
+    expect(within(hk).getByTestId("group-actual")).not.toHaveTextContent("香港 IX");
+    expect(hkLive.querySelector('[data-testid="group-actual"] [data-status="unverified"]')).toHaveTextContent("未验证");
+    expect(within(hk).queryByText("使用中")).toBeNull();
 
     const us = screen.getByTestId("group-us");
-    const usLive = within(us).getByTestId("group-live");
-    expect(usLive).toHaveTextContent("实际使用");
-    expect(usLive).toHaveTextContent("面板推算");
-    expect(within(us).getByTestId("group-alert")).toHaveTextContent("组内没有可用的出口");
+    // The model's alert is labelled as the model's; the actual line stays unknown.
+    expect(within(us).getByTestId("group-model")).toHaveTextContent("面板推算");
+    expect(within(us).getByTestId("group-model-alert")).toHaveTextContent("面板推算：组内没有可用的出口");
+    expect(within(us).getByTestId("group-actual")).toHaveTextContent("未知");
+    expect(within(us).queryByTestId("group-alert")).toBeNull();
     expect(within(screen.getByTestId("member-us-us")).getByText("不可用")).toBeInTheDocument();
   });
 
@@ -633,7 +704,7 @@ describe("remote access", () => {
     await waitFor(() => expect(api.find("PATCH /api/remote-access/devices/dev-1")).toHaveLength(1));
     expect(api.find("PATCH /api/remote-access/devices/dev-1")[0].body).toEqual({ enabled: false });
 
-    await userEvent.click(within(screen.getByTestId("device-row-dev-1")).getByRole("button", { name: /删除/ }));
+    await menuItem(within(screen.getByTestId("device-row-dev-1")).getByRole("button", { name: "我的手机 的更多操作" }), "删除");
     await waitFor(() => expect(document.querySelector(".ant-modal-confirm")).toHaveTextContent("设备上的配置作废"));
     await confirmModal("删除");
     await waitFor(() => expect(api.find("DELETE /api/remote-access/devices/dev-1")).toHaveLength(1));
@@ -686,6 +757,7 @@ describe("deploy", () => {
       "POST /api/apply": () =>
         reply(500, {
           error: "安装失败，已补偿回到事务前的状态：宿主动作 activate 失败：start meridian.service",
+          code: "activation_failed_compensated",
           compensated: true,
           host: {
             transaction: "txn-1",
@@ -707,7 +779,7 @@ describe("deploy", () => {
     await userEvent.click(await screen.findByRole("button", { name: /安装到网关/ }));
     await confirmModal("安装");
     const failed = await screen.findByTestId("txn-failed");
-    expect(failed).toHaveTextContent("安装失败，已补偿回安装前的状态");
+    expect(failed).toHaveTextContent("失败，已补偿回事务前的状态");
     const step = failed.querySelector('[data-step-status="failed"]')!;
     expect(step).toHaveTextContent("start meridian.service");
     expect(step).toHaveTextContent("从这一步开始失败");
@@ -715,12 +787,15 @@ describe("deploy", () => {
     expect(screen.queryByText(/已安装：服务已启动/)).toBeNull();
   });
 
-  it("explains refusals: no host agent, missing peer keys, a legacy install", async () => {
+  it("explains refusals by their code: no host agent, missing peer keys, legacy, pending, invalid", async () => {
     const api = fakeApi({
-      "GET /api/topology": () => topology(),
+      "GET /api/topology": () => {
+        const t = topology();
+        return { ...t, nodes: [...t.nodes, exitNode("ix-line", "IX 专线", { managed: false })] };
+      },
       "GET /api/status": changed,
       "GET /api/host": () => host(true),
-      "POST /api/apply": () => reply(503, { error: "面板没有宿主执行能力：……未写入任何宿主文件" }),
+      "POST /api/apply": () => reply(503, { error: "面板没有宿主执行能力：……未写入任何宿主文件", code: "host_unavailable" }),
     });
     renderAt("#/deploy");
     const install = async () => {
@@ -731,15 +806,96 @@ describe("deploy", () => {
     expect(await screen.findByTestId("txn-refused")).toHaveTextContent("没有宿主执行通道，什么都没改");
 
     api.on("POST /api/apply", () =>
-      reply(422, { error: "拒绝安装", peer_key_problems: [{ peer: "hk-hub", problem: "missing" }, { peer: "hk-ix", problem: "placeholder" }] }),
+      reply(422, {
+        error: "拒绝安装",
+        code: "peer_keys_missing",
+        peer_key_problems: [{ peer: "hk-hub", problem: "missing" }, { peer: "hk-ix", problem: "placeholder" }, { peer: "ix-line", problem: "missing" }],
+      }),
     );
     await install();
     await waitFor(() => expect(screen.getByTestId("txn-refused")).toHaveTextContent("这些对端节点还没有可用的公钥"));
-    expect(within(screen.getByTestId("txn-refused")).getByRole("link", { name: "香港枢纽" })).toHaveAttribute("href", "#/topology/hk-hub");
+    const refused = screen.getByTestId("txn-refused");
+    expect(within(refused).getByRole("link", { name: "香港枢纽" })).toHaveAttribute("href", "#/topology/hk-hub");
+    // A managed remote node is fixed in 远端节点; anything else in the topology.
+    const items = within(screen.getByTestId("peer-key-list")).getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("在下面「远端节点」里生成密钥并下发");
+    expect(items[2]).toHaveTextContent("在拓扑里填入它的公钥");
+    expect(within(items[2]).getByRole("link", { name: "在拓扑里填入它的公钥" })).toHaveAttribute("href", "#/topology/ix-line");
 
-    api.on("POST /api/apply", () => reply(409, { error: "宿主上有旧版 Meridian 数据面（没有受管清单），无法可靠接管；已停止" }));
+    // The page decides on the code, not on the message text.
+    api.on("POST /api/apply", () => reply(409, { error: "refused (any text)", code: "legacy_install_refused" }));
     await install();
     await waitFor(() => expect(screen.getByTestId("txn-refused")).toHaveTextContent("无法可靠接管"));
+
+    api.on("POST /api/apply", () => reply(409, { error: "pending (any text)", code: "transaction_pending" }));
+    await install();
+    await waitFor(() => expect(screen.getByTestId("txn-refused")).toHaveTextContent("上一次宿主事务没有完成，先恢复"));
+    expect(within(screen.getByTestId("txn-refused")).getByRole("button", { name: btn("恢复") })).toBeInTheDocument();
+
+    api.on("POST /api/apply", () =>
+      reply(422, { error: "x", code: "topology_invalid", issues: [{ code: "rule_unreachable", severity: "error", rule_id: "r1", message: "规则 r1 永远匹配不到" }] }),
+    );
+    await install();
+    await waitFor(() => expect(screen.getByTestId("txn-refused")).toHaveTextContent("拓扑校验没有通过"));
+    expect(screen.getByTestId("txn-refused")).toHaveTextContent("规则 r1 永远匹配不到");
+
+    // An old message without a code is not guessed at.
+    api.on("POST /api/apply", () => reply(409, { error: "宿主上有旧版 Meridian 数据面" }));
+    await install();
+    await waitFor(() => expect(screen.queryByTestId("txn-refused")).toBeNull());
+  });
+
+  it("does not offer a rollback when there is no previous configuration", async () => {
+    fakeApi({
+      "GET /api/status": () => panelStatus({ ...changed(), previous_available: false }),
+      "GET /api/host": () => host(true),
+    });
+    renderAt("#/deploy");
+    expect(await screen.findByTestId("no-previous")).toHaveTextContent("还没有上一份配置可以回滚");
+    expect(screen.getByRole("button", { name: /回滚/ })).toBeDisabled();
+  });
+
+  it("offers 只写入数据目录 only without a host agent, and lists what an applied-only change would install", async () => {
+    const appliedOnly = { state: "changed" as const, installed_version: 3, applied: true, applied_matches: true };
+    const api = fakeApi({
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, installOver: appliedOnly }),
+      "GET /api/host": () => host(true),
+      "POST /api/diff": () => ({
+        diff: "（没有变化）\n",
+        order: [],
+        issues: [],
+        installed: { files_changed: ["etc/nftables.d/meridian.nft"], files_added: ["etc/wireguard/m09.conf"], interfaces_added: ["m09"] },
+      }),
+    });
+    renderAt("#/deploy");
+    const list = await screen.findByTestId("installed-diff");
+    expect(list).toHaveTextContent("/etc/nftables.d/meridian.nft");
+    expect(list).toHaveTextContent("/etc/wireguard/m09.conf");
+    expect(list).toHaveTextContent("没有逐行内容");
+    expect(list).toHaveTextContent("m09");
+    expect(screen.queryByTestId("apply-only")).toBeNull();
+    expect(screen.queryByText(/只写入数据目录/)).toBeNull();
+
+    expect(api.find("POST /api/apply")).toHaveLength(0);
+  });
+
+  it("offers 只写入数据目录 without a host agent and says what it does there", async () => {
+    const api = fakeApi({
+      "GET /api/status": () => panelStatus({ installOver: { state: "not_installed", installed_version: null, applied: false, applied_matches: false } }),
+      "POST /api/apply": () => ({ dry_run: false, install: false, wrote: ["a", "b"], order: [], diff: "" }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(await screen.findByTestId("apply-only"));
+    const box = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>(".ant-modal-confirm");
+      if (!el) throw new Error("no confirm dialog");
+      return el;
+    });
+    expect(box).toHaveTextContent("没有宿主执行通道的场合");
+    await confirmModal("只写入");
+    await waitFor(() => expect(api.find("POST /api/apply")).toHaveLength(1));
+    expect(api.find("POST /api/apply")[0].body).toEqual({ dry_run: false, install: false });
+    expect(screen.getByRole("button", { name: /安装到网关/ })).toBeDisabled();
   });
 
   it("offers runtime rollback when installed and snapshot-only only when nothing is installed", async () => {
@@ -802,7 +958,7 @@ function result(over: Partial<ProbeResultRow>): ProbeResultRow {
     exit_name: "香港 IX",
     family: "ipv4",
     state: "done",
-    exit_groups: [{ id: "hk", name: "香港（机房）", mode: "auto", active: "hk-ix" }],
+    exit_groups: [{ id: "hk", name: "香港（机房）", mode: "auto", actual_active: "hk-ix", model_active: "hk-ix" }],
     is_active: true,
     ingestible: true,
     validation: "synthetic_only",
@@ -916,5 +1072,405 @@ describe("leak check", () => {
     expect(auto.querySelector('[data-status="ok"]')).toBeNull();
     expect(screen.getByText(/这一页没有任何一项能证明不泄露/)).toBeInTheDocument();
     expect(document.body).toHaveTextContent("docs/verification.md");
+  });
+});
+
+// ------------------------------------------------- usability pass (items) ---
+
+describe("unlock: not applicable is not unknown", () => {
+  it("shows IPv4-only services skipped on IPv6 as 不适用 · 仅 IPv4 in the summary, the matrix and the detail", async () => {
+    const na = { state: "skipped", signal: "family_not_supported", ingest: "not_ingested:family_not_supported", error: "该服务的公开检测方法只支持 IPv4，未探测 IPv6" };
+    const items = [
+      { service: "auto-kktv", service_name: "KKTV", exit_id: "hk-2", family: "ipv4" as const, state: "done", category: "failed" as const, grade: "error" as const },
+      { service: "auto-kktv", service_name: "KKTV", exit_id: "hk-2", family: "ipv6" as const, ...na, category: "not_applicable" as const, grade: "not_applicable" as const },
+      // Stored by an older panel: category unknown, but nothing was probed.
+      { service: "auto-kktv", service_name: "KKTV", exit_id: "hk-ix", family: "ipv6" as const, ...na, category: "unknown" as const, grade: "unknown_response" as const },
+    ];
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, probe_available: true }),
+      "GET /api/unlock/catalog": () => ({ catalog: CATALOG, available: true, validation: "synthetic_only", validation_text: "x", grades: [], ingest_rule: "" }),
+      "GET /api/unlock/jobs": () => ({ jobs: [{ id: "job-1", kind: "manual", state: "done", created_at: NOW, finished_at: NOW, items }], running: "", catalog: CATALOG, available: true }),
+      "GET /api/unlock": () => ({ services: [], states: {}, history: [], next_run: NOW, interval_sec: 21600, pending_apply: false, decisions: {} }),
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+      "GET /api/unlock/results": () => ({ results: items.map((i) => result({ ...i, exit_name: i.exit_id, is_active: false })), validation: "synthetic_only", validation_text: "x" }),
+    });
+    renderAt("#/unlock");
+    const progress = await screen.findByTestId("job-progress");
+    await waitFor(() => expect(progress).toHaveTextContent("不适用 · 仅 IPv4 2"));
+    expect(progress.querySelector('[data-category="unknown"]')).toBeNull();
+    expect(progress).toHaveTextContent("探测失败 1");
+    const matrix = await screen.findByTestId("unlock-matrix");
+    for (const ex of ["hk-2", "hk-ix"]) {
+      const cell = within(matrix).getByTestId(`cell-auto-kktv-${ex}-ipv6`);
+      expect(cell.querySelector("[data-category]")!.getAttribute("data-category")).toBe("not_applicable");
+      expect(cell).toHaveTextContent("不适用 · 仅 IPv4");
+    }
+    expect(matrix.querySelector('[data-category="unknown"]')).toBeNull();
+    await userEvent.click(within(matrix).getByTestId("cell-auto-kktv-hk-ix-ipv6"));
+    const detail = await screen.findByTestId("result-detail");
+    expect(within(detail).getByTestId("not-applicable-notice")).toHaveTextContent("这不是失败，也不是未知");
+    expect(detail).toHaveTextContent("没有探测");
+    expect(detail).not.toHaveTextContent("应答无法识别");
+  });
+});
+
+describe("region groups: the hub's actual state", () => {
+  const observedModel = { active: "hk-2", reason: "failover", alert: false, last_switch: NOW, observed: true, source: "panel_model" };
+
+  it("shows the hub's member, reason and times only from an ok report, the model separately", async () => {
+    const g = group({
+      actual: actualOK("hk-2"),
+      model: { ...observedModel, active: "hk-ix", reason: "preferred" },
+      member_status: group().member_status.map((m) => ({ ...m, actual_active: m.id === "hk-2", model_active: m.id === "hk-ix" })),
+    });
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [g], default_group: "hk", thresholds: THRESHOLDS, hub_state: hubState() }),
+    });
+    renderAt("#/exits");
+    const card = await screen.findByTestId("group-hk");
+    const actual = within(card).getByTestId("group-actual");
+    expect(actual).toHaveAttribute("data-state", "ok");
+    expect(actual).toHaveTextContent("实际使用香港二号");
+    expect(actual).toHaveTextContent("前面的成员不可用，自动切到后面的成员");
+    expect(actual).toHaveTextContent("上次切换");
+    expect(actual).toHaveTextContent("读取于");
+    expect(actual.querySelector('[data-status="ok"]')).toHaveTextContent("枢纽报告");
+    // 使用中 follows the hub; the model's member is only 推算在用.
+    expect(within(screen.getByTestId("member-hk-hk-2")).getByText("使用中")).toBeInTheDocument();
+    expect(within(screen.getByTestId("member-hk-hk-ix")).queryByText("使用中")).toBeNull();
+    expect(within(card).getByTestId("group-model")).toHaveTextContent("面板推算");
+    expect(within(card).getByTestId("group-model")).not.toHaveTextContent("实际使用");
+  });
+
+  it("with only the model, never says 实际使用 of a member nor 使用中", async () => {
+    const g = group({
+      model: observedModel,
+      member_status: group().member_status.map((m) => ({ ...m, model_active: m.id === "hk-2" })),
+    });
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [g], default_group: "hk", thresholds: THRESHOLDS, hub_state: hubState({ readable: false, not_readable_code: "server_not_ready", not_readable_message: "服务器 枢纽服务器 的主机指纹还没有确认", last_read: null }) }),
+    });
+    renderAt("#/exits");
+    const card = await screen.findByTestId("group-hk");
+    const actual = within(card).getByTestId("group-actual");
+    expect(actual).toHaveTextContent("实际使用未知");
+    expect(actual).not.toHaveTextContent("香港二号");
+    expect(actual.querySelector('[data-status="unverified"]')).toHaveTextContent("未验证");
+    expect(within(card).queryByText("使用中")).toBeNull();
+    expect(within(screen.getByTestId("member-hk-hk-2")).getByText("推算在用")).toBeInTheDocument();
+    expect(within(card).getByTestId("group-model")).toHaveTextContent("面板推算香港二号");
+    // The hub cannot be read: why, and where to fix it; no automatic read.
+    const bar = screen.getByTestId("hub-state-bar");
+    expect(within(bar).getByTestId("hub-not-readable")).toHaveTextContent("主机指纹还没有确认");
+    expect(within(bar).getByRole("link", { name: /服务器页/ })).toHaveAttribute("href", "#/servers/srv-hub");
+    expect(within(bar).getByRole("button", { name: /读取枢纽状态/ })).toBeDisabled();
+  });
+
+  it("explains stale, version mismatch and failed switches with their fix and no member", async () => {
+    const groups = [
+      group({ id: "a", name: "甲", actual: { ...NEVER_READ, state: "stale", code: "heartbeat_old", message: "枢纽这个组的心跳已停 300 秒（超过 135 秒）", read_at: NOW } }),
+      group({ id: "b", name: "乙", is_default: false, actual: { ...NEVER_READ, state: "version_mismatch", code: "plan_differs", message: "枢纽还没有按当前拓扑装机", read_at: NOW, deployed_matches: false } }),
+      group({
+        id: "c",
+        name: "丙",
+        is_default: false,
+        actual: { ...NEVER_READ, state: "switch_failed", code: "hop_failed", message: "枢纽切换到 hk-2 的路由命令失败", read_at: NOW, reported: { hop: "hk-ix", want: "hk-2", failed_at: NOW } },
+      }),
+    ];
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups, default_group: "a", thresholds: THRESHOLDS, hub_state: hubState() }),
+    });
+    renderAt("#/exits");
+    const a = await screen.findByTestId("group-a");
+    expect(within(a).getByTestId("group-actual")).toHaveTextContent("未验证 · 状态过期");
+    expect(within(a).getByTestId("group-actual-why")).toHaveTextContent("心跳已停");
+    expect(within(a).getByRole("button", { name: /重新读取/ })).toBeEnabled();
+    const b = screen.getByTestId("group-b");
+    expect(within(b).getByTestId("group-actual")).toHaveTextContent("未验证 · 枢纽不是当前配置");
+    expect(within(b).getByRole("link", { name: /部署页/ })).toHaveAttribute("href", "#/deploy");
+    const c = screen.getByTestId("group-c");
+    expect(within(c).getByTestId("group-actual").querySelector('[data-status="failed"]')).toHaveTextContent("切换失败");
+    expect(within(c).getByTestId("group-actual-why")).toHaveTextContent("枢纽报告（未确认）：路由表 香港 IX，想切到 香港二号");
+    for (const card of [a, b, c]) {
+      expect(within(card).getByTestId("group-actual")).toHaveTextContent("实际使用未知");
+      expect(within(card).queryByText("使用中")).toBeNull();
+    }
+  });
+
+  it("reads the hub once when the page opens and again on request", async () => {
+    let g = group();
+    let reads = 0;
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [g], default_group: "hk", thresholds: THRESHOLDS, hub_state: hubState({ last_read: null }) }),
+      "POST /api/region-groups/runtime/refresh": () => {
+        reads++;
+        g = group({ actual: actualOK("hk-2", { read_at: new Date().toISOString() }) });
+        return { groups: [g], default_group: "hk", thresholds: THRESHOLDS, hub_state: hubState({ last_read: { read_at: new Date().toISOString(), ok: true, ignored: [] } }) };
+      },
+    });
+    renderAt("#/exits");
+    await waitFor(() => expect(api.find("POST /api/region-groups/runtime/refresh")).toHaveLength(1));
+    const card = await screen.findByTestId("group-hk");
+    await waitFor(() => expect(within(card).getByTestId("group-actual")).toHaveTextContent("实际使用香港二号"));
+    expect(api.find("POST /api/region-groups/runtime/refresh")[0].body).toBeUndefined();
+    await userEvent.click(within(screen.getByTestId("hub-state-bar")).getByRole("button", { name: /读取枢纽状态/ }));
+    await waitFor(() => expect(reads).toBe(2));
+    // No polling: nothing more without a click.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(reads).toBe(2);
+  });
+
+  it("does not read automatically when a recent read is stored", async () => {
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS, hub_state: hubState({ last_read: { read_at: new Date().toISOString(), ok: true, ignored: [] } }) }),
+    });
+    renderAt("#/exits");
+    await screen.findByTestId("group-hk");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(api.find("POST /api/region-groups/runtime/refresh")).toHaveLength(0);
+  });
+
+  it("the overview tile names a member only from the hub's report", async () => {
+    const groups = [
+      group({ id: "g0", name: "组0", actual: actualOK("hk-2") }),
+      group({ id: "g1", name: "组1", is_default: false, model: observedModel }),
+    ];
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/servers": () => ({ servers: [server()] }),
+      "GET /api/region-groups": () => ({ groups, default_group: "g0", thresholds: THRESHOLDS, hub_state: hubState() }),
+    });
+    renderAt("#/");
+    expect(await screen.findByTestId("groups-tile-actual-g0")).toHaveTextContent("香港二号");
+    expect(screen.queryByTestId("groups-tile-actual-g1")).toBeNull();
+    const tag = await screen.findByText("实际未知 · 未验证 · 未读取");
+    expect(tag.closest("[data-status]")).toHaveAttribute("data-status", "unverified");
+    expect(screen.getByTestId("groups-tile-hub")).toHaveTextContent("读取于");
+  });
+});
+
+describe("overview: first-time order and all region groups", () => {
+  it("adds the first provisioning step with the count and shows how many region groups there are", async () => {
+    const t = topology();
+    t.nodes = t.nodes.map((n) => (n.role === "gateway" ? n : n.id === "hk-2" ? { ...n, server_id: "srv-1", public_key: "PUBKEY=" } : { ...n, server_id: "srv-1" }));
+    const groups = Array.from({ length: 10 }, (_, i) => group({ id: `g${i}`, name: `组${i}`, is_default: i === 0 }));
+    fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [server()] }),
+      "GET /api/region-groups": () => ({ groups, default_group: "g0", thresholds: THRESHOLDS }),
+    });
+    renderAt("#/");
+    const steps = await screen.findAllByTestId(/^next-step-/);
+    const first = await waitFor(() => {
+      const el = steps.find((s) => s.textContent?.includes("远端节点还没有密钥"));
+      if (!el) throw new Error("no provisioning step");
+      return el;
+    });
+    // hk-hub, hk-ix, hk-resi, us have no key; hk-2 has one.
+    expect(first).toHaveTextContent("4 个远端节点还没有密钥");
+    expect(screen.getByRole("link", { name: "远端节点第一次装机" })).toHaveAttribute("href", "#/deploy?section=remote");
+    const order = steps.map((s) => s.getAttribute("data-testid"));
+    const idx = (text: string) => steps.findIndex((s) => s.textContent?.includes(text));
+    expect(idx("远端节点还没有密钥")).toBeLessThan(steps.length - 1);
+    expect(order.length).toBeGreaterThan(6);
+    expect(await screen.findByTestId("groups-tile-count")).toHaveTextContent("10 个地区组");
+    expect(screen.getByTestId("groups-tile-more")).toHaveTextContent("还有 4 个 · 查看全部 10 个");
+    expect(within(screen.getByTestId("groups-tile-more")).getByRole("link")).toHaveAttribute("href", "#/exits");
+  });
+});
+
+describe("deploy: remote nodes", () => {
+  it("states the order, marks keyless nodes and makes 生成密钥并下发 their main action", async () => {
+    const t = topology();
+    t.nodes = t.nodes.map((n) => (n.id === "hk-2" ? { ...n, server_id: "srv-1", public_key: "PUBKEY=" } : n.id === "us" ? { ...n, server_id: "srv-2" } : n));
+    fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [server(), server({ id: "srv-2", name: "美国机" })] }),
+    });
+    renderAt("#/deploy");
+    const remote = await screen.findByTestId("remote-node-us");
+    expect(document.getElementById("remote")).toHaveTextContent("推荐顺序：先在这里给每个远端节点「生成密钥并下发」");
+    expect(screen.getByTestId("keyless-nodes")).toHaveTextContent("还没有密钥");
+    expect(within(remote).getByTestId("keyless-us")).toHaveTextContent("第一次装机");
+    const main = within(remote).getByRole("button", { name: /生成密钥并下发/ });
+    expect(main).toHaveClass("ant-btn-primary");
+    const withKey = screen.getByTestId("remote-node-hk-2");
+    expect(within(withKey).getByRole("button", { name: /下发/ })).not.toHaveClass("ant-btn-primary");
+    expect(within(withKey).queryByTestId("keyless-hk-2")).toBeNull();
+  });
+});
+
+describe("rules: ordering", () => {
+  const rule = (id: string, manual: boolean, priority: number): Rule => ({
+    id,
+    name: id,
+    manual,
+    priority,
+    enabled: true,
+    overridden: false,
+    match_type: "domain",
+    match_value: `${id}.example`,
+    target_group: "hk",
+    require_residential: false,
+    require_v6: false,
+  });
+
+  it("moveRule keeps manual rules before built-in ones and renumbers predictably", () => {
+    const rules = [rule("m1", true, 10), rule("m2", true, 20), rule("m3", true, 30), rule("a", false, 100), rule("b", false, 110), rule("c", false, 110)];
+    expect(effectiveOrder(rules).map((r) => r.id)).toEqual(["m1", "m2", "m3", "a", "b", "c"]);
+    // Room between neighbours: only the moved rule changes.
+    let out = moveRule(rules, "m3", 0);
+    expect(effectiveOrder(out).map((r) => r.id)).toEqual(["m3", "m1", "m2", "a", "b", "c"]);
+    expect(out.filter((r) => r.priority !== rules.find((x) => x.id === r.id)!.priority).map((r) => r.id)).toEqual(["m3"]);
+    // Ties (b and c share 110): the built-in class is renumbered in the shown order from its base, step 10.
+    out = moveRule(rules, "a", 2);
+    expect(effectiveOrder(out).map((r) => r.id)).toEqual(["m1", "m2", "m3", "b", "c", "a"]);
+    out = moveRule(rules, "c", 0);
+    expect(effectiveOrder(out).filter((r) => !r.manual).map((r) => [r.id, r.priority])).toEqual([["c", 90], ["a", 100], ["b", 110]]);
+    out = moveRule(rules, "a", 1);
+    expect(effectiveOrder(out).filter((r) => !r.manual).map((r) => [r.id, r.priority])).toEqual([["b", 100], ["a", 110], ["c", 120]]);
+    expect(out.find((r) => r.id === "c")!.overridden).toBe(true);
+    expect(out.find((r) => r.id === "a")!.overridden).toBe(true);
+    // A built-in rule never crosses above a manual one.
+    out = moveRule(rules, "b", -5);
+    expect(effectiveOrder(out).slice(0, 3).every((r) => r.manual)).toBe(true);
+    // Numbers that collide with built-in ones do not change what is shown first.
+    const mixed = [rule("auto", false, 5), rule("man", true, 50)];
+    expect(effectiveOrder(mixed).map((r) => r.id)).toEqual(["man", "auto"]);
+  });
+
+  it("moves a rule to the bottom of its class from the row menu and saves that order", async () => {
+    const t = topology({ rules: [rule("m1", true, 10), rule("m2", true, 20), rule("m3", true, 30), rule("a", false, 100)] });
+    let saved: Topology | undefined;
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "POST /api/validate": () => ({ issues: [], paths: [] }),
+      "PUT /api/topology": (req) => {
+        saved = req.body as Topology;
+        return { topology: req.body, issues: [], paths: [], draft: false };
+      },
+    });
+    renderAt("#/rules");
+    const row = await screen.findByTestId("rule-row-m1");
+    await menuItem(within(row).getByRole("button", { name: "移动 m1" }), "移到手动规则的最后");
+    await waitFor(() => expect(screen.getByTestId("rule-pos-m1")).toHaveTextContent("3"));
+    expect(screen.getByTestId("rule-pos-a")).toHaveTextContent("4");
+    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
+    expect(effectiveOrder(saved!.rules).map((r) => r.id)).toEqual(["m2", "m3", "m1", "a"]);
+    expect(saved!.rules.find((r) => r.id === "m1")!.priority).toBe(40);
+  });
+});
+
+describe("topology: deleting a node", () => {
+  it("lists what refers to the node, cleans up groups and links, and requires a choice for pinned rules", async () => {
+    const t = topology({
+      links: [{ id: "l1", name: "枢纽到美国", from: "hk-hub", to: "us", transport: "wireguard", enabled: true, standby: false } as unknown as Topology["links"][number]],
+      rules: [
+        {
+          id: "pin-us",
+          name: "钉到美国",
+          manual: true,
+          priority: 10,
+          enabled: true,
+          overridden: false,
+          match_type: "domain",
+          match_value: "x.example",
+          target_exit: "us",
+          require_residential: false,
+          require_v6: false,
+        },
+      ],
+      region_groups: [
+        { id: "us", name: "美国", members: ["us"], mode: "manual", chosen: "us" },
+        { id: "hk", name: "香港（机房）", members: ["hk-2", "us"], mode: "auto" },
+      ],
+    });
+    let saved: Topology | undefined;
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "PUT /api/topology": (req) => {
+        saved = req.body as Topology;
+        return { topology: req.body, issues: [], paths: [], draft: true };
+      },
+      "PUT /api/topology?draft=1": (req) => {
+        saved = req.body as Topology;
+        return { topology: req.body, issues: [], paths: [], draft: true };
+      },
+    });
+    renderAt("#/topology/us");
+    await userEvent.click(await screen.findByRole("button", { name: /删除节点/ }));
+    const dlg = await screen.findByTestId("node-delete");
+    expect(dlg).toHaveTextContent("链路 1 条：一起删除");
+    const groups = within(dlg).getByTestId("node-delete-groups");
+    expect(groups).toHaveTextContent("这个组会变成空组");
+    expect(groups).toHaveTextContent("这个组手动指定的就是这个节点");
+    expect(within(dlg).getByTestId("node-delete-rules")).toHaveTextContent("钉到美国");
+    const ok = screen.getByRole("button", { name: /删除并清理引用/ });
+    expect(ok).toBeDisabled();
+    await pick("规则 钉到美国 的处理", "地区组：香港（机房）", dlg);
+    await waitFor(() => expect(ok).toBeEnabled());
+    await userEvent.click(ok);
+    await waitFor(() => expect(screen.queryByTestId("node-delete")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: btn("保存草稿") }));
+    await waitFor(() => expect(api.calls.some((c) => c.method === "PUT" && c.path === "/api/topology")).toBe(true));
+    expect(saved!.nodes.some((n) => n.id === "us")).toBe(false);
+    expect(saved!.links).toHaveLength(0);
+    expect(saved!.region_groups!.find((g) => g.id === "us")).toMatchObject({ members: [] });
+    expect(saved!.region_groups!.find((g) => g.id === "us")!.chosen).toBeUndefined();
+    expect(saved!.region_groups!.find((g) => g.id === "hk")!.members).toEqual(["hk-2"]);
+    const r = saved!.rules.find((x) => x.id === "pin-us")!;
+    expect(r.target_group).toBe("hk");
+    expect(r.target_exit).toBeUndefined();
+  });
+
+  it("never touches a pinned rule without a choice (deleteNode)", () => {
+    const t = topology({
+      rules: [{ id: "p", name: "p", manual: true, priority: 1, enabled: true, overridden: false, match_type: "domain", match_value: "a", target_exit: "us", require_residential: false, require_v6: false }],
+    });
+    expect(deleteNode(t, "us", {}).rules[0].target_exit).toBe("us");
+    expect(deleteNode(t, "us", { p: "delete" }).rules).toHaveLength(0);
+  });
+});
+
+describe("remote access: configuration text", () => {
+  it("wraps the one-time configuration for reading without changing the text", async () => {
+    const text = configText("长名字的设备") + "# " + "x".repeat(300) + "\n";
+    fakeApi({
+      "GET /api/remote-access": () => remoteView([device()]),
+      "POST /api/remote-access/devices/:id/regenerate": () => ({
+        device: device(),
+        config: { text, filename: "meridian-phone.conf", mode: "full", explanation: "", shown_once: true },
+        router_forward: remoteView([]).router_forward,
+        apply_required: true,
+      }),
+    });
+    renderAt("#/remote");
+    const row = await screen.findByTestId("device-row-dev-1");
+    await userEvent.click(within(row).getByRole("button", { name: /重新生成/ }));
+    await confirmModal("重新生成");
+    const pre = await screen.findByTestId("config-text");
+    expect(pre.textContent).toBe(text);
+    expect(pre.style.whiteSpace).toBe("pre-wrap");
+    expect(pre.style.overflowX).toBe("hidden");
+  });
+});
+
+describe("tables at narrow widths", () => {
+  it("render inside a horizontally scrollable box, with non-wrapping names and a fixed action column", async () => {
+    fakeApi({ "GET /api/servers": () => ({ servers: [server({ name: "一台名字很长很长的香港机房服务器" })] }) });
+    renderAt("#/servers");
+    const row = await screen.findByTestId("server-row-srv-1");
+    const table = row.closest("table")!;
+    expect(table.style.width).toBe("max-content");
+    expect(row.closest(".ant-table-content, .ant-table-body")).not.toBeNull();
+    expect(row.querySelector("td.cell-name")).toHaveTextContent("一台名字很长很长的香港机房服务器");
+    expect(row.querySelector("td.cell-actions.ant-table-cell-fix-right")).not.toBeNull();
   });
 });

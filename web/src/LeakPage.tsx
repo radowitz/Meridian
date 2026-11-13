@@ -10,7 +10,8 @@ import type { ReactNode } from "react";
 import * as api from "./api";
 import { useStatus } from "./state";
 import type { LeakItem } from "./types";
-import { DataView, Page, Section, StatusTag, useApi, type StatusKind } from "./ui";
+import {
+  TABLE_SCROLL, DataView, Page, Section, StatusTag, useApi, type StatusKind } from "./ui";
 
 type Scope = "automated" | "integration" | "human" | "limitation";
 
@@ -100,18 +101,19 @@ export default function LeakPage() {
                     pagination={false}
                     dataSource={rows}
                     data-testid={`leak-${sc.key}`}
+                    scroll={TABLE_SCROLL}
                     onRow={(it) => ({ "data-testid": `leak-item-${it.id}` }) as React.HTMLAttributes<HTMLElement>}
                     columns={[
-                      { title: "检查", dataIndex: "title", width: "32%" },
+                      { title: "检查", dataIndex: "title", width: 220, className: "cell-text" },
                       {
                         title: "状态",
-                        width: 130,
+                        className: "nowrap",
                         render: (_, it) => {
                           const s = leakStatus(it);
                           return <StatusTag kind={s.kind}>{s.label}</StatusTag>;
                         },
                       },
-                      { title: "说明", dataIndex: "detail" },
+                      { title: "说明", dataIndex: "detail", width: 420, className: "cell-text" },
                     ]}
                   />
                 </Section>

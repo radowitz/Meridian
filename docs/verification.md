@@ -19,10 +19,12 @@
 | 命令 | 证明 | 不证明 |
 | --- | --- | --- |
 | `go test ./...`（任何平台） | 代码级：模型与迁移、编译出的文本（nft、路由、SmartDNS、WireGuard 占位符）、bash 里带桩执行的生成脚本（`meridian-up.sh`、`meridian-verify.sh`、枢纽 `group_step`）、状态机、API 契约（秘密不出现在响应 / 日志 / 快照 / 编译产物 / 差异、引用阻止删除、迁移、安装 / 回滚事务用模拟宿主）、host agent 的校验与动作顺序 | 规则已加载到任何主机；真实 nft / iproute2 的输出格式；真实 SSH 服务器以外的远端；Cloudflare；任何平台；任何泄漏结论 |
-| `go test ./...` 在非 root 或非 Linux 上 | 同上 | `TestNetnsReloadNoLeak` 只在 Linux 编译（`//go:build linux`），没有 `MERIDIAN_NETNS_TEST=1` 或不是 root 时**跳过**。跳过不是通过：日志里是 `--- SKIP`，在交付记录里必须写成「跳过（权限不足 / 非 Linux）」。没有 bash 的机器上脚本类测试也会跳过 |
+| `go test ./...` 在非 root 或非 Linux 上 | 同上 | `TestNetnsReloadNoLeak` 和 `TestNetnsULALANHomeAccess` 只在 Linux 编译（`//go:build linux`），没有 `MERIDIAN_NETNS_TEST=1` 或不是 root 时**跳过**。跳过不是通过：日志里是 `--- SKIP`，在交付记录里必须写成「跳过（权限不足 / 非 Linux）」。没有 bash 的机器上脚本类测试也会跳过 |
 | `npm --prefix web run build` | 面板 TypeScript 类型检查通过、能打包 | 任何运行时行为 |
 | `npm --prefix web test`（vitest + jsdom，假 API） | 面板用例：秘密只发送一次且不留在浏览器存储；服务器「发现 → 确认同一指纹 → 测试」流程与指纹不符的处理；被引用时删除被拒并列出引用者；Cloudflare 权限检查显示「写权限未确认」、Mesh「已发布」不显示为可用；名单策略与保留旧版；安装状态指示；地区组排序、手动 / 回落、删除被拒；规则只有一个目标；拓扑节点只选服务器、不发 `ssh_*`；远程接入一次性配置、重新生成、停用删除、运行状态不可用时说明原因；部署失败与补偿、回滚方式；解锁到达性不算解锁；防泄露页集成项永远「未执行」、人工项永远「待人工签收」 | 后端行为（API 是假的）；真实浏览器；可用性 |
 | `sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsReloadNoLeak`（Linux root） | 隔离命名空间里，生成的 nft 和路由在首次加载、200 次重载、两种加载失败注入、地区组来回切换（含路由脚本重跑）、只剩兜底表时，局域网和远程设备的境外流量不到 ROS | 真实隧道、真实客户端、真实 ROS |
+| `sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsGroupDNSFailover`（Linux root，需要 python3；2026-11-13 在一台 Debian 13 上跑通，日志在 `docs/evidence/2026-11-13-debian13/netns-group-dns.log`） | 命名空间里用编译出的网关、阿里云、枢纽、两个成员出口的 nft 和路由，以及枢纽编译出的 `group_step`：切换前组查询（UDP、TCP）由首选成员应答、数据经首选；首选整机断开（解析器、隧道、WAN）后枢纽把组切到备成员，同样的查询由备成员应答、新连接经备成员；两个成员都断时查询失败；整个过程没有组查询到 ROS 或国内解析地址、没有从局域网口出去、没有不带 mark 离开网关（见「地区组的解析」） | 真实 WireGuard（AllowedIPs 只有单元测试）、真实 SmartDNS 的 `-set-mark`（只在真实网关上用计数器核实过一次，见架构文档）、真实出口和 Mesh |
+| `sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsULALANHomeAccess`（Linux root；2026-11-13 在一台 Debian 13 上跑通，日志在 `docs/evidence/2026-11-13-debian13/netns-ula-lan.log`） | 同样的命名空间、局域网 IPv6 前缀换成 ULA，加载一次后：设备 ↔ 家里主机 IPv6 双向有回包；前缀之外的 ULA（含隧道、中转）从设备和局域网客户端发出时到了网关、没有被转发、ROS 一个也没收到 | 同上；GUA 局域网前缀（由上一行覆盖） |
 | 网关上 `meridian-verify.sh` | 这台网关此刻加载的状态（见下面「meridian-verify.sh」） | 真实客户端不泄漏；路由器；手机 |
 
 ### 已存档的执行记录
@@ -30,8 +32,11 @@
 | 日期 | 环境 | 范围 | 存档 |
 | --- | --- | --- | --- |
 | 2026-11-12 | 全新 Debian 13 虚拟机（内核 6.12、nftables 1.1.3、systemd 257），示例拓扑，隧道未握手 | 第二类（隔离 Linux 集成证据）的五个入口各跑通一次，外加首次安装、升级、回滚、重启的手工核对 | [docs/evidence/2026-11-12-debian13](evidence/2026-11-12-debian13/README.md) |
+| 2026-11-13 | 同一台主机，从上一版升级；示例拓扑加地区组、远程接入（两个测试设备，没有设备真的拨入），隧道未握手 | 第二类的五个入口在面板重做之后的版本上各跑通一次（netns 测试含远程设备、地区组切换和端到端回复；验收脚本 47 项本地检查；地区组解析的故障切换测试；ULA 家网测试），外加升级、迁移、密钥与密码登录、名单更新、远程接入安装、重启的手工核对 | [docs/evidence/2026-11-13-debian13](evidence/2026-11-13-debian13/README.md) |
 
-这份记录只覆盖第二类，而且只对当时那一版代码和那台主机成立。它是用提交 `d9b8556` 产生的，**早于**地区组、名单源、远程接入、14 个解锁适配器和面板重建；这些功能都不在它的范围内，它的 `meridian-verify.sh` 日志（17 PASS / 5 PENDING-HUMAN / 4 NOT-RUN-HERE）也是旧版脚本的输出，没有本版新增的检查。之后改过的防火墙（守卫标记范围、`mra` 入口）、路由（地区组标记）、启动脚本（chnroute 重新加入）、安装脚本（`meridian-secrets` 卷）、宿主执行（名单动作、远程接入状态）和验证脚本本身都要重跑：下面的「真实网关重跑清单」列出顺序。存档目录里的原始日志和 README 不改写。
+两份记录都只覆盖第二类，而且只对各自那一版代码和那台主机成立。2026-11-13 那份对应面板重做之后、删除 IPv4 `iif … unreachable` 规则之后的版本（见它的 README）；在它之后再改防火墙、路由、安装脚本、宿主执行或验收脚本就要重跑。它没有覆盖的东西在它的 README 里逐条列出：没有真实隧道和出口、没有设备真的拨入、没有调用过 Cloudflare、没有对真实平台探测、对真实远端节点的下发只测了连接、全新主机的首次安装这次没有重走。
+
+2026-11-12 那份是用提交 `d9b8556` 产生的，**早于**地区组、名单源、远程接入、14 个解锁适配器和面板重建；这些功能都不在它的范围内，它的 `meridian-verify.sh` 日志（17 PASS / 5 PENDING-HUMAN / 4 NOT-RUN-HERE）也是旧版脚本的输出，没有本版新增的检查。之后改过的防火墙（守卫标记范围、`mra` 入口）、路由（地区组标记）、启动脚本（chnroute 重新加入）、安装脚本（`meridian-secrets` 卷）、宿主执行（名单动作、远程接入状态）和验证脚本本身都要重跑：下面的「真实网关重跑清单」列出顺序。存档目录里的原始日志和 README 不改写。
 
 第三类（实机人工签收）至今没有任何记录：下面标着「待人工签收」的每一项都还没做。真实出口切换、Cloudflare Mesh 的真实部署、路由器转发、手机蜂窝拨入、解锁探测的真实平台判定和防泄漏抓包都没有执行过，它们是用户或主会话另行执行的待签收项。
 
@@ -39,11 +44,11 @@
 
 按顺序，每一步把完整输出存进新的证据目录（例如 `docs/evidence/<日期>-debian13/`），没有存档就仍是「未验证」：
 
-1. 开发机：`GOOS=linux go test -c -o compile.test ./internal/compile`，拷到一台可以建命名空间的 Linux 主机（不要在网关本机上跑），`sudo MERIDIAN_NETNS_TEST=1 ./compile.test -test.run '^TestNetnsReloadNoLeak$' -test.v`。通过的样子：每个阶段（对照、首次安装、200 次重载、失败注入、20 次地区组切换、切换后 20 次路由重跑、只剩兜底表、只有开机兜底文件）都有 `EVIDENCE` 行，远程设备 `raw_at_ros=0`，最后一行 `meridian-netns-reload-test-ok`。
+1. 开发机：`GOOS=linux go test -c -o compile.test ./internal/compile`，拷到一台可以建命名空间的 Linux 主机（不要在网关本机上跑），`sudo MERIDIAN_NETNS_TEST=1 ./compile.test -test.run '^TestNetnsReloadNoLeak$' -test.v`。通过的样子：每个阶段（对照、首次安装、200 次重载、失败注入、20 次地区组切换、切换后 20 次路由重跑、只剩兜底表、只有开机兜底文件）都有 `EVIDENCE` 行，首次安装、200 次重载后和地区组切换后各有一组 `e2e ok` 行和一行路由校验通过，远程设备 `raw_at_ros=0`，最后一行 `meridian-netns-reload-test-ok`。同一个 `compile.test` 再跑 `sudo MERIDIAN_NETNS_TEST=1 ./compile.test -test.run '^TestNetnsGroupDNSFailover$' -test.v`（地区组的解析；需要 python3；2026-11-13 跑通过一次，见已存档的执行记录）。通过的样子：`EVIDENCE before`、`EVIDENCE after failover` 各有 UDP、TCP 查询和连接三行（之前是 `198.18.1.1` / `100.64.1.2`，之后是 `198.18.1.2` / `100.64.2.2`），`hub active member of group us: us-2`、`hub report: hop in table us: us-2`、`hub report: result: ok`，`all members down` 阶段查询 `TIMEOUT`、`hub active hop of group us: mmesh`、`hub report: hop in table us (Mesh unsealed): blackhole`，每个阶段的计数行里 `gw unmarked`、`gw lan`、`gw domestic`、`ros domestic`、`ros group` 都是 0，`--- PASS: TestNetnsGroupDNSFailover`，stderr 最后一行 `meridian-netns-group-dns-test-ok`。失败时日志里有 `DIAG` 段（各命名空间的规则、路由、nft、枢纽的组状态文件和解析器日志）。再跑 `sudo MERIDIAN_NETNS_TEST=1 ./compile.test -test.run '^TestNetnsULALANHomeAccess$' -test.v`（ULA 局域网前缀；2026-11-13 跑通过一次，见已存档的执行记录）。通过的样子：两行 `EVIDENCE ula-lan e2e ok`（设备 → 家里主机、家里主机 → 设备），一行 `EVIDENCE ula-lan outside-prefix ULA … arrived_at_gateway=<不小于 20> forwarded=0 at_ros=0`，`--- PASS: TestNetnsULALANHomeAccess`，stderr 最后一行 `meridian-netns-ula-lan-test-ok`。
 2. 网关：按 [安装](install-debian13.md)「升级」重跑 `install.sh`（全程转发不掉、`meridian-restore-ok`），用新镜像重建面板容器；`docker compose logs meridian` 里应有凭据迁移和地区组迁移的日志（只有数量和 ID）。
 3. 面板：密钥 → 服务器 → 发现并核对指纹 → 确认 → 连接测试（就绪）；Cloudflare 账户 → 检查权限（预期：令牌有效、可读节点和路由，写权限「未确认」）。
 4. 面板「部署」：差分、安装到本机。然后「名单 → 立即更新」一次（选网关上能到达的策略）。
-5. 网关：`sudo /usr/local/sbin/meridian-verify.sh`。通过的样子：退出码 0、最后一行 `meridian-verify-local-ok`；`PASS policy_marks`（数量等于出口数加地区组数）、`PASS guard_mark_range`、`PASS guard_ingress`、`PASS guard_boot_file`、`PASS fallback_blackholes`、`PASS lan_iif_unreachable`、`PASS chnroute_loaded`（和 `chnroute6_loaded`）、`PASS geosite_cn`、`PASS dns_listener`；`INFO list …` 行与面板「名单」页一致；远程接入关闭时 `PASS remote_absent`，打开时 `remote_*` 全部 PASS 且多四条 `PENDING-HUMAN remote_*`。旧版 17 项里任何一项变成 `FAIL` 都要查原因（真实 `nft list` 格式与本仓库桩不同只会导致 FAIL，不会误报 PASS）。
+5. 网关：`sudo /usr/local/sbin/meridian-verify.sh`。通过的样子：退出码 0、最后一行 `meridian-verify-local-ok`；`PASS policy_marks`（数量等于出口数加地区组数）、`PASS guard_mark_range`、`PASS guard_ingress`、`PASS guard_boot_file`、`PASS fallback_blackholes`、`PASS no_stale_iif_rule`、`PASS route_lan_domestic4`、`PASS route_tunnel_reply4`（局域网有 IPv6 前缀时还有 `route_lan_domestic6`、`route_tunnel_reply6`）、`PASS chnroute_loaded`（和 `chnroute6_loaded`）、`PASS geosite_cn`、`PASS dns_listener`；有可切换地区组时还有 `PASS group_dns_snat`、`PASS group_dns_upstream`、`PASS group_dns_route`，以及 `PENDING-HUMAN group_dns_failover`、`NOT-RUN-HERE netns_group_dns`；`INFO list …` 行与面板「名单」页一致；远程接入关闭时 `PASS remote_absent`，打开时 `remote_*` 全部 PASS 且多四条 `PENDING-HUMAN remote_*`。旧版 17 项里任何一项变成 `FAIL` 都要查原因（真实 `nft list` 格式与本仓库桩不同只会导致 FAIL，不会误报 PASS）。
 6. 网关：`sudo bash deploy/verify-smartdns.sh`、`sudo bash deploy/verify-host-exec.sh`，重启后 `--boot`；重启后再跑一次 `meridian-verify.sh`，`chnroute_loaded` 仍为 PASS（证明重载时重新加入了保存的批次）。
 7. 隔离 Linux 主机：`sudo bash deploy/verify-mesh-veth.sh`（Mesh 生成结果没有改，但存档是旧版本的）。
 8. 人工签收（各自存档）：测试机 DNS / WebRTC / 断隧道 / 抓包；真实出口与地区组切换；Cloudflare Mesh 部署、健康、撤回；路由器转发；手机蜂窝拨入两种模式（[远程接入](remote-access.md)「验证」）；解锁平台结论（[unlock-methods.md](unlock-methods.md)「需要人工在真实平台上核对的事项」）。
@@ -118,7 +123,7 @@ DoH 只能拦截清单内的公共解析器。用非常见的 DoH 地址仍可�
 
 网关 `192.168.100.88/24` 和 ROS `192.168.100.1` 在同一个二层。国内回程可能由 ROS 直接交给客户端，所以 `rp_filter` 必须是 loose（2）。本机发送 ICMP 重定向必须关掉，否则境外目的有可能被指去 `.1`。
 
-### meridian-verify.sh（隔离 Linux 集成证据，网关上以 root 运行；2026-11-12 执行过一次，见已存档的执行记录）
+### meridian-verify.sh（隔离 Linux 集成证据，网关上以 root 运行；本版于 2026-11-13 执行过，见已存档的执行记录）
 
 ```bash
 sudo /usr/local/sbin/meridian-verify.sh
@@ -136,14 +141,16 @@ sudo MERIDIAN_ROS_SSH=admin@192.168.100.1 /usr/local/sbin/meridian-verify.sh
 | `PENDING-HUMAN` | 这个脚本不可能执行，需要实机人工签收 |
 | `NOT-RUN-HERE` | 属于别的集成测试，要单独跑并存档 |
 
-本机检查（会执行）。2026-11-12 的存档只覆盖前五条，其余是之后加的，还没有在真实网关上跑过：
+本机检查（会执行）。2026-11-12 的存档只覆盖前五条；其余是之后加的，于 2026-11-13 在测试网关上跑过一次（远程接入打开，47 项 PASS，重启后再跑结果相同），见已存档的执行记录：
 
-- 运行中的 `rp_filter=2`（all、default、局域网口）、`send_redirects=0`（all、局域网口）、v4/v6 `accept_redirects=0`、`ip_forward=1` 和 `ipv6 all.forwarding=1`（转发只在兜底表加载之后由 `meridian-up.sh` 打开，所以它为 1 也间接说明 up 脚本走完了）。
+- 运行中的 `rp_filter=2`（all、default、局域网口）、IPv4 `send_redirects=0`（all、局域网口）、v4/v6 `accept_redirects=0`、`ip_forward=1` 和 `ipv6 all.forwarding=1`（转发只在兜底表加载之后由 `meridian-up.sh` 打开，所以它为 1 也间接说明 up 脚本走完了）。
 - 网关地址在局域网口上；`ip route get <ROS>` 是同链路邻居（没有 `via`）。
-- `ip -6 route show table all` 里没有任何 ULA（`fc00::/7`）路由走局域网口或指向 ROS 的链路本地地址。
-- **防火墙必须存在**：没有 `nft` 命令、`inet meridian_guard` 不在、或 `inet meridian` 不在，都是 `FAIL`，不再是 SKIP。兜底表要有 forward 钩子、优先级 -200 和 `fail closed` 那条丢弃；主表要有 53/853 的 `redirect`、非局域网 DNS 的 input 丢弃和 `ip6 daddr fc00::/7 drop`。
+- `ip -6 route show table all` 里没有任何 ULA（`fc00::/7`）路由走局域网口或指向 ROS 的链路本地地址。局域网 IPv6 前缀本身是 ULA 时，落在这个前缀里的路由和本机地址（它的直连路由、表 100/102 里的同一条、`local`/`anycast`）按设计在局域网口上，单独存为 `ula-routes-lan.txt`、不算走局域网口；它们也不能指向 ROS。前缀之外的 ULA（包括包含这个前缀的更宽路由）照旧检查。
+- **防火墙必须存在**：没有 `nft` 命令、`inet meridian_guard` 不在、或 `inet meridian` 不在，都是 `FAIL`，不再是 SKIP。兜底表要有 forward 钩子、优先级 -200 和 `fail closed` 那条丢弃；主表要有 53/853 的 `redirect`、非局域网 DNS 的 input 丢弃和 `ip6 daddr fc00::/7 drop`。`ula_drop` 读的是已加载的 `classify` 链：丢弃必须在链里，丢弃之前的 IPv6 规则只能是设备池那条，以及局域网 IPv6 前缀是 ULA 时恰好这个前缀的那条（这时它必须在，否则家里的 ULA 主机经网关不可达，也是 `FAIL`）；任何别的、或更宽的 IPv6 规则排在丢弃之前都是 `FAIL`。
 - **策略路由覆盖每个编译出的标记**（`policy_marks`）：`ip -4/-6 rule show` 里每个出口和地区组标记都有 `fwmark <标记> lookup 102`（或表名 `meridian_foreign`）和其后优先级的 `unreachable`，优先级与编译结果一致；缺哪个就列出 `exit/<ID>` 或 `group/<ID>`。`ip rule` 读不出来是 `FAIL`。
-- **局域网 IPv4 兜底规则**（`lan_iif_unreachable`）：优先级 17850 的 `iif <局域网口> unreachable`。
+- **没有旧的 iif 规则**（`no_stale_iif_rule`）：`ip -4 rule show` 里优先级 17850/17851 不能有 `iif <接口> unreachable`。旧版本装过这两条，它们让经局域网口或 `mra` 转发出去的 IPv4 过不了内核的源地址校验（见架构「局域网兜底」）；在就是 `FAIL`，并说明原因（重跑 `meridian-routes.sh` 会删掉）。
+- **路由探测**（`route_*`）：用 `ip route get <目的> from <源> iif <入接口> [mark 0x64]` 让内核实际判一次转发（包括 `rp_filter` 的源地址校验），结果必须是经指定接口出去的单播路由；报错（例如 `Invalid cross-device link`）、`unreachable`/`blackhole`、或从别的接口出去都是 `FAIL`，原始输出存为 `rtget-<项>.txt`。地址：局域网客户端取局域网前缀里最后一个既不是网关也不是 ROS 的地址（示例 `192.168.100.254`），IPv6 取局域网前缀里的 `::fffe`；国内 IPv4 目的地就是 ROS 的地址（带国内 mark 查表 100）；境外一侧和国内 IPv6 目的地只用文档地址 `192.0.2.1`、`2001:db8:ffff::2`、`2001:db8:ffff::1`；设备地址取设备池里网关之后的那个（示例 `10.67.0.2`、`fd67::2`）。各项：`route_lan_domestic4`（客户端到国内，出局域网口）、`route_tunnel_reply4`（每个网关隧道接口回到客户端的回程，出局域网口）；局域网有 IPv6 前缀时 `route_lan_domestic6`、`route_tunnel_reply6`；远程接入打开时 `route_remote_domestic4`（设备到国内，出局域网口）、`route_remote_reply4` / `route_remote_reply6`（国内回程到设备，出 `mra`）、`route_remote_domestic6`（局域网有 IPv6 前缀时）、`route_tunnel_reply_device4` / `route_tunnel_reply_device6`（每个隧道回到设备，出 `mra`）。
+- **另一个会清空规则集的加载器**（`WARN nftables_service_flush`）：`nftables.service` 已启用、且 `/etc/nftables.conf` 里有清空整个规则集的那一行时打印 `WARN`。它只是提醒，不影响退出码：它在 Meridian 加载之后运行时会删掉两张 Meridian 表，转发仍开着，局域网的 IPv4 和 IPv6 都会不受兜底地经 ROS 出去。
 - **表尾黑洞**（`fallback_blackholes`）：表 102 的 v4、v6 和表 100 的 v4 都有 metric 32767 的 `blackhole default`。
 - **守卫的标记范围**（`guard_mark_range`）：从 `nft list table inet meridian_guard` 读出放行进隧道的标记范围（`nft` 打印成 `0x00000101` 这种形式，按数值比较），必须等于编译出的范围（出口加地区组的最大标记，至少到 `0x140`），并且包含每个编译出的标记。
 - **守卫的入口**（`guard_ingress`）：远程接入关闭时守卫里没有 `mra`；打开时 DNS 丢弃、国内标记、出口标记和最后的 fail-closed 丢弃都以 `{ 局域网口, mra }` 为入口，只有两条局域网到设备池的放行单独写局域网口。
@@ -151,14 +158,14 @@ sudo MERIDIAN_ROS_SSH=admin@192.168.100.1 /usr/local/sbin/meridian-verify.sh
 - **名单版本**（`INFO list <名单>`）：从 `/var/lib/meridian/lists/status.json` 读出每个名单当前生效的来源、条数和时间，只是信息，不算检查；没有这个文件时 `INFO lists`。
 - **开机兜底文件**（`guard_boot_file`）：已安装的 `/etc/nftables.d/meridian-guard.nft` 里的守卫与 `meridian.nft` 里的逐字相同；缺文件或不同都是 `FAIL`。
 - **DNS 有人接**（`dns_listener`）：`ss` 显示 UDP 和 TCP 53 都有监听；没有 `ss` 是 `UNKNOWN`。是否答得对是 `verify-smartdns.sh` 的事。
-- **远程接入打开时**：`remote_iface`（`mra` 存在且 up）、`remote_iif_unreachable`（优先级 17851）、`remote_pool_routes`（设备池在 main 和表 100 路由到 `mra`）、`remote_dns`（`mra` 的 53/853 重定向，DNS 白名单含两个设备池）、`remote_port_lan_only`（监听端口只在局域网口接受）、`remote_nat`（设备池对每个标记都有中转 SNAT，另有局域网口 masquerade）、`remote_wg` / `remote_listen`（`wg show mra listen-port` 等于配置）、`remote_peers`（`wg show mra peers` 恰好是已启用设备的公钥：缺的按设备 ID 列出，多出来的只报数量；只比较公钥，从不运行 `wg show … dump`，不打印也不保存任何私钥或预共享密钥）。**关闭时**：`remote_absent`（没有 `mra` 接口；关闭后遗留的 `iif mra unreachable` 只会丢包、重启后消失，显示为 `INFO remote_leftover`）。
+- **远程接入打开时**：`remote_iface`（`mra` 存在且 up）、上面的 `route_remote_*` / `route_tunnel_reply_device*`、`remote_pool_routes`（设备池在 main 和表 100 路由到 `mra`）、`remote_dns`（`mra` 的 53/853 重定向，DNS 白名单含两个设备池）、`remote_port_lan_only`（监听端口只在局域网口接受）、`remote_nat`（设备池对每个标记都有中转 SNAT，另有局域网口 masquerade）、`remote_wg` / `remote_listen`（`wg show mra listen-port` 等于配置）、`remote_peers`（`wg show mra peers` 恰好是已启用设备的公钥：缺的按设备 ID 列出，多出来的只报数量；只比较公钥，从不运行 `wg show … dump`，不打印也不保存任何私钥或预共享密钥）。**关闭时**：`remote_absent`（没有 `mra` 接口）。旧版本遗留的 `iif mra unreachable` 由路由脚本删除，还在就是 `FAIL no_stale_iif_rule`（以前显示为 `INFO remote_leftover`，这一项已去掉）。
 - ROS `fd00::/8` 黑洞：只有设置了 `MERIDIAN_ROS_SSH` 时才执行一条只读的 `/ipv6 route print terse where blackhole`，输出里有 `dst-address=fd00::/8` 或 `fc00::/7` 才 `PASS`；ROS 回答了但没有这条是 `FAIL`；连不上是 `UNKNOWN`。没设置就是 `PENDING-HUMAN`。
 
 一定是 `PENDING-HUMAN`（脚本不跑浏览器、不抓包、不断隧道、看不到路由器和手机）：`dns_leak_client`、`webrtc_srflx`、`redirect_on_wire`、`tunnel_cut`；远程接入打开时还有 `remote_phone_full`、`remote_phone_home`、`remote_router_forward`、`remote_ipv6`。一定是 `NOT-RUN-HERE`：netns 重载测试、`verify-smartdns.sh`、`verify-host-exec.sh`、`verify-mesh-veth.sh`。
 
 退出码：有 `FAIL` 为 1（最后一行 `meridian-verify-failed`）；没有 `FAIL` 但有 `UNKNOWN` 为 2（`meridian-verify-incomplete`，在没有 `/proc`、`sysctl` 或 `ip` 的容器里就是这样，不再退出 0）；全部本机检查通过才是 0，最后一行 `meridian-verify-local-ok`。这一行只代表本机检查，**不是**防泄露结论，也不是发布签收；脚本不再打印旧的 `meridian-verify-ok`。
 
-自动化回归（`go test ./...`，`internal/compile/verify_script_test.go`）：`TestVerifyScriptExecutedChecks` 和 `TestVerifyScriptRemoteAccess` 用桩程序（`sysctl`/`ip`/`nft`/`wg`/`ss`/`ssh`）和临时根目录（`MERIDIAN_VERIFY_ROOT`，只给测试用）在 bash 里真的执行生成的脚本。覆盖：全部通过、没有 nft、缺主表、缺兜底表、转发关闭、不在网关上（`UNKNOWN`、退出 2）、ULA 指向 ROS、ROS 有/没有黑洞、ROS 连不上、`MERIDIAN_ROS_SSH` 注入被拒；地区组标记的规则缺失、`ip rule` 读不出、表 102 缺黑洞、守卫范围比地区组标记窄、远程接入关闭时有残留 `mra`（失败）与只有残留规则（通过 + INFO）、chnroute 为空（有保存的批次 / 从没更新过）、`cn.txt` 为空、开机兜底文件不同或缺失、53 没人监听；远程接入打开时全部通过、停用设备仍是 peer、启用设备缺 peer、`mra` 不在、端口不对、没有 `wg`、守卫不含 `mra`、主表缺远程规则、设备池路由缺失、缺 `iif mra unreachable`。每个用例都断言脚本不能执行的项从不出现 `PASS`。桩里的 nft 输出是编译文本加上真实 `nft list` 的两处格式（标记补零成 8 位、集合元素跨行），真实 `nft list` / `ip rule` / `ss` 的其他格式差异要在网关上跑一次确认（格式不同只会让对应项 `FAIL`，不会误报通过）。
+自动化回归（`go test ./...`，`internal/compile/verify_script_test.go`）：`TestVerifyScriptExecutedChecks`、`TestVerifyScriptRemoteAccess` 和 `TestVerifyScriptULALAN` 用桩程序（`sysctl`/`ip`/`nft`/`wg`/`ss`/`ssh`）和临时根目录（`MERIDIAN_VERIFY_ROOT`，只给测试用）在 bash 里真的执行生成的脚本。覆盖：全部通过、没有 nft、缺主表、缺兜底表、转发关闭、不在网关上（`UNKNOWN`、退出 2）、ULA 指向 ROS、ROS 有/没有黑洞、ROS 连不上、`MERIDIAN_ROS_SSH` 注入被拒；地区组标记的规则缺失、`ip rule` 读不出、表 102 缺黑洞、守卫范围比地区组标记窄、远程接入关闭时有残留 `mra`（失败）与残留 `iif mra unreachable`（`FAIL no_stale_iif_rule`）、旧版的 `iif eth0 unreachable` 加上内核随之给出的 `Invalid cross-device link`（`no_stale_iif_rule` 和 `route_lan_domestic4`、`route_tunnel_reply4` 都 FAIL，IPv6 两项仍 PASS）、某个隧道的回程从别的接口出去、路由探测落到黑洞、没有路由探测的结果（全部 FAIL，不出现任何 `PASS route_`）、`nftables.service` 启用且会清空规则集（`WARN`，退出码仍是 0）与启用但不清空 / 未启用（没有 `WARN`）、chnroute 为空（有保存的批次 / 从没更新过）、`cn.txt` 为空、开机兜底文件不同或缺失、53 没人监听；远程接入打开时全部通过、停用设备仍是 peer、启用设备缺 peer、`mra` 不在、端口不对、没有 `wg`、守卫不含 `mra`、主表缺远程规则、设备池路由缺失、残留 `iif mra unreachable`（`FAIL no_stale_iif_rule`，设备回程的探测 `Invalid cross-device link`）、设备到国内被源地址校验拒绝；局域网 IPv6 前缀是 ULA 时全部通过、前缀之外的 ULA 路由在局域网口上、包含前缀的更宽 ULA 路由、`fd66::/48` 在局域网口上、前缀路由指向 ROS、已加载的分类链缺这条前缀规则、前缀规则被换成更宽的、丢弃不在（都 FAIL），以及 GUA 前缀时丢弃之前多出一条 ULA 规则（FAIL）。每个用例都断言脚本不能执行的项从不出现 `PASS`。桩里的 nft 输出是编译文本加上真实 `nft list` 的两处格式（标记补零成 8 位、集合元素跨行），真实 `nft list` / `ip rule` / `ss` 的其他格式差异要在网关上跑一次确认（格式不同只会让对应项 `FAIL`，不会误报通过）。
 
 这些测试找到过一个真实问题：打开远程接入后守卫最后一条是 `iifname { "eth0", "mra" } … drop`，旧版 `nft_guard` 的匹配只认 `iifname "eth0"`，会在每台打开远程接入的网关上误报 `FAIL`；已改为两种写法都认。
 
@@ -168,7 +175,7 @@ sudo MERIDIAN_ROS_SSH=admin@192.168.100.1 /usr/local/sbin/meridian-verify.sh
 面板「防泄露」页对生成配置做同样的文本检查，那是自动化回归，不替代上面的运行结果。下面这些打勾项里，标了「实机」的没法在仓库的单元测试里做。
 
 - [ ] `sysctl net.ipv4.conf.all.rp_filter` 和每个接口（含 `eth0`）都是 2。生成配置和 `meridian-verify.sh` 会查；实机上再看一遍运行值。
-- [ ] `net.ipv4.conf.all.send_redirects`、`net.ipv6.conf.all.send_redirects` 以及对应接口都是 0。
+- [ ] `net.ipv4.conf.all.send_redirects` 以及对应接口都是 0。IPv6 没有这个开关，见下面「已知边界」。
 - [ ] `accept_redirects` 为 0。ROS 自己仍可能对客户端发重定向，这不由本机控制，实机上在测试机抓包确认。
 - [ ] 网关地址不是 `192.168.100.1`，两者在 `192.168.100.0/24`。
 - [ ] 没有在这块网卡上跑 radvd 或第二个 DHCP。
@@ -187,19 +194,19 @@ sudo MERIDIAN_ROS_SSH=admin@192.168.100.1 /usr/local/sbin/meridian-verify.sh
   2. `meta mark 0x64`（国内）且出接口是局域网口：经表 100 直连 ROS 或局域网。这是设计里允许直出的那部分 IPv6（chnroute6、direct6、局域网前缀）。
   3. 出口 mark（`0x101`–`0x140`，出口更多时随之扩大）且出接口是网关自己的 WireGuard 接口（示例 `m02`、`m02w`、`m03`，含故障切换的备接口）。被路由到 ROS 的出口 mark 包会被丢弃。
   4. 其余从局域网口转发的包一律丢弃并计数：没有 mark（分类表不在、或者走了 main 表经 ROS 的 IPv6 默认路由）以及走错出接口的包。
-- 兜底只挂 forward，不影响 RA、ND 和访问网关本机（input）的流量，也不匹配从隧道回来的流量。IPv4 原有的 `ip rule iif eth0 unreachable` 保留，作为路由层的第二道；IPv6 仍然不加这条规则，因为没有证明过它不会吃掉 RA/ND，IPv6 的兜底只靠 nft 这张表。
+- 兜底只挂 forward，不影响 RA、ND 和访问网关本机（input）的流量，也不匹配从隧道回来的流量。IPv4 和 IPv6 都**没有** `ip rule iif <局域网口> unreachable`：旧版本在 IPv4 上有这一条（打开远程接入时还有 `iif mra`），它让内核对经局域网口（或 `mra`）转发出去的 IPv4 做源地址校验时反查失败（`rp_filter=2`，反查的 iif 是出接口、mark 是 0），国内直连、隧道回程、设备的国内流量和回程全部被丢，已删除（见架构「局域网兜底」）。未分类流量的兜底只靠这张 nft 表；已分类的境外流量还有每个 mark 的 `fwmark … unreachable` 和表尾黑洞。
 
 仓库里能跑的（macOS / 任意平台，`go test ./...` 会跑）：
 
 - `TestNFTAtomicReplace`：每份 nft 文件都是「建-删-重建」写法，每张表只定义一次，没有 `flush`，兜底表在被保护的表之前。
-- `TestGatewayGuardStructure`：兜底表的四条规则、优先级、没有跨表引用、最后一条不带协议族限定的 drop，以及 IPv6 没有 iif 规则。
+- `TestGatewayGuardStructure`：兜底表的四条规则、优先级、没有跨表引用、最后一条不带协议族限定的 drop；路由脚本不加任何 `iif` 规则（v4、v6），按优先级、接口和动作删除旧版的 17850/17851 两条，每个出口 mark 后面仍有 `fwmark … unreachable`。`TestRemoteRoutesAndUpOrder` 对打开远程接入的拓扑做同样的断言；面板检查项 `no_iif_unreachable`（`internal/verify`）在生成配置里出现 iif 规则、缺少旧规则清理或缺少兜底表时失败。
 - `TestUpScriptLoadsFirewallFirst`：`nft -c` 在 `nft -f` 之前，二者都在 `sysctl`、`wg-quick`、路由脚本之前，脚本里没有别的 nft 改动命令。
 - `TestUpScriptFailurePreservesState`：用桩程序在 bash 里真的执行网关的 `meridian-up.sh`，分别让检查失败、加载失败、兜底表缺失、文件缺失，确认脚本停下、不调用 `sysctl`/`wg`/`ip`/路由脚本、也从不发 delete。
 - `TestInstallSurfacesFirewallLoadFailure`（internal/apply）：激活失败会作为错误返回给调用方。
 
 这些只证明生成的文本和脚本控制流。内核是否真的整批回滚、持续流量下是否真的没有一个包漏到 ROS，只能在 Linux 上验证。
 
-### 运行时测试（Linux，root；2026-11-12 执行过一次，见已存档的执行记录）
+### 运行时测试（Linux，root；本版于 2026-11-13 执行过，见已存档的执行记录）
 
 在一台可以随便建网络命名空间的 Linux 机器上（不要在网关本机上跑），需要 `ip`、`nft`、`ping`、`bash` 和 Go：
 
@@ -207,28 +214,31 @@ sudo MERIDIAN_ROS_SSH=admin@192.168.100.1 /usr/local/sbin/meridian-verify.sh
 sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsReloadNoLeak -count=1 -v
 ```
 
-它只在自己建的五个命名空间里动（客户端、网关、ROS、一台远程设备，加一个放网桥的），结束时删掉。网关命名空间里装的是编译出来的 `meridian-routes.sh` 和 `meridian.nft`，隧道用 dummy 接口代替，并给网关加一条经 ROS 链路本地地址的 IPv6 main 默认路由（就是审计里的泄漏路径）。客户端持续向「境外」v4/v6 地址和一个写进 `direct6` 的「国内」v6 地址发 ping，ROS 上计数。
+它只在自己建的五个命名空间里动（客户端、网关、ROS、一台远程设备，加一个放网桥的），结束时删掉。网关命名空间里装的是编译出来的 `meridian-routes.sh` 和 `meridian.nft`，隧道用 dummy 接口代替，并给网关加一条经 ROS 链路本地地址的 IPv6 main 默认路由（就是审计里的泄漏路径）。客户端持续向「境外」v4/v6 地址和写进 `direct4` / `direct6` 的「国内」v4/v6 地址发 ping，ROS 上计数。ROS 在 dummy 接口上拥有这些测试地址，局域网 v4/v6 前缀对它是同链路（能回给客户端和网关的地址改写地址），但**没有**到设备池的路由（测试开头断言），所以设备的国内流量只有经网关改写才回得来。
 
-- [ ] 对照：没有任何 Meridian 表时，境外 IPv6 能到 ROS（`foreign6>0`）。不满足就说明测试环境没覆盖到泄漏路径，结果作废。
-- [ ] 首次安装：加载后境外 v4/v6 到 ROS 为 0，国内 IPv6 能到 ROS，隧道接口有发送。
-- [ ] 持续流量下连续重载 200 次：境外 v4/v6 到 ROS 为 0。
+只数出去的包不够：旧版的 `iif <局域网口> unreachable` 让经局域网口转发出去的 IPv4 全部过不了源地址校验，而旧测试只数到 ROS 的包、国内只测 IPv6，没有发现。现在首次安装、200 次重载后和地区组切换后各跑一次 `e2e`：真实的 ping 必须收到回复——客户端到国内 v4/v6、设备到国内 v4/v6（回复经网关的地址改写从 `mra` 出去）、客户端到设备和设备到客户端 v4/v6；dummy 隧道回不了包，所以隧道回程用 `ip route get <客户端/设备> from <境外地址> iif <每个隧道接口>` 让内核判，必须分别从局域网口和 `mra` 出去；加载的规则里不能有 `iif … unreachable`。任一项失败都会打出网关和 ROS 命名空间的规则、路由和 `ip route get` 诊断。另外在第一次跑路由脚本之前先手工装上旧版的 17850/17851 两条，确认路由脚本把它们删掉。
+
+- [ ] 对照：没有任何 Meridian 表时（路由已装、转发已开），客户端的境外 IPv4 和 IPv6 都能到 ROS（`foreign4>0`、`foreign6>0`），设备未改写的 v4 和 v6 也能到（`raw4_at_ros>0`，且 `raw_at_ros` 大于它）。这是两张表要挡住的基线：路由层没有 iif 规则后，IPv4 和 IPv6 一样只靠 nft。不满足就说明测试环境没覆盖到泄漏路径，结果作废。
+- [ ] 首次安装：加载后境外 v4/v6 到 ROS 为 0，国内 IPv4 和 IPv6 都能到 ROS，隧道接口有发送；`e2e` 全部通过。
+- [ ] 持续流量下连续重载 200 次：境外 v4/v6 到 ROS 为 0；之后 `e2e` 全部通过。
 - [ ] 加载失败注入（批次末尾一条坏规则；兜底表和主表之间一条坏规则）：`nft -c` 和 `nft -f` 都失败，两张表的内容（除计数值）与之前完全一致，`meridian-up.sh` 的加载段停下，期间境外为 0，国内路径仍通。
 - [ ] 只删 `inet meridian`（模拟旧流程两次 nft 之间的空窗）：只靠兜底表，境外和国内都到不了 ROS。
 - [ ] 远程设备（第五个命名空间，`mra` 用 veth 代替）：各阶段设备的原地址从不到 ROS（`raw_at_ros=0`）；加载后国内 v4/v6 经地址改写到 ROS、境外进隧道；只剩兜底表时设备流量全部丢弃。
-- [ ] 地区组切换（阶段 G）：同一拓扑把默认地区组换成另一个组再编译，在持续流量下来回加载 20 次（每次 `nft -c`、`nft -f`、重跑路由脚本），境外 v4/v6 到 ROS 为 0、设备原地址到 ROS 为 0；停在切换后的版本，`classify` 链里默认流量的标记是新组的；再重跑路由脚本 20 次后国内 IPv6 仍到 ROS、隧道仍有发送。
+- [ ] 地区组切换（阶段 G）：同一拓扑把默认地区组换成另一个组再编译，在持续流量下来回加载 20 次（每次 `nft -c`、`nft -f`、重跑路由脚本），境外 v4/v6 到 ROS 为 0、设备原地址到 ROS 为 0；停在切换后的版本，`classify` 链里默认流量的标记是新组的；再重跑路由脚本 20 次后国内 IPv4 和 IPv6 仍到 ROS、隧道仍有发送，`e2e` 全部通过。
 - [ ] 日志里有每一阶段的 `EVIDENCE` 行，最后一行是 `meridian-netns-reload-test-ok`。把整份日志存档；没有存档就仍是「未验证」。
 
-远程设备命名空间（N3）和阶段 G（这一版）加入之后，这个测试**还没有在 Linux 上执行过**；只确认了它能为 `GOOS=linux` 编译（`GOOS=linux go vet ./internal/compile`）。2026-11-12 的存档日志是加入它们之前的版本。
+远程设备命名空间、阶段 G（地区组切换）和 `e2e` 回复 / 路由校验加入之后，这个测试于 2026-11-13 在一台 Debian 13（内核 6.12、nftables 1.1.3）上跑通，日志在 [docs/evidence/2026-11-13-debian13/netns-reload.log](evidence/2026-11-13-debian13/netns-reload.log)。第一次在真实内核上运行时它失败了三回，每一回都改了东西：一回暴露出 IPv4 `iif … unreachable` 规则的缺陷（已删除，见架构「局域网兜底」），另外两回是测试装置自己的问题——设备的流量必须在规则加载之后才开始，充当隧道的 dummy 接口必须带上编译配置里的地址，重载之后要把运行时集合里的测试地址加回去；这些都写在测试的注释里。2026-11-12 的存档日志是这一切之前的版本，没有测过国内 IPv4，也没有测过任何回程，不能证明现在的版本（存档文件保持原样，不改）。它仍然只是命名空间里的证据：真实客户端、ROS 和断隧道下的行为是待人工签收。
 
 ### 已知边界（仍未解决）
 
 - 开机空窗（已改；2026-11-12 在一台 Debian 13 上重启核对过加载顺序，见已存档的执行记录）：`99-meridian.conf` 不再打开转发，网关上反而显式写 `ip_forward=0` / `all.forwarding=0`；转发只由 `meridian-up.sh` 在 nft 批次和兜底表确认之后，从 `/etc/meridian/forwarding.conf` 打开。另有 `meridian-guard.service`（`DefaultDependencies=no`，排在 systemd-sysctl、Docker 和 meridian.service 之前）开机先只加载 `meridian-guard.nft` 里的兜底表；安装脚本给新的 `daemon.json` 加了 `"ip-forward": false`。验证见下面「宿主执行与运行态回滚」。
-- 每次重载会重建集合，SmartDNS 写入的 `direct*`/`r*`/`default*` 会被清空，直到再次解析。这段时间国内目标会被当成境外走默认出口，不会漏到 ROS，但国内流量会绕路。chnroute 已改为在重载时从上次成功加载的副本（`/var/lib/meridian/lists/chnroute.nft`）装回；从未成功更新过名单的网关上仍然是空的。只在本地用桩 nft 测过，尚未在真实网关上重载核对。
-- geosite 的 `include:` 现在递归展开（含属性过滤、循环与缺失检测），`cn` 应当非空；`keyword:` / `regexp:` 条目和 `&` 归属仍然丢弃（见架构「名单源」）。只在本地合成源上测过，尚未从真实网关拉取核对。
+- 每次重载会重建集合，SmartDNS 写入的 `direct*`/`r*`/`default*` 会被清空，直到再次解析。这段时间国内目标会被当成境外走默认出口，不会漏到 ROS，但国内流量会绕路。chnroute 已改为在重载时从上次成功加载的副本（`/var/lib/meridian/lists/chnroute.nft`）装回；从未成功更新过名单的网关上仍然是空的。只在本地用桩 nft 测过；2026-11-13 在测试网关上更新名单后重载和重启各核对过一次，集合都还在（见已存档的执行记录）。
+- geosite 的 `include:` 现在递归展开（含属性过滤、循环与缺失检测）；`keyword:` / `regexp:` 条目和 `&` 归属仍然丢弃（见架构「名单源」）。2026-11-13 在测试网关上用全自动策略更新过一次：全部来自国内源，`cn` 从 361 个文件展开出 8519 个域名（见已存档的执行记录）；海外源和回退路径没有在真实线路上走过。
 - 名单源可选国内（jsDelivr）、海外（GitHub raw）、全自动（先国内后海外），默认全自动；只有手动更新，没有定时任务。镜像内容只做形状检查，不是“已验证”的数据（见架构「名单源」的信任边界）。
-- `net.ipv6.conf.*.send_redirects` 在 Linux 上不存在。生成的 sysctl 文件和安装脚本仍会写它，结果是几行 `skip sysctl` / `cannot stat` 的噪音，不影响别的键。
-- 面板探测失败时，错误文字里的 `lookup … on <系统 DNS>:53` 是 Go 解析器套用的名义地址；实际的查询发往出口解析器（同一行后半段的套接字地址）。文字容易误读，尚未改。
+- 同一条连接中途改变分类时会断。分类标记按包打，地址转换按连接在建立时定下；重载清空运行时集合后，一条持续的连接可能先被当成境外（转换成中转地址），等它的目的地址重新进入国内集合后又从局域网口出去，沿用的却是旧的转换，对端的回程回不来，直到这条连接在连接跟踪里超时。目的地是国内地址，不构成境外泄漏；新建的连接不受影响。2026-11-13 的 netns 运行里看到过（测试因此在重载后重启设备的流量）。要根治得把分类结果存进连接标记，尚未做。
+- 网关不阻止发送 **IPv6** ICMP 重定向。Linux 没有 `net.ipv6.conf.*.send_redirects`（这个键只有 IPv4 有）：转发路径在包从进来的同一个接口出去时直接发 IPv6 重定向，没有 sysctl 开关。以前生成的 sysctl 文件和安装脚本写过这个不存在的键（日志里的 `skip sysctl` / `cannot stat` 噪音），防泄露页还把「关闭 IPv6 发送重定向」列为「配置包含」——这个保护从来不存在；现在三处都已删除，不再声称。IPv6 重定向是否出现，只能靠「同网段 ICMP 重定向抓包」那条人工签收（IPv4 和 IPv6 都要抓）。要真正挡住，需要在 nft 里丢弃发往局域网的 `nd-redirect`，尚未做。
 - 兜底只管从局域网口进来的转发。如果以后在网关上用非 host 网络的 Docker 发布端口给局域网，兜底会把它丢掉（出接口不是局域网口）。
+- IPv4 对**没有 mark** 的局域网转发流量已经没有路由层兜底（旧的 `iif <局域网口> unreachable` 因为会挡掉所有经局域网口转发出去的 IPv4 而删除，见架构「局域网兜底」），和 IPv6 一样只靠 `inet meridian_guard`。两张 Meridian 表都被删掉而转发仍开着时（有人执行 `nft flush ruleset`，或启用了 Debian 自带、配置以清空规则集开头的 `nftables.service`），IPv4 会和 IPv6 一样直接经 ROS 出去。`meridian-up.sh` 不会在兜底表缺失时打开转发，`meridian-verify.sh` 在兜底表缺失时 `FAIL`、在 `nftables.service` 已启用且会清空规则集时 `WARN`；运行中有人删表不会被阻止，只能靠检查发现。
 
 ## 宿主执行与运行态回滚
 
@@ -243,7 +253,7 @@ sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsReloadNoLeak
 - `internal/api`：已安装时 `{}` 回滚被拒绝；`install` 与 `snapshot_only` 互斥；没有宿主执行能力时 503 且不写快照；失败返回带补偿结果的事务报告。
 - `internal/compile`：up 脚本只列清单里的接口，缺文件即失败；没有 systemd 时 `meridian-systemd-missing` 失败而不是跳过；sysctl.d 不开转发，转发在兜底检查之后。
 
-### 实机（Debian 13 网关，root；2026-11-12 执行过一次，见已存档的执行记录）
+### 实机（Debian 13 网关，root；本版于 2026-11-13 执行过，见已存档的执行记录）
 
 ```
 sudo bash deploy/verify-host-exec.sh          # 接线、权限、容器无特权、agent 拒绝非法请求
@@ -275,14 +285,38 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 ## 地区组和 Mesh
 
 - [ ] 香港机房组里有多台非家宽出口，面板上首选是 IX 绑定的那台。家宽在另一个组，至少两台。
-- [ ] 把首选成员的探测连续打失败 3 次，枢纽上该组自己的路由表（`ip route show table <组表>`）下一跳换成同组备成员。只失败 1 次时下一跳不变。各出口自己的表不变。（实机：看 `/run/meridian/group/<组 ID>/{active,reason,switched,alert}`。仓库里用状态机单测和在 bash 里带桩运行生成的 `group_step` 覆盖了同一规则：`go test ./internal/pool ./internal/compile -run 'Group|Hub'`。）
+- [ ] 把首选成员的探测连续打失败 3 次，枢纽上该组自己的路由表（`ip route show table <组表>`）下一跳换成同组备成员。只失败 1 次时下一跳不变。各出口自己的表不变。（实机：看 `/run/meridian/group/<组 ID>/report`，或在面板「出口」页读取枢纽状态。仓库里用状态机单测和在 bash 里带桩运行生成的 `group_step` 覆盖了同一规则：`go test ./internal/pool ./internal/compile -run 'Group|Hub'`。）
 - [ ] 首选恢复后，要连续成功满 120 秒、最近一次探测成功、并且距上次切换满 120 秒才切回；恢复期间首选再失败一次，恢复计时清零。首选已经判死时，这 120 秒不会把下一跳留在另一台也已经判死的成员上。
 - [ ] 手动组「保持」：指定成员判死后下一跳不变，`reason=held`、`alert=1`。「回落」：切到有效顺序里的下一个成员，`reason=fallback`、`alert=1`，恢复后按上一条切回。
 - [ ] 组内 WireGuard 都失败且该组有 Mesh 边时，下一跳才是 `mmesh`，并且只有 `/run/meridian/mesh-sealed` 存在时才装这条路由。没有密封或没有 Mesh 时，这张表是黑洞，不改去别的国家，也不从枢纽的默认路由出去。
 - [ ] 改组（顺序、指定成员、成员）后下发：`meridian-failover.service` 被重启，组表回到编译时的选择。
+
+### 枢纽实际状态回读（面板「实际使用」）
+
+机制见[架构](architecture.md#实际状态与面板推算两个来源分开显示)。
+
+- 自动化回归（`go test ./internal/compile ./internal/hubstate ./internal/api`）：
+  - 枢纽侧，在 bash 里带桩（`ip` 按表保存路由并可对某张组表注入失败、`ping`、`date`）运行**生成的**切换脚本，再用面板的固定命令读回并交给面板解析器：`TestHubStateRecordsSwitch`（启动写入部署标识；心跳每轮前进；成功切换记录新成员、原因、时间，面板判为 `ok`；Mesh 未封装时报告 `blackhole`）、`TestHubStateRecordsFailedSwitch`（组表的路由命令失败：`result failed`、`want`、`hop` 仍是原成员，切换器状态不变，面板判为 `switch_failed`；之后恢复切换成功；表被外部改动判为 `diverged`）、`TestHubStateStaleAndVersion`（心跳超过阈值为 `stale`、恰好在阈值内仍是 `ok`；改了组的顺序为 `version_mismatch`；与组无关的改动不改部署标识）、`TestHubStateWritesAreAtomic`（写入期间并发读取从未读到半个报告）、`TestHubStateScriptShape`（循环间隔与阈值一致；只有枢纽的切换脚本带记录）。
+  - 解析与判定：`internal/hubstate` 的 `TestEvaluateStates`、`TestEvaluateClock`、`TestParseRejects`（未知成员、Mesh 边不存在时的 `mmesh`、格式错误、控制字符、shell 字符、重复字段 / 组、不完整、过大、时间不合理）。
+  - 面板侧，对进程内 SSH 测试服务器的固定命令给出预设输出：`TestHubStateReadStates`（`ok`、`stale`、`version_mismatch`、`switch_failed`、未知成员、缺记录、格式错误、过大、命令失败、密码错误、主机指纹变了；发出的命令永远是那条常量，请求体里的东西不会进入命令；非 `ok` 状态没有任何成员被标为实际使用；模型与实际分开；密码不在响应、日志和存储里）、`TestHubStateUnreachable`（指纹未确认时不登录、枢纽没有服务器、静态组为 `not_switchable`）、`TestHubStateRefreshSerialised`（并发读取 409）、`TestHubStateLimitsAgree`。
+  - 界面（`npm --prefix web test`）：只有模型时显示「面板推算」和「未验证」，不出现「实际使用 <成员>」和「使用中」；`actual.ok` 时显示成员、原因、上次切换、读取时间；过期 / 版本不一致 / 切换失败各自的原因和修复入口；打开页面自动读一次、按钮再读、不轮询；概览卡片同样只在 `ok` 时写成员。
+- 隔离 Linux 集成：`TestNetnsGroupDNSFailover` 在真实内核的命名空间里跑编译出的 `group_step`，并核对报告：切换后 `hub report: hop in table us: us-2`、`hub report: result: ok`，全部成员断开且 Mesh 未封装时 `hub report: hop in table us (Mesh unsealed): blackhole`。
+- [ ] 实机（待人工签收）：在真实枢纽上让某个可切换组的首选成员失效，枢纽切换后在面板「出口」页点「读取枢纽状态」，该组显示「实际使用 <备成员>」、原因「故障切换」、上次切换时间与枢纽上 `ip route show table <组表>` 和 `/run/meridian/group/<组>/report` 一致；同时在测试机上确认流量确实从备成员出去（`ipleak`）。再停掉 `meridian-failover.service` 超过阈值后读取，显示「状态过期」而不是成员；改一下组的顺序但不装机，读取显示「枢纽不是当前配置」。签收时记录读取时间和枢纽上的报告原文。
 - [ ] 家宽网关上没有 `cloudflare/mesh`，也没有 `dev mmesh`。Mesh 只在枢纽和出口的独立网络命名空间里。本机地址是 `192.168.100.88/24` 时，mesh 脚本拒绝启动。
 - [ ] `/etc/meridian/mesh.env` 权限 0600，令牌不在 git 里，由面板部署写入（经 SSH 标准输入传送，不出现在远端进程列表）。文件为空时 sidecar 不启动，其余隧道照常。
 - [ ] 删掉 IX 或把 Mesh 从家宽画到出口，保存被拒绝。
+
+### 地区组的解析
+
+机制见[架构](architecture.md#地区组的解析)。可切换组的名字经组的解析地址（`fd66::53:<k>`）、带组 mark 查询，网关把源地址改成组的中转地址，枢纽按源地址送进当前成员，成员把它 DNAT 到自己的隧道解析器。
+
+- 自动化回归（`go test ./internal/compile ./internal/validate`）：`TestGroupDNSSmartDNS`（每组一个上游、只有组解析地址、mark 是十进制、钉死 / 解锁移动 / 不可切换组仍用成员解析器、国内解析器不在任何组上游里、默认组里只有默认地区组的上游）、`TestGroupDNSGatewaySNAT`（SNAT 在一组包上求值：只有组 mark + 组解析地址 + 53 被改写；局域网和设备入口对解析地址一律丢弃；带 mark 的出路只有西向隧道和黑洞）、`TestGroupDNSExitDNAT`、`TestGroupDNSHubPath`、`TestGroupDNSAbsentWithoutSwitchableGroup`、`TestGroupResolverAddresses`、`TestGroupResolverReserved`，以及验收脚本的桩测试。它们只证明生成结果。
+- 隔离 Linux 集成：`TestNetnsGroupDNSFailover`（上面「每个命令能证明什么」）。2026-11-13 在一台 Debian 13 上跑通（见已存档的执行记录）。它用的是编译出的规则和枢纽脚本，但成员出口上的解析器是替身，隧道是 veth：真实出口上的解析器、真实枢纽和带客户端的真实故障切换仍是待人工签收。
+- 网关本地（`meridian-verify.sh`）：`group_dns_snat`（已加载的主表里每个可切换组都有解析 SNAT）、`group_dns_upstream`（`/etc/smartdns/smartdns.conf` 里每组有带十进制 mark 的上游，出现十六进制 mark 即 FAIL）、`group_dns_route`（`ip -6 route get <解析地址> mark <组 mark>` 落在网关的隧道接口上，落到局域网口、黑洞或不可达都是 FAIL）。它们看不到成员是否应答。
+- [ ] 实机（待人工签收）：选一个可切换组，把它当前成员的隧道和解析器都停掉，等枢纽切换（`/run/meridian/group/<组>/active` 变成备成员）；在测试机上解析一个此前没解析过的、命中该组规则的名字，能得到地址并能打开，`ipleak` 显示备成员的出口；同时在网关局域网口抓包，没有这个名字的查询发往国内解析器或 ROS。再把组内成员全部停掉：这个名字解析失败（不是从别处得到答案）。
+- [ ] 升级顺序：先下发出口和枢纽，再安装网关。网关先装、出口还是旧版本时，组内新名字解析失败，这是预期的（不回落）。
+
+`docs/evidence/` 下 2026-11-12 的存档早于这一改动，不覆盖它。2026-11-13 的存档是加入它之后的最后一次构建：`meridian-verify.sh` 的日志里有 `group_dns_*` 三项（共 47 项本地检查），`netns-group-dns.log` 是上面那个命名空间测试的通过记录，另有一次用真实 SmartDNS 观察出站路径的手工核对（见该目录的 README）。真实出口、真实枢纽和带客户端的故障切换不在其中。
 
 ### Mesh veth 下一跳（审计 P1）
 
@@ -297,7 +331,7 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 静态路由（`meridian-routes.sh`）和动态出口切换（`meridian-failover.sh` 的 `group_hop`，与路由脚本共用同一段 `MESH_NH4` / `MESH_NH6` 定义）用同一组下一跳。sidecar 的回程（网关局域网、`10.66.0.0/16`、`fd66::/48`、局域网 IPv6 前缀）`via 169.254.66.1` / `via fe80::66:1 dev mmesh-c`。`meridian-mesh-up.sh` 只在主机侧 ping 通两个下一跳之后才写 `/run/meridian/mesh-sealed`；sidecar 内的 `inet meridian_mesh` 改成一个 nft 事务（建表 → 删表 → 重建）。
 
 - **自动化回归**：`go test ./internal/compile -run TestMeshVethNextHops`、`go test ./internal/verify -run TestMeshItemsNeverClaimForwarding`、`go test ./internal/mesh`（地址与冲突校验、阶段顺序、每个阶段的故障注入与补偿、补偿失败可重试、只撤回本次拥有的资源、凭据不落盘/不回显；撤回只去部署时固定的主机与主机指纹、主机上没有本次备份目录不算已恢复、撤回前核对 Cloudflare 账户、撤回完成前不能切换账户且与凭据修改串行）。只说明生成的文本和控制流正确。
-- **隔离 Linux 集成证据（2026-11-12 执行过一次，见已存档的执行记录）**：`sudo bash deploy/verify-mesh-veth.sh`。在四个临时 netns 里按生成的命令搭出 主机 ↔ sidecar ↔「warp」，v4 / v6 的 ICMP 和 TCP 都要经 `169.254.66.2` / `fe80::66:2%mmesh` 转发，`mmesh` 上只解析这两个下一跳；同时把出口表换成旧写法 `default dev mmesh` 作为对照，对照必须不通。最后一行应是 `meridian-mesh-veth-verify-ok`，把证据目录存档。它于 2026-11-12 在一台 Debian 13 上跑通（8 项 PASS，存档在 [docs/evidence/2026-11-12-debian13/mesh-veth.log](evidence/2026-11-12-debian13/mesh-veth.log)），证明的只是命名空间里主机到 sidecar 这一跳；改过 Mesh 的地址、路由或 `meridian-mesh-up.sh` 之后要重跑。Cloudflare、真实 sidecar 镜像和真实出口都不在这项测试里，Mesh 备路的真实转发仍是待人工签收。面板「防泄露」页的「Mesh veth 下一跳双栈转发（netns）」一律显示「未执行」，因为面板不运行它，也不读取存档。
+- **隔离 Linux 集成证据（2026-11-12 和 2026-11-13 各执行过一次，见已存档的执行记录）**：`sudo bash deploy/verify-mesh-veth.sh`。在四个临时 netns 里按生成的命令搭出 主机 ↔ sidecar ↔「warp」，v4 / v6 的 ICMP 和 TCP 都要经 `169.254.66.2` / `fe80::66:2%mmesh` 转发，`mmesh` 上只解析这两个下一跳；同时把出口表换成旧写法 `default dev mmesh` 作为对照，对照必须不通。最后一行应是 `meridian-mesh-veth-verify-ok`，把证据目录存档。它于 2026-11-12 在一台 Debian 13 上跑通（8 项 PASS，存档在 [docs/evidence/2026-11-12-debian13/mesh-veth.log](evidence/2026-11-12-debian13/mesh-veth.log)），证明的只是命名空间里主机到 sidecar 这一跳；改过 Mesh 的地址、路由或 `meridian-mesh-up.sh` 之后要重跑。Cloudflare、真实 sidecar 镜像和真实出口都不在这项测试里，Mesh 备路的真实转发仍是待人工签收。面板「防泄露」页的「Mesh veth 下一跳双栈转发（netns）」一律显示「未执行」，因为面板不运行它，也不读取存档。
 - **实机人工签收（待签收）**：「Mesh 备路真实转发（v4 / v6）」。让池里所有 WireGuard 成员失效、出口表切到 `mmesh` 后，在枢纽 `mmesh` 和出口上抓包，v4 / v6 测试流量从出口离开，`mmesh` 上没有对公网目的地址的 ARP / NS。
 
 在这两类证据存档之前，Mesh 数据面在代码、面板和文档里都是 **未验证**。面板部署的结果「路由已发布」只表示 Cloudflare 路由已经发布，不等于「Mesh 可用」。
@@ -331,7 +365,7 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 步骤和签收项见 [remote-access.md](remote-access.md)「验证」。
 
 - 自动化回归：`go test ./internal/compile -run 'Remote|VerifyScriptRemote'`、`go test ./internal/apply -run Remote`、`go test ./internal/api -run 'RemoteAccess|RegeneratedDevice'`、`go test ./internal/validate`。
-- 隔离 Linux 集成：`TestNetnsReloadNoLeak` 的远程设备命名空间（未执行，见上）；网关上 `meridian-verify.sh` 的 `remote_*` 检查（未执行）。
+- 隔离 Linux 集成：`TestNetnsReloadNoLeak` 的远程设备命名空间、网关上 `meridian-verify.sh` 的 `remote_*` 检查，都于 2026-11-13 执行过（见已存档的执行记录）。当时 `mra` 上有两个 peer，但没有任何设备真的拨入。
 - [ ] 实机人工签收（未执行）：路由器转发、手机蜂窝两种模式、IPv6、停用和重新生成后旧配置失效。
 
 ## 解锁
@@ -420,7 +454,7 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 
 - [ ] 53/853 被劫持到本机，非局域网来源的 53/853 在 input 被丢弃。
 - [ ] 不 `flush ruleset`，策略路由优先级从 17000 起，境外表有黑洞默认路由。
-- [ ] 网关 nft 文件是单个事务（建-删-重建），带独立的 `inet meridian_guard` 兜底表。运行中重载不漏仍是「未验证」，见上面「防火墙原子替换与 LAN 兜底」。
+- [ ] 网关 nft 文件是单个事务（建-删-重建），带独立的 `inet meridian_guard` 兜底表。运行中重载不漏在命名空间里有存档的通过记录（2026-11-13），真实客户端、ROS 和抓包下仍是待人工签收，见上面「防火墙原子替换与 LAN 兜底」。
 - [ ] `fd66::/48` 不指向 ROS。
 - [ ] 已知 DoH 域名返回 SOA，已知地址的 443 被拒绝。这不是全部 DoH。
 - [ ] WebRTC：srflx / 中继候选是出口地址（实机人工签收，ipleak 或 browserleaks）。
@@ -429,6 +463,7 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 - [ ] 实机人工签收：ROS 上 `fd00::/8`（或 `fc00::/7`）黑洞的只读查询输出已存档（或 `meridian-verify.sh` 带 `MERIDIAN_ROS_SSH` 的 `PASS ros_ula_blackhole` 及其证据文件）。
 - [ ] 实机人工签收：断隧道时测试机不通、ROS / 家庭 WAN 抓包里没有境外流量。
 - [ ] 隔离 Linux 集成证据：`meridian-verify.sh` 在网关上 `meridian-verify-local-ok`，证据目录已存档。
+- [ ] 自动化回归：网关路由脚本不装任何 `iif … unreachable` 规则、删除旧版的 17850/17851 两条、并且有兜底表（`no_iif_unreachable`）；网关上由 `meridian-verify.sh` 的 `no_stale_iif_rule` 和 `route_*` 路由探测按内核实际结果核对。
 - [ ] 自动化回归：每个出口和地区组标记都有 v4/v6 的 102 表规则和其后的 unreachable，并在守卫范围内（`group_marks_routed`）；开机兜底文件与主规则的守卫一致（`boot_guard_matches`）；启动脚本重新加入保存的 chnroute（`chnroute_readd`）；编译产物里的私钥和预共享密钥都是占位符（`bundle_keys_placeholder`）；远程接入的生成配置（`remote_access_config`，关闭时为「不适用」且配置里没有 `mra`）。
 - [ ] 隔离 Linux 集成证据：名单更新后重载，`chnroute_loaded` / `geosite_cn` 仍为 PASS（`lists_update_runtime`）。
 - [ ] 实机人工签收：真实出口与地区组切换（`real_exit_switch`）；平台解锁结果按 unlock-methods.md 核对（`unlock_platform_verdicts`）；启用远程接入时手机两种模式、路由器转发、IPv6（`remote_phone_full`、`remote_phone_home`、`remote_router_forward`、`remote_ipv6`）。

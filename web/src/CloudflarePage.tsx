@@ -23,6 +23,8 @@ import MeshDeploy, { checkSummary } from "./MeshDeploy";
 import { useRouter } from "./state";
 import type { CloudflareAccountView, CloudflareRequirements, PermissionCheck } from "./types";
 import {
+  RowActions,
+  TABLE_SCROLL,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -74,9 +76,10 @@ export function PermissionCheckView({ check }: { check: PermissionCheck | null |
         pagination={false}
         rowKey="name"
         dataSource={check.checks ?? []}
+        scroll={TABLE_SCROLL}
         columns={[
-          { title: "检查", render: (_, p) => PROBE_LABEL[p.name] ?? p.name },
-          { title: "接口", render: (_, p) => <Mono>{p.endpoint}</Mono> },
+          { title: "检查", className: "cell-name", render: (_, p) => PROBE_LABEL[p.name] ?? p.name },
+          { title: "接口", className: "nowrap", render: (_, p) => <Mono>{p.endpoint}</Mono> },
           {
             title: "结果",
             width: 100,
@@ -85,7 +88,7 @@ export function PermissionCheckView({ check }: { check: PermissionCheck | null |
               return <StatusTag kind={st.kind}>{st.label}</StatusTag>;
             },
           },
-          { title: "说明", dataIndex: "detail" },
+          { title: "说明", dataIndex: "detail", width: 280, className: "cell-text" },
         ]}
       />
       {check.missing && check.missing.length > 0 ? (
@@ -136,10 +139,11 @@ function TokenHowTo({ req }: { req: CloudflareRequirements }) {
         pagination={false}
         rowKey="name"
         dataSource={req.permissions}
+        scroll={TABLE_SCROLL}
         columns={[
-          { title: "权限", render: (_, p) => <Mono>{p.name}</Mono> },
-          { title: "范围", width: 90, render: (_, p) => (p.scope === "account" ? "账户" : p.scope) },
-          { title: "用途", dataIndex: "why" },
+          { title: "权限", className: "cell-name", render: (_, p) => <Mono>{p.name}</Mono> },
+          { title: "范围", className: "nowrap", render: (_, p) => (p.scope === "account" ? "账户" : p.scope) },
+          { title: "用途", dataIndex: "why", width: 280, className: "cell-text" },
         ]}
       />
       <Typography.Title level={5} style={{ marginTop: 16 }}>
@@ -393,15 +397,15 @@ export default function CloudflarePage() {
               rowKey="id"
               dataSource={d.accounts}
               pagination={false}
-              scroll={{ x: 980 }}
+              scroll={TABLE_SCROLL}
               expandable={{
                 expandedRowKeys: expanded,
                 onExpandedRowsChange: (keys) => setExpanded(keys as string[]),
                 expandedRowRender: (a) => <PermissionCheckView check={a.permission_check} />,
               }}
               columns={[
-                { title: "名称", dataIndex: "name" },
-                { title: "Account ID", render: (_, a) => <Mono copy>{a.account_id}</Mono> },
+                { title: "名称", dataIndex: "name", className: "cell-name" },
+                { title: "Account ID", className: "nowrap", render: (_, a) => <Mono copy>{a.account_id}</Mono> },
                 {
                   title: "Token",
                   width: 100,
@@ -409,10 +413,11 @@ export default function CloudflarePage() {
                 },
                 {
                   title: "权限检查",
+                  className: "nowrap",
                   render: (_, a) => {
                     const s = checkSummary(a.permission_check);
                     return (
-                      <Space size={4} wrap>
+                      <Space size={4}>
                         <StatusTag kind={s.kind}>{s.label}</StatusTag>
                         {a.permission_check ? <TimeText value={a.permission_check.checked_at} /> : null}
                       </Space>
@@ -440,20 +445,21 @@ export default function CloudflarePage() {
                     ),
                 },
                 {
-                  title: "",
-                  className: "table-actions",
+                  title: "操作",
+                  fixed: "right",
+                  className: "cell-actions",
                   render: (_, a) => (
-                    <Space size={0}>
+                    <RowActions
+                      label={a.name}
+                      more={[
+                        { key: "edit", label: "编辑", onClick: () => setDrawer({ open: true, account: a }) },
+                        { key: "delete", label: "删除", danger: true, onClick: () => askDelete(a) },
+                      ]}
+                    >
                       <Button type="link" size="small" loading={act.busy === `check:${a.id}`} disabled={!a.token_set} onClick={() => void check(a)}>
                         检查权限
                       </Button>
-                      <Button type="link" size="small" onClick={() => setDrawer({ open: true, account: a })}>
-                        编辑
-                      </Button>
-                      <Button type="link" size="small" danger onClick={() => askDelete(a)}>
-                        删除
-                      </Button>
-                    </Space>
+                    </RowActions>
                   ),
                 },
               ]}

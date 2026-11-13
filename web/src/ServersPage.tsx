@@ -28,6 +28,9 @@ import { CredentialCreateDrawer, kindLabel } from "./CredentialsPage";
 import { href, useRouter } from "./state";
 import type { AuthMethod, SSHCredentialView, ServerInput, ServerPatch, ServerView } from "./types";
 import {
+  ERROR_TEXT,
+  RowActions,
+  TABLE_SCROLL,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -59,15 +62,6 @@ const MISSING_LABEL: Record<string, string> = {
   credential: "选择密钥",
   host_key: "确认主机指纹",
   connection_test: "通过连接测试",
-};
-
-const TEST_CODE: Record<string, string> = {
-  unreachable: "连不上",
-  timeout: "超时",
-  auth_failed: "登录被拒绝",
-  host_key_mismatch: "主机指纹不符",
-  host_key_untrusted: "主机指纹未确认",
-  command_failed: "命令失败",
 };
 
 export function serverReadiness(s: ServerView): { kind: StatusKind; label: string } {
@@ -590,7 +584,7 @@ function ServerFlow({
                     <Alert
                       type="error"
                       showIcon
-                      message={`测试失败：${(lt.code && TEST_CODE[lt.code]) || lt.code || "未知原因"}`}
+                      message={`测试失败：${(lt.code && ERROR_TEXT[lt.code]) || lt.code || "未知原因"}`}
                       description={
                         <>
                           <div>{lt.error}</div>
@@ -799,13 +793,14 @@ export default function ServersPage() {
               rowKey="id"
               dataSource={d.servers}
               pagination={false}
-              scroll={{ x: 1100 }}
+              scroll={TABLE_SCROLL}
               onRow={(s) => ({ "data-testid": `server-row-${s.id}` }) as HTMLAttributes<HTMLElement>}
               columns={[
-                { title: "名称", width: 160, render: (_, s) => <Link to={href("servers", s.id)}>{s.name}</Link> },
-                { title: "地址", render: (_, s) => <Mono>{`${s.user}@${s.address}:${s.port}`}</Mono> },
+                { title: "名称", className: "cell-name", render: (_, s) => <Link to={href("servers", s.id)}>{s.name}</Link> },
+                { title: "地址", className: "nowrap", render: (_, s) => <Mono>{`${s.user}@${s.address}:${s.port}`}</Mono> },
                 {
                   title: "登录",
+                  className: "nowrap",
                   render: (_, s) =>
                     s.credential ? (
                       <Space size={4}>
@@ -837,6 +832,7 @@ export default function ServersPage() {
                 },
                 {
                   title: "节点",
+                  className: "nowrap",
                   render: (_, s) =>
                     s.node ? <Link to={href("topology", s.node.id)}>{s.node.name || s.node.id}</Link> : <Typography.Text type="secondary">—</Typography.Text>,
                 },
@@ -852,20 +848,21 @@ export default function ServersPage() {
                   },
                 },
                 {
-                  title: "",
-                  className: "table-actions",
+                  title: "操作",
+                  fixed: "right",
+                  className: "cell-actions",
                   render: (_, s) => (
-                    <Space size={0}>
+                    <RowActions
+                      label={s.name}
+                      more={[
+                        { key: "edit", label: "编辑", onClick: () => setForm({ open: true, server: s }) },
+                        { key: "delete", label: "删除", danger: true, onClick: () => askDelete(s) },
+                      ]}
+                    >
                       <Button type="link" size="small" onClick={() => navigate(href("servers", s.id))}>
                         {s.ready ? "详情" : "继续"}
                       </Button>
-                      <Button type="link" size="small" onClick={() => setForm({ open: true, server: s })}>
-                        编辑
-                      </Button>
-                      <Button type="link" size="small" danger onClick={() => askDelete(s)}>
-                        删除
-                      </Button>
-                    </Space>
+                    </RowActions>
                   ),
                 },
               ]}

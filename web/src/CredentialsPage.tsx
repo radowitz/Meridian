@@ -22,6 +22,8 @@ import * as api from "./api";
 import { href, useRouter } from "./state";
 import type { SSHCredentialCreate, SSHCredentialView, SSHSecretInput } from "./types";
 import {
+  RowActions,
+  TABLE_SCROLL,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -539,18 +541,20 @@ export default function CredentialsPage() {
             rowKey="id"
             dataSource={d.credentials}
             pagination={false}
-            scroll={{ x: 860 }}
+            scroll={TABLE_SCROLL}
+            onRow={(c) => ({ "data-testid": `credential-row-${c.id}` }) as React.HTMLAttributes<HTMLElement>}
             columns={[
               {
                 title: "名称",
                 dataIndex: "name",
-                width: 180,
+                className: "cell-name",
                 render: (_, c) => <Link to={href("keys", c.id)}>{c.name}</Link>,
               },
               {
                 title: "种类",
+                className: "nowrap",
                 render: (_, c) => (
-                  <Space size={4} wrap>
+                  <Space size={4}>
                     <span>{kindLabel(c)}</span>
                     {c.generated ? <Tag>面板生成</Tag> : null}
                     {c.has_passphrase ? <Tag>有口令</Tag> : null}
@@ -562,15 +566,16 @@ export default function CredentialsPage() {
                 width: 260,
                 render: (_, c) => (c.kind === "private_key" ? <Mono ellipsis>{c.fingerprint}</Mono> : <Typography.Text type="secondary">—</Typography.Text>),
               },
-              { title: "创建", width: 110, render: (_, c) => <TimeText value={c.created_at} /> },
-              { title: "最近轮换", width: 110, render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
+              { title: "创建", render: (_, c) => <TimeText value={c.created_at} /> },
+              { title: "最近轮换", render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
               {
                 title: "使用者",
+                className: "nowrap",
                 render: (_, c) =>
                   c.in_use_by.length === 0 ? (
                     <Typography.Text type="secondary">未使用</Typography.Text>
                   ) : (
-                    <Space size={[4, 0]} wrap>
+                    <Space size={[4, 0]}>
                       {c.in_use_by.slice(0, 3).map((r) => (
                         <Link key={r.kind + r.id} to={r.kind === "server" ? href("servers", r.id) : href("cloudflare") + "?section=mesh"}>
                           {r.name || r.id}
@@ -581,21 +586,21 @@ export default function CredentialsPage() {
                   ),
               },
               {
-                title: "",
-                width: 170,
-                className: "table-actions",
+                title: "操作",
+                fixed: "right",
+                className: "cell-actions",
                 render: (_, c) => (
-                  <Space size={0}>
-                    <Button type="link" size="small" onClick={() => setRotating(c)}>
-                      轮换
-                    </Button>
+                  <RowActions
+                    label={c.name}
+                    more={[
+                      { key: "rotate", label: "轮换", onClick: () => setRotating(c) },
+                      { key: "delete", label: "删除", danger: true, onClick: () => askDelete(c) },
+                    ]}
+                  >
                     <Button type="link" size="small" onClick={() => setEditing(c)}>
                       编辑
                     </Button>
-                    <Button type="link" size="small" danger onClick={() => askDelete(c)}>
-                      删除
-                    </Button>
-                  </Space>
+                  </RowActions>
                 ),
               },
             ]}

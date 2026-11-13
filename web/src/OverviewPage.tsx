@@ -3,7 +3,9 @@
 
 import { Space, Steps, Typography } from "antd";
 import type { ReactNode } from "react";
+import type { RegionGroupView } from "./types";
 import * as api from "./api";
+import { ACTUAL_CODE, actualTag } from "./ExitsPage";
 import { JOURNAL_STATE, checkSummary } from "./MeshDeploy";
 import { serverReadiness } from "./ServersPage";
 import { href, useStatus, useTopologyDoc } from "./state";
@@ -47,6 +49,35 @@ function Row({ label, children }: { label: ReactNode; children: ReactNode }) {
 
 type Done = boolean | null; // null: unknown (data unavailable)
 
+/**
+ * One group on the overview tile: the member in use only from the hub's
+ * report (actual.state "ok"); otherwise unknown with the reason. The
+ * panel's model is mentioned in the tooltip, labelled 面板推算.
+ */
+function GroupActualCell({ g, nodeName }: { g: RegionGroupView; nodeName: (id: string) => string }) {
+  const a = g.actual;
+  const model = g.model.observed ? `面板推算：${g.model.active ? nodeName(g.model.active) : "无可用成员"}` : `按配置应使用：${g.target ? nodeName(g.target) : "无目标"}（面板推算，无健康样本）`;
+  if (a.state === "ok") {
+    const who = a.active === "mmesh" ? "Mesh 备路" : a.active ? nodeName(a.active) : "无（黑洞）";
+    return a.alert ? (
+      <StatusTag kind="attention" title={a.alert_message}>
+        {who}
+      </StatusTag>
+    ) : (
+      <span data-testid={`groups-tile-actual-${g.id}`}>{who}</span>
+    );
+  }
+  const t = actualTag(a);
+  return (
+    <StatusTag kind={t.kind} title={`${ACTUAL_CODE[a.code ?? ""] ?? a.code ?? ""}${a.message ? `：${a.message}` : ""}。${model}`}>
+      {a.state === "not_switchable" ? "枢纽不切换" : `实际未知 · ${t.label}`}
+    </StatusTag>
+  );
+}
+
+/** Region groups listed by name on the overview tile; the rest behind a link. */
+const GROUP_TILE_ROWS = 6;
+
 export default function OverviewPage() {
   const { status, statusError, install } = useStatus();
   const doc = useTopologyDoc();
@@ -64,6 +95,10 @@ export default function OverviewPage() {
   // ---------------------------------------------------------- next steps ---
   const sv = servers.data?.servers;
   const managed = doc.topo?.nodes.filter((n) => n.role !== "gateway" && n.managed) ?? null;
+  // Peers an install refuses until they have a public key: managed nodes get
+  // one from their first provisioning, unmanaged ones (IX …) from the topology.
+  const keyless = managed ? managed.filter((n) => !n.public_key) : null;
+  const keylessUnmanaged = doc.topo?.nodes.filter((n) => n.role !== "gateway" && !n.managed && !n.public_key) ?? [];
   const steps: { title: string; done: Done; text: ReactNode; to: string }[] = [
     {
       title: "添加 SSH 密钥",
@@ -100,6 +135,23 @@ export default function OverviewPage() {
             : `${managed.filter((n) => !n.server_id).length} 个节点还没关联服务器`
         : "读不到拓扑",
       to: href("topology"),
+    },
+    {
+      title: "远端节点第一次装机",
+      done: keyless && managed ? managed.length > 0 && keyless.length === 0 && keylessUnmanaged.length === 0 : null,
+      text: keyless
+        ? managed!.length === 0
+          ? "拓扑里还没有受管的远端节点"
+          : keyless.length === 0 && keylessUnmanaged.length === 0
+            ? "每个远端节点都有密钥"
+            : [
+                keyless.length > 0 ? `${keyless.length} 个远端节点还没有密钥：在「部署 → 远端节点」对它们执行「生成密钥并下发」` : "",
+                keylessUnmanaged.length > 0 ? `${keylessUnmanaged.length} 个不受管的节点要在拓扑里填入公钥` : "",
+              ]
+                .filter(Boolean)
+                .join("；") + "。之后才能安装到网关。"
+        : "读不到拓扑",
+      to: keyless && keyless.length === 0 && keylessUnmanaged.length > 0 ? href("topology", keylessUnmanaged[0].id) : `${href("deploy")}?section=remote`,
     },
     {
       title: "设置出口地区组",
@@ -259,30 +311,46 @@ export default function OverviewPage() {
               d.groups.length === 0 ? (
                 <Typography.Text type="secondary">还没有地区组。</Typography.Text>
               ) : (
-                d.groups.slice(0, 6).map((g) => (
+                <>
+                <Row label="共">
+                  <span data-testid="groups-tile-count">{d.groups.length} 个地区组</span>
+                </Row>
+                <Row label="枢纽状态">
+                  {d.hub_state?.last_read ? (
+                    <span data-testid="groups-tile-hub">
+                      {d.hub_state.last_read.ok ? "读取于 " : "读取失败 · "}
+                      <TimeText value={d.hub_state.last_read.read_at} />
+                    </span>
+                  ) : (
+                    <StatusTag kind="unverified" title="还没有从枢纽读回地区组的实际状态；在出口页读取">
+                      未读取
+                    </StatusTag>
+                  )}
+                </Row>
+                {d.groups.slice(0, GROUP_TILE_ROWS).map((g) => (
                   <Row
                     key={g.id}
                     label={
                       <Space size={4}>
                         <Link to={href("exits", g.id)}>{g.name}</Link>
-                        <Typography.Text type="secondary">{g.mode === "manual" ? "手动" : "自动"}</Typography.Text>
+                        <Typography.Text type="secondary" style={{ whiteSpace: "nowrap" }}>
+                          {g.mode === "manual" ? "手动" : "自动"}
+                        </Typography.Text>
                         {g.is_default ? <Typography.Text type="secondary">· 默认</Typography.Text> : null}
                       </Space>
                     }
                   >
-                    {g.state.alert ? (
-                      <StatusTag kind="attention" title={g.state.alert_message}>
-                        {g.state.active ? nodeName(g.state.active) : "无可用成员"}
-                      </StatusTag>
-                    ) : g.state.observed ? (
-                      <span>{g.state.active === "mmesh" ? "Mesh 备路" : g.state.active ? nodeName(g.state.active) : "无可用成员"}</span>
-                    ) : (
-                      <StatusTag kind="unverified" title="还没有收到健康样本，显示的是编译目标">
-                        {g.target ? nodeName(g.target) : "无目标"}
-                      </StatusTag>
-                    )}
+                    <GroupActualCell g={g} nodeName={nodeName} />
                   </Row>
-                ))
+                ))}
+                {d.groups.length > GROUP_TILE_ROWS ? (
+                  <div className="tile-more">
+                    <span data-testid="groups-tile-more">
+                      <Link to={href("exits")}>还有 {d.groups.length - GROUP_TILE_ROWS} 个 · 查看全部 {d.groups.length} 个</Link>
+                    </span>
+                  </div>
+                ) : null}
+                </>
               )
             }
           </TileData>

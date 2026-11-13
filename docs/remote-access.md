@@ -32,12 +32,12 @@
 
 ### 关闭
 
-关掉开关并安装：网关删除 `mra` 接口、配置和全部相关规则；设备记录和密钥留在面板，重新打开后原配置继续可用。关闭后旧地址池的黑洞路由和 `iif mra unreachable` 规则会留到下次重启，它们只会丢包；`meridian-verify.sh` 把后者显示为 `INFO remote_leftover`，并在 `mra` 接口仍然存在时报 `FAIL remote_absent`。
+关掉开关并安装：网关删除 `mra` 接口、配置和全部相关规则；设备记录和密钥留在面板，重新打开后原配置继续可用。关闭后旧地址池的黑洞路由会留到下次重启，它只会丢包；`meridian-verify.sh` 在 `mra` 接口仍然存在时报 `FAIL remote_absent`。旧版本还装过一条 `iif mra unreachable`（优先级 17851），它会让经 `mra` 转发出去的 IPv4（设备的国内回程、家里主机访问设备）过不了内核的源地址校验，所以已经去掉：路由脚本每次运行都会删掉它（不论开关），还在时 `meridian-verify.sh` 报 `FAIL no_stale_iif_rule`。
 
 ## 安全性质
 
 - **与局域网同等对待**：同一套分类、DNS 劫持、DoH 拒绝、策略路由和兜底表；境外标记的流量只能进网关的 WireGuard 隧道接口，`mra` 不在其中，所以境外流量不会从 `mra` 或局域网口出去。
-- **设备之间不互通**：从 `mra` 进、再从 `mra` 出的包被兜底表丢弃。家里的主机可以访问设备（两条窄放行），设备可以访问家里的主机。
+- **设备之间不互通**：从 `mra` 进、再从 `mra` 出的包被兜底表丢弃。家里的主机可以访问设备（两条窄放行），设备可以访问家里的主机。局域网 IPv6 前缀是 ULA（例如 `fd12:3456:789a:1::/64`）时也一样：分类链在 `fc00::/7` 丢弃之前只放过这一个前缀（标国内 mark，经表 100 从局域网口直连出去），隧道 `fd66::/48`、中转前缀和其他 ULA 照旧丢弃。
 - **面板不对设备开放**：面板端口只接受局域网地址，设备地址池不在其中。
 - **监听端口只在局域网口接受**（包括 ROS 转发进来的 IPv6），其他接口上的同一端口丢弃。
 - **秘密**：网关私钥和预共享密钥在 `meridian-secrets` 卷里（0700 / 0600，没有静态加密），编译产物、快照、预览、差异和 API 里只有占位符，只在「安装到本机」时写进 0600 的 `mra.conf`。设备私钥只在创建或重新生成的那一次响应里出现。
@@ -48,8 +48,9 @@
 自动化与集成层面已经有的：
 
 - `go test ./internal/compile`：守卫逐条求值、分类、DNS、入站端口、地址改写、路由、启动顺序、关闭时编译结果逐字节不变；`TestVerifyScriptRemoteAccess` 用桩程序检查 `meridian-verify.sh` 对远程接入的判定。这些只证明生成的文本和脚本逻辑。
-- `TestNetnsReloadNoLeak`（Linux、root、`MERIDIAN_NETNS_TEST=1`）用 veth 代替 WireGuard 模拟一台远程设备，在加载、重载、失败注入、地区组切换和只剩兜底表时检查设备流量不以原地址到达 ROS。**它在加入远程接入之后还没有在 Linux 上跑过**；`docs/evidence/2026-11-12-debian13/` 里的日志不覆盖远程接入。
-- 网关上 `sudo /usr/local/sbin/meridian-verify.sh`：打开时核对 `mra` 存在且 up、监听端口、对端公钥恰好是已启用设备（只比较公钥）、兜底表入口是 `{ 局域网口, mra }`、DNS 劫持和 DNS 白名单含设备池、端口只在局域网口放行、`iif mra unreachable`、设备池路由、地址改写。
+- `TestNetnsReloadNoLeak`（Linux、root、`MERIDIAN_NETNS_TEST=1`）用 veth 代替 WireGuard 模拟一台远程设备，在加载、重载、失败注入、地区组切换和只剩兜底表时检查设备流量不以原地址到达 ROS。这一版于 2026-11-13 在一台 Debian 13 上跑通，日志在 `docs/evidence/2026-11-13-debian13/netns-reload.log`；`docs/evidence/2026-11-12-debian13/` 里的旧日志不覆盖远程接入。它证明的是命名空间里这套规则的行为，模拟设备用的是 veth 而不是真的 WireGuard 拨入，不能代替下面的真机步骤。
+- `TestNetnsULALANHomeAccess`（同样的条件）用同一套命名空间、把局域网 IPv6 前缀换成 ULA，加载一次后要求设备 → 家里主机、家里主机 → 设备的 IPv6 ping 有回包，并检查设备和局域网客户端发往前缀之外的 ULA（无关 ULA、相邻 /64、隧道 `fd66::`、中转 `fd66:0:0:ff::`）到了网关、没有被转发、ROS 一个也没收到。2026-11-13 在一台 Debian 13 上跑通，日志在 `docs/evidence/2026-11-13-debian13/netns-ula-lan.log`。它是命名空间里的证据：ULA 局域网前缀下真实设备拨入的行为仍是待人工签收。
+- 网关上 `sudo /usr/local/sbin/meridian-verify.sh`：打开时核对 `mra` 存在且 up、监听端口、对端公钥恰好是已启用设备（只比较公钥）、兜底表入口是 `{ 局域网口, mra }`、DNS 劫持和 DNS 白名单含设备池、端口只在局域网口放行、设备池路由、地址改写，并用 `ip route get … iif …` 让内核实际判一次设备到国内、国内回程到设备、每个隧道回到设备的转发（`route_remote_*`、`route_tunnel_reply_device*`，报 `Invalid cross-device link` 之类错误就是 `FAIL`）。
 
 必须由人用真实设备做、并把截图和输出存档的（`meridian-verify.sh` 打印为 `PENDING-HUMAN`，面板「防泄露」页为「待人工签收」）：
 

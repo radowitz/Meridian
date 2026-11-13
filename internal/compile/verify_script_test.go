@@ -28,7 +28,9 @@ type verifyHost struct {
 	nft    map[string]string
 	wg     map[string]string
 	ss     map[string]string
-	ssh    string
+	// systemctl is nil on most hosts here: the WARN check is then skipped.
+	systemctl map[string]string
+	ssh       string
 	// sshFail makes ssh time out.
 	sshFail bool
 	// files are installed files under MERIDIAN_VERIFY_ROOT.
@@ -157,7 +159,86 @@ func goodHost(t *testing.T, b *Bundle, topo model.Topology) verifyHost {
 			"show mra peers":       strings.Join(peers, "\n") + "\n",
 		}
 	}
+	routeProbes(t, b.File("nodes/gw/usr/local/sbin/meridian-verify.sh"), h.ip)
+	// Region-group resolvers: SmartDNS's config, and the marked lookup of
+	// each resolver address the way iproute2 prints it.
+	h.files["etc/smartdns/smartdns.conf"] = b.File("nodes/gw/etc/smartdns/smartdns.conf")
+	groups, err := PlanGroups(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	west := strings.Fields(strings.Join(gatewayTunnelIfaces(mustTunnels(t, topo)), " "))[0]
+	for _, g := range groups {
+		if g.Dynamic {
+			h.ip[fmt.Sprintf("-6 route get %s mark %#x", g.Resolver, g.Mark)] = fmt.Sprintf("%s from :: dev %s table meridian_foreign proto kernel src fd66:0:0:1::1 metric 1024 pref medium\n", g.Resolver, west)
+		}
+	}
 	return h
+}
+
+// Route-probe answers, the way iproute2 prints a resolved "route get … iif"
+// (the probe addresses are read from the compiled script).
+var reVerifyVar = regexp.MustCompile(`(?m)^(lan_client4|lan_client6|has_lan6|tun_ifaces|ra_dev4|ra_dev6|ra_enabled)='?([^'\n]*)'?$`)
+
+// probeKeys returns the ip arguments of every route probe the script runs,
+// mapped to the interface the answer must name.
+func probeKeys(t *testing.T, script string) map[string]string {
+	t.Helper()
+	v := map[string]string{}
+	for _, m := range reVerifyVar.FindAllStringSubmatch(script, -1) {
+		v[m[1]] = m[2]
+	}
+	if v["lan_client4"] == "" {
+		t.Fatal("no lan_client4 in the verify script")
+	}
+	k := map[string]string{
+		"-4 route get 192.168.100.1 from " + v["lan_client4"] + " iif eth0 mark 0x64": "eth0",
+	}
+	tuns := strings.Fields(v["tun_ifaces"])
+	for _, tun := range tuns {
+		k["-4 route get "+v["lan_client4"]+" from 192.0.2.1 iif "+tun] = "eth0"
+	}
+	if v["has_lan6"] == "1" {
+		k["-6 route get 2001:db8:ffff::1 from "+v["lan_client6"]+" iif eth0 mark 0x64"] = "eth0"
+		for _, tun := range tuns {
+			k["-6 route get "+v["lan_client6"]+" from 2001:db8:ffff::2 iif "+tun] = "eth0"
+		}
+	}
+	if v["ra_enabled"] == "1" {
+		k["-4 route get 192.168.100.1 from "+v["ra_dev4"]+" iif mra mark 0x64"] = "eth0"
+		k["-4 route get "+v["ra_dev4"]+" from 192.168.100.1 iif eth0 mark 0x64"] = "mra"
+		k["-6 route get "+v["ra_dev6"]+" from 2001:db8:ffff::1 iif eth0 mark 0x64"] = "mra"
+		if v["has_lan6"] == "1" {
+			k["-6 route get 2001:db8:ffff::1 from "+v["ra_dev6"]+" iif mra mark 0x64"] = "eth0"
+		}
+		for _, tun := range tuns {
+			k["-4 route get "+v["ra_dev4"]+" from 192.0.2.1 iif "+tun] = "mra"
+			k["-6 route get "+v["ra_dev6"]+" from 2001:db8:ffff::2 iif "+tun] = "mra"
+		}
+	}
+	return k
+}
+
+func routeProbes(t *testing.T, script string, ip map[string]string) {
+	t.Helper()
+	for args, dev := range probeKeys(t, script) {
+		f := strings.Fields(args) // -4 route get DST from SRC iif IIF [mark M]
+		ans := f[3] + " from " + f[5] + " dev " + dev
+		if len(f) > 9 {
+			ans += " table meridian_domestic mark " + f[9]
+		}
+		ip[args] = ans + " uid 0\n    cache iif " + f[7] + "\n"
+	}
+}
+
+// exdev makes every probe whose arguments contain needle fail the way the
+// kernel does when source validation rejects the packet.
+func exdev(h *verifyHost, needle string) {
+	for k := range h.ip {
+		if strings.Contains(k, " route get ") && strings.Contains(k, " iif ") && strings.Contains(k, needle) {
+			h.ip[k] = "ERR:RTNETLINK answers: Invalid cross-device link\n"
+		}
+	}
 }
 
 // stubCases writes a stub that answers exactly the argument strings in m.
@@ -174,6 +255,14 @@ func stubCases(t *testing.T, dir, bin, name string, m map[string]string) {
 		f := filepath.Join(dir, fmt.Sprintf("%s-%d.out", name, i))
 		if err := os.WriteFile(f, []byte(m[k]), 0o644); err != nil {
 			t.Fatal(err)
+		}
+		if body, ok := strings.CutPrefix(m[k], "ERR:"); ok {
+			// A failing command: the text on stderr, exit 2 (like ip).
+			if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fmt.Fprintf(&sb, "'%s') cat '%s' >&2; exit 2 ;;\n", k, f)
+			continue
 		}
 		fmt.Fprintf(&sb, "'%s') cat '%s' ;;\n", k, f)
 	}
@@ -219,7 +308,7 @@ while IFS='=' read -r k v; do [ "$k" = "$2" ] && { echo "$v"; exit 0; }; done < 
 exit 1
 `), 0o755)
 	}
-	for name, m := range map[string]map[string]string{"ip": h.ip, "nft": h.nft, "wg": h.wg, "ss": h.ss} {
+	for name, m := range map[string]map[string]string{"ip": h.ip, "nft": h.nft, "wg": h.wg, "ss": h.ss, "systemctl": h.systemctl} {
 		if m != nil {
 			stubCases(t, dir, bin, name, m)
 		}
@@ -288,7 +377,7 @@ func runVerifyCases(t *testing.T, script string, base func() verifyHost, cases [
 			}
 			// Every PASS is a check the script ran; nothing it cannot run
 			// (client DNS, WebRTC, captures, phones, the router) passes.
-			for _, never := range []string{"PASS dns_leak", "PASS webrtc", "PASS redirect_on_wire", "PASS tunnel_cut", "PASS remote_phone", "PASS remote_router", "PASS remote_ipv6", "PASS netns", "meridian-verify-ok"} {
+			for _, never := range []string{"PASS dns_leak", "PASS webrtc", "PASS redirect_on_wire", "PASS tunnel_cut", "PASS remote_phone", "PASS remote_router", "PASS remote_ipv6", "PASS netns", "PASS group_dns_failover", "meridian-verify-ok"} {
 				if strings.Contains(out, never) {
 					t.Errorf("unexecuted check reported as passed: %q\n%s", never, out)
 				}
@@ -328,9 +417,14 @@ func TestVerifyScriptExecutedChecks(t *testing.T) {
 	runVerifyCases(t, script, base, []verifyCase{
 		{name: "all local checks pass", wantCode: 0,
 			want: append([]string{"meridian-verify-local-ok", "PASS nft_guard", "PASS dns_hijack_853", "PASS ula_not_via_ros",
-				"PASS policy_marks: all 22 compiled", "PASS lan_iif_unreachable", "PASS fallback_blackholes", "PASS remote_absent",
+				"PASS policy_marks: all 22 compiled", "PASS no_stale_iif_rule", "PASS fallback_blackholes", "PASS remote_absent",
+				"PASS route_lan_domestic4: a LAN client (192.168.100.254) to a domestic destination (192.168.100.1, mark 0x64) resolves out of eth0",
+				"PASS route_tunnel_reply4: a reply from 192.0.2.1 to the LAN client 192.168.100.254 from each tunnel (m02 m02w m03) resolves out of eth0",
+				"PASS route_lan_domestic6", "PASS route_tunnel_reply6",
 				"PASS guard_mark_range", "PASS guard_ingress: the guard's ingress is eth0 only", "PASS chnroute_loaded", "PASS chnroute6_loaded",
 				"PASS guard_boot_file", "PASS geosite_cn", "PASS dns_listener",
+				"PASS group_dns_snat", "PASS group_dns_upstream: ", "PASS group_dns_route: a lookup of each group resolver address with the group mark resolves into a tunnel (m02 m02w m03), not eth0",
+				"PENDING-HUMAN group_dns_failover", "NOT-RUN-HERE netns_group_dns",
 				"INFO list chnroute4: source=github count=8000 updated=2026-11-12T03:00:00Z", "INFO list geosite:cn: source=github count=2",
 				"PENDING-HUMAN ros_ula_blackhole"}, pendings...),
 			forbidden: []string{"PASS ros_ula", "PENDING-HUMAN remote_", "FAIL", "UNKNOWN"}},
@@ -365,7 +459,7 @@ func TestVerifyScriptExecutedChecks(t *testing.T) {
 			h.ip["-4 rule show"] = dropLines(h.ip["-4 rule show"], "fwmark 0x10f lookup")
 		}, wantCode: 1, want: []string{"FAIL policy_marks: loaded policy rules miss: group/jp/v4-lookup group/jp/v6-unreachable"}},
 		{name: "ip rule unreadable", mutate: func(h *verifyHost) { delete(h.ip, "-4 rule show") }, wantCode: 1,
-			want: []string{"FAIL policy_marks: ip rule show failed"}, forbidden: []string{"PASS lan_iif_unreachable"}},
+			want: []string{"FAIL policy_marks: ip rule show failed"}, forbidden: []string{"PASS no_stale_iif_rule"}},
 		{name: "foreign table without blackhole", mutate: func(h *verifyHost) {
 			h.ip["-6 route show table 102"] = dropLines(h.ip["-6 route show table 102"], "blackhole")
 		}, wantCode: 1, want: []string{"FAIL fallback_blackholes"}},
@@ -377,7 +471,44 @@ func TestVerifyScriptExecutedChecks(t *testing.T) {
 		}, wantCode: 1, want: []string{"FAIL remote_absent: remote access is off but interface mra exists"}},
 		{name: "leftover iif mra rule after switching remote access off", mutate: func(h *verifyHost) {
 			h.ip["-4 rule show"] += "17851:\tfrom all iif mra [detached] unreachable\n"
-		}, wantCode: 0, want: []string{"PASS remote_absent", "INFO remote_leftover", "local-ok"}},
+		}, wantCode: 1, want: []string{"PASS remote_absent", "FAIL no_stale_iif_rule: a stale IPv4 'iif … unreachable' rule is loaded (17851: from all iif mra [detached] unreachable)"},
+			forbidden: []string{"local-ok"}},
+		{name: "stale LAN iif rule from an older install", mutate: func(h *verifyHost) {
+			h.ip["-4 rule show"] = strings.Replace(h.ip["-4 rule show"], "32766:", "17850:\tfrom all iif eth0 unreachable\n32766:", 1)
+			// What the kernel then answers for the paths out of eth0.
+			exdev(h, "-4 route get ")
+		}, wantCode: 1, want: []string{"FAIL no_stale_iif_rule: a stale IPv4 'iif … unreachable' rule is loaded (17850: from all iif eth0 unreachable)",
+			"FAIL route_lan_domestic4: a LAN client (192.168.100.254) to a domestic destination (192.168.100.1, mark 0x64): ip -4 route get 192.168.100.1 from 192.168.100.254 iif eth0 mark 0x64 answered: RTNETLINK answers: Invalid cross-device link (source validation failed",
+			"FAIL route_tunnel_reply4: a reply from 192.0.2.1 to the LAN client 192.168.100.254 does not resolve out of eth0 for: m02: RTNETLINK answers: Invalid cross-device link",
+			"PASS route_lan_domestic6", "PASS route_tunnel_reply6", "PASS ros_neighbour"},
+			forbidden: []string{"local-ok", "PASS route_lan_domestic4", "PASS route_tunnel_reply4"}},
+		{name: "tunnel reply answered from the wrong interface", mutate: func(h *verifyHost) {
+			h.ip["-4 route get 192.168.100.254 from 192.0.2.1 iif m03"] = "192.168.100.254 from 192.0.2.1 dev m02 uid 0\n"
+		}, wantCode: 1, want: []string{"FAIL route_tunnel_reply4: a reply from 192.0.2.1 to the LAN client 192.168.100.254 does not resolve out of eth0 for: m03: 192.168.100.254 from 192.0.2.1 dev m02 uid 0 (not via eth0)"},
+			forbidden: []string{"PASS route_tunnel_reply4"}},
+		{name: "route probe resolves to a blackhole", mutate: func(h *verifyHost) {
+			h.ip["-6 route get 2001:db8:ffff::1 from 2001:db8:100::fffe iif eth0 mark 0x64"] = "blackhole 2001:db8:ffff::1 from 2001:db8:100::fffe dev lo table meridian_domestic\n"
+		}, wantCode: 1, want: []string{"FAIL route_lan_domestic6", "answered: blackhole 2001:db8:ffff::1"}, forbidden: []string{"PASS route_lan_domestic6"}},
+		{name: "route probes without ip route get", mutate: func(h *verifyHost) {
+			for k := range h.ip {
+				if strings.Contains(k, " route get ") && strings.Contains(k, " iif ") {
+					delete(h.ip, k)
+				}
+			}
+		}, wantCode: 1, want: []string{"FAIL route_lan_domestic4", "not available (ip exited 1)", "FAIL route_tunnel_reply6"},
+			forbidden: []string{"PASS route_"}},
+		{name: "stock nftables.service enabled with a flush", mutate: func(h *verifyHost) {
+			h.systemctl = map[string]string{"is-enabled nftables.service": "enabled\n"}
+			h.files["etc/nftables.conf"] = "#!/usr/sbin/nft -f\n\nflush ruleset\n\ntable inet filter {\n}\n"
+		}, wantCode: 0, want: []string{"WARN nftables_service_flush: nftables.service is enabled", "local-ok"}},
+		{name: "stock nftables.service enabled without a flush", mutate: func(h *verifyHost) {
+			h.systemctl = map[string]string{"is-enabled nftables.service": "enabled\n"}
+			h.files["etc/nftables.conf"] = "#!/usr/sbin/nft -f\n# flush ruleset\ntable inet filter {\n}\n"
+		}, wantCode: 0, want: []string{"local-ok"}, forbidden: []string{"WARN"}},
+		{name: "stock nftables.service disabled", mutate: func(h *verifyHost) {
+			h.systemctl = map[string]string{}
+			h.files["etc/nftables.conf"] = "flush ruleset\n"
+		}, wantCode: 0, want: []string{"local-ok"}, forbidden: []string{"WARN"}},
 		{name: "chnroute empty with a saved batch", mutate: func(h *verifyHost) {
 			emptyChn(h)
 			h.files["var/lib/meridian/lists/chnroute.nft"] = "flush set inet meridian chnroute\nadd element inet meridian chnroute { 1.0.1.0/24 }\n"
@@ -395,6 +526,25 @@ func TestVerifyScriptExecutedChecks(t *testing.T) {
 			want: []string{"FAIL guard_boot_file"}},
 		{name: "no resolver on 53", mutate: func(h *verifyHost) { h.ss["-H -lnt"] = "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n" }, wantCode: 1,
 			want: []string{"FAIL dns_listener"}},
+		{name: "group resolver SNAT missing", mutate: func(h *verifyHost) {
+			h.nft["list table inet meridian"] = dropLines(h.nft["list table inet meridian"], "ip6 daddr fd66::53:13 ")
+		}, wantCode: 1, want: []string{"FAIL group_dns_snat: no resolver SNAT loaded for group(s): us (evidence nft-meridian.txt)", "PASS group_dns_upstream", "PASS group_dns_route"},
+			forbidden: []string{"PASS group_dns_snat"}},
+		{name: "group resolver mark in hex", mutate: func(h *verifyHost) {
+			h.files["etc/smartdns/smartdns.conf"] = strings.Replace(h.files["etc/smartdns/smartdns.conf"], "-set-mark 275", "-set-mark 0x113", 1)
+		}, wantCode: 1, want: []string{"FAIL group_dns_upstream", "applies no mark"}, forbidden: []string{"PASS group_dns_upstream"}},
+		{name: "group resolver upstream missing", mutate: func(h *verifyHost) {
+			h.files["etc/smartdns/smartdns.conf"] = dropLines(h.files["etc/smartdns/smartdns.conf"], "-group rg_jp ")
+		}, wantCode: 1, want: []string{"FAIL group_dns_upstream: ", "/etc/smartdns/smartdns.conf has no marked resolver upstream for group(s): jp"}},
+		{name: "smartdns config unreadable", mutate: func(h *verifyHost) { delete(h.files, "etc/smartdns/smartdns.conf") }, wantCode: 2,
+			want: []string{"UNKNOWN group_dns_upstream"}, forbidden: []string{"PASS group_dns_upstream", "local-ok"}},
+		{name: "group resolver routed out of the LAN port", mutate: func(h *verifyHost) {
+			h.ip["-6 route get fd66::53:13 mark 0x113"] = "fd66::53:13 from :: via fe80::1 dev eth0 proto ra metric 1024 pref medium\n"
+		}, wantCode: 1, want: []string{"FAIL group_dns_route: a marked lookup of a group resolver address does not enter a tunnel: us: fd66::53:13 from :: via fe80::1 dev eth0"},
+			forbidden: []string{"PASS group_dns_route"}},
+		{name: "group resolver unreachable", mutate: func(h *verifyHost) {
+			h.ip["-6 route get fd66::53:d mark 0x10d"] = "ERR:RTNETLINK answers: Network is unreachable\n"
+		}, wantCode: 1, want: []string{"FAIL group_dns_route", "hk: RTNETLINK answers: Network is unreachable"}},
 	})
 }
 
@@ -420,7 +570,11 @@ func TestVerifyScriptRemoteAccess(t *testing.T) {
 	offGuard := offNft[strings.Index(offNft, "table inet meridian_guard {"):strings.Index(offNft, "table inet meridian\ndelete")]
 	runVerifyCases(t, script, base, []verifyCase{
 		{name: "all local checks pass", wantCode: 0,
-			want: []string{"meridian-verify-local-ok", "PASS remote_iface", "PASS remote_iif_unreachable", "PASS remote_pool_routes",
+			want: []string{"meridian-verify-local-ok", "PASS remote_iface", "PASS no_stale_iif_rule", "PASS remote_pool_routes",
+				"PASS route_remote_domestic4: a device (10.67.0.2) to a domestic destination (192.168.100.1, mark 0x64) resolves out of eth0",
+				"PASS route_remote_reply4: a domestic reply (192.168.100.1, mark 0x64) to a device (10.67.0.2) resolves out of mra",
+				"PASS route_remote_domestic6", "PASS route_remote_reply6", "PASS route_tunnel_reply_device4", "PASS route_tunnel_reply_device6",
+				"PASS route_lan_domestic4", "PASS route_tunnel_reply4",
 				"PASS guard_ingress: the guard's ingress is { eth0, mra }", "PASS remote_dns", "PASS remote_port_lan_only",
 				"PASS remote_nat: device pools have a transit SNAT for each of the 22 marks", "PASS remote_listen: mra listens on UDP 51900",
 				"PASS remote_peers: mra has exactly the 2 enabled devices", "PASS chnroute6_loaded",
@@ -449,8 +603,117 @@ func TestVerifyScriptRemoteAccess(t *testing.T) {
 		{name: "pool route gone", mutate: func(h *verifyHost) {
 			h.ip["-6 route show table 100"] = "default via fe80::1 dev eth0 metric 1024 pref medium\n"
 		}, wantCode: 1, want: []string{"FAIL remote_pool_routes"}},
-		{name: "no iif mra rule", mutate: func(h *verifyHost) {
-			h.ip["-4 rule show"] = strings.Replace(h.ip["-4 rule show"], "iif mra unreachable", "iif mra lookup main", 1)
-		}, wantCode: 1, want: []string{"FAIL remote_iif_unreachable"}},
+		{name: "stale iif mra rule while remote access is on", mutate: func(h *verifyHost) {
+			h.ip["-4 rule show"] = strings.Replace(h.ip["-4 rule show"], "32766:", "17851:\tfrom all iif mra unreachable\n32766:", 1)
+			exdev(h, "-4 route get 10.67.0.2 from")
+		}, wantCode: 1, want: []string{"FAIL no_stale_iif_rule: a stale IPv4 'iif … unreachable' rule is loaded (17851: from all iif mra unreachable)",
+			"FAIL route_remote_reply4: a domestic reply (192.168.100.1, mark 0x64) to a device (10.67.0.2): ip -4 route get 10.67.0.2 from 192.168.100.1 iif eth0 mark 0x64 answered: RTNETLINK answers: Invalid cross-device link",
+			"FAIL route_tunnel_reply_device4", "PASS route_remote_domestic4", "PASS route_remote_reply6"},
+			forbidden: []string{"local-ok", "PASS route_remote_reply4"}},
+		{name: "device to domestic rejected by source validation", mutate: func(h *verifyHost) {
+			exdev(h, "from 10.67.0.2 iif mra")
+		}, wantCode: 1, want: []string{"FAIL route_remote_domestic4", "Invalid cross-device link", "PASS no_stale_iif_rule"},
+			forbidden: []string{"PASS route_remote_domestic4"}},
 	})
+}
+
+// TestVerifyScriptULALAN: with a ULA LAN prefix the loaded classifier must
+// mark exactly that prefix ahead of the ULA drop, its on-link routes on the
+// LAN NIC are not a ULA leak, and any other ULA route on the LAN NIC, any
+// ULA route via ROS, a missing LAN rule or a wider rule ahead of the drop
+// still fails. With a global prefix a rule ahead of the drop fails too.
+func TestVerifyScriptULALAN(t *testing.T) {
+	topo := ulaLANExample(t)
+	b := mustCompile(t, topo)
+	script := b.File("nodes/gw/usr/local/sbin/meridian-verify.sh")
+	for _, need := range []string{"lan6_ula='" + ulaLAN + "'", "lan6_ula_hex='fd123456789a00010000000000000000'", "lan6_ula_bits=64"} {
+		if !strings.Contains(script, need) {
+			t.Fatalf("verify script lacks %q", need)
+		}
+	}
+	lanRule := `ip6 daddr ` + ulaLAN + ` meta mark set 0x00000064 return comment "ULA LAN prefix: home hosts only"`
+	base := func() verifyHost {
+		h := goodHost(t, b, topo)
+		if !strings.Contains(h.nft["list table inet meridian"], lanRule) {
+			t.Fatalf("listing lacks %q", lanRule)
+		}
+		// What the kernel lists for an on-link ULA LAN prefix.
+		h.ip["-6 route show table all"] += ulaLAN + " dev eth0 proto kernel metric 256 pref medium\n" +
+			ulaLAN + " dev eth0 table meridian_domestic metric 1024 pref medium\n" +
+			ulaLAN + " dev eth0 table meridian_foreign metric 1024 pref medium\n" +
+			"local fd12:3456:789a:1::88 dev eth0 table local proto kernel metric 0 pref medium\n" +
+			"anycast fd12:3456:789a:1:: dev eth0 table local proto kernel metric 0 pref medium\n" +
+			"blackhole " + ulaLAN + " dev lo metric 32767 pref medium\n"
+		return h
+	}
+	replaceNft := func(old, new string) func(h *verifyHost) {
+		return func(h *verifyHost) {
+			s := h.nft["list table inet meridian"]
+			if !strings.Contains(s, old) {
+				t.Fatalf("listing lacks %q", old)
+			}
+			h.nft["list table inet meridian"] = strings.Replace(s, old, new, 1)
+		}
+	}
+	runVerifyCases(t, script, base, []verifyCase{
+		{name: "all local checks pass", wantCode: 0,
+			want: []string{"meridian-verify-local-ok",
+				"PASS ula_drop: forwarded ULA is dropped, except the ULA LAN prefix " + ulaLAN,
+				"PASS ula_not_via_ros: no ULA route in any table points at ROS, and none outside the LAN prefix " + ulaLAN + " uses eth0",
+				"PASS route_lan_domestic6: a LAN client (fd12:3456:789a:1::fffe)", "PASS route_remote_domestic6"},
+			forbidden: []string{"FAIL", "UNKNOWN"}},
+		{name: "another ULA on the LAN NIC", mutate: func(h *verifyHost) {
+			h.ip["-6 route show table all"] += "fd12:3456:789a:2::/64 dev eth0 metric 1024 pref medium\n"
+		}, wantCode: 1, want: []string{"FAIL ula_not_via_ros: a ULA route leaves via eth0"}},
+		{name: "a wider ULA route containing the LAN prefix", mutate: func(h *verifyHost) {
+			h.ip["-6 route show table all"] += "fd12:3456:789a::/48 dev eth0 metric 1024 pref medium\n"
+		}, wantCode: 1, want: []string{"FAIL ula_not_via_ros: a ULA route leaves via eth0"}},
+		{name: "tunnel ULA on the LAN NIC", mutate: func(h *verifyHost) {
+			h.ip["-6 route show table all"] += "fd66::/48 dev eth0 metric 1024 pref medium\n"
+		}, wantCode: 1, want: []string{"FAIL ula_not_via_ros: a ULA route leaves via eth0"}},
+		{name: "LAN prefix pointed at ROS", mutate: func(h *verifyHost) {
+			h.ip["-6 route show table all"] += ulaLAN + " via fe80::1 dev eth0 table meridian_domestic metric 1 pref medium\n"
+		}, wantCode: 1, want: []string{"FAIL ula_not_via_ros: a ULA route points at ROS fe80::1"}},
+		{name: "LAN rule missing from the loaded classifier", mutate: replaceNft(lanRule+"\n", ""), wantCode: 1,
+			want:      []string{"FAIL ula_drop: the ULA LAN prefix " + ulaLAN + " is not classified ahead of the fc00::/7 drop"},
+			forbidden: []string{"PASS ula_drop"}},
+		{name: "wider rule ahead of the drop", mutate: replaceNft(lanRule, strings.Replace(lanRule, ulaLAN, "fd12:3456:789a::/48", 1)), wantCode: 1,
+			want:      []string{"FAIL ula_drop: an IPv6 rule ahead of the fc00::/7 drop lets other addresses past it: ip6 daddr fd12:3456:789a::/48"},
+			forbidden: []string{"PASS ula_drop"}},
+		{name: "drop missing", mutate: replaceNft("ip6 daddr fc00::/7 drop", "ip6 daddr fc00::/7 counter"), wantCode: 1,
+			want: []string{"FAIL ula_drop: no fc00::/7 drop in the classify chain"}},
+	})
+
+	gtopo, _ := raExample(t)
+	gb := mustCompile(t, gtopo)
+	gscript := gb.File("nodes/gw/usr/local/sbin/meridian-verify.sh")
+	if !strings.Contains(gscript, "lan6_ula=''") {
+		t.Fatal("a global LAN prefix must leave lan6_ula empty")
+	}
+	runVerifyCases(t, gscript, func() verifyHost { return goodHost(t, gb, gtopo) }, []verifyCase{
+		{name: "global: all local checks pass", wantCode: 0,
+			want: []string{"PASS ula_drop: forwarded ULA is dropped", "PASS ula_not_via_ros: no ULA route in any table uses eth0 or ROS"}, forbidden: []string{"FAIL", "except the ULA LAN"}},
+		{name: "global: a ULA rule ahead of the drop", mutate: func(h *verifyHost) {
+			h.nft["list table inet meridian"] = strings.Replace(h.nft["list table inet meridian"], "ip6 daddr fc00::/7 drop",
+				"ip6 daddr fd12:3456:789a:1::/64 meta mark set 0x00000064 return\n    ip6 daddr fc00::/7 drop", 1)
+		}, wantCode: 1, want: []string{"FAIL ula_drop: an IPv6 rule ahead of the fc00::/7 drop lets other addresses past it: ip6 daddr fd12:3456:789a:1::/64"}},
+		{name: "global: a ULA LAN-looking route on eth0 still fails", mutate: func(h *verifyHost) {
+			h.ip["-6 route show table all"] += ulaLAN + " dev eth0 metric 1024 pref medium\n"
+		}, wantCode: 1, want: []string{"FAIL ula_not_via_ros: a ULA route leaves via eth0"}},
+	})
+}
+
+// Both netns tests are named on the NOT-RUN-HERE line.
+func TestVerifyScriptNamesBothNetnsTests(t *testing.T) {
+	b := mustCompile(t, defaults.Example())
+	script := b.File("nodes/gw/usr/local/sbin/meridian-verify.sh")
+	for _, l := range strings.Split(script, "\n") {
+		if strings.HasPrefix(l, "notrun netns_reload_no_leak ") {
+			if !strings.Contains(l, "TestNetnsReloadNoLeak") || !strings.Contains(l, "TestNetnsULALANHomeAccess") {
+				t.Fatalf("line names only one test: %s", l)
+			}
+			return
+		}
+	}
+	t.Fatal("no notrun netns_reload_no_leak line")
 }

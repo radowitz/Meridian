@@ -242,13 +242,12 @@ func remoteAccessItem(t model.Topology, files map[string]string, gwp string) Ite
 	}
 	need := map[string]string{
 		"兜底表把 " + ifc + " 和局域网口一样处理": fmt.Sprintf(`iifname { "%s", "%s" } counter drop`, lan, ifc),
-		"DNS 劫持":                      fmt.Sprintf(`iifname "%s" meta nfproto ipv4 udp dport { 53, 853 } redirect to :53`, ifc),
-		"监听端口只在局域网口放行":                fmt.Sprintf(`iifname "%s" udp dport %d accept`, lan, ra.ListenPort),
-		"其他接口丢弃监听端口":                  fmt.Sprintf("udp dport %d drop", ra.ListenPort),
-		"iif " + ifc + " unreachable": fmt.Sprintf("ip rule add iif '%s' unreachable", ifc),
-		"设备地址池路由到 " + ifc:             fmt.Sprintf("ip route replace %s dev '%s'", ra.V4Prefix(), ifc),
-		"设备地址池的 NAT":                  fmt.Sprintf("ip saddr %s masquerade", ra.V4Prefix()),
-		"网关私钥是占位符":                    "PrivateKey = " + model.SecretPlaceholderPrefix,
+		"DNS 劫持":          fmt.Sprintf(`iifname "%s" meta nfproto ipv4 udp dport { 53, 853 } redirect to :53`, ifc),
+		"监听端口只在局域网口放行":    fmt.Sprintf(`iifname "%s" udp dport %d accept`, lan, ra.ListenPort),
+		"其他接口丢弃监听端口":      fmt.Sprintf("udp dport %d drop", ra.ListenPort),
+		"设备地址池路由到 " + ifc: fmt.Sprintf("ip route replace %s dev '%s'", ra.V4Prefix(), ifc),
+		"设备地址池的 NAT":      fmt.Sprintf("ip saddr %s masquerade", ra.V4Prefix()),
+		"网关私钥是占位符":        "PrivateKey = " + model.SecretPlaceholderPrefix,
 	}
 	var missing []string
 	for label, needle := range need {
@@ -260,7 +259,7 @@ func remoteAccessItem(t model.Topology, files map[string]string, gwp string) Ite
 	if len(missing) > 0 {
 		return Item{ID: id, Status: Fail, Title: title, Detail: "生成配置缺少：" + strings.Join(missing, "、")}
 	}
-	return Item{ID: id, Status: Pass, Title: title, Detail: "生成配置里 " + ifc + " 与局域网口同用兜底表、DNS 劫持和分流；监听端口只在局域网口放行；设备地址池有路由、unreachable 和 NAT；网关私钥是占位符。是否已加载、对端是否只有已启用的设备由 meridian-verify.sh 检查；手机实测见人工签收项。"}
+	return Item{ID: id, Status: Pass, Title: title, Detail: "生成配置里 " + ifc + " 与局域网口同用兜底表、DNS 劫持和分流；监听端口只在局域网口放行；设备地址池有路由、黑洞和 NAT；网关私钥是占位符。是否已加载、对端是否只有已启用的设备由 meridian-verify.sh 检查；手机实测见人工签收项。"}
 }
 
 // remoteHumanItems: remote access needs a real phone and the router.
@@ -302,7 +301,7 @@ func integrationItems() []Item {
 		{
 			ID: "netns_reload_no_leak", Status: Unknown, Scope: ScopeIntegration,
 			Title:  "持续流量下 nft 重载不漏（netns）",
-			Detail: "未执行。sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsReloadNoLeak，在隔离的 Linux 主机上跑并存档日志；没有日志就仍是未验证。",
+			Detail: "未执行。sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run 'TestNetnsReloadNoLeak|TestNetnsULALANHomeAccess'，在隔离的 Linux 主机上跑并存档日志；没有日志就仍是未验证。",
 		},
 		{
 			ID: "smartdns_runtime", Status: Unknown, Scope: ScopeIntegration,
@@ -359,7 +358,7 @@ func humanItems() []Item {
 		{
 			ID: "redirect_on_wire", Status: PendingSignoff, Scope: ScopeHuman,
 			Title:  "同网段 ICMP 重定向抓包",
-			Detail: "待人工签收。生成的 sysctl 关闭了 send_redirects。ROS 自己仍可能对客户端发重定向，这不在本机的控制范围内，要在测试机上抓包确认。",
+			Detail: "待人工签收。生成的 sysctl 关闭了 IPv4 的 send_redirects。IPv6 没有对应的开关（Linux 不存在 net.ipv6.conf.*.send_redirects），网关转发同网段 IPv6 时仍可能发重定向；ROS 自己也可能对客户端发重定向。这些都要在测试机上抓 IPv4 和 IPv6 包确认。",
 		},
 		{
 			ID: "tunnel_cut", Status: PendingSignoff, Scope: ScopeHuman,
@@ -393,8 +392,7 @@ func sysctlItems(gw string) []Item {
 	}{
 		{"rp_filter", "rp_filter 为 loose（2）", "net.ipv4.conf.all.rp_filter=2"},
 		{"rp_filter_device", "局域网口 rp_filter 为 2", "rp_filter=2"},
-		{"send_redirects", "关闭发送 ICMP 重定向", "net.ipv4.conf.all.send_redirects=0"},
-		{"send_redirects_v6", "关闭 IPv6 发送重定向", "net.ipv6.conf.all.send_redirects=0"},
+		{"send_redirects", "关闭 IPv4 发送 ICMP 重定向", "net.ipv4.conf.all.send_redirects=0"},
 		{"accept_redirects", "不接受 ICMP 重定向", "net.ipv4.conf.all.accept_redirects=0"},
 		{"accept_ra", "网关作为 SLAAC 客户端接受 RA", "accept_ra=2"},
 	}
@@ -493,12 +491,41 @@ func routeItems(t model.Topology, gw string) []Item {
 	} else {
 		out = append(out, Item{ID: "fail_closed", Status: Fail, Title: "境外表黑洞且策略优先级从 17000 起", Detail: "缺少 table 102 的黑洞或 17000 优先级。"})
 	}
+	out = append(out, iifRuleItem(gw))
 	if strings.Contains(gw, "send_redirects=0") && strings.Contains(gw, "rp_filter=2") {
 		out = append(out, Item{ID: "redirect_sysctl", Status: Pass, Title: "同网段重定向与 rp_filter 脚本", Detail: "路由脚本会对每个接口再写一次 rp_filter=2 和 send_redirects=0，避免 all 被单口覆盖。"})
 	} else {
 		out = append(out, Item{ID: "redirect_sysctl", Status: Fail, Title: "同网段重定向与 rp_filter 脚本", Detail: "路由脚本没有对每个接口关闭重定向。"})
 	}
 	return out
+}
+
+// iifRuleItem: the gateway installs no "iif <interface> unreachable"
+// policy rule. With rp_filter on, the kernel validates the source of a
+// forwarded packet with a lookup whose iif is the OUTPUT interface and
+// whose mark is 0; such a rule fails that lookup, so every IPv4 packet
+// forwarded out of the LAN NIC (or mra) was dropped. Unclassified traffic
+// is dropped by the guard table instead, and classified traffic is kept
+// out of main by the per-mark unreachable rules (group_marks_routed).
+func iifRuleItem(gw string) Item {
+	const id, title = "no_iif_unreachable", "不装 iif … unreachable 策略规则"
+	var bad []string
+	for _, line := range strings.Split(gw, "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "ip ") && strings.Contains(l, " rule add ") && strings.Contains(l, " iif ") {
+			bad = append(bad, l)
+		}
+	}
+	if len(bad) > 0 {
+		return Item{ID: id, Status: Fail, Title: title, Detail: "网关路由脚本装了按入接口的策略规则，内核对经该接口转发出去的 IPv4 做源地址校验时会失败（Invalid cross-device link）：" + strings.Join(bad, "；")}
+	}
+	if !strings.Contains(gw, "rule del priority 17850 iif") || !strings.Contains(gw, "rule del priority 17851 iif") {
+		return Item{ID: id, Status: Fail, Title: title, Detail: "网关路由脚本没有删除旧版本留下的 17850/17851 iif … unreachable 规则，升级后旧规则会继续丢包。"}
+	}
+	if !strings.Contains(gw, "table inet meridian_guard") {
+		return Item{ID: id, Status: Fail, Title: title, Detail: "没有 iif 规则，也没有兜底表 inet meridian_guard：未分类的转发流量没有任何拦截。"}
+	}
+	return Item{ID: id, Status: Pass, Title: title, Detail: "生成的路由脚本不装 iif … unreachable，并删除旧版本的 17850/17851 两条；未分类的转发流量由兜底表 inet meridian_guard 丢弃（v4/v6 相同）。网关上由 meridian-verify.sh 的 no_stale_iif_rule 和 route_* 路由探测按内核实际结果检查。"}
 }
 
 func meshItems(files map[string]string) []Item {
@@ -585,7 +612,6 @@ func CheckSysctl(values map[string]string) []Item {
 		{"live_rp_filter", "net.ipv4.conf.all.rp_filter", "2", "运行中 rp_filter=2"},
 		{"live_rp_filter_default", "net.ipv4.conf.default.rp_filter", "2", "default rp_filter=2"},
 		{"live_send_redirects", "net.ipv4.conf.all.send_redirects", "0", "运行中 send_redirects=0"},
-		{"live_send_redirects_v6", "net.ipv6.conf.all.send_redirects", "0", "运行中 IPv6 send_redirects=0"},
 		{"live_accept_redirects", "net.ipv4.conf.all.accept_redirects", "0", "运行中 accept_redirects=0"},
 		{"live_forward", "net.ipv4.ip_forward", "1", "IPv4 转发已开"},
 	}

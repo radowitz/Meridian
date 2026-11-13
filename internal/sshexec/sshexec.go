@@ -46,8 +46,13 @@ const (
 	CodeUnreachable   = "unreachable"
 	CodeTimeout       = "timeout"
 	CodeAuthFailed    = "auth_failed"
-	CodeCommandFailed = "command_failed"
-	CodeNotSSH        = "not_ssh"
+	// CodeAuthMethodUnavailable: the server never offered the credential's
+	// login method (for example password login with PasswordAuthentication
+	// no), so the credential itself was not tried. Distinct from
+	// CodeAuthFailed, where the server tried and rejected it.
+	CodeAuthMethodUnavailable = "auth_method_unavailable"
+	CodeCommandFailed         = "command_failed"
+	CodeNotSSH                = "not_ssh"
 )
 
 // Error is every error this package returns. Msg is scrubbed of the
@@ -305,11 +310,30 @@ func (c *Connector) connect(ctx context.Context, t Target) (*session, error) {
 		}
 		return auth, authErr
 	}
+	// tried records whether the credential's own method was used at all
+	// (the client only calls a method's callback when the server offers it);
+	// offered collects the other methods the server offered, learned from
+	// probe-only methods that never send anything and only record that the
+	// server listed them.
+	var tried bool
+	var offered []string
+	markTried := func() { authMu.Lock(); tried = true; authMu.Unlock() }
+	probe := func(m string) {
+		authMu.Lock()
+		defer authMu.Unlock()
+		for _, o := range offered {
+			if o == m {
+				return
+			}
+		}
+		offered = append(offered, m)
+	}
 	var methods []ssh.AuthMethod
 	switch meta.Kind {
 	case credentials.KindPassword:
 		s.method = AuthPassword
 		pw := func() (string, error) {
+			markTried()
 			a, err := resolve()
 			if err != nil {
 				return "", err
@@ -335,6 +359,7 @@ func (c *Connector) connect(ctx context.Context, t Target) (*session, error) {
 	case credentials.KindPrivateKey:
 		s.method = AuthKey
 		methods = append(methods, ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+			markTried()
 			a, err := resolve()
 			if err != nil {
 				return nil, err
@@ -352,6 +377,27 @@ func (c *Connector) connect(ctx context.Context, t Target) (*session, error) {
 		}))
 	default:
 		return nil, errf(CodeNoCredential, "SSH 凭据 %s 的种类 %q 不支持", credID, meta.Kind)
+	}
+	// Probe-only methods come after the real ones, so they run only when the
+	// server offers them and the credential's method is not offered or has
+	// been rejected. Their callbacks fail before anything is sent (password,
+	// publickey); keyboard-interactive sends only the method request, never
+	// an answer.
+	if meta.Kind == credentials.KindPassword {
+		methods = append(methods, ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+			probe("publickey")
+			return nil, errProbeOnly
+		}))
+	} else {
+		methods = append(methods,
+			ssh.PasswordCallback(func() (string, error) {
+				probe("password")
+				return "", errProbeOnly
+			}),
+			ssh.KeyboardInteractive(func(_, _ string, _ []string, _ []bool) ([]string, error) {
+				probe("keyboard-interactive")
+				return nil, errProbeOnly
+			}))
 	}
 	pinned, pinnedType := sv.HostKey.Fingerprint, sv.HostKey.KeyType
 	cfg := &ssh.ClientConfig{
@@ -393,8 +439,14 @@ func (c *Connector) connect(ctx context.Context, t Target) (*session, error) {
 			return nil, hostErr
 		case authErr != nil:
 			return nil, errf(CodeAuthFailed, "%s", credentials.Scrub(authErr.Error(), s.secrets...))
-		case strings.Contains(err.Error(), "unable to authenticate"):
-			return nil, errf(CodeAuthFailed, "%s 拒绝了 %s 的%s登录", sv.Name, sv.User, methodName(s.method))
+		case errors.Is(err, errProbeOnly) || strings.Contains(err.Error(), "unable to authenticate"):
+			authMu.Lock()
+			used, others := tried, append([]string(nil), offered...)
+			authMu.Unlock()
+			if !used {
+				return nil, errf(CodeAuthMethodUnavailable, "%s", methodUnavailableMsg(sv.Name, s.method, others))
+			}
+			return nil, errf(CodeAuthFailed, "%s 拒绝了 %s 的%s登录（服务器接受%s登录，但这份凭据没有通过）", sv.Name, sv.User, methodName(s.method), methodName(s.method))
 		case isTimeout(err):
 			return nil, errf(CodeTimeout, "%s 的 SSH 握手超时", sv.Name)
 		default:
@@ -418,6 +470,26 @@ func hostKeyAlgos(keyType string) []string {
 	default:
 		return []string{keyType}
 	}
+}
+
+// errProbeOnly is returned by the probe-only auth methods.
+var errProbeOnly = errors.New("probe only: method offered by the server, not used")
+
+// methodUnavailableMsg says that the server does not accept the
+// credential's login method, which methods it does offer (when known) and
+// what to do.
+func methodUnavailableMsg(server, method string, offered []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s 不接受%s登录，这份凭据没有被尝试", server, methodName(method))
+	if len(offered) > 0 {
+		fmt.Fprintf(&b, "（服务器提供的登录方式：%s）", strings.Join(offered, "、"))
+	}
+	if method == AuthPassword {
+		b.WriteString("。改用 SSH 密钥凭据，或在服务器上开启密码登录（sshd_config 里 PasswordAuthentication yes，然后重载 sshd）")
+	} else {
+		b.WriteString("。改用密码凭据，或在服务器上开启公钥登录（sshd_config 里 PubkeyAuthentication yes，然后重载 sshd）")
+	}
+	return b.String()
 }
 
 func methodName(m string) string {
@@ -550,4 +622,35 @@ func clean(s string) string {
 		out = string(r[:128])
 	}
 	return out
+}
+
+// GroupStateCommand is the fixed, read-only command that reads the hub's
+// region-group state (written by the hub's failover script, see
+// internal/compile hub_state.go): the hub's clock, the deployed group plan
+// identifier and every group report, framed by a header and an end line.
+// It takes no input. Output is cut at GroupStateMax+1 bytes on the hub, so
+// a longer answer is recognisable as oversized (internal/hubstate parses
+// it).
+const GroupStateCommand = `{ printf 'meridian-group-state 1\nnow %s\n' "$(date +%s)"; cat /run/meridian/group-plan; for f in /run/meridian/group/*/report; do if [ -f "$f" ]; then cat "$f"; fi; done; echo meridian-group-state-end; } 2>/dev/null | head -c 65537`
+
+// GroupStateMax is the largest accepted answer of GroupStateCommand.
+const GroupStateMax = 64 << 10
+
+// GroupStateTimeout bounds the whole read.
+const GroupStateTimeout = 30 * time.Second
+
+// ReadGroupState logs in to the server with its stored credential (trusted,
+// pinned host key required) and runs GroupStateCommand. The output is
+// returned scrubbed and capped at GroupStateMax+1 bytes; the caller parses
+// it.
+func (c *Connector) ReadGroupState(ctx context.Context, serverID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, GroupStateTimeout)
+	defer cancel()
+	cc := *c
+	cc.MaxOutput = GroupStateMax + 1
+	res, err := cc.run(ctx, Target{ServerID: serverID}, GroupStateCommand, nil)
+	if err != nil {
+		return "", err
+	}
+	return res.Output, nil
 }

@@ -6,7 +6,7 @@
 
 import {
   CloudUploadOutlined,
-  DownOutlined,
+  EllipsisOutlined,
   EyeOutlined,
   KeyOutlined,
   ReloadOutlined,
@@ -15,14 +15,15 @@ import {
   ToolOutlined,
 } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Collapse, Dropdown, Empty, Modal, Radio, Space, Table, Tag, Tooltip, Typography } from "antd";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
 import { serverReadiness } from "./ServersPage";
-import { href, useStatus, useTopologyDoc } from "./state";
-import type { ApplyResult, HostReport, HostStatus, Issue, Node, ProvisionResult, ServerView } from "./types";
+import { href, useRouter, useStatus, useTopologyDoc } from "./state";
+import type { ApplyResult, HostReport, HostStatus, InstalledDiff, Issue, Node, ProvisionResult, ServerView } from "./types";
 import { roleLabel } from "./types";
 import {
+  TABLE_SCROLL,
   ApiErrorAlert,
   CopyButton,
   DataView,
@@ -176,7 +177,7 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
           showIcon
           style={{ marginBottom: 12 }}
           message={`改动已写入数据目录，但网关上运行的仍是 v${install.version ?? "?"}`}
-          description="逐文件差分只能和上一次「应用」的版本比，所以下面可能显示没有变化；网关上安装的版本确实比存储的旧，安装后才一致。"
+          description="逐行差分只和上一次「应用」的版本比，那一份已经包含这些改动，所以逐行看没有变化。下面列出的是安装会让网关上哪些文件新增、修改或删除（按已安装清单里的文件哈希比较）；这种情况下看不到逐行内容。"
         />
       ) : null}
       {install.kind === "unknown" ? (
@@ -189,8 +190,10 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
         />
       ) : null}
       <DataView state={diff} rows={3}>
-        {() =>
-          files.length === 0 ? (
+        {(d) =>
+          files.length === 0 && install.kind === "changed" && d.installed && installedCount(d.installed) > 0 ? (
+            <InstalledChanges diff={d.installed} version={install.version} />
+          ) : files.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               description={
@@ -244,6 +247,38 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
         }
       </DataView>
     </Section>
+  );
+}
+
+/** Files and resources an install would change, by the installed manifest's hashes. */
+function installedCount(d: InstalledDiff) {
+  return (d.files_added?.length ?? 0) + (d.files_changed?.length ?? 0) + (d.files_removed?.length ?? 0);
+}
+
+function InstalledChanges({ diff, version }: { diff: InstalledDiff; version: number | null }) {
+  const rows: { path: string; status: FileDiff["status"] }[] = [
+    ...(diff.files_added ?? []).map((path) => ({ path, status: "added" as const })),
+    ...(diff.files_changed ?? []).map((path) => ({ path, status: "changed" as const })),
+    ...(diff.files_removed ?? []).map((path) => ({ path, status: "removed" as const })),
+  ].sort((a, b) => a.path.localeCompare(b.path));
+  const res = DIFF_LABEL.filter(([k]) => !k.startsWith("files_"))
+    .map(([k, label]) => [label, (diff[k as keyof InstalledDiff] ?? []) as (string | number)[]] as const)
+    .filter(([, v]) => v.length > 0);
+  return (
+    <div data-testid="installed-diff">
+      <Typography.Paragraph>
+        安装会改动网关上的 {rows.length} 个文件（与已安装的 v{version ?? "?"} 按文件哈希比较，没有逐行内容）：
+      </Typography.Paragraph>
+      <ul className="installed-files">
+        {rows.map((r) => (
+          <li key={r.path}>
+            <Tag color={FILE_STATUS[r.status].color}>{FILE_STATUS[r.status].label}</Tag>
+            <span className="mono-small">/{r.path}</span>
+          </li>
+        ))}
+      </ul>
+      {res.length > 0 ? <Facts items={res.map(([label, v]) => [label, <span key={label} className="mono-small">{v.join("  ")}</span>])} /> : null}
+    </div>
   );
 }
 
@@ -317,110 +352,167 @@ interface PeerKeyProblem {
   problem?: string;
 }
 
-/** Explains an install/rollback refusal or failure in operator terms. */
-function TxnFailure({ error, nodeName, onRecover, recovering }: { error: ApiError; nodeName: (id: string) => string; onRecover: () => void; recovering: boolean }) {
-  const body = error.body as { host?: HostReport | null; compensated?: boolean; peer_key_problems?: PeerKeyProblem[] };
-  if (error.status === 503) {
-    return (
-      <Alert
-        type="warning"
-        showIcon
-        data-testid="txn-refused"
-        message="没有宿主执行通道，什么都没改"
-        description={
-          <span>
-            安装必须经由网关上的 meridian-host 启动服务。它没有运行或面板连不上它（例如面板不在网关上运行）。宿主、快照和数据目录都没有改动。
-            <div className="muted">{error.message}</div>
-          </span>
-        }
-      />
-    );
-  }
-  if (body.peer_key_problems && body.peer_key_problems.length > 0) {
-    const peers = [...new Set(body.peer_key_problems.map((p) => p.peer))];
-    return (
-      <Alert
-        type="warning"
-        showIcon
-        data-testid="txn-refused"
-        message="拒绝安装：这些对端节点还没有可用的公钥"
-        description={
-          <div>
-            <ul className="ref-list">
-              {peers.map((p) => (
-                <li key={p}>
-                  <Link to={href("topology", p)}>{nodeName(p)}</Link> <span className="mono-small muted">{p}</span>
-                </li>
-              ))}
-            </ul>
-            先在下面「远端节点」里对它们执行「生成新密钥并下发」，或在拓扑里填入它们的公钥。网关上没有写入任何文件。
-          </div>
-        }
-      />
-    );
-  }
-  if (error.status === 409 && /旧版 Meridian/.test(error.message)) {
-    return (
-      <Alert
-        type="error"
-        showIcon
-        data-testid="txn-refused"
-        message="网关上有旧版 Meridian 的安装，无法可靠接管"
-        description={
-          <span>
-            {error.message} 需要先在网关上手动清理旧版本（见 docs/install-debian13.md 的升级说明），再回来安装。
-          </span>
-        }
-      />
-    );
-  }
-  if (error.status === 409 && /事务没有完成|先执行恢复/.test(error.message)) {
-    return (
-      <Alert
-        type="error"
-        showIcon
-        data-testid="txn-refused"
-        message="上一次宿主事务没有完成，先恢复"
-        description={error.message}
-        action={
-          <Button danger size="small" loading={recovering} onClick={onRecover}>
-            恢复
-          </Button>
-        }
-      />
-    );
-  }
-  if (body.host) {
-    const compensated = !!body.compensated;
-    return (
-      <Alert
-        type="error"
-        showIcon
-        data-testid="txn-failed"
-        message={compensated ? "安装失败，已补偿回安装前的状态" : "安装失败，补偿也失败了"}
-        description={
-          <div>
-            <Typography.Paragraph style={{ marginBottom: 8 }}>{error.message}</Typography.Paragraph>
-            {compensated ? (
-              <Typography.Paragraph type="secondary">网关和数据目录都回到了安装前；可以修正问题后再装。</Typography.Paragraph>
-            ) : (
-              <Typography.Paragraph>
-                宿主处于未知状态，事务日志已保留，新的安装和回滚都会被拒绝。修好原因后点「恢复」。
-                <Button danger size="small" style={{ marginLeft: 8 }} loading={recovering} onClick={onRecover}>
-                  恢复
-                </Button>
-              </Typography.Paragraph>
-            )}
-            <HostReportView report={body.host} failed />
-          </div>
-        }
-      />
-    );
-  }
-  return <ApiErrorAlert error={error} />;
+/** Where a peer without a public key is fixed: its row in 远端节点 (managed) or the topology. */
+function scrollToRemote(id: string) {
+  const row = document.querySelector(`[data-testid="remote-node-${CSS.escape(id)}"]`) as HTMLElement | null;
+  row?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  row?.classList.add("row-flash");
+  window.setTimeout(() => row?.classList.remove("row-flash"), 2000);
 }
 
-function InstallSection({ host, reloadHost, nodeName }: { host: HostStatus | undefined; reloadHost: () => void; nodeName: (id: string) => string }) {
+/**
+ * Explains an install/rollback refusal or failure in operator terms. It
+ * decides on the API's machine code (internal/api/server.go), never on the
+ * message text.
+ */
+function TxnFailure({
+  error,
+  nodes,
+  onRecover,
+  recovering,
+}: {
+  error: ApiError;
+  nodes: Node[];
+  onRecover: () => void;
+  recovering: boolean;
+}) {
+  const body = error.body as { host?: HostReport | null; compensated?: boolean; peer_key_problems?: PeerKeyProblem[]; issues?: Issue[] };
+  const node = (id: string) => nodes.find((n) => n.id === id);
+  switch (error.code) {
+    case "host_unavailable":
+      return (
+        <Alert
+          type="warning"
+          showIcon
+          data-testid="txn-refused"
+          message="没有宿主执行通道，什么都没改"
+          description={
+            <span>
+              安装和回滚必须经由网关上的 meridian-host 启动服务。它没有运行或面板连不上它（例如面板不在网关上运行）。宿主、快照和数据目录都没有改动。
+              <div className="muted">{error.message}</div>
+            </span>
+          }
+        />
+      );
+    case "peer_keys_missing": {
+      const peers = [...new Set((body.peer_key_problems ?? []).map((p) => p.peer))];
+      return (
+        <Alert
+          type="warning"
+          showIcon
+          data-testid="txn-refused"
+          message="拒绝安装：这些对端节点还没有可用的公钥"
+          description={
+            <div>
+              <ul className="ref-list" data-testid="peer-key-list">
+                {peers.map((p) => {
+                  const n = node(p);
+                  const remote = !!n && n.managed && n.role !== "gateway";
+                  return (
+                    <li key={p}>
+                      <Link to={href("topology", p)}>{n?.name || p}</Link> <span className="mono-small muted">{p}</span>
+                      {" — "}
+                      {remote ? (
+                        <Button type="link" size="small" style={{ padding: 0 }} onClick={() => scrollToRemote(p)}>
+                          在下面「远端节点」里生成密钥并下发
+                        </Button>
+                      ) : (
+                        <Link to={href("topology", p)}>在拓扑里填入它的公钥</Link>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              受管的远端节点第一次装机时生成密钥；不受管的节点（例如专线）在拓扑里填入 44 字符的公钥。网关上没有写入任何文件。
+            </div>
+          }
+        />
+      );
+    }
+    case "legacy_install_refused":
+      return (
+        <Alert
+          type="error"
+          showIcon
+          data-testid="txn-refused"
+          message="网关上有旧版 Meridian 的安装，无法可靠接管"
+          description={<span>{error.message} 需要先在网关上手动清理旧版本（见 docs/install-debian13.md 的升级说明），再回来安装。</span>}
+        />
+      );
+    case "transaction_pending":
+      return (
+        <Alert
+          type="error"
+          showIcon
+          data-testid="txn-refused"
+          message="上一次宿主事务没有完成，先恢复"
+          description={error.message}
+          action={
+            <Button danger size="small" loading={recovering} onClick={onRecover}>
+              恢复
+            </Button>
+          }
+        />
+      );
+    case "topology_invalid":
+    case "lan_interface_mismatch":
+      return (
+        <Alert
+          type="error"
+          showIcon
+          data-testid="txn-refused"
+          message={error.code === "lan_interface_mismatch" ? "拒绝安装：网关的局域网接口不一致" : "拒绝安装：拓扑校验没有通过"}
+          description={
+            <div>
+              <Typography.Paragraph style={{ marginBottom: 8 }}>
+                在 <Link to={href("topology")}>拓扑</Link> 或 <Link to={href("rules")}>分流规则</Link> 页改正后保存，再回来安装。网关上没有写入任何文件。
+              </Typography.Paragraph>
+              <IssueList issues={(body.issues ?? []).filter((i) => i.severity === "error")} />
+            </div>
+          }
+        />
+      );
+    case "nothing_to_rollback":
+      return <Alert type="info" showIcon data-testid="txn-refused" message="没有上一份配置可以回滚" description="回滚要在至少两次安装或应用之后才有东西可回。什么都没有改。" />;
+    case "activation_failed_compensated":
+    case "activation_failed_uncompensated":
+    case "commit_failed": {
+      const compensated = error.code === "activation_failed_compensated";
+      return (
+        <Alert
+          type="error"
+          showIcon
+          data-testid="txn-failed"
+          message={
+            compensated ? "失败，已补偿回事务前的状态" : error.code === "commit_failed" ? "网关已生效，但提交记录失败" : "失败，补偿也失败了"
+          }
+          description={
+            <div>
+              <Typography.Paragraph style={{ marginBottom: 8 }}>{error.message}</Typography.Paragraph>
+              {compensated ? (
+                <Typography.Paragraph type="secondary">网关和数据目录都回到了事务前；可以修正问题后再试。</Typography.Paragraph>
+              ) : (
+                <Typography.Paragraph>
+                  {error.code === "commit_failed"
+                    ? "事务日志已保留，新的安装和回滚都会被拒绝；「恢复」会完成这次提交。"
+                    : "宿主处于未知状态，事务日志已保留，新的安装和回滚都会被拒绝。修好原因后点「恢复」。"}
+                  <Button danger size="small" style={{ marginLeft: 8 }} loading={recovering} onClick={onRecover}>
+                    恢复
+                  </Button>
+                </Typography.Paragraph>
+              )}
+              {body.host ? <HostReportView report={body.host} failed /> : null}
+            </div>
+          }
+        />
+      );
+    }
+    default:
+      return <ApiErrorAlert error={error} />;
+  }
+}
+
+function InstallSection({ host, reloadHost, nodes }: { host: HostStatus | undefined; reloadHost: () => void; nodes: Node[] }) {
   const { install, status, refresh } = useStatus();
   const confirm = useConfirmDanger();
   const act = useAction();
@@ -462,7 +554,8 @@ function InstallSection({ host, reloadHost, nodeName }: { host: HostStatus | und
   const doApplyOnly = () =>
     confirm({
       title: "只写入数据目录？",
-      consequence: "把编译结果存为新的快照（可用于回滚），但不碰网关：网关上的服务、接口和防火墙都不变，顶栏会显示「已应用，尚未安装」。",
+      consequence:
+        "把编译结果存成数据目录里的新快照，网关上的服务、接口和防火墙一样都不动。用于没有宿主执行通道的场合（开发，或面板不在网关上）：之后可以在下面看编译结果、把快照拿去手动部署。之后能安装时，仍要点「安装到网关」才生效；顶栏会显示「已应用，尚未安装」。",
       okText: "只写入",
       danger: false,
       onOk: () =>
@@ -474,6 +567,8 @@ function InstallSection({ host, reloadHost, nodeName }: { host: HostStatus | und
     });
 
   const mode: "runtime" | "snapshot" = installed ? "runtime" : rbMode;
+  // Older panels' status has no previous_available: assume there may be one.
+  const canRollBack = status?.previous_available !== false;
   const doRollback = () =>
     confirm({
       title: mode === "runtime" ? "回滚网关（含宿主网络）？" : "只回滚数据目录快照？",
@@ -534,22 +629,30 @@ function InstallSection({ host, reloadHost, nodeName }: { host: HostStatus | und
               安装成功只说明服务已启动、健康检查通过，不说明分流、防泄露或解锁已经验证——这些去「防泄露」和「解锁」页确认。
             </Typography.Text>
           </div>
-          <Space>
-            <Dropdown.Button
+          <Space wrap>
+            <Button
               type="primary"
-              icon={<DownOutlined />}
+              icon={<CloudUploadOutlined />}
               disabled={blocked || !!pending || !agentOK || install.kind === "in_sync"}
               loading={act.busy === "install"}
               onClick={doInstall}
-              menu={{
-                items: [{ key: "apply", label: "只写入数据目录（不安装）", disabled: blocked || !!pending }],
-                onClick: () => doApplyOnly(),
-              }}
             >
-              <CloudUploadOutlined /> 安装到网关
-            </Dropdown.Button>
+              安装到网关
+            </Button>
+            {!agentOK ? (
+              <Tooltip title="没有宿主执行通道时可用：只把编译结果存成快照，不碰网关">
+                <Button disabled={blocked || !!pending} loading={act.busy === "apply"} onClick={doApplyOnly} data-testid="apply-only">
+                  只写入数据目录
+                </Button>
+              </Tooltip>
+            ) : null}
           </Space>
         </div>
+        {!agentOK ? (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+            「只写入数据目录」：没有宿主执行通道时（开发，或面板不在网关上）把编译结果存成快照，不安装、不改网关。有宿主执行通道时不提供，直接安装即可。
+          </Typography.Paragraph>
+        ) : null}
         {install.kind === "in_sync" ? (
           <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
             网关上的 v{install.version} 和存储的拓扑一致，没有需要安装的。
@@ -557,7 +660,7 @@ function InstallSection({ host, reloadHost, nodeName }: { host: HostStatus | und
         ) : null}
         {act.error ? (
           <div style={{ marginTop: 12 }}>
-            <TxnFailure error={act.error} nodeName={nodeName} onRecover={() => void recover()} recovering={act.busy === "recover"} />
+            <TxnFailure error={act.error} nodes={nodes} onRecover={() => void recover()} recovering={act.busy === "recover"} />
           </div>
         ) : null}
         {result ? (
@@ -585,6 +688,11 @@ function InstallSection({ host, reloadHost, nodeName }: { host: HostStatus | und
       </Section>
 
       <Section title="回滚">
+        {!canRollBack ? (
+          <Typography.Paragraph type="secondary" data-testid="no-previous">
+            还没有上一份配置可以回滚：第一次安装（或应用）之后，下一次安装前的版本才会留作回滚目标。
+          </Typography.Paragraph>
+        ) : null}
         <Radio.Group value={mode} onChange={(e) => setRbMode(e.target.value)} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <Radio value="runtime" disabled={!installed}>
             <Typography.Text strong>回滚网关（含宿主网络）</Typography.Text>
@@ -603,7 +711,7 @@ function InstallSection({ host, reloadHost, nodeName }: { host: HostStatus | und
           style={{ marginTop: 12 }}
           icon={<RollbackOutlined />}
           danger
-          disabled={!!pending || (installed ? !agentOK : false)}
+          disabled={!canRollBack || !!pending || (installed ? !agentOK : false)}
           loading={act.busy === "rollback"}
           onClick={doRollback}
         >
@@ -649,6 +757,14 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
         danger: false,
         onOk: go,
       });
+    if (!n.public_key)
+      return confirm({
+        title: `为「${n.name}」生成密钥并第一次下发？`,
+        consequence: `生成这个节点的 WireGuard 密钥（私钥只保存在面板里），然后经 SSH 在 ${sv ? `${sv.name}（${sv.address}）` : "它的服务器"} 上真的执行脚本：写入 Meridian 的文件并启动它的服务。之后网关安装时才认得这个节点。`,
+        okText: "生成并下发",
+        danger: false,
+        onOk: go,
+      });
     confirm({
       title: `为「${n.name}」生成新密钥并下发？`,
       consequence: (
@@ -666,29 +782,49 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
     });
   };
 
+  const keyless = nodes.filter((n) => !n.public_key);
+
   if (nodes.length === 0)
     return (
-      <Section title="远端节点">
+      <Section title="远端节点" id="remote">
         <Typography.Text type="secondary">拓扑里没有需要装机的远端节点。</Typography.Text>
       </Section>
     );
 
   return (
-    <Section title="远端节点">
+    <Section title="远端节点" id="remote">
+      <Typography.Paragraph>
+        推荐顺序：先在这里给每个远端节点「生成密钥并下发」（第一次装机），再「安装到网关」——网关的配置要用到每个对端的公钥，缺了会被拒绝安装。以后改了拓扑，也是先对受影响的远端节点「下发」，再「安装到网关」：可切换地区组的解析走组的隧道地址（fd66::53:…），只有已经下发新配置的出口才会应答，网关先装的话组内的名字在出口更新前解析不了（不会改问国内或别的出口）。
+      </Typography.Paragraph>
+      {keyless.length > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          data-testid="keyless-nodes"
+          message={`${keyless.length} 个节点还没有密钥，还没有第一次装机：${keyless
+            .slice(0, 5)
+            .map((n) => n.name || n.id)
+            .join("、")}${keyless.length > 5 ? ` 等 ${keyless.length} 个` : ""}`}
+          description="在它们那一行点「生成密钥并下发」。服务器要先在「服务器」页确认指纹并测试连接。"
+        />
+      ) : null}
       <Typography.Paragraph type="secondary">
-        中继、枢纽和出口各自经 SSH 下发。先「预览脚本」看会执行什么（不连接服务器，密钥显示为占位符）；「下发」真的在服务器上执行。
+        「预览脚本」不连接服务器，密钥显示为占位符；「下发」和「生成密钥并下发」会真的在服务器上执行。
       </Typography.Paragraph>
       <Table<Node>
         rowKey="id"
         dataSource={nodes}
         pagination={false}
-        scroll={{ x: 860 }}
+        size="middle"
+        scroll={TABLE_SCROLL}
         onRow={(n) => ({ "data-testid": `remote-node-${n.id}` }) as React.HTMLAttributes<HTMLElement>}
         columns={[
           {
             title: "节点",
+            className: "cell-name",
             render: (_, n) => (
-              <Space size={4} wrap>
+              <Space size={4}>
                 <Link to={href("topology", n.id)}>{n.name || n.id}</Link>
                 <Tag>{roleLabel[n.role]}</Tag>
               </Space>
@@ -696,13 +832,14 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
           },
           {
             title: "服务器",
+            className: "nowrap",
             render: (_, n) => {
               const sv = server(n);
               if (!n.server_id) return <StatusTag kind="attention">未选服务器</StatusTag>;
               if (!sv) return servers ? <StatusTag kind="failed">服务器不存在</StatusTag> : <Typography.Text type="secondary">…</Typography.Text>;
               const r = serverReadiness(sv);
               return (
-                <Space size={4} wrap>
+                <Space size={4}>
                   <Link to={href("servers", sv.id)}>{sv.name}</Link>
                   <StatusTag kind={r.kind}>{r.label}</StatusTag>
                 </Space>
@@ -710,40 +847,50 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
             },
           },
           {
-            title: "公钥",
-            width: 120,
+            title: "密钥",
             render: (_, n) =>
               n.public_key ? (
                 <Tooltip title={n.public_key}>
                   <Tag>已有</Tag>
                 </Tooltip>
               ) : (
-                <Tooltip title="第一次下发要用「生成新密钥并下发」">
-                  <Tag color="warning">还没有</Tag>
-                </Tooltip>
+                <span data-testid={`keyless-${n.id}`}>
+                  <StatusTag kind="attention">还没有 · 第一次装机</StatusTag>
+                </span>
               ),
           },
           {
-            title: "",
-            width: 330,
+            title: "操作",
+            fixed: "right",
+            className: "cell-actions",
             render: (_, n) => {
               const sv = server(n);
               const ready = !!sv?.ready;
+              const notReady = !n.server_id ? "节点还没有选择服务器" : !sv ? "服务器不存在" : !ready ? "服务器还没就绪：先确认指纹并测试连接" : undefined;
+              const first = !n.public_key;
+              const more = [
+                { key: "preview", icon: <EyeOutlined />, label: "预览脚本（不连接服务器）" },
+                ...(first ? [] : [{ key: "rotate", icon: <KeyOutlined />, label: "生成新密钥并下发…", danger: true, disabled: !ready }]),
+              ];
               return (
-                <Space size={0} wrap className="table-actions">
-                  <Button type="link" size="small" icon={<EyeOutlined />} loading={act.busy === `preview:${n.id}`} onClick={() => run(n, "preview")}>
-                    预览脚本
-                  </Button>
-                  <Tooltip title={!ready ? "服务器还没就绪" : !n.public_key ? "节点还没有密钥，先生成" : undefined}>
-                    <Button type="link" size="small" icon={<SendOutlined />} disabled={!ready || !n.public_key} loading={act.busy === `push:${n.id}`} onClick={() => run(n, "push")}>
-                      下发
-                    </Button>
+                <Space size={4} className="table-actions">
+                  <Tooltip title={notReady}>
+                    {first ? (
+                      <Button type="primary" size="small" icon={<KeyOutlined />} disabled={!ready} loading={act.busy === `rotate:${n.id}`} onClick={() => run(n, "rotate")}>
+                        生成密钥并下发
+                      </Button>
+                    ) : (
+                      <Button size="small" icon={<SendOutlined />} disabled={!ready} loading={act.busy === `push:${n.id}`} onClick={() => run(n, "push")}>
+                        下发
+                      </Button>
+                    )}
                   </Tooltip>
-                  <Tooltip title={!ready ? "服务器还没就绪" : undefined}>
-                    <Button type="link" size="small" danger icon={<KeyOutlined />} disabled={!ready} loading={act.busy === `rotate:${n.id}`} onClick={() => run(n, "rotate")}>
-                      生成新密钥并下发
-                    </Button>
-                  </Tooltip>
+                  <Dropdown
+                    trigger={["click"]}
+                    menu={{ items: more, onClick: ({ key }) => run(n, key as "preview" | "rotate") }}
+                  >
+                    <Button size="small" icon={<EllipsisOutlined />} aria-label={`${n.name || n.id} 的更多操作`} loading={act.busy === `preview:${n.id}` || (!first && act.busy === `rotate:${n.id}`)} />
+                  </Dropdown>
                 </Space>
               );
             },
@@ -864,6 +1011,13 @@ function CurrentInstall({ host }: { host: HostStatus }) {
 
 export default function DeployPage() {
   const doc = useTopologyDoc();
+  const { route } = useRouter();
+  useEffect(() => {
+    if (route.query.get("section") === "remote") {
+      const t = window.setTimeout(() => document.getElementById("remote")?.scrollIntoView?.({ behavior: "smooth" }), 200);
+      return () => window.clearTimeout(t);
+    }
+  }, [route.query]);
   const host = useApi(() => api.hostStatus(), []);
   const servers = useApi(() => api.listServers(), []);
   const nodeName = (id: string) => doc.topo?.nodes.find((n) => n.id === id)?.name ?? id;
@@ -893,7 +1047,7 @@ export default function DeployPage() {
         />
       ) : null}
       <PendingChanges nodeName={nodeName} />
-      <InstallSection host={host.data} reloadHost={() => void host.reload()} nodeName={nodeName} />
+      <InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} />
       <RemoteNodes nodes={remote} servers={servers.data?.servers} />
       <Section title="当前安装">
         <DataView state={host} rows={4}>

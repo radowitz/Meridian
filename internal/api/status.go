@@ -71,12 +71,15 @@ type statusJob struct {
 }
 
 type statusView struct {
-	Agent          statusAgent        `json:"agent"`
-	ListsAvailable bool               `json:"lists_available"`
-	ProbeAvailable bool               `json:"probe_available"`
-	Install        statusInstall      `json:"install"`
-	Pending        *apply.PendingView `json:"pending"`
-	Jobs           struct {
+	Agent          statusAgent   `json:"agent"`
+	ListsAvailable bool          `json:"lists_available"`
+	ProbeAvailable bool          `json:"probe_available"`
+	Install        statusInstall `json:"install"`
+	// PreviousAvailable: a previous snapshot exists, so a rollback has
+	// something to go back to.
+	PreviousAvailable bool               `json:"previous_available"`
+	Pending           *apply.PendingView `json:"pending"`
+	Jobs              struct {
 		Lists  statusJob `json:"lists"`
 		Unlock statusJob `json:"unlock"`
 		Mesh   statusJob `json:"mesh"`
@@ -106,6 +109,7 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	v.PreviousAvailable = ap.PreviousAvailable()
 	v.Install = s.installState(ap, inst, func() (*compile.Bundle, error) { return s.compileTopo(t) })
 
 	v.Jobs.Lists = statusJob{State: "none"}

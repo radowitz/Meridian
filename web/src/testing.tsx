@@ -58,6 +58,7 @@ export function panelStatus(over: Partial<PanelStatus> & { installOver?: Partial
     install: { state: "not_installed", installed_version: null, applied: false, applied_matches: false, ...installOver },
     pending: null,
     jobs: { lists: idle, unlock: idle, mesh: idle },
+    previous_available: true,
     ...rest,
   };
 }

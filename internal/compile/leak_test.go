@@ -11,6 +11,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/defaults"
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/validate"
 )
 
 func TestGatewayFailClosed(t *testing.T) {
@@ -44,7 +45,6 @@ func TestGatewayFailClosed(t *testing.T) {
 		"blackhole fd66::/48 metric 32767",
 		"fwmark 0x4d72 lookup main",
 		"fwmark 0x101 unreachable",
-		"iif 'eth0' unreachable",
 		"table 100",
 	} {
 		if !strings.Contains(routes, needle) {
@@ -275,14 +275,34 @@ func TestGatewayGuardStructure(t *testing.T) {
 	if rules[3] != `iifname "eth0" counter drop comment "fail closed: unclassified or misrouted LAN traffic, v4 and v6"` {
 		t.Errorf("last guard rule must be an unqualified drop: %s", rules[3])
 	}
-	// The IPv6 counterpart of the IPv4 iif rule is deliberately absent from
-	// the routes; the guard is what closes the main-table default via ROS.
-	routes := b.File("nodes/gw/usr/local/sbin/meridian-routes.sh")
-	if strings.Contains(routes, "ip -6 rule add iif") {
-		t.Fatal("unexpected IPv6 iif rule: RA and ND safety was never proven")
+	// No "iif <LAN> unreachable" rule in either family: the kernel's source
+	// validation of a packet forwarded OUT of the LAN NIC looks the source
+	// up with that iif and mark 0, so the IPv4 rule dropped domestic
+	// traffic and tunnel replies (EXDEV). The guard above is what closes
+	// the main-table default via ROS, v4 and v6; the per-mark unreachable
+	// rules keep classified traffic out of main.
+	assertNoIIFRules(t, b.File("nodes/gw/usr/local/sbin/meridian-routes.sh"))
+}
+
+// assertNoIIFRules: the gateway routes script adds no "iif" policy rule,
+// deletes the two that older versions installed (by priority, interface
+// and action), and keeps an unreachable rule behind every exit mark.
+func assertNoIIFRules(t *testing.T, routes string) {
+	t.Helper()
+	for _, l := range strings.Split(routes, "\n") {
+		if strings.Contains(l, "rule add") && strings.Contains(l, " iif ") {
+			t.Errorf("routes add an iif rule (breaks source validation of forwarded IPv4): %s", l)
+		}
 	}
-	if !strings.Contains(routes, "iif 'eth0' unreachable") {
-		t.Fatal("IPv4 iif unreachable rule is gone")
+	for _, need := range []string{
+		"del_rule ip -4 rule del priority 17850 iif 'eth0' unreachable\n",
+		"del_rule ip -4 rule del priority 17851 iif mra unreachable\n",
+		"ip rule add fwmark 0x101 unreachable priority 17600\n",
+		"ip -6 rule add fwmark 0x101 unreachable priority 17600\n",
+	} {
+		if !strings.Contains(routes, need) {
+			t.Errorf("routes missing %q", need)
+		}
 	}
 }
 
@@ -528,5 +548,75 @@ exit 0
 				}
 			}
 		})
+	}
+}
+
+// Linux has no net.ipv6.conf.*.send_redirects; writing it only produced
+// "skip sysctl" / "cannot stat" noise and a leak-check item that claimed a
+// protection that did not exist. Nothing generated or installed may name it.
+func TestNoIPv6SendRedirects(t *testing.T) {
+	b, err := Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range b.Files {
+		if strings.Contains(body, "ipv6.conf") && strings.Contains(body, "send_redirects") {
+			for _, line := range strings.Split(body, "\n") {
+				if strings.Contains(line, "ipv6.conf") && strings.Contains(line, "send_redirects") && !strings.HasPrefix(strings.TrimSpace(line), "#") && !strings.HasPrefix(strings.TrimSpace(line), "//") {
+					t.Errorf("%s writes a key Linux does not have: %s", path, line)
+				}
+			}
+		}
+	}
+	gw := b.File("nodes/gw/etc/sysctl.d/99-meridian.conf")
+	if !strings.Contains(gw, "net.ipv4.conf.all.send_redirects=0") {
+		t.Fatalf("IPv4 send_redirects must stay:\n%s", gw)
+	}
+	inst, err := os.ReadFile(filepath.Join("..", "..", "deploy", "debian", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(inst), "\n") {
+		if strings.Contains(line, "ipv6.conf") && strings.Contains(line, "send_redirects") {
+			t.Errorf("install.sh writes a key Linux does not have: %s", line)
+		}
+	}
+}
+
+// validate's rule_unreachable check mirrors what the classify chain drops
+// before the rules. Every address the compiler puts into underlay4 must be
+// reported for a rule that targets it, or the two have drifted apart.
+func TestUnderlayRulesReportedUnreachable(t *testing.T) {
+	topo := defaults.Example()
+	b, err := Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nft := b.File("nodes/gw/etc/nftables.d/meridian.nft")
+	i := strings.Index(nft, "set underlay4 {")
+	if i < 0 {
+		t.Fatal("no underlay4 set")
+	}
+	block := nft[i:]
+	block = block[:strings.Index(block, "}\n")]
+	j := strings.Index(block, "elements = { ")
+	if j < 0 {
+		t.Fatal("underlay4 is empty in the example")
+	}
+	elems := strings.Split(strings.TrimSuffix(strings.TrimSpace(block[j+len("elements = { "):]), " }"), ", ")
+	for _, ep := range elems {
+		ep = strings.TrimSpace(strings.TrimSuffix(ep, "}"))
+		cand := topo
+		cand.Rules = append(append([]model.Rule(nil), topo.Rules...), model.Rule{ID: "ep", Name: "ep", Manual: true, Enabled: true,
+			MatchType: model.MatchCIDR, MatchValue: ep + "/32", TargetGroup: topo.Settings.DefaultGroup})
+		found := false
+		for _, iss := range validate.Run(cand).Issues {
+			if iss.Code == "rule_unreachable" && iss.RuleID == "ep" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("underlay endpoint %s: rule not reported unreachable", ep)
+		}
 	}
 }

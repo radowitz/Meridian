@@ -131,13 +131,44 @@ func TestPanelProbeIPv4OnlyAdaptersNotSentOnIPv6(t *testing.T) {
 	for _, it := range job.Items {
 		if it.Service == "auto-kktv" {
 			seen++
-			if it.State != itemSkipped || it.Ingest != "not_ingested:family_not_supported" || it.Signal != probe.SigFamily {
+			// Not applicable, not unknown: nothing was sent, nothing ingested.
+			if it.State != itemSkipped || it.Ingest != "not_ingested:family_not_supported" || it.Signal != probe.SigFamily ||
+				it.Category != probe.CatNotApplicable || it.Grade != probe.GradeNotApplicable {
 				t.Fatalf("%+v", it)
 			}
 		}
 	}
 	if seen != 1 || len(f.requests()) != 1 {
 		t.Fatalf("items %+v requests %+v", job.Items, f.requests())
+	}
+}
+
+// An agent result of not_applicable is kept only for a family the service's
+// check does not support (and then even with an unconfirmed egress, since
+// nothing was sent); for any other service it is an unknown category.
+// Neither is a verdict.
+func TestSanitizeReportNotApplicable(t *testing.T) {
+	spec := probe.Spec{ExitID: "us", Family: unlock.FamilyIPv6, Services: []string{"auto-kktv", "auto-netflix"}}
+	rep := probe.Report{ExitID: "us", Family: unlock.FamilyIPv6, Results: []probe.Result{
+		{Service: "auto-kktv", Family: unlock.FamilyIPv6, Category: probe.CatNotApplicable, Region: "TW"},
+		{Service: "auto-netflix", Family: unlock.FamilyIPv6, Category: probe.CatNotApplicable},
+	}}
+	rep.Egress.Confirmed = false
+	out := sanitizeReport(rep, spec)
+	got := map[string]probe.Result{}
+	for _, r := range out.Results {
+		got[r.Service] = r
+	}
+	if k := got["auto-kktv"]; k.Category != probe.CatNotApplicable || k.Grade != probe.GradeNotApplicable || k.Region != "" || k.Signal != probe.SigFamily {
+		t.Fatalf("kktv: %+v", k)
+	}
+	if n := got["auto-netflix"]; n.Category == probe.CatNotApplicable {
+		t.Fatalf("a supported family cannot be not_applicable: %+v", n)
+	}
+	for _, c := range []probe.Category{probe.CatNotApplicable} {
+		if _, has := probe.IngestVerdict(c); has {
+			t.Fatal("not_applicable must not be a verdict")
+		}
 	}
 }
 

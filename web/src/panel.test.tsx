@@ -144,7 +144,12 @@ describe("secrets", () => {
       "PUT /api/cloudflare/accounts/:id/token": () => ({ account: account({ rotated_at: NOW }) }),
     });
     renderAt("#/cloudflare");
-    await userEvent.click(await screen.findByRole("button", { name: btn("编辑") }));
+    await userEvent.click(await screen.findByRole("button", { name: /的更多操作/ }));
+    await userEvent.click(await waitFor(() => {
+      const el = [...document.querySelectorAll<HTMLElement>(".ant-dropdown-menu-item")].find((e) => e.textContent?.includes("编辑"));
+      if (!el) throw new Error("no menu");
+      return el;
+    }));
     const drawer = await screen.findByRole("dialog");
     expect(within(drawer).getByText("已设置")).toBeInTheDocument();
     expect(within(drawer).queryByLabelText("API token")).toBeNull();
@@ -259,7 +264,12 @@ describe("servers", () => {
     });
     renderAt("#/servers");
     const row = await screen.findByTestId("server-row-srv-1");
-    await userEvent.click(within(row).getByRole("button", { name: btn("删除") }));
+    await userEvent.click(within(row).getByRole("button", { name: /的更多操作/ }));
+    await userEvent.click(await waitFor(() => {
+      const el = [...document.querySelectorAll<HTMLElement>(".ant-dropdown-menu-item")].find((e) => e.textContent?.includes("删除"));
+      if (!el) throw new Error("no menu");
+      return el;
+    }));
     await confirmModal("删除");
     const refused = await screen.findByTestId("refused-dialog");
     expect(refused).toHaveTextContent("先解除引用");
@@ -559,5 +569,16 @@ describe("pending install indicator (GET /api/status)", () => {
     await within(bar).findByText("名单更新中");
     expect(bar).toHaveTextContent("Mesh 部署进行中");
     expect(bar).not.toHaveTextContent("解锁探测中");
+  });
+});
+
+describe("error table", () => {
+  it("names a login method the server does not offer differently from a rejected credential", async () => {
+    const { errorTitle } = await import("./ui");
+    const { ApiError } = await import("./api");
+    expect(errorTitle(new ApiError(502, { error: "x", code: "auth_method_unavailable" }))).toBe("服务器不接受这种登录方式");
+    expect(errorTitle(new ApiError(502, { error: "x", code: "auth_failed" }))).toMatch(/拒绝/);
+    for (const c of ["legacy_install_refused", "transaction_pending", "peer_keys_missing", "nothing_to_rollback", "rollback_mode_required", "activation_failed_compensated", "activation_failed_uncompensated"])
+      expect(errorTitle(new ApiError(409, { error: "x", code: c }))).not.toBe("操作没有完成");
   });
 });

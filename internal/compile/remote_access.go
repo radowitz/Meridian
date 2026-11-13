@@ -102,8 +102,9 @@ sysctl -w net.ipv6.conf.@IF@.forwarding=1 >/dev/null
 // remoteRouteCommands: the device pools are on-link on mra in main (tunnel
 // replies, unmarked) and in table 100 (domestic-marked: LAN to device, and
 // direct replies from ROS after de-NAT). Each has a metric-32767 blackhole,
-// so with mra gone nothing falls through to ROS. The IPv4 iif rule mirrors
-// the LAN one.
+// so with mra gone nothing falls through to ROS. There is no "iif mra
+// unreachable" rule (see removeStaleIIFRules): the guard table drops
+// unclassified traffic from mra.
 func remoteRouteCommands(sb *strings.Builder, rp *remotePlan) {
 	ifQ := shQuote(rp.Iface)
 	fmt.Fprintf(sb, "# remote access %s: pools %s %s\n", rp.Iface, rp.V4, rp.V6)
@@ -113,6 +114,16 @@ func remoteRouteCommands(sb *strings.Builder, rp *remotePlan) {
 		fmt.Fprintf(sb, "ip -6 route replace %s dev %s%s\n", rp.V6, ifQ, tbl)
 		fmt.Fprintf(sb, "ip -6 route replace blackhole %s metric 32767%s\n", rp.V6, tbl)
 	}
-	fmt.Fprintf(sb, "del_rule ip rule del iif %s unreachable\n", ifQ)
-	fmt.Fprintf(sb, "ip rule add iif %s unreachable priority %d\n", ifQ, prioLANDrop+1)
+}
+
+// removeStaleIIFRules deletes the IPv4 "iif <LAN> unreachable" (17850) and
+// "iif mra unreachable" (17851) rules older versions installed, by
+// priority, interface and action, so nothing else is touched; del_rule
+// makes it idempotent. It runs whether remote access is on or off, so a
+// gateway that had it on also loses the mra rule. The mra name is written
+// unquoted: it is a fixed identifier, and a quoted 'mra' in a gateway
+// without remote access is what the leak check treats as a leftover.
+func removeStaleIIFRules(sb *strings.Builder, lanQ string) {
+	fmt.Fprintf(sb, "del_rule ip -4 rule del priority %d iif %s unreachable\n", prioStaleLANDrop, lanQ)
+	fmt.Fprintf(sb, "del_rule ip -4 rule del priority %d iif %s unreachable\n", prioStaleRemoteDrop, model.RemoteAccessIface)
 }

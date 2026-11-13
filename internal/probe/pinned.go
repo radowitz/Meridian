@@ -73,7 +73,7 @@ func (p Pinned) Resolve(ctx context.Context, host string) ([]netip.Addr, error) 
 	}
 	addrs, err := r.LookupNetIP(ctx, ipnet, host)
 	if err != nil {
-		return nil, err
+		return nil, resolveError(p.Resolver, err)
 	}
 	out := addrs[:0]
 	for _, a := range addrs {
@@ -86,4 +86,33 @@ func (p Pinned) Resolve(ctx context.Context, host string) ([]netip.Addr, error) 
 		return nil, fmt.Errorf("%s 没有 %s 记录", host, p.Family)
 	}
 	return out, nil
+}
+
+// resolveError describes a failed lookup by the resolver that was really
+// asked. Go's *net.DNSError prints "lookup <host> on <server>", where
+// <server> is the nominal system resolver from resolv.conf; Resolve's Dial
+// ignores that address and always talks to the exit's tunnel resolver, so
+// printing it would read as a query to the home router (a leak) when none
+// happened. The server field is therefore never used.
+func resolveError(resolver netip.Addr, err error) error {
+	at := netip.AddrPortFrom(resolver, 53).String()
+	var de *net.DNSError
+	if !errors.As(err, &de) {
+		return fmt.Errorf("出口解析器 %s：%v", at, err)
+	}
+	var what string
+	switch {
+	case de.IsTimeout:
+		what = "查询超时"
+	case de.IsNotFound:
+		what = "没有这个域名或没有对应记录"
+	case de.IsTemporary:
+		what = "暂时失败"
+	default:
+		what = "查询失败"
+	}
+	if de.Err != "" {
+		return fmt.Errorf("出口解析器 %s %s（%s）", at, what, de.Err)
+	}
+	return fmt.Errorf("出口解析器 %s %s", at, what)
 }

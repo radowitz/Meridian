@@ -24,12 +24,13 @@ API 里对应 `validation: "synthetic_only"` 和 `validation_text`，出现在�
 | `unlocked` | `platform_signal` | 找到有文档依据的正面标记；带地区的适配器还要求地区与出口一致 | 成功 |
 | `not_unlocked` | `platform_signal` | 找到有文档依据的负面标记，或平台报的目录地区与出口不一致 | 失败 |
 | `network_ok` | `reachability_only` | 平台有应答，但这不是解锁判断 | 不是结论 → inconclusive |
-| `unknown` | `unknown_response` | 有应答但不是已知标记：质询页、登录墙、同意页、限流、5xx、改版、未跟随的站外跳转、只支持 IPv4 | 不是结论 → inconclusive |
+| `unknown` | `unknown_response` | 有应答但不是已知标记：质询页、登录墙、同意页、限流、5xx、改版、未跟随的站外跳转 | 不是结论 → inconclusive |
 | `failed` | `error` | 没有可判断的应答：超时、DNS 或传输错误、出口未确认或变化、agent 报告的出口不对 | 不是结论 → inconclusive |
+| `not_applicable` | `not_applicable` | 没有探测：这个服务的公开检测方法只支持 IPv4，没有发出 IPv6 请求（`signal: family_not_supported`）。不是应答，面板显示「不适用 · 仅 IPv4」，不计入「未知」 | 不入库（`ingest: not_ingested:family_not_supported`） |
 
 - `signal` 是判断所依据的标记代码，例如 `region_match`、`region_mismatch`、`available_marker`、`no_negative_marker`、`blocked_marker`、`blocked_403`、`anti_bot_challenge`、`login_required`、`consent_page`、`rate_limited`、`server_error`、`redirect_unlisted`、`unexpected_response`、`egress_changed`、`family_not_supported`。
 - `grade` 由面板按 `probe.GradeOf(category)` 重新计算，不采信 agent 自己报的值。
-- 适配器里声明了 `returns`，即它允许给出的结论。超出声明的结论都会降为 `unknown`，在 agent 内部降一次，面板 `sanitizeReport` 里再降一次。所以只做到达性的适配器永远给不出 `unlocked` 或 `not_unlocked`。
+- 适配器里声明了 `returns`，即它允许给出的结论。超出声明的结论都会降为 `unknown`，在 agent 内部降一次，面板 `sanitizeReport` 里再降一次。所以只做到达性的适配器永远给不出 `unlocked` 或 `not_unlocked`。`not_applicable` 只在服务确实不支持该地址族时保留，否则同样降为 `unknown`。
 - 有多个平台检查的服务，只由 `primary` 那一项决定服务结论；其余检查放在 `parts` 里展示，不入库。
 - 入库规则（`probe.IngestVerdict`，全项目只有这一处）：`unlocked` 算成功，`not_unlocked` 算失败，其他都不算结论。一个服务在一次探测里所有地址族都没有结论时，按 `unlock.KindInconclusive` 交给 `unlock.Ingest`。这种结果不计入两次失败降级，不会开始恢复计时，也不会让出口变成已知可用的备选；它只会终止首选成员正在进行的恢复计时。这一点有回归测试覆盖。
 - 出口上报的 `ai` 字段（curl 的 HTTP 状态码）同样只算到达性：照常记入历史并带说明，但不推动状态机。

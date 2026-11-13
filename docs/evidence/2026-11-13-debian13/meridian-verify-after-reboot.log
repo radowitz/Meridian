@@ -1,0 +1,77 @@
+meridian-verify 20261113T013004Z iface=ens192 gateway=192.168.100.88 ros=192.168.100.1 ros6=<ROS 链路本地地址>
+PASS sysctl net.ipv4.conf.all.rp_filter: 2
+PASS sysctl net.ipv4.conf.default.rp_filter: 2
+PASS sysctl net.ipv4.conf.ens192.rp_filter: 2
+PASS sysctl net.ipv4.conf.all.send_redirects: 0
+PASS sysctl net.ipv4.conf.ens192.send_redirects: 0
+PASS sysctl net.ipv4.conf.all.accept_redirects: 0
+PASS sysctl net.ipv6.conf.all.accept_redirects: 0
+PASS sysctl net.ipv4.ip_forward: 1
+PASS sysctl net.ipv6.conf.all.forwarding: 1
+PASS gateway_address: 192.168.100.88 is on ens192
+PASS ros_neighbour: 192.168.100.1 is reached on-link via ens192
+PASS ula_not_via_ros: no ULA route in any table uses ens192 or ROS (evidence ula-routes.txt)
+PASS policy_marks: all 22 compiled exit and region-group marks route to table 102 with an unreachable behind them, v4 and v6
+PASS no_stale_iif_rule: no IPv4 'iif … unreachable' rule at 17850/17851
+PASS route_lan_domestic4: a LAN client (192.168.100.254) to a domestic destination (192.168.100.1, mark 0x64) resolves out of ens192 (ip -4 route get 192.168.100.1 from 192.168.100.254 iif ens192 mark 0x64)
+PASS route_tunnel_reply4: a reply from 192.0.2.1 to the LAN client 192.168.100.254 from each tunnel (m02 m02w m03) resolves out of ens192
+PASS route_lan_domestic6: a LAN client (<局域网 IPv6 前缀>::fffe) to a domestic destination (2001:db8:ffff::1, mark 0x64) resolves out of ens192 (ip -6 route get 2001:db8:ffff::1 from <局域网 IPv6 前缀>::fffe iif ens192 mark 0x64)
+PASS route_tunnel_reply6: a reply from 2001:db8:ffff::2 to the LAN client <局域网 IPv6 前缀>::fffe from each tunnel (m02 m02w m03) resolves out of ens192
+PASS fallback_blackholes: tables 102 (v4, v6) and 100 (v4) end in a metric-32767 blackhole
+PASS remote_iface: mra exists and is up
+PASS route_remote_domestic4: a device (10.67.0.2) to a domestic destination (192.168.100.1, mark 0x64) resolves out of ens192 (ip -4 route get 192.168.100.1 from 10.67.0.2 iif mra mark 0x64)
+PASS route_remote_reply4: a domestic reply (192.168.100.1, mark 0x64) to a device (10.67.0.2) resolves out of mra (ip -4 route get 10.67.0.2 from 192.168.100.1 iif ens192 mark 0x64)
+PASS route_remote_reply6: a domestic reply (2001:db8:ffff::1, mark 0x64) to a device (fd67::2) resolves out of mra (ip -6 route get fd67::2 from 2001:db8:ffff::1 iif ens192 mark 0x64)
+PASS route_remote_domestic6: a device (fd67::2) to a domestic destination (2001:db8:ffff::1, mark 0x64) resolves out of ens192 (ip -6 route get 2001:db8:ffff::1 from fd67::2 iif mra mark 0x64)
+PASS route_tunnel_reply_device4: a reply from 192.0.2.1 to the device 10.67.0.2 from each tunnel (m02 m02w m03) resolves out of mra
+PASS route_tunnel_reply_device6: a reply from 2001:db8:ffff::2 to the device fd67::2 from each tunnel (m02 m02w m03) resolves out of mra
+PASS remote_pool_routes: device pools 10.67.0.0/24 and fd67::/64 are routed to mra in main and table 100
+PASS nft_guard: inet meridian_guard is loaded: forward hook at -200 with the fail-closed LAN drop
+PASS guard_mark_range: guard admits exit marks 0x101-0x140 into the tunnels, covering every compiled exit and group mark
+PASS guard_ingress: the guard's ingress is { ens192, mra } with the same DNS drop, mark rules and fail-closed drop
+PASS dns_hijack_53: LAN 53 is redirected to the local resolver
+PASS dns_hijack_853: LAN 853 is redirected locally
+PASS dns_input_drop: non-LAN 53/853 is dropped on input
+PASS ula_drop: forwarded ULA is dropped
+PASS chnroute_loaded: nft set chnroute holds elements
+PASS chnroute6_loaded: nft set chnroute6 holds elements
+PASS remote_dns: 53/853 from mra is redirected locally and the DNS input allow-list holds 10.67.0.0/24 and fd67::/64
+PASS remote_port_lan_only: UDP 51900 is accepted on ens192 only
+PASS remote_nat: device pools have a transit SNAT for each of the 22 marks and a masquerade on ens192
+PASS guard_boot_file: meridian-guard.nft holds exactly the guard of meridian.nft
+INFO list chnroute4: source=domestic count=6217 updated=2026-11-12T18:35:28.880867067Z
+INFO list chnroute6: source=domestic count=3429 updated=2026-11-12T18:35:28.881724414Z
+INFO list geosite:abema: source=domestic count=21 updated=2026-11-12T18:35:28.507725496Z
+INFO list geosite:anthropic: source=domestic count=21 updated=2026-11-12T18:35:28.508761739Z
+INFO list geosite:apple: source=domestic count=1811 updated=2026-11-12T18:35:28.50979335Z
+INFO list geosite:bahamut: source=domestic count=5 updated=2026-11-12T18:35:28.510563731Z
+INFO list geosite:cn: source=domestic count=8519 updated=2026-11-12T18:35:28.51215221Z
+INFO list geosite:disney: source=domestic count=228 updated=2026-11-12T18:35:28.513000257Z
+INFO list geosite:mytvsuper: source=domestic count=1 updated=2026-11-12T18:35:28.513744975Z
+INFO list geosite:netflix: source=domestic count=24 updated=2026-11-12T18:35:28.514526875Z
+INFO list geosite:openai: source=domestic count=24 updated=2026-11-12T18:35:28.51532488Z
+INFO list geosite:perplexity: source=domestic count=5 updated=2026-11-12T18:35:28.51609572Z
+PASS geosite_cn: /var/lib/meridian/geosite/cn.txt has domains (SmartDNS answers domestic names from domestic resolvers)
+PASS dns_listener: a resolver listens on UDP and TCP 53 (whether it answers correctly is deploy/verify-smartdns.sh)
+PASS group_dns_snat: this host's marked queries to each group resolver are SNATed to the group's transit address
+PASS group_dns_upstream: /etc/smartdns/smartdns.conf asks each group's resolver address with the group mark (decimal)
+PASS group_dns_route: a lookup of each group resolver address with the group mark resolves into a tunnel (m02 m02w m03), not ens192
+PASS remote_listen: mra listens on UDP 51900
+PASS remote_peers: mra has exactly the 2 enabled devices as peers (public keys compared)
+PENDING-HUMAN ros_ula_blackhole: not executed. On ROS (read-only): /ipv6 route print where blackhole and (dst-address=fd00::/8 or dst-address=fc00::/7); archive the output, or rerun with MERIDIAN_ROS_SSH=user@192.168.100.1
+PENDING-HUMAN dns_leak_client: dnsleaktest.com and ipleak.net on the test device (v4 and v6), plus a WAN capture with no 53/853 from it; this script runs no browser
+PENDING-HUMAN webrtc_srflx: browserleaks/ipleak WebRTC on the test device: srflx must be the exit address; a host GUA is a known limitation
+PENDING-HUMAN redirect_on_wire: capture on the test device while browsing: no ICMP redirect from 192.168.100.88 pointing at 192.168.100.1, and no ICMPv6 redirect from the gateway (Linux has no sysctl that stops IPv6 redirects)
+PENDING-HUMAN tunnel_cut: take the exit tunnel down while the test device keeps browsing; capture on ens192: nothing foreign leaves towards 192.168.100.1, and the device gets no answer instead of a home-WAN answer
+NOT-RUN-HERE netns_reload_no_leak: isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run 'TestNetnsReloadNoLeak|TestNetnsULALANHomeAccess' (archive the log)
+PENDING-HUMAN group_dns_failover: with a member of a switchable group stopped completely (tunnel and resolver): the hub moves the group, a new name of a group rule resolves and connects through the next member, and a capture on ens192 shows no query to a domestic resolver or ROS for it (docs/verification.md)
+NOT-RUN-HERE netns_group_dns: isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsGroupDNSFailover (archive the log)
+NOT-RUN-HERE smartdns: sudo bash deploy/verify-smartdns.sh (archive the output)
+NOT-RUN-HERE host_exec: sudo bash deploy/verify-host-exec.sh and --boot after a reboot (archive the output)
+NOT-RUN-HERE mesh_veth: isolated Linux integration: sudo bash deploy/verify-mesh-veth.sh (dual-stack forwarding through the mmesh next-hops; archive the output). Mesh stays unverified until then
+PENDING-HUMAN remote_phone_full: a real phone on cellular (Wi-Fi off) in full mode: handshake on UDP 51900, ipleak/dnsleaktest show the exit region and no carrier DNS, the panel and the other devices are unreachable (docs/remote-access.md)
+PENDING-HUMAN remote_phone_home: the same phone in home-only mode: LAN hosts and the gateway DNS answer; its other Internet traffic stays on the carrier and is not covered by Meridian
+PENDING-HUMAN remote_router_forward: the router forwards UDP 51900 to 192.168.100.88; this script cannot see the router (show its NAT/port-forward rule read-only and archive it)
+PENDING-HUMAN remote_ipv6: IPv6 inside the tunnel (fd67::/64) and, if the endpoint has an AAAA record, dialing over IPv6 from a phone; neither is visible from here
+evidence: <证据目录>
+meridian-verify-local-ok: local gateway checks passed. This is not a leak test; release still needs every PENDING-HUMAN and NOT-RUN-HERE item signed off with archived evidence.

@@ -64,6 +64,8 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 	sb.WriteString("# Meridian SmartDNS. Real answers, no fake-ip.\n")
 	sb.WriteString("# ECS is intentionally unset so the family prefix is not attached to queries.\n")
 	sb.WriteString("# Queries to an exit resolver leave from that exit's WAN, so DNS and the data path share a region.\n")
+	sb.WriteString("# A region group the hub switches resolves through its own data path (group mark, group\n")
+	sb.WriteString("# resolver address), so its DNS always reaches the member the hub currently uses.\n")
 	sb.WriteString("speed-check-mode none\n")
 	sb.WriteString("dualstack-ip-selection no\n")
 	sb.WriteString("cache-size 65536\n")
@@ -104,7 +106,7 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 			continue
 		}
 		excl := " -exclude-default-group"
-		if e.Node.ID == def.Node.ID {
+		if defT.Group == nil && e.Node.ID == def.Node.ID {
 			excl = ""
 		}
 		// ULA only. The tunnel v4 address is not routed past the first hop,
@@ -112,6 +114,7 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 		fmt.Fprintf(&sb, "server %s -group %s%s\n", e.DNSULA, e.Group, excl)
 	}
 	sb.WriteString("\n")
+	writeGroupResolvers(&sb, groups, defT.Group)
 	sb.WriteString("nftset #4:inet#meridian#default4\n")
 	sb.WriteString("nftset #6:inet#meridian#default6\n")
 	sb.WriteString("\n")
@@ -139,10 +142,17 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 		if rp.FilterAAAA {
 			flag = " -address #6"
 		}
-		sb.WriteString(fmt.Sprintf("# rule %s -> %s manual=%v\n", rp.Rule.ID, rp.Exit.Node.ID, rp.Rule.Manual))
+		ns := rp.Exit.Group
+		if rp.ViaGroup != nil {
+			ns = rp.ViaGroup.DNSGroup
+			sb.WriteString(fmt.Sprintf("# rule %s -> %s manual=%v via group %s (switched by the hub; resolved at %s on the member in use)\n", rp.Rule.ID, rp.Exit.Node.ID, rp.Rule.Manual, rp.ViaGroup.Group.ID, rp.ViaGroup.Resolver))
+		} else {
+			sb.WriteString(fmt.Sprintf("# rule %s -> %s manual=%v\n", rp.Rule.ID, rp.Exit.Node.ID, rp.Rule.Manual))
+		}
 		// No tunnel resolver (Mesh-only exit): return SOA. Falling through
-		// would ask another country's DNS, or the default group.
-		if rp.Exit.DNSULA == "" {
+		// would ask another country's DNS, or the default group. A
+		// switchable group always has its resolver address.
+		if rp.ViaGroup == nil && rp.Exit.DNSULA == "" {
 			sb.WriteString("# no in-tunnel resolver; SOA so the query does not leave via another exit\n")
 			switch rp.Rule.MatchType {
 			case model.MatchGeosite:
@@ -169,24 +179,65 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 		case model.MatchGeosite:
 			if rp.Rule.Geosite != "" {
 				fmt.Fprintf(&sb, "domain-set -name gs_%s -file /var/lib/meridian/geosite/%s.txt\n", sanitize(rp.Rule.Geosite), sanitize(rp.Rule.Geosite))
-				fmt.Fprintf(&sb, "domain-rules /domain-set:gs_%s/ -nameserver %s%s -nftset %s\n", sanitize(rp.Rule.Geosite), rp.Exit.Group, flag, nset)
+				fmt.Fprintf(&sb, "domain-rules /domain-set:gs_%s/ -nameserver %s%s -nftset %s\n", sanitize(rp.Rule.Geosite), ns, flag, nset)
 			}
 		case model.MatchKeyword:
 			fmt.Fprintf(&sb, "# keyword %q is expanded by the list update into /var/lib/meridian/keywords/%s.txt\n", rp.Rule.MatchValue, sanitize(rp.Rule.ID))
 			fmt.Fprintf(&sb, "domain-set -name kw_%s -file /var/lib/meridian/keywords/%s.txt\n", sanitize(rp.Rule.ID), sanitize(rp.Rule.ID))
-			fmt.Fprintf(&sb, "domain-rules /domain-set:kw_%s/ -nameserver %s%s -nftset %s\n", sanitize(rp.Rule.ID), rp.Exit.Group, flag, nset)
+			fmt.Fprintf(&sb, "domain-rules /domain-set:kw_%s/ -nameserver %s%s -nftset %s\n", sanitize(rp.Rule.ID), ns, flag, nset)
 		case model.MatchCIDR, model.MatchGeoIP, model.MatchASN:
 			fmt.Fprintf(&sb, "# %s %s is installed in nft set %s, not in SmartDNS\n", rp.Rule.MatchType, rp.Rule.MatchValue, rp.Set4)
 		}
 		for _, d := range rp.Rule.Domains {
 			d = strings.TrimPrefix(d, ".")
-			fmt.Fprintf(&sb, "domain-rules /%s/ -nameserver %s%s -nftset %s\n", d, rp.Exit.Group, flag, nset)
+			fmt.Fprintf(&sb, "domain-rules /%s/ -nameserver %s%s -nftset %s\n", d, ns, flag, nset)
 		}
 		if len(rp.Rule.Domains) == 0 && (rp.Rule.MatchType == model.MatchDomain || rp.Rule.MatchType == model.MatchSuffix) && rp.Rule.MatchValue != "" {
-			fmt.Fprintf(&sb, "domain-rules /%s/ -nameserver %s%s -nftset %s\n", strings.TrimPrefix(rp.Rule.MatchValue, "."), rp.Exit.Group, flag, nset)
+			fmt.Fprintf(&sb, "domain-rules /%s/ -nameserver %s%s -nftset %s\n", strings.TrimPrefix(rp.Rule.MatchValue, "."), ns, flag, nset)
 		}
 	}
 	return sb.String()
+}
+
+// writeGroupResolvers adds one upstream group per region group the hub can
+// switch. Its only server is the group's resolver address, an address no
+// node owns (validate.GroupResolverNet). SmartDNS puts the group's fwmark on
+// the upstream socket (-set-mark, which needs CAP_NET_ADMIN), so the query
+// takes the group's data path on this host: "fwmark <group mark> lookup
+// 102" into the west tunnel, or "unreachable" behind it, never main or
+// table 100. transit_snat (render_nft.go) gives it the group's transit
+// source, the hub routes it by that source into the member its group
+// table currently points at, and that member DNATs it to its own tunnel
+// resolver (renderExitNFT). The group's DNS therefore follows every hub
+// switch with no state on this host, and fails, with no fallback, while
+// the group is on the Mesh hop or blackholed.
+//
+// The mark is written in decimal. SmartDNS 1.2026.11.09 accepts
+// "-set-mark 0x4d70" without complaint and applies no mark at all (seen
+// with nft output counters on a real gateway); decimal is applied.
+//
+// Only the default group, when it is switchable, leaves out
+// -exclude-default-group: it is then the one upstream for names no rule
+// matches. Every other group upstream is reached only by its own rules.
+func writeGroupResolvers(sb *strings.Builder, groups []GroupPlan, def *GroupPlan) {
+	n := 0
+	for _, g := range groups {
+		if !g.Dynamic {
+			continue
+		}
+		if n == 0 {
+			sb.WriteString("# region groups switched by the hub: the group's resolver address, the group mark on the socket\n")
+		}
+		n++
+		excl := " -exclude-default-group"
+		if def != nil && def.Group.ID == g.Group.ID {
+			excl = ""
+		}
+		fmt.Fprintf(sb, "server %s -group %s%s -set-mark %d\n", g.Resolver, g.DNSGroup, excl, g.Mark)
+	}
+	if n > 0 {
+		sb.WriteString("\n")
+	}
 }
 
 func renderExitDNS(n model.Node, tunnels []Tunnel) string {

@@ -27,6 +27,7 @@ import * as api from "./api";
 import { href, useStatus } from "./state";
 import type { ProbeCatalogEntry, ProbeCategory, ProbeGrade, ProbeJob, ProbeResultRow, ProbeSelection } from "./types";
 import {
+  TABLE_SCROLL,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -50,13 +51,28 @@ export const CATEGORY: Record<ProbeCategory, { label: string; cls: string; desc:
   network_ok: { label: "仅可达", cls: "cat-reach", desc: "连得上平台，但这个检测方法给不出解锁结论" },
   unknown: { label: "未知", cls: "cat-unknown", desc: "平台应答无法识别（验证页、登录页、改版……）" },
   failed: { label: "探测失败", cls: "cat-failed", desc: "没有完成：出口确认不了、超时或网络错误" },
+  not_applicable: { label: "不适用 · 仅 IPv4", cls: "cat-na", desc: "这个服务的检测方法只支持 IPv4，IPv6 没有探测，也不入库" },
 };
+
+/**
+ * The category to show. Items stored before the API had not_applicable
+ * carry category "unknown" with signal family_not_supported: nothing was
+ * probed, so they are not applicable, not unknown.
+ */
+export function shownCategory(r: { category?: ProbeCategory; signal?: string }): ProbeCategory | undefined {
+  if (r.signal === "family_not_supported" && (r.category === "unknown" || r.category === "not_applicable")) return "not_applicable";
+  return r.category;
+}
+function shownGrade(r: { category?: ProbeCategory; signal?: string; grade?: ProbeGrade }): ProbeGrade | undefined {
+  return shownCategory(r) === "not_applicable" ? "not_applicable" : r.grade;
+}
 
 const GRADE: Record<ProbeGrade, string> = {
   platform_signal: "平台信号",
   reachability_only: "只有可达性",
   unknown_response: "应答无法识别",
   error: "错误",
+  not_applicable: "没有探测",
 };
 
 const CAPABILITY: Record<string, { label: string; color: string; desc: string }> = {
@@ -129,7 +145,7 @@ export function CategoryChip({ cat, grade, small }: { cat?: ProbeCategory; grade
   return (
     <span className={`cat-chip ${c.cls}${small ? " small" : ""}`} data-category={cat} title={`${c.label}：${c.desc}${grade ? `（证据：${GRADE[grade]}）` : ""}`}>
       {c.label}
-      {grade && grade !== "platform_signal" && cat !== "network_ok" && cat !== "failed" ? <span className="cat-grade">{GRADE[grade]}</span> : null}
+      {grade && grade !== "platform_signal" && cat !== "network_ok" && cat !== "failed" && cat !== "not_applicable" ? <span className="cat-grade">{GRADE[grade]}</span> : null}
     </span>
   );
 }
@@ -187,10 +203,11 @@ function CatalogTable({ catalog }: { catalog: ProbeCatalogEntry[] }) {
       size="small"
       pagination={false}
       dataSource={catalog}
-      scroll={{ x: 820 }}
+      scroll={TABLE_SCROLL}
       columns={[
         {
           title: "服务",
+          className: "cell-name",
           render: (_, c) => (
             <Space size={4}>
               <Typography.Text strong>{c.name}</Typography.Text>
@@ -202,7 +219,7 @@ function CatalogTable({ catalog }: { catalog: ProbeCatalogEntry[] }) {
         },
         {
           title: "能告诉你什么",
-          width: 170,
+          className: "nowrap",
           render: (_, c) => {
             const cap = CAPABILITY[c.capability ?? (c.reachability ? "reachability" : "verdict")];
             return (
@@ -225,15 +242,15 @@ function CatalogTable({ catalog }: { catalog: ProbeCatalogEntry[] }) {
         },
         {
           title: "地址族",
-          width: 110,
+          className: "nowrap",
           render: (_, c) => (c.ipv4_only ? <Tag>只有 IPv4</Tag> : <Typography.Text type="secondary">IPv4 / IPv6</Typography.Text>),
         },
         {
           title: "规则",
-          width: 180,
+          className: "nowrap",
           render: (_, c) =>
             c.enabled ? (
-              <Space size={4} wrap>
+              <Space size={4}>
                 <Link to={href("exits", c.group)}>{c.group}</Link>
                 {c.group_mode === "manual" ? (
                   <Tooltip title="组是手动模式：结果只记录，不改出口">
@@ -414,27 +431,42 @@ interface ExitCol {
   id: string;
   name: string;
   group: { id: string; name: string } | null;
+  /** The hub reported this member in use for its group. */
   active: boolean;
+  /** Only the panel's model says so (面板推算). */
+  modelActive: boolean;
   families: string[];
 }
 
 function ResultDetail({ row }: { row: ProbeResultRow }) {
+  const cat = shownCategory(row);
+  const grade = shownGrade(row);
   return (
     <div data-testid="result-detail">
       <Space size={6} wrap style={{ marginBottom: 12 }}>
-        <CategoryChip cat={row.category} grade={row.grade} />
+        <CategoryChip cat={cat} grade={grade} />
         <Tag>{row.family === "ipv6" ? "IPv6" : "IPv4"}</Tag>
         {row.is_active ? <Tag color="success">这个出口正在承载该服务</Tag> : null}
       </Space>
       {row.category === "network_ok" ? (
         <Alert type="info" showIcon style={{ marginBottom: 12 }} message="「仅可达」不是解锁：只说明连得上平台，这个检测方法给不出解锁结论。" />
       ) : null}
+      {cat === "not_applicable" ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          data-testid="not-applicable-notice"
+          message="不适用：这一项没有探测"
+          description="这个服务的公开检测方法只支持 IPv4，所以没有经这个出口发出 IPv6 请求。这不是失败，也不是未知；不入库，不影响这个服务在组内选哪个出口。要看 IPv4 的结果，点同一格里的 v4。"
+        />
+      ) : null}
       <Facts
         items={[
           ["服务", row.service_name || row.service],
           ["出口", <span key="e">{row.exit_name || row.exit_id} <span className="mono-small muted">{row.exit_id}</span></span>],
-          ["结论", `${row.category ? CATEGORY[row.category].label : "—"}${row.category ? ` — ${CATEGORY[row.category].desc}` : ""}`],
-          ["证据等级", row.grade ? GRADE[row.grade] : "—"],
+          ["结论", `${cat ? CATEGORY[cat].label : "—"}${cat ? ` — ${CATEGORY[cat].desc}` : ""}`],
+          ["证据等级", grade ? GRADE[grade] : "—"],
           ["信号", row.signal ? `${SIGNAL[row.signal] ?? row.signal}（${row.signal}）` : "—"],
           ["平台认定的地区", row.region ? row.region.toUpperCase() : "—"],
           ["证据", row.evidence || "—"],
@@ -458,12 +490,13 @@ function ResultDetail({ row }: { row: ProbeResultRow }) {
             rowKey="platform"
             pagination={false}
             dataSource={row.parts}
+            scroll={TABLE_SCROLL}
             columns={[
-              { title: "平台", render: (_, p) => <span>{p.platform}{p.primary ? <Tag style={{ marginLeft: 4 }}>主</Tag> : null}</span> },
+              { title: "平台", className: "cell-name", render: (_, p) => <span>{p.platform}{p.primary ? <Tag style={{ marginLeft: 4 }}>主</Tag> : null}</span> },
               { title: "结论", render: (_, p) => <CategoryChip cat={p.category} grade={p.grade} small /> },
               { title: "信号", render: (_, p) => (p.signal ? SIGNAL[p.signal] ?? p.signal : "—") },
               { title: "地区", render: (_, p) => p.region?.toUpperCase() || "—" },
-              { title: "证据", render: (_, p) => p.evidence || p.error || "—" },
+              { title: "证据", width: 220, className: "cell-text", render: (_, p) => p.evidence || p.error || "—" },
             ]}
           />
         </>
@@ -480,7 +513,8 @@ function ResultsMatrix({ rows, catalog, onOpen }: { rows: ProbeResultRow[]; cata
         id: r.exit_id,
         name: r.exit_name || r.exit_id,
         group: r.exit_groups[0] ? { id: r.exit_groups[0].id, name: r.exit_groups[0].name } : null,
-        active: r.exit_groups.some((g) => g.active === r.exit_id),
+        active: r.exit_groups.some((g) => g.actual_active === r.exit_id),
+        modelActive: r.exit_groups.some((g) => g.model_active === r.exit_id),
         families: [],
       };
       if (!c.families.includes(r.family)) c.families.push(r.family);
@@ -523,10 +557,16 @@ function ResultsMatrix({ rows, catalog, onOpen }: { rows: ProbeResultRow[]; cata
           <tr>
             {cols.map((c) => (
               <th key={c.id} className="matrix-exit">
-                <Tooltip title={c.active ? "这个组当前使用的成员（面板推算）" : undefined}>
+                <Tooltip
+                  title={c.active ? "枢纽报告这个组当前使用它" : c.modelActive ? "面板推算这个组在用它（未经枢纽确认）" : undefined}
+                >
                   <span>
                     {c.name}
-                    {c.active ? <span className="active-dot" aria-label="组当前使用" /> : null}
+                    {c.active ? (
+                      <span className="active-dot" aria-label="枢纽报告组当前使用" />
+                    ) : c.modelActive ? (
+                      <span className="active-dot model" aria-label="面板推算组在用" />
+                    ) : null}
                   </span>
                 </Tooltip>
               </th>
@@ -550,13 +590,13 @@ function ResultsMatrix({ rows, catalog, onOpen }: { rows: ProbeResultRow[]; cata
                           className="matrix-btn"
                           onClick={() => onOpen(r)}
                           data-testid={`cell-${s}-${c.id}-${f}`}
-                          aria-label={`${svcName(s)} · ${c.name} · ${f === "ipv6" ? "IPv6" : "IPv4"}：${r.category ? CATEGORY[r.category].label : r.state}`}
+                          aria-label={`${svcName(s)} · ${c.name} · ${f === "ipv6" ? "IPv6" : "IPv4"}：${shownCategory(r) ? CATEGORY[shownCategory(r)!].label : r.state}`}
                         >
                           <span className="fam">{f === "ipv6" ? "v6" : "v4"}</span>
                           {r.state === "queued" || r.state === "running" ? (
                             <span className="cat-chip cat-none">{r.state === "running" ? "探测中" : "排队"}</span>
                           ) : (
-                            <CategoryChip cat={r.category} grade={r.grade} small />
+                            <CategoryChip cat={shownCategory(r)} grade={shownGrade(r)} small />
                           )}
                           {r.is_active ? <span className="active-dot" aria-hidden /> : null}
                         </button>
@@ -652,7 +692,10 @@ export default function UnlockPage() {
     const total = job.items.length;
     const done = job.items.filter((i) => i.state === "done" || i.state === "skipped").length;
     const by: Partial<Record<ProbeCategory, number>> = {};
-    for (const i of job.items) if (i.category && (i.state === "done" || i.state === "skipped")) by[i.category] = (by[i.category] ?? 0) + 1;
+    for (const i of job.items) {
+      const c = shownCategory(i);
+      if (c && (i.state === "done" || i.state === "skipped")) by[c] = (by[c] ?? 0) + 1;
+    }
     return { total, done, by };
   }, [job]);
 
@@ -802,12 +845,12 @@ export default function UnlockPage() {
                 size="small"
                 pagination={false}
                 dataSource={stateRows}
-                scroll={{ x: 760 }}
+                scroll={TABLE_SCROLL}
                 columns={[
-                  { title: "服务", dataIndex: "name" },
-                  { title: "地区组", render: (_, r) => <Link to={href("exits", r.pool)}>{r.pool}</Link> },
-                  { title: "首选", render: (_, r) => nm(r.preferred) },
-                  { title: "现在承载", render: (_, r) => <Typography.Text strong={r.active !== r.preferred}>{nm(r.active)}</Typography.Text> },
+                  { title: "服务", dataIndex: "name", className: "cell-name" },
+                  { title: "地区组", className: "nowrap", render: (_, r) => <Link to={href("exits", r.pool)}>{r.pool}</Link> },
+                  { title: "首选", className: "nowrap", render: (_, r) => nm(r.preferred) },
+                  { title: "现在承载", className: "nowrap", render: (_, r) => <Typography.Text strong={r.active !== r.preferred}>{nm(r.active)}</Typography.Text> },
                   {
                     title: "状态",
                     render: (_, r) => (
@@ -840,20 +883,22 @@ export default function UnlockPage() {
               rowKey={(_, i) => String(i)}
               pagination={{ pageSize: 10, hideOnSinglePage: true }}
               dataSource={[...(v.history ?? [])].reverse()}
-              scroll={{ x: 760 }}
+              scroll={TABLE_SCROLL}
               columns={[
-                { title: "时间", width: 120, render: (_, h) => <TimeText value={h.at} /> },
-                { title: "来源", width: 110, render: (_, h) => HISTORY_KIND[h.kind] ?? h.kind },
-                { title: "服务", dataIndex: "service" },
-                { title: "出口", render: (_, h) => nm(h.exit_id) },
-                { title: "地址族", width: 80, render: (_, h) => (h.family === "ipv6" ? "IPv6" : h.family === "ipv4" ? "IPv4" : "—") },
+                { title: "时间", className: "nowrap", render: (_, h) => <TimeText value={h.at} /> },
+                { title: "来源", className: "nowrap", render: (_, h) => HISTORY_KIND[h.kind] ?? h.kind },
+                { title: "服务", dataIndex: "service", className: "cell-name" },
+                { title: "出口", className: "nowrap", render: (_, h) => nm(h.exit_id) },
+                { title: "地址族", className: "nowrap", render: (_, h) => (h.family === "ipv6" ? "IPv6" : h.family === "ipv4" ? "IPv4" : "—") },
                 {
                   title: "结果",
-                  width: 100,
+                  className: "nowrap",
                   render: (_, h) => (h.kind === "inconclusive" ? <Tag>无结论</Tag> : h.ok ? <Tag color="green">可用</Tag> : <Tag color="red">不可用</Tag>),
                 },
                 {
                   title: "说明",
+                  width: 260,
+                  className: "cell-text",
                   render: (_, h) => (
                     <>
                       {h.rejected ? <Tag>未采纳：{REJECTED[h.rejected] ?? h.rejected}</Tag> : null}

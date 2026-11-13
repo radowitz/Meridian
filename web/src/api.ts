@@ -342,6 +342,8 @@ export const deleteGroup = (id: string) =>
   request<{ deleted: string } & ApplyRequired>("DELETE", `/api/region-groups/${enc(id)}`);
 export const setDefaultGroup = (group: string) =>
   request<{ default_group: string; group: RegionGroupView } & ApplyRequired>("PUT", "/api/region-groups/default", { group });
+/** Reads the hub's region-group state once over the managed-server SSH channel (fixed command). */
+export const refreshGroupRuntime = () => request<RegionGroupsView>("POST", "/api/region-groups/runtime/refresh");
 export const postGroupHealth = (observations: { id: string; up: boolean }[]) =>
   request<{ groups: RegionGroupView[]; flipped: string[] }>("POST", "/api/region-groups/health", { observations });
 

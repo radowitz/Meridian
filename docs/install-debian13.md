@@ -32,7 +32,7 @@ sudo bash deploy/debian/install.sh
 
 首次准备时脚本会：
 
-- 写入并应用 `/etc/sysctl.d/99-meridian.conf`（开机时转发保持关闭、`rp_filter=2`、关闭发送重定向、局域网口 `accept_ra=2`）；转发由 `meridian-up.sh` 在防火墙和兜底表加载之后打开，脚本结束时 IPv4 / IPv6 转发都是关的
+- 写入并应用 `/etc/sysctl.d/99-meridian.conf`（开机时转发保持关闭、`rp_filter=2`、关闭 IPv4 发送重定向、局域网口 `accept_ra=2`）；转发由 `meridian-up.sh` 在防火墙和兜底表加载之后打开，脚本结束时 IPv4 / IPv6 转发都是关的
 - 若存在 systemd-resolved，关掉它的 53 端口占用，把 53 留给 SmartDNS
 - **先**写 `/etc/docker/daemon.json`（`iptables` / `ip6tables` / `ip-forward` 都为 false，仅当还没有这个文件），**再**用发行版软件包安装 `docker.io`、`docker-compose-v2`（没有这个包时才用 `docker-compose`）、`wireguard-tools`、`nftables`、`openssl`。apt 装完会立刻启动 dockerd；如果它先用默认设置启动，会打开 IPv4 转发并把 iptables 的 FORWARD 策略改成 DROP，网关在下次重启前不转发任何 IPv4 流量
 - Docker 启动后再把转发关掉（这台机器上还没有数据面）；如果 `iptables -S FORWARD` / `ip6tables -S FORWARD` 仍显示 `-P FORWARD DROP`（以前装过 Docker 的机器），脚本用 `!!!` 醒目提示并在最后再提醒一次：**重启本机即可清除**（Docker 不会再建它）；确认没有别的程序依赖时也可手动 `iptables -P FORWARD ACCEPT`。提示出现时先重启，再去面板安装
@@ -140,6 +140,8 @@ Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧
 3. **写入数据目录**，确认后再 **安装到本机**。安装只会覆盖和删除受管清单里属于 Meridian 的 WireGuard、nftables、sysctl、SmartDNS、unit 和脚本，nft 以单个事务替换；随后经 `meridian-host` 启动服务并做健康检查，任一步失败即停止并补偿回安装前。**回滚（含宿主网络）** 把宿主和数据目录一起恢复到上一份，删除新版本引入的文件、接口和服务。实机验收：`sudo bash deploy/verify-host-exec.sh`。
 
 「安装到本机」还要求本机每条 WireGuard 隧道对端节点都有可用的公钥（44 字符 base64）。初始拓扑里对端是占位符：这时安装直接以 422 拒绝并列出缺公钥的节点，不生成网关密钥、不写宿主文件、不动快照；编译、预览、演练和差分照常可用。先给对端生成密钥（「生成脚本」/ provision 的 `generate_keys`）或把公钥填进拓扑。
+
+**顺序：先远端，后网关。** 第一次装机和以后每次改拓扑，都先给受影响的远端节点（出口、枢纽、阿里云）下发，再安装网关。原因之一是地区组的解析：网关把可切换地区组的查询发往组的解析地址（`fd66::53:0/112` 里的一个），只有已经下发了这一版配置的出口才会应答；网关先装的话，组内的名字在出口更新之前解析不了——不会改问国内解析器或别的出口（见 [架构](architecture.md)「地区组的解析」）。编译结果的 `APPLY_ORDER.txt` 也写了这个顺序。
 
 远程节点的装机脚本可以先演练（`POST /api/provision` 带 `dry_run: true`，不需要服务器，脚本里只有占位符）。真正装机经下面「服务器、密钥与 Cloudflare」里配好的服务器执行，请求里只有节点 ID，不再粘贴私钥。响应里不会出现新生成的 WireGuard 私钥明文。
 

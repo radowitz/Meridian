@@ -163,6 +163,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .tile-body { font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
 .tile-metric { font-size: 22px; font-weight: 650; line-height: 1.2; }
 .tile-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.tile-more { margin-top: 4px; font-size: 13px; }
 
 .status-tag { margin-inline-end: 4px; }
 
@@ -229,6 +230,11 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
   background: var(--m-surface-2); border: 1px solid var(--m-border); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px;
 }
 .group-live.alert { border-color: var(--m-warn-border); background: var(--m-warn-bg); }
+.group-actual-why { margin-top: 4px; }
+.group-model { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--m-border); }
+.hub-state-bar {
+  background: var(--m-surface-2); border: 1px solid var(--m-border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px;
+}
 .group-manual { border-left: 3px solid var(--m-accent); padding: 4px 0 4px 10px; margin-bottom: 10px; }
 .group-members-head { display: flex; justify-content: space-between; align-items: center; margin: 4px 0 6px; font-size: 13px; }
 .member-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
@@ -317,11 +323,15 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .forward-cell { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--m-border); border-radius: 8px; background: var(--m-surface-2); }
 .ros-hint { margin-top: 8px; }
 .ros-hint summary { cursor: pointer; color: var(--m-accent); }
+.config-text { min-width: 0; }
 .config-once { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: start; }
 .config-qr { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 380px; }
 .config-qr .ant-qrcode { background: #fff; padding: 8px; border-radius: 8px; }
+/* Wrapped for reading only: long keys and AllowedIPs lines break anywhere, so the whole
+   configuration fits without sideways scrolling. Copy and download use the original text. */
 .config-pre {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre; overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; overflow-x: hidden; overflow-y: auto;
   max-height: 340px; padding: 10px 12px; border-radius: 8px; background: var(--m-code-bg); border: 1px solid var(--m-border); margin: 0 0 8px;
 }
 @media (max-width: 767px) {
@@ -363,6 +373,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .cat-unknown { background: var(--m-surface-2); color: var(--m-text-2); border-color: var(--m-border-strong); }
 .cat-failed { background: var(--m-warn-fg-bg); color: var(--m-warn); border-color: var(--m-warn-fg-border); }
 .cat-none { color: var(--m-text-2); }
+.cat-na { background: transparent; color: var(--m-text-2); border: 1px dotted var(--m-border-strong); }
 .cat-grade { font-size: 10px; opacity: 0.85; border-left: 1px solid currentColor; padding-left: 4px; }
 .cat-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; margin-bottom: 12px; }
 .matrix-wrap { overflow-x: auto; border: 1px solid var(--m-border); border-radius: 8px; }
@@ -377,8 +388,34 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .matrix-btn:hover .cat-chip, .matrix-btn:focus-visible .cat-chip { outline: 2px solid var(--m-accent); outline-offset: 1px; }
 .matrix-btn .fam { color: var(--m-text-2); font-size: 10px; width: 14px; }
 .active-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--m-accent); margin-left: 4px; vertical-align: middle; }
+.active-dot.model { background: transparent; border: 1.5px solid var(--m-accent); }
 .catalog-info { font-size: 13px; max-height: 60vh; overflow: auto; }
 
 /* ------------------------------------------------------- shared tables */
 
 .ant-table-wrapper .table-actions .ant-btn-link { padding-inline: 4px; }
+
+/* node delete dialog */
+.delete-ref { margin-bottom: 12px; }
+.delete-ref .consequence { color: var(--m-warn); font-size: 12px; margin: 2px 0 4px; }
+.delete-rule-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+
+/* ------------------------------------------------------------ tables
+   Every table scrolls sideways inside its own box when it cannot fit
+   (scroll.x = "max-content" via TABLE_SCROLL), never clips its actions (the
+   action column is fixed right) and never breaks a header, a name or a tag
+   in the middle of a word: CJK text otherwise breaks between any two
+   characters, which turned names into one character per line. Long text
+   columns set a width and wrap normally. */
+.ant-table-wrapper .ant-table-thead > tr > th { white-space: nowrap; word-break: keep-all; }
+.ant-table-wrapper .ant-table-cell .ant-tag { white-space: nowrap; }
+.ant-table-wrapper td.cell-name,
+.ant-table-wrapper td.nowrap { white-space: nowrap; word-break: keep-all; }
+.ant-table-wrapper td.cell-name .ant-space { flex-wrap: nowrap; }
+.ant-table-wrapper td.cell-text { min-width: 180px; white-space: normal; word-break: normal; overflow-wrap: anywhere; }
+.ant-table-wrapper td.cell-actions { white-space: nowrap; }
+.row-flash > td { animation: row-flash 2s ease-out; }
+@keyframes row-flash { from { background: var(--m-warn-fg-bg); } to { background: transparent; } }
+.installed-files { list-style: none; padding: 0; margin: 0 0 8px; }
+.installed-files li { display: flex; gap: 6px; align-items: center; padding: 2px 0; overflow-wrap: anywhere; }
+.cell-note { font-size: 12px; white-space: normal; max-width: 260px; overflow-wrap: anywhere; }

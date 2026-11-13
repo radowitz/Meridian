@@ -120,8 +120,6 @@ net.ipv4.conf.all.rp_filter=2
 net.ipv4.conf.default.rp_filter=2
 net.ipv4.conf.all.send_redirects=0
 net.ipv4.conf.default.send_redirects=0
-net.ipv6.conf.all.send_redirects=0
-net.ipv6.conf.default.send_redirects=0
 net.ipv4.conf.all.accept_redirects=0
 net.ipv4.conf.default.accept_redirects=0
 net.ipv6.conf.all.accept_redirects=0
@@ -132,7 +130,6 @@ EOF
 net.ipv4.conf.${lan_if}.rp_filter=2
 net.ipv4.conf.${lan_if}.send_redirects=0
 net.ipv6.conf.${lan_if}.accept_ra=2
-net.ipv6.conf.${lan_if}.send_redirects=0
 net.ipv6.conf.${lan_if}.accept_redirects=0
 EOF
   fi
@@ -149,7 +146,6 @@ if [[ "${mode}" == prepare ]]; then
   done
   for d in /proc/sys/net/ipv6/conf/*; do
     i="$(basename "$d")"
-    sysctl -w "net.ipv6.conf.${i}.send_redirects=0" >/dev/null || true
     sysctl -w "net.ipv6.conf.${i}.accept_redirects=0" >/dev/null || true
   done
   sysctl --system >/dev/null || true

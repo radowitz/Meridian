@@ -274,3 +274,77 @@ func TestUnreachable(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// sshd with PasswordAuthentication no advertises only publickey: a password
+// credential is never tried, which is not a rejected password.
+func TestPasswordNotOfferedIsNotAuthFailed(t *testing.T) {
+	f := newFixture(t)
+	pw := "pw-" + randHex(8)
+	f.srv.SetPassword(pw)
+	f.srv.OfferOnly("publickey")
+	c, err := f.cs.CreateSSHCredential("p", "", credentials.SSHSecretInput{Kind: credentials.KindPassword, Password: pw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := f.server(t, model.AuthPassword, c.ID)
+	f.trust(t, sv.ID)
+	ct, err := f.conn.Test(context.Background(), sv.ID)
+	if err != nil || ct.OK || ct.Code != CodeAuthMethodUnavailable {
+		t.Fatalf("password not offered: %+v %v", ct, err)
+	}
+	for _, want := range []string{"不接受密码登录", "publickey", "PasswordAuthentication"} {
+		if !strings.Contains(ct.Error, want) {
+			t.Fatalf("message %q lacks %q", ct.Error, want)
+		}
+	}
+	if strings.Contains(ct.Error, pw) || f.srv.AuthAttempts() != 0 {
+		t.Fatalf("password was sent or leaked: attempts=%d %q", f.srv.AuthAttempts(), ct.Error)
+	}
+	// RunScript (provision, Mesh) carries the same code.
+	_, err = f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "x")
+	if CodeOf(err) != CodeAuthMethodUnavailable {
+		t.Fatalf("run: %v", err)
+	}
+	// Offered and wrong: still auth_failed, and the message says it was tried.
+	f.srv.OfferOnly()
+	f.srv.SetPassword("other-" + randHex(4))
+	ct, _ = f.conn.Test(context.Background(), sv.ID)
+	if ct.Code != CodeAuthFailed || !strings.Contains(ct.Error, "拒绝了") {
+		t.Fatalf("wrong password: %+v", ct)
+	}
+}
+
+// A server that only takes passwords: a key credential is not offered.
+func TestKeyNotOfferedIsNotAuthFailed(t *testing.T) {
+	f := newFixture(t)
+	pemText, pub := encryptedKey(t, "")
+	f.srv.SetAuthorizedKey(pub)
+	f.srv.SetPassword("pw-" + randHex(8))
+	f.srv.OfferOnly("password")
+	c, err := f.cs.CreateSSHCredential("k", "", credentials.SSHSecretInput{Kind: credentials.KindPrivateKey, PrivateKey: pemText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := f.server(t, model.AuthKey, c.ID)
+	f.trust(t, sv.ID)
+	ct, err := f.conn.Test(context.Background(), sv.ID)
+	if err != nil || ct.OK || ct.Code != CodeAuthMethodUnavailable {
+		t.Fatalf("key not offered: %+v %v", ct, err)
+	}
+	for _, want := range []string{"不接受密钥登录", "password", "PubkeyAuthentication"} {
+		if !strings.Contains(ct.Error, want) {
+			t.Fatalf("message %q lacks %q", ct.Error, want)
+		}
+	}
+	if f.srv.AuthAttempts() != 0 {
+		t.Fatalf("probe-only methods sent a credential: %d attempts", f.srv.AuthAttempts())
+	}
+	// Both offered, key rejected: auth_failed.
+	f.srv.OfferOnly()
+	_, other := encryptedKey(t, "")
+	f.srv.SetAuthorizedKey(other)
+	ct, _ = f.conn.Test(context.Background(), sv.ID)
+	if ct.Code != CodeAuthFailed {
+		t.Fatalf("wrong key: %+v", ct)
+	}
+}

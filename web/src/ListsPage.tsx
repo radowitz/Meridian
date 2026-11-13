@@ -10,6 +10,7 @@ import type { ApiError } from "./api";
 import { useStatus, useTopologyDoc } from "./state";
 import type { ListAttempt, ListKind, ListResult, ListsJob, ListsPolicy, ListsReport, ListsView } from "./types";
 import {
+  TABLE_SCROLL,
   ApiErrorAlert,
   DataView,
   Facts,
@@ -91,10 +92,11 @@ function ReportTable({ report }: { report: ListsReport }) {
       rowKey="list"
       pagination={false}
       dataSource={report.lists ?? []}
-      scroll={{ x: 1000 }}
+      scroll={TABLE_SCROLL}
       columns={[
         {
           title: "名单",
+          className: "cell-name",
           render: (_, r) => (
             <Space size={4}>
               <Tag>{KIND_LABEL[r.kind] ?? r.kind}</Tag>
@@ -111,6 +113,7 @@ function ReportTable({ report }: { report: ListsReport }) {
         },
         {
           title: "生效来源",
+          className: "nowrap",
           render: (_, r) => {
             const src = r.updated ? r.source : r.current?.source;
             const url = r.updated ? r.url : r.current?.url;
@@ -353,16 +356,18 @@ export default function ListsPage() {
                 rowKey="key"
                 pagination={false}
                 dataSource={configured}
+                scroll={TABLE_SCROLL}
                 loading={hostStatus.loading && !hostStatus.data && !hostStatus.error}
                 columns={[
-                  { title: "名单", render: (_, r) => <Space size={4}><Tag>{KIND_LABEL[r.kind]}</Tag><Mono>{r.name}</Mono></Space> },
+                  { title: "名单", className: "cell-name", render: (_, r) => <Space size={4}><Tag>{KIND_LABEL[r.kind]}</Tag><Mono>{r.name}</Mono></Space> },
                   {
                     title: "网关上的版本",
+                    className: "nowrap",
                     render: (_, r) => {
                       const p = published?.[r.key];
                       if (!published) return <Typography.Text type="secondary">未知</Typography.Text>;
                       return p ? (
-                        <Space size={6} wrap>
+                        <Space size={6}>
                           <span>{SOURCE_LABEL[p.source] ?? p.source}</span>
                           <TimeText value={p.updated_at} />
                           <Typography.Text type="secondary">{p.count.toLocaleString()} 条</Typography.Text>

@@ -60,6 +60,7 @@ func Run(t model.Topology) Result {
 	nodes := indexNodes(t)
 	out.Issues = append(out.Issues, checkIDs(t)...)
 	out.Issues = append(out.Issues, checkSettings(t)...)
+	out.Issues = append(out.Issues, checkGroupResolver(t)...)
 	out.Issues = append(out.Issues, checkLinks(t, nodes)...)
 
 	exits := exitsOf(t)
@@ -114,6 +115,7 @@ func Run(t model.Topology) Result {
 	out.Issues = append(out.Issues, checkIXReplacement(t, nodes)...)
 	out.Issues = append(out.Issues, checkSubnets(t)...)
 	out.Issues = append(out.Issues, checkRules(t, nodes)...)
+	out.Issues = append(out.Issues, checkRuleReachable(t)...)
 	out.Issues = append(out.Issues, checkSafe(t)...)
 	out.Issues = append(out.Issues, CheckGroups(t)...)
 	out.Issues = append(out.Issues, CheckRemoteAccess(t)...)
@@ -203,8 +205,11 @@ func checkSettings(t model.Topology) []Issue {
 			out = append(out, Issue{Code: "prefix_conflict", Severity: SeverityError, Message: "局域网 IPv6 前缀无法解析。"})
 		} else if ula.Overlaps(lan) {
 			out = append(out, Issue{Code: "prefix_conflict", Severity: SeverityError, Message: "局域网 IPv6 前缀与 fd66 ULA 重叠。"})
+		} else {
+			out = append(out, checkLANIPv6(t, lan)...)
 		}
 	}
+	out = append(out, checkLANIPv4(t)...)
 	if t.Settings.ROSIPv4 == "" {
 		out = append(out, Issue{Code: "missing_ros", Severity: SeverityError, Message: "需要 ROS 的 IPv4 地址（192.168.100.1），国内流量下一跳指向它。"})
 	} else if _, err := netip.ParseAddr(t.Settings.ROSIPv4); err != nil {
@@ -1395,4 +1400,39 @@ func checkListSource(t model.Topology) []Issue {
 		files[f] = name
 	}
 	return out
+}
+
+// checkLANIPv6 limits settings.lan_ipv6_prefix where the gateway's
+// classifier depends on it. A LAN prefix inside fc00::/7 is classified
+// domestic (LAN NIC only) ahead of the classifier's ULA drop, so it must be
+// one exact network that cannot reach tunnel or transit address space. A
+// prefix that contains the whole ULA range (::/0, fc00::/6, ...) is never a
+// LAN and is refused outright.
+func checkLANIPv6(t model.Topology, lan netip.Prefix) []Issue {
+	bad := func(msg string, a ...any) []Issue {
+		return []Issue{{Code: "prefix_conflict", Severity: SeverityError, Message: fmt.Sprintf(msg, a...)}}
+	}
+	if !lan.Addr().Is6() || lan.Addr().Is4In6() {
+		return bad("局域网 IPv6 前缀必须是 IPv6 前缀：%s", lan)
+	}
+	if !lan.Overlaps(ulaRange) {
+		return nil
+	}
+	if lan.Bits() < ulaRange.Bits() {
+		return bad("局域网 IPv6 前缀 %s 包含了整个 ULA 段 fc00::/7，不是一个局域网前缀。", lan)
+	}
+	// From here the LAN prefix is a ULA.
+	if lan != lan.Masked() {
+		return bad("局域网 IPv6 前缀是 ULA 时要写成网络地址，例如 %s。", lan.Masked())
+	}
+	if lan.Bits() < 48 {
+		return bad("局域网 IPv6 前缀是 ULA 时长度必须在 /48 到 /128 之间（通常是 /64），%s 太宽。", lan)
+	}
+	if lan.Overlaps(remoteTunnelV6) {
+		return bad("局域网 IPv6 前缀 %s 与隧道和中转地址段 fd66::/48 重叠。", lan)
+	}
+	if tp, err := netip.ParsePrefix(strings.TrimSpace(t.Settings.TransitV6Prefix)); err == nil && tp.Overlaps(lan) {
+		return bad("局域网 IPv6 前缀 %s 与中转前缀 %s 重叠。", lan, tp.Masked())
+	}
+	return nil
 }

@@ -43,6 +43,10 @@ const (
 	// CatUnknown: the platform answered but not with a documented marker
 	// (anti-bot challenge, login wall, changed page, server error).
 	CatUnknown Category = "unknown"
+	// CatNotApplicable: nothing was sent because the check does not apply
+	// (an IPv4-only public method asked for IPv6). Not a response at all,
+	// so neither unknown nor failed; never ingested.
+	CatNotApplicable Category = "not_applicable"
 )
 
 // Grade is the evidence grade of a result, for the panel and for anyone
@@ -58,6 +62,8 @@ const (
 	GradeUnknown Grade = "unknown_response"
 	// GradeError: no usable answer, or the egress was not confirmed.
 	GradeError Grade = "error"
+	// GradeNotApplicable: no check ran because it does not apply.
+	GradeNotApplicable Grade = "not_applicable"
 )
 
 // GradeOf derives the grade from the category. It is the only mapping;
@@ -70,6 +76,8 @@ func GradeOf(c Category) Grade {
 		return GradeReachability
 	case CatUnknown:
 		return GradeUnknown
+	case CatNotApplicable:
+		return GradeNotApplicable
 	default:
 		return GradeError
 	}
@@ -77,7 +85,7 @@ func GradeOf(c Category) Grade {
 
 // IngestVerdict is the single mapping from a category to the unlock state
 // machine: unlocked → success, not_unlocked → failure, everything else (in
-// particular reachability and unknown) → no verdict. A service whose
+// particular reachability, unknown and not_applicable) → no verdict. A service whose
 // families all have no verdict is ingested as unlock.KindInconclusive,
 // which can neither demote nor restore an exit.
 func IngestVerdict(c Category) (ok, has bool) {

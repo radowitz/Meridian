@@ -7,6 +7,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/pool"
+	"github.com/radowitz/meridian/internal/validate"
 )
 
 // ExitPlan is one foreign next hop. Mark and transit address are how the
@@ -111,6 +112,13 @@ type GroupPlan struct {
 	Mesh bool
 	// Hold: manual group with on_failure=hold (never moves).
 	Hold bool
+	// Resolver is the group's resolver address (validate.GroupResolverAddr
+	// of Index) and DNSGroup the SmartDNS upstream group that asks it with
+	// the group mark. Only a Dynamic group uses them: its queries follow
+	// the group's own data path to whichever member the hub selected
+	// (docs/architecture.md「地区组的解析」).
+	Resolver string
+	DNSGroup string
 }
 
 // Policy is the state-machine view of the plan, shared by the panel model
@@ -146,6 +154,8 @@ func planGroups(t model.Topology, exits []ExitPlan) []GroupPlan {
 			TransitV4: fmt.Sprintf("10.66.200.%d", 10+idx),
 			TransitV6: fmt.Sprintf("fd66:0:0:ff::%x", 10+idx),
 			Hold:      g.EffectiveOnFailure() == model.OnFailureHold,
+			Resolver:  validate.GroupResolverAddr(idx).String(),
+			DNSGroup:  "rg_" + strings.ReplaceAll(g.ID, "-", "_"),
 		}
 		gp.Selection = pool.Select(t, g, sw)
 		if gp.Selection.Target != "" {
@@ -217,6 +227,18 @@ type target struct {
 	// V6 is false when some member the mark can reach has no egress_v6
 	// (AAAA is filtered for the rule).
 	V6 bool
+	// Group is set when the target is a switchable region group's own
+	// mark: names are then resolved through the group's resolver address
+	// (Group.DNSGroup), never through one member's resolver.
+	Group *GroupPlan
+}
+
+// dnsGroup is the SmartDNS upstream group that resolves for this target.
+func (tg target) dnsGroup() string {
+	if tg.Group != nil {
+		return tg.Group.DNSGroup
+	}
+	return tg.Exit.Group
 }
 
 // groupTarget is the static target of a group: the group mark when the hub
@@ -234,7 +256,8 @@ func groupTarget(gp GroupPlan) (target, bool) {
 			v6 = false
 		}
 	}
-	return target{Exit: gp.Target, Mark: gp.Mark, V6: v6}, true
+	g := gp
+	return target{Exit: gp.Target, Mark: gp.Mark, V6: v6, Group: &g}, true
 }
 
 func defaultExit(t model.Topology, groups []GroupPlan) (target, bool) {
@@ -246,8 +269,12 @@ func defaultExit(t model.Topology, groups []GroupPlan) (target, bool) {
 }
 
 type rulePlan struct {
-	Rule       model.Rule
-	Exit       ExitPlan
+	Rule model.Rule
+	Exit ExitPlan
+	// ViaGroup: the rule uses a switchable group's mark and resolver (nil
+	// for a pinned exit, an unlock-moved rule or a group the hub cannot
+	// switch).
+	ViaGroup   *GroupPlan
 	Mark       uint32
 	Set4       string
 	Set6       string
@@ -278,6 +305,7 @@ func planRules(t model.Topology, exits []ExitPlan, groups []GroupPlan, decisions
 		rp := rulePlan{
 			Rule:       r,
 			Exit:       tg.Exit,
+			ViaGroup:   tg.Group,
 			Mark:       tg.Mark,
 			Set4:       fmt.Sprintf("r%d", n),
 			Set6:       fmt.Sprintf("r%d6", n),

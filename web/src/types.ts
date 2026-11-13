@@ -289,6 +289,8 @@ export interface PanelStatus {
   };
   pending: HostStatus["pending"];
   jobs: { lists: StatusJob; unlock: StatusJob; mesh: StatusJob };
+  /** A previous snapshot exists, so a rollback has something to go back to. */
+  previous_available?: boolean;
 }
 
 export interface TopologySaveResult {
@@ -299,11 +301,28 @@ export interface TopologySaveResult {
   migration_error?: string;
 }
 
+/** What an install would change on the gateway, by the installed manifest's file hashes. */
+export interface InstalledDiff {
+  files_added?: string[];
+  files_changed?: string[];
+  files_removed?: string[];
+  interfaces_added?: string[];
+  interfaces_removed?: string[];
+  units_added?: string[];
+  units_removed?: string[];
+  nft_tables_added?: string[];
+  nft_tables_removed?: string[];
+  route_tables_added?: number[];
+  route_tables_removed?: number[];
+}
+
 export interface DiffResult {
   /** "（没有变化）\n" when the compiled text equals the last applied one. */
   diff: string;
   order: string[];
   issues: Issue[];
+  /** Against the installed manifest (null: nothing installed). */
+  installed?: InstalledDiff | null;
 }
 
 export interface ApplyResult {
@@ -346,7 +365,7 @@ export interface ConnectionTest {
   at: string;
   ok: boolean;
   auth_method?: "password" | "key";
-  /** unreachable | timeout | auth_failed | host_key_mismatch | host_key_untrusted | command_failed */
+  /** unreachable | timeout | auth_failed (credential rejected) | auth_method_unavailable (server does not offer this login method) | host_key_mismatch | host_key_untrusted | command_failed */
   code?: string;
   error?: string;
   os?: string;
@@ -751,7 +770,10 @@ export interface GroupMemberView {
   switchable?: boolean;
   reasons: { code: string; message: string }[];
   target: boolean;
-  active: boolean;
+  /** The hub reported (actual.state "ok") that the group table uses this member. */
+  actual_active: boolean;
+  /** The panel's model puts the group on this member (面板推算, never an observation). */
+  model_active: boolean;
   health: {
     up: boolean;
     fails: number;
@@ -762,7 +784,37 @@ export interface GroupMemberView {
   } | null;
 }
 
-export interface GroupStateView {
+/**
+ * The hub's own report for a group, read over SSH with a fixed command and
+ * judged by the panel. Only state "ok" names the member actually in use;
+ * every other state means unknown / not verified, with code and message.
+ */
+export type GroupActualState = "ok" | "stale" | "version_mismatch" | "switch_failed" | "unavailable" | "not_switchable" | "never_read";
+
+export interface GroupActualView {
+  state: GroupActualState;
+  /** Machine reason for every state but ok (no_hub, hub_no_server, server_not_ready, ssh_failed, state_missing, parse_error, invalid_report, plan_unavailable, heartbeat_old, read_old, plan_differs, hop_failed, table_diverged, static_only, not_read). */
+  code?: string;
+  ssh_code?: string;
+  message?: string;
+  /** ok only: member ID, "mmesh", or "" when the table is a blackhole. */
+  active: string;
+  hop?: string;
+  reason?: string;
+  alert: boolean;
+  alert_message?: string;
+  last_switch: string | null;
+  running_since?: string;
+  read_at: string | null;
+  hub_reported_at: string | null;
+  deployed_matches: boolean | null;
+  clock_skew_sec?: number;
+  /** switch_failed: what the hub said (unconfirmed). */
+  reported?: { hop: string; active?: string; want?: string; failed_at?: string };
+}
+
+/** The panel's own computation of the hub's state machine (source "panel_model"). */
+export interface GroupModelView {
   /** Member ID, "mmesh" (Mesh last hop) or "" (no member). */
   active: string;
   reason: string;
@@ -788,7 +840,8 @@ export interface RegionGroupView extends RegionGroup {
   fwmark?: string;
   table?: number;
   member_status: GroupMemberView[];
-  state: GroupStateView;
+  actual: GroupActualView;
+  model: GroupModelView;
   in_use_by: Ref[];
 }
 
@@ -798,10 +851,38 @@ export interface GroupThresholds {
   cooldown_sec: number;
 }
 
+export interface GroupHubState {
+  hub_node?: string;
+  hub_name?: string;
+  server_id?: string;
+  server_name?: string;
+  /** The hub node has a managed server with a trusted key and a credential. */
+  readable: boolean;
+  not_readable_code?: string;
+  not_readable_ssh_code?: string;
+  not_readable_message?: string;
+  last_read: {
+    read_at: string;
+    ok: boolean;
+    error_code?: string;
+    ssh_code?: string;
+    error?: string;
+    clock_skew_sec?: number;
+    ignored: string[];
+  } | null;
+  refreshing: boolean;
+  loop_interval_sec: number;
+  stale_after_sec: number;
+  read_max_age_sec: number;
+  skew_warn_sec: number;
+  counts: Record<string, number>;
+}
+
 export interface RegionGroupsView {
   groups: RegionGroupView[];
   default_group: string;
   thresholds: GroupThresholds;
+  hub_state: GroupHubState;
 }
 
 export type RegionGroupInput = Omit<RegionGroup, "migrated_from">;
@@ -968,9 +1049,9 @@ export interface UnlockView {
   decisions: Record<string, string>;
 }
 
-/** network_ok | unlocked | not_unlocked | failed | unknown */
-export type ProbeCategory = "network_ok" | "unlocked" | "not_unlocked" | "failed" | "unknown";
-export type ProbeGrade = "platform_signal" | "reachability_only" | "unknown_response" | "error";
+/** network_ok | unlocked | not_unlocked | failed | unknown | not_applicable (nothing sent: the check does not support the family) */
+export type ProbeCategory = "network_ok" | "unlocked" | "not_unlocked" | "failed" | "unknown" | "not_applicable";
+export type ProbeGrade = "platform_signal" | "reachability_only" | "unknown_response" | "error" | "not_applicable";
 export type ProbeCapability = "region_verdict" | "verdict" | "reachability" | "unsupported";
 
 export interface ProbePart {
@@ -1071,7 +1152,8 @@ export interface ProbeCatalogView {
 
 export interface ProbeResultRow extends ProbeJobItem {
   exit_name?: string;
-  exit_groups: { id: string; name: string; mode: string; active?: string }[];
+  /** actual_active: the hub reported it in use; model_active: 面板推算. */
+  exit_groups: { id: string; name: string; mode: string; actual_active?: string; model_active?: string }[];
   service_active?: string;
   is_active: boolean;
   ingestible: boolean;

@@ -128,6 +128,20 @@ func TestServerReadinessAndProvisionOverPassword(t *testing.T) {
 		t.Fatal("script with the injected key was not sent on stdin")
 	}
 
+	// sshd switched to PasswordAuthentication no: not a wrong password.
+	srv.OfferOnly("publickey")
+	attempts0 := srv.AuthAttempts()
+	rr = do(s, http.MethodPost, "/api/servers/"+id+"/test", nil)
+	decode(t, rr, &tr)
+	if tr.Test.OK || tr.Test.Code != sshexec.CodeAuthMethodUnavailable || !strings.Contains(tr.Test.Error, "publickey") {
+		t.Fatalf("test, password not offered: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw"}`))
+	if code, _ := errCode(t, rr); rr.Code != http.StatusBadGateway || code != sshexec.CodeAuthMethodUnavailable || srv.AuthAttempts() != attempts0 {
+		t.Fatalf("provision, password not offered: %d %s", rr.Code, rr.Body.String())
+	}
+	srv.OfferOnly()
+
 	// Rotating the credential clears the last test (no longer ready).
 	if rr = do(s, http.MethodPut, "/api/ssh-credentials/"+c.Credential.ID+"/secret", mustJSON(map[string]string{"password": pw + "x"})); rr.Code != 200 {
 		t.Fatal(rr.Body.String())

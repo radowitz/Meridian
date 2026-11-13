@@ -52,7 +52,6 @@ func TestSysctlSnapshot(t *testing.T) {
 		"net.ipv4.conf.all.rp_filter":        "2",
 		"net.ipv4.conf.default.rp_filter":    "2",
 		"net.ipv4.conf.all.send_redirects":   "0",
-		"net.ipv6.conf.all.send_redirects":   "0",
 		"net.ipv4.conf.all.accept_redirects": "0",
 		"net.ipv4.ip_forward":                "1",
 	}
@@ -265,5 +264,56 @@ func TestNewWorkItemsAndScopes(t *testing.T) {
 	stale := mut("nodes/gw/usr/local/sbin/meridian-routes.sh", "# failover companions", "ip link set 'mra' up\n# failover companions")
 	if it := itemsByID(CheckBundle(off, stale))["remote_access_config"]; it.Status != Fail {
 		t.Errorf("mra in the files of a topology without remote access not flagged: %+v", it)
+	}
+}
+
+// The gateway installs no "iif … unreachable" rule (it broke source
+// validation of IPv4 forwarded out of the LAN NIC and mra), deletes the
+// two older versions installed, and keeps the guard. An old routes script
+// with the rule fails the item.
+func TestNoIIFUnreachableRule(t *testing.T) {
+	for name, topo := range map[string]model.Topology{"off": defaults.Example(), "on": raTopology(t)} {
+		b, err := compile.Compile(topo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := itemsByID(CheckBundle(topo, b.Files))
+		if it := got["no_iif_unreachable"]; it.Status != Pass || it.Scope != ScopeAutomated {
+			t.Errorf("%s: %+v", name, it)
+		}
+		if it := got["group_marks_routed"]; it.Status != Pass {
+			t.Errorf("%s: per-mark unreachable rules: %+v", name, it)
+		}
+		files := map[string]string{}
+		for k, v := range b.Files {
+			files[k] = v
+		}
+		const routes = "nodes/gw/usr/local/sbin/meridian-routes.sh"
+		files[routes] += "ip rule add iif 'eth0' unreachable priority 17850\n"
+		if it := itemsByID(CheckBundle(topo, files))["no_iif_unreachable"]; it.Status != Fail || !strings.Contains(it.Detail, "ip rule add iif 'eth0' unreachable") {
+			t.Errorf("%s: an iif rule must fail: %+v", name, it)
+		}
+		files[routes] = strings.ReplaceAll(b.Files[routes], "rule del priority 17851 iif", "rule del iif")
+		if it := itemsByID(CheckBundle(topo, files))["no_iif_unreachable"]; it.Status != Fail {
+			t.Errorf("%s: without the stale-rule cleanup it must fail: %+v", name, it)
+		}
+	}
+}
+
+// The leak page must not list a protection that does not exist on Linux.
+func TestNoIPv6SendRedirectsClaim(t *testing.T) {
+	b, err := compile.Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range CheckBundle(defaults.Example(), b.Files) {
+		if it.ID == "send_redirects_v6" || strings.Contains(it.Title, "IPv6 发送重定向") {
+			t.Fatalf("checklist still claims IPv6 send_redirects: %+v", it)
+		}
+	}
+	for _, it := range CheckSysctl(map[string]string{}) {
+		if strings.Contains(it.Detail, "ipv6.conf.all.send_redirects") {
+			t.Fatalf("live check asks for a key Linux does not have: %+v", it)
+		}
 	}
 }

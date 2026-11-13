@@ -126,9 +126,34 @@ func (a Applier) probe(rt Runtime) error {
 		if errors.Is(err, hostexec.ErrUnavailable) {
 			return fmt.Errorf("%w（%v）", ErrNoHostExec, err)
 		}
-		return fmt.Errorf("宿主执行通道不可用，已停止，未写入任何宿主文件：%w", err)
+		return fmt.Errorf("%w：%w", ErrHostAgentFailed, err)
 	}
 	return nil
+}
+
+// PreviousAvailable reports whether a previous snapshot exists, i.e.
+// whether a rollback has anything to go back to. Read-only.
+func (a Applier) PreviousAvailable() bool {
+	fi, err := os.Stat(filepath.Join(a.data(), "previous"))
+	return err == nil && fi.IsDir()
+}
+
+// InstalledDiff compares what installing b would put on this host with the
+// installed manifest, by file hash (installed copies carry the same
+// placeholders as the bundle, so the hashes are comparable). It returns nil
+// when nothing is installed. Content diffs against the installed copy are
+// not offered: only names and hashes.
+func (a Applier) InstalledDiff(b *compile.Bundle) (*ManifestDiff, error) {
+	inst, err := a.Installed()
+	if err != nil || inst.Empty() {
+		return nil, err
+	}
+	to, err := DeriveManifest(a.localID(), nodeFiles(b.Files, a.localID()), 0, "")
+	if err != nil {
+		return nil, err
+	}
+	d := DiffManifests(inst, to)
+	return &d, nil
 }
 
 // Diff compares the last applied canonical text with the candidate.
@@ -305,7 +330,7 @@ func (a Applier) RollbackReport() (*HostReport, error) {
 	root := a.data()
 	previous := filepath.Join(root, "previous")
 	if _, err := os.Stat(previous); err != nil {
-		return nil, fmt.Errorf("没有可回滚的上一份配置")
+		return nil, ErrNoPrevious
 	}
 	from, err := a.Installed()
 	if err != nil {

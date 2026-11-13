@@ -3,13 +3,24 @@
 // group) or one pinned exit. Rules are part of the topology document, so the
 // page edits the working copy and saves through the document bar.
 
-import { ArrowDownOutlined, ArrowUpOutlined, DeleteOutlined, EditOutlined, PlusOutlined, SearchOutlined } from "@ant-design/icons";
+import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  EllipsisOutlined,
+  PlusOutlined,
+  SearchOutlined,
+  VerticalAlignBottomOutlined,
+  VerticalAlignTopOutlined,
+} from "@ant-design/icons";
 import {
   Alert,
   Button,
   Checkbox,
   Collapse,
   Drawer,
+  Dropdown,
   Form,
   Input,
   Radio,
@@ -25,7 +36,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import { href, useRouter, useTopologyDoc } from "./state";
 import type { Issue, Rule, Topology } from "./types";
-import { ApiErrorAlert, EmptyState, IssueList, Link, Page, StatusTag, TopologyDocBar, regionLabel, useConfirmDanger } from "./ui";
+import { ApiErrorAlert, EmptyState, IssueList, Link, Page, StatusTag, TABLE_SCROLL, TopologyDocBar, regionLabel, useConfirmDanger } from "./ui";
 
 export const MATCH_TYPES: { value: string; label: string; help: string; placeholder: string }[] = [
   { value: "domain", label: "完整域名", help: "只匹配这个域名本身。", placeholder: "api.example.com" },
@@ -70,6 +81,72 @@ function targetOf(t: Topology, r: Rule) {
   }
   const g = (t.region_groups ?? []).find((x) => x.id === r.target_group);
   return { kind: "group" as const, id: r.target_group ?? "", name: g?.name ?? r.target_group ?? "—", missing: !g, mode: g?.mode };
+}
+
+// ------------------------------------------------------------- ordering ---
+
+/**
+ * The order the compiler matches rules in (internal/compile planRules):
+ * every manual rule before every built-in rule, then ascending priority,
+ * then ID. The page shows exactly this order.
+ */
+export function effectiveOrder(rules: Rule[]): Rule[] {
+  return [...rules].sort((a, b) => (a.manual === b.manual ? 0 : a.manual ? -1 : 1) || a.priority - b.priority || a.id.localeCompare(b.id));
+}
+
+/** Lowest priority number a rule of this class may get: manual ≥ 1, built-in above every manual one. */
+function classFloor(rules: Rule[], manual: boolean) {
+  if (manual) return 1;
+  return Math.max(1, ...rules.filter((r) => r.manual).map((r) => r.priority + 1));
+}
+
+/**
+ * Moves rule `id` to position `to` within its own class (manual or
+ * built-in: the compiler always puts manual rules first, so a rule cannot
+ * cross into the other class). Only the moved rule gets a new priority when
+ * its new neighbours leave room for one; otherwise the whole class is
+ * renumbered in the shown order, in steps of 10 from the class's base (10
+ * for manual, the lowest built-in number for built-in). Built-in rules whose
+ * number changed are marked 已改默认. The array order is kept.
+ */
+export function moveRule(rules: Rule[], id: string, to: number): Rule[] {
+  const r = rules.find((x) => x.id === id);
+  if (!r) return rules;
+  const cls = effectiveOrder(rules).filter((x) => x.manual === r.manual);
+  const from = cls.findIndex((x) => x.id === id);
+  const dest = Math.max(0, Math.min(cls.length - 1, to));
+  if (dest === from) return rules;
+  const order = cls.filter((x) => x.id !== id);
+  order.splice(dest, 0, r);
+  const floor = classFloor(rules, r.manual);
+  const prev = order[dest - 1]?.priority;
+  const next = order[dest + 1]?.priority;
+  let p: number | null = null;
+  if (prev === undefined && next !== undefined) p = next - floor >= 1 ? Math.max(floor, next - 10) : null;
+  else if (next === undefined && prev !== undefined) p = prev + 10;
+  else if (prev !== undefined && next !== undefined) p = next - prev >= 2 ? prev + Math.floor((next - prev) / 2) : null;
+  const want = new Map<string, number>();
+  const strictly = (ps: number[]) => ps.every((v, i) => i === 0 || v > ps[i - 1]);
+  if (p !== null && strictly(order.map((x) => (x.id === id ? p! : x.priority)))) {
+    want.set(id, p);
+  } else {
+    const base = r.manual ? 10 : Math.max(floor, Math.min(...cls.map((x) => x.priority)));
+    const start = Math.ceil(base / 10) * 10;
+    order.forEach((x, i) => want.set(x.id, start + i * 10));
+  }
+  return rules.map((x) => {
+    const np = want.get(x.id);
+    if (np === undefined || np === x.priority) return x;
+    return { ...x, priority: np, overridden: x.manual ? x.overridden : true };
+  });
+}
+
+/** Priority for a new manual rule: at the top of the manual rules. */
+function topManualPriority(rules: Rule[]) {
+  const manual = rules.filter((r) => r.manual).map((r) => r.priority);
+  if (manual.length === 0) return 10;
+  const min = Math.min(...manual);
+  return min > 1 ? Math.max(1, min - 10) : null;
 }
 
 // --------------------------------------------------------------- drawer ---
@@ -155,7 +232,6 @@ function RuleDrawer({
       id = base;
       for (let i = 2; manualIDs.has(id); i++) id = `${base}-${i}`;
     }
-    const minManual = Math.min(...topo.rules.filter((r) => r.manual).map((r) => r.priority), 20);
     const value = v.match_value.trim();
     let domains = (v.domains ?? []).map((d) => d.trim().replace(/^\./, "")).filter(Boolean);
     if ((v.match_type === "domain" || v.match_type === "suffix") && value && !domains.includes(value.replace(/^\./, ""))) {
@@ -165,7 +241,8 @@ function RuleDrawer({
       id,
       name: "",
       manual: true,
-      priority: minManual - 10,
+      // Placed at the top of the manual rules; RulesPage renumbers when there is no room.
+      priority: topManualPriority(topo.rules) ?? 0,
       enabled: true,
       overridden: false,
       match_type: "domain",
@@ -398,7 +475,8 @@ export default function RulesPage() {
     );
   }
 
-  const sorted = [...topo.rules].sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
+  const sorted = effectiveOrder(topo.rules);
+  const manualCount = topo.rules.filter((r) => r.manual).length;
   const shown = sorted.filter((r) => {
     if (kind === "manual" && !r.manual) return false;
     if (kind === "auto" && r.manual) return false;
@@ -410,14 +488,10 @@ export default function RulesPage() {
   const setRules = (rules: Rule[]) => doc.setTopo({ ...topo, rules: rules.map(cleanRule) });
   const patch = (id: string, p: Partial<Rule>) =>
     setRules(topo.rules.map((r) => (r.id === id ? { ...r, ...p, overridden: r.manual ? r.overridden : true } : r)));
-  const swap = (a: Rule, b: Rule) =>
-    setRules(
-      topo.rules.map((r) => {
-        if (r.id === a.id) return { ...r, priority: b.priority === a.priority ? a.priority + 1 : b.priority, overridden: r.manual ? r.overridden : true };
-        if (r.id === b.id) return { ...r, priority: a.priority, overridden: r.manual ? r.overridden : true };
-        return r;
-      }),
-    );
+  /** Position of r within its class (manual rules, then built-in rules). */
+  const classIndex = (r: Rule) => sorted.filter((x) => x.manual === r.manual).findIndex((x) => x.id === r.id);
+  const classSize = (r: Rule) => (r.manual ? manualCount : topo.rules.length - manualCount);
+  const move = (r: Rule, to: number) => setRules(moveRule(topo.rules, r.id, to));
 
   return (
     <Page
@@ -461,6 +535,11 @@ export default function RulesPage() {
           )}
         </Typography.Text>
       </Space>
+      {topo.rules.length > 0 ? (
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          表格就是匹配顺序：手动规则总是排在内置规则前面，各自按优先级排。上下箭头和「…」里的移到最前 / 最后只在同一类里移动；移动后需要时会把这一类重新编号（步长 10），保存后按这个顺序生效。
+        </Typography.Paragraph>
+      ) : null}
       {topo.rules.length === 0 ? (
         <EmptyState
           title="还没有规则"
@@ -477,43 +556,49 @@ export default function RulesPage() {
           size="middle"
           dataSource={shown}
           pagination={false}
-          scroll={{ x: 980 }}
+          scroll={TABLE_SCROLL}
           onRow={(r) => ({ "data-testid": `rule-row-${r.id}` }) as React.HTMLAttributes<HTMLElement>}
           rowClassName={(r) => (r.enabled ? "" : "row-disabled")}
           columns={[
             {
               title: "顺序",
-              width: 96,
+              width: 132,
+              className: "nowrap",
               render: (_, r) => {
                 const i = sorted.findIndex((x) => x.id === r.id);
+                const ci = classIndex(r);
+                const last = classSize(r) - 1;
                 return (
                   <Space size={0}>
-                    <span className="rule-pos">{i + 1}</span>
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<ArrowUpOutlined />}
-                      aria-label={`提前 ${r.name}`}
-                      disabled={i === 0}
-                      onClick={() => swap(r, sorted[i - 1])}
-                    />
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<ArrowDownOutlined />}
-                      aria-label={`推后 ${r.name}`}
-                      disabled={i === sorted.length - 1}
-                      onClick={() => swap(r, sorted[i + 1])}
-                    />
+                    <Tooltip title={`优先级数值 ${r.priority}`}>
+                      <span className="rule-pos" data-testid={`rule-pos-${r.id}`}>
+                        {i + 1}
+                      </span>
+                    </Tooltip>
+                    <Button type="text" size="small" icon={<ArrowUpOutlined />} aria-label={`提前 ${r.name}`} disabled={ci === 0} onClick={() => move(r, ci - 1)} />
+                    <Button type="text" size="small" icon={<ArrowDownOutlined />} aria-label={`推后 ${r.name}`} disabled={ci === last} onClick={() => move(r, ci + 1)} />
+                    <Dropdown
+                      trigger={["click"]}
+                      menu={{
+                        items: [
+                          { key: "top", icon: <VerticalAlignTopOutlined />, label: r.manual ? "移到最前" : "移到内置规则的最前", disabled: ci === 0 },
+                          { key: "bottom", icon: <VerticalAlignBottomOutlined />, label: r.manual ? "移到手动规则的最后" : "移到最后", disabled: ci === last },
+                        ],
+                        onClick: ({ key }) => move(r, key === "top" ? 0 : last),
+                      }}
+                    >
+                      <Button type="text" size="small" icon={<EllipsisOutlined />} aria-label={`移动 ${r.name}`} />
+                    </Dropdown>
                   </Space>
                 );
               },
             },
             {
               title: "规则",
+              className: "cell-name",
               render: (_, r) => (
                 <div>
-                  <Space size={4} wrap>
+                  <Space size={4}>
                     <Typography.Text strong>{r.name}</Typography.Text>
                     {r.manual ? <Tag color="blue">手动</Tag> : <Tooltip title="内置的自动规则；改动后标为「已改默认」"><Tag>内置</Tag></Tooltip>}
                     {!r.manual && r.overridden ? <Tag color="orange">已改默认</Tag> : null}
@@ -532,11 +617,11 @@ export default function RulesPage() {
             },
             {
               title: "去向",
-              width: 260,
+              className: "nowrap",
               render: (_, r) => {
                 const t = targetOf(topo, r);
                 return (
-                  <Space size={4} wrap>
+                  <Space size={4}>
                     {t.kind === "group" ? <Tag>地区组</Tag> : <Tag color="purple">固定出口</Tag>}
                     {t.missing ? (
                       <StatusTag kind="failed">{t.id || "未设置"} 不存在</StatusTag>
@@ -554,7 +639,7 @@ export default function RulesPage() {
             },
             {
               title: "要求",
-              width: 110,
+              className: "nowrap",
               render: (_, r) => (
                 <>
                   {r.require_residential ? <Tag color="green">住宅</Tag> : null}
@@ -564,7 +649,7 @@ export default function RulesPage() {
             },
             {
               title: "校验",
-              width: 110,
+              className: "nowrap",
               render: (_, r) => {
                 const iss = issuesByRule.get(r.id) ?? [];
                 const err = iss.filter((i) => i.severity === "error");
@@ -578,13 +663,12 @@ export default function RulesPage() {
             },
             {
               title: "启用",
-              width: 72,
               render: (_, r) => <Switch size="small" checked={r.enabled} onChange={(enabled) => patch(r.id, { enabled })} aria-label={`启用 ${r.name}`} />,
             },
             {
-              title: "",
-              width: 120,
+              title: "操作",
               fixed: "right",
+              className: "cell-actions",
               render: (_, r) => (
                 <Space size={0} className="table-actions">
                   <Button
@@ -632,7 +716,10 @@ export default function RulesPage() {
         }}
         onApply={(r) => {
           const exists = topo.rules.some((x) => x.id === r.id);
-          setRules(exists ? topo.rules.map((x) => (x.id === r.id ? r : x)) : [...topo.rules, r]);
+          let next = exists ? topo.rules.map((x) => (x.id === r.id ? r : x)) : [...topo.rules, r];
+          // A new manual rule goes to the top; with no room above the first one, renumber the manual rules.
+          if (!exists && r.manual && r.priority < 1) next = moveRule(next.map((x) => (x.id === r.id ? { ...x, priority: Number.MAX_SAFE_INTEGER } : x)), r.id, 0);
+          setRules(next);
           setEditing(null);
           if (focus) navigate(href("rules"), { replace: true });
         }}

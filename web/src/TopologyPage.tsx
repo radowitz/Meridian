@@ -35,6 +35,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Select,
   Space,
   Switch,
@@ -659,11 +660,169 @@ function ClickableIssues({ issues }: { issues: Issue[] }) {
   );
 }
 
+// ------------------------------------------------------------ node delete ---
+
+type RuleFix = "" | "delete" | `exit:${string}` | `group:${string}`;
+
+/** Everything in the document that refers to node `id`. */
+export function nodeReferences(t: Topology, id: string) {
+  const links = t.links.filter((l) => l.from === id || l.to === id);
+  const groups = (t.region_groups ?? []).filter((g) => g.members.includes(id));
+  const rules = t.rules.filter((r) => r.target_exit === id);
+  return { links, groups, rules };
+}
+
+/**
+ * Removes node `id` with the clean-up the operator chose: its links go, it
+ * leaves every region group (a manual choice of it is cleared), and each rule
+ * pinned to it is retargeted or deleted as `fixes` says. Rules are never
+ * changed without an entry in `fixes`.
+ */
+export function deleteNode(t: Topology, id: string, fixes: Record<string, RuleFix>): Topology {
+  const rules = t.rules.flatMap((r) => {
+    if (r.target_exit !== id) return [r];
+    const fix = fixes[r.id];
+    if (fix === "delete") return [];
+    const ov = r.manual ? r.overridden : true;
+    if (fix?.startsWith("exit:")) return [{ ...r, target_exit: fix.slice(5), overridden: ov }];
+    if (fix?.startsWith("group:")) {
+      const { target_exit: _e, ...rest } = r;
+      void _e;
+      return [{ ...rest, target_group: fix.slice(6), overridden: ov }];
+    }
+    return [r];
+  });
+  return {
+    ...t,
+    nodes: t.nodes.filter((n) => n.id !== id),
+    links: t.links.filter((l) => l.from !== id && l.to !== id),
+    rules,
+    region_groups: (t.region_groups ?? []).map((g) => {
+      if (!g.members.includes(id)) return g;
+      const next = { ...g, members: g.members.filter((m) => m !== id) };
+      if (next.chosen === id) delete next.chosen;
+      return next;
+    }),
+  };
+}
+
+function NodeDeleteDialog({
+  node,
+  topo,
+  servers,
+  onCancel,
+  onDelete,
+}: {
+  node: Node | null;
+  topo: Topology;
+  servers: ServerView[] | undefined;
+  onCancel: () => void;
+  onDelete: (t: Topology) => void;
+}) {
+  const [fixes, setFixes] = useState<Record<string, RuleFix>>({});
+  useEffect(() => setFixes({}), [node?.id]);
+  if (!node) return null;
+  const refs = nodeReferences(topo, node.id);
+  const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
+  const server = node.server_id ? servers?.find((s) => s.id === node.server_id) : undefined;
+  const targets = [
+    ...(topo.region_groups ?? []).map((g) => ({ value: `group:${g.id}`, label: `地区组：${g.name}` })),
+    ...topo.nodes.filter((n) => n.role === "exit" && n.id !== node.id).map((n) => ({ value: `exit:${n.id}`, label: `固定出口：${n.name || n.id}` })),
+  ];
+  const undecided = refs.rules.filter((r) => !fixes[r.id]);
+  const nothing = refs.links.length + refs.groups.length + refs.rules.length === 0 && !node.server_id;
+  return (
+    <Modal
+      open
+      title={`删除节点「${node.name || node.id}」`}
+      onCancel={onCancel}
+      width={620}
+      destroyOnHidden
+      okText="删除并清理引用"
+      okButtonProps={{ danger: true, disabled: undecided.length > 0 }}
+      cancelText="取消"
+      onOk={() => onDelete(deleteNode(topo, node.id, fixes))}
+    >
+      <div data-testid="node-delete">
+        <Typography.Paragraph>
+          {nothing ? "没有别的东西引用这个节点。" : "下面这些地方引用了这个节点，会在同一步里处理："}
+          只改工作副本，保存并安装之前网关不变。
+        </Typography.Paragraph>
+        {refs.links.length > 0 ? (
+          <div className="delete-ref">
+            <Typography.Text strong>链路 {refs.links.length} 条：一起删除</Typography.Text>
+            <ul className="ref-list">
+              {refs.links.map((l) => (
+                <li key={l.id}>
+                  {l.name || l.id} <span className="muted">（{name(l.from)} → {name(l.to)}）</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {refs.groups.length > 0 ? (
+          <div className="delete-ref" data-testid="node-delete-groups">
+            <Typography.Text strong>地区组 {refs.groups.length} 个：把它移出成员</Typography.Text>
+            <ul className="ref-list">
+              {refs.groups.map((g) => {
+                const left = g.members.filter((m) => m !== node.id).length;
+                return (
+                  <li key={g.id}>
+                    <Link to={href("exits", g.id)}>{g.name}</Link>
+                    <span className="muted">（剩 {left} 个成员）</span>
+                    {left === 0 ? (
+                      <div className="consequence">这个组会变成空组：用它的规则（和默认组，如果是）将没有出口可走，校验会报错，保存只能存为草稿，直到你给它加成员。</div>
+                    ) : null}
+                    {g.chosen === node.id ? (
+                      <div className="consequence">
+                        这个组手动指定的就是这个节点：指定会被清除，{g.mode === "manual" ? "手动组没有指定成员时校验会报错，要在「出口」页重新指定一个。" : "组按自动顺序选成员。"}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
+        {refs.rules.length > 0 ? (
+          <div className="delete-ref" data-testid="node-delete-rules">
+            <Typography.Text strong>固定到它的规则 {refs.rules.length} 条：逐条选择改指向哪里，或删除</Typography.Text>
+            {refs.rules.map((r) => (
+              <div key={r.id} className="delete-rule-row">
+                <span>
+                  <Link to={href("rules", r.id)}>{r.name}</Link> {r.manual ? null : <Tag>内置</Tag>}
+                </span>
+                <Select<RuleFix>
+                  aria-label={`规则 ${r.name} 的处理`}
+                  placeholder="选择…"
+                  style={{ minWidth: 220 }}
+                  value={fixes[r.id] || undefined}
+                  onChange={(v) => setFixes((f) => ({ ...f, [r.id]: v }))}
+                  options={[{ value: "delete", label: "删除这条规则" }, ...targets]}
+                />
+              </div>
+            ))}
+            {undecided.length > 0 ? <Typography.Text type="warning">还有 {undecided.length} 条规则没有选择处理方式。</Typography.Text> : null}
+          </div>
+        ) : null}
+        {node.server_id ? (
+          <div className="delete-ref">
+            <Typography.Text strong>关联的服务器：</Typography.Text>{" "}
+            <Link to={href("servers", node.server_id)}>{server?.name ?? node.server_id}</Link>
+            <span className="muted"> 不会被删除，只是不再被这个节点使用；服务器上已经下发的 Meridian 文件和服务不会被自动清理。</span>
+          </div>
+        ) : null}
+      </div>
+    </Modal>
+  );
+}
+
 export default function TopologyPage() {
   const doc = useTopologyDoc();
   const { route, navigate } = useRouter();
   const confirm = useConfirmDanger();
   const servers = useApi(() => api.listServers(), []);
+  const [deleting, setDeleting] = useState<Node | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const topo = doc.topo;
 
@@ -801,21 +960,7 @@ export default function TopologyPage() {
             servers={servers.data?.servers}
             serversError={servers.error}
             onChange={doc.setTopo}
-            onDelete={() =>
-              confirm({
-                title: `删除节点「${node.name || node.id}」？`,
-                consequence: "节点和连到它的链路从工作副本里移除；引用它的规则和地区组会出现校验错误，需要一起改掉。保存并安装之前网关不变。",
-                okText: "删除",
-                onOk: () => {
-                  doc.setTopo({
-                    ...topo,
-                    nodes: topo.nodes.filter((n) => n.id !== node.id),
-                    links: topo.links.filter((l) => l.from !== node.id && l.to !== node.id),
-                  });
-                  select(null);
-                },
-              })
-            }
+            onDelete={() => setDeleting(node)}
           />
         ) : link ? (
           <LinkDetail
@@ -837,6 +982,17 @@ export default function TopologyPage() {
         ) : null}
       </Drawer>
       <SettingsDrawer open={settingsOpen} topo={topo} onClose={() => setSettingsOpen(false)} onChange={doc.setTopo} />
+      <NodeDeleteDialog
+        node={deleting}
+        topo={topo}
+        servers={servers.data?.servers}
+        onCancel={() => setDeleting(null)}
+        onDelete={(t) => {
+          doc.setTopo(t);
+          setDeleting(null);
+          select(null);
+        }}
+      />
     </Page>
   );
 }

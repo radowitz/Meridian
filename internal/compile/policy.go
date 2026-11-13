@@ -20,9 +20,17 @@ const (
 	prioDomestic    = 17100
 	prioExitBase    = 17200
 	prioExitDrop    = 17600
-	prioLANDrop     = 17850
 	prioRelayFrom   = 18100
 	prioHubExitFrom = 18200
+)
+
+// Priorities of the IPv4 "iif <LAN> unreachable" and "iif mra unreachable"
+// rules older versions installed. They broke source validation of IPv4
+// forwarded out of the LAN NIC or mra and are no longer generated; the
+// routes script deletes them, and the verify script fails if they are back.
+const (
+	prioStaleLANDrop    = 17850
+	prioStaleRemoteDrop = 17851
 )
 
 func exitMark(index int) uint32 { return markExitBase + uint32(index) }

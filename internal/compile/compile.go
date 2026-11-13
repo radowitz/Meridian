@@ -184,7 +184,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		b.Files[path] = strings.TrimRight(content, "\n") + "\n"
 	}
 
-	add("APPLY_ORDER.txt", renderOrder(b.Order))
+	add("APPLY_ORDER.txt", renderOrder(b.Order, groups))
 	add("README.txt", renderBundleReadme(t))
 
 	for _, n := range managedNodes(t) {
@@ -325,10 +325,21 @@ func applyOrder(t model.Topology) []string {
 	return out
 }
 
-func renderOrder(order []string) string {
+func renderOrder(order []string, groups []GroupPlan) string {
 	var sb strings.Builder
 	sb.WriteString("# Publish order: NAT dial-out exits, other exits, hub, relay, gateway.\n")
 	sb.WriteString("# IX is a dedicated line, not a host. Mesh is not in this list.\n")
+	for _, g := range groups {
+		if g.Dynamic {
+			// The gateway cannot tell which exits already carry this; see
+			// docs/architecture.md「地区组的解析」.
+			fmt.Fprintf(&sb, "# Region groups resolve through %s on their members: publish the exits\n", validate.GroupResolverNet)
+			sb.WriteString("# (and the hub) before the gateway. A gateway installed first gets no answer for\n")
+			sb.WriteString("# group names until the member in use is re-published; it never falls back to\n")
+			sb.WriteString("# another resolver.\n")
+			break
+		}
+	}
 	for i, id := range order {
 		fmt.Fprintf(&sb, "%d\t%s\n", i+1, id)
 	}

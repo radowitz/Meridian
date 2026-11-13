@@ -10,6 +10,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/credentials"
+	"github.com/radowitz/meridian/internal/hubstate"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/pool"
 	"github.com/radowitz/meridian/internal/unlock"
@@ -18,6 +19,11 @@ import (
 
 // Region groups: the exits' country/region groups, their mode, order,
 // manual choice and live state. See docs/architecture.md「地区组」.
+//
+// Every group view carries two separate things: "actual", the hub's own
+// report read over SSH (region_groups_runtime.go) — the only source that
+// may be shown as the member in use — and "model", the panel's computation
+// of the hub's state machine from health samples, labelled as such.
 // Changes edit the topology only; they take effect through an install
 // (POST /api/apply), never directly on a host.
 
@@ -25,6 +31,7 @@ func (s *Server) registerRegionGroups(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/region-groups", s.listGroups)
 	mux.HandleFunc("POST /api/region-groups", s.createGroup)
 	mux.HandleFunc("POST /api/region-groups/health", s.postGroupHealth)
+	mux.HandleFunc("POST /api/region-groups/runtime/refresh", s.refreshGroupRuntime)
 	mux.HandleFunc("PUT /api/region-groups/default", s.putDefaultGroup)
 	mux.HandleFunc("GET /api/region-groups/{id}", s.getGroup)
 	mux.HandleFunc("PATCH /api/region-groups/{id}", s.patchGroup)
@@ -39,6 +46,10 @@ func (s *Server) registerRegionGroups(mux *http.ServeMux) {
 type groupPlans struct {
 	byID     map[string]compile.GroupPlan
 	compiled bool
+	// planID is compile.GroupPlanID of the compiled plans ("" when the
+	// topology does not compile); staleAfter is compile.HubStaleAfter.
+	planID     string
+	staleAfter time.Duration
 }
 
 func plansOf(t model.Topology) groupPlans {
@@ -46,6 +57,8 @@ func plansOf(t model.Topology) groupPlans {
 	plans, err := compile.PlanGroups(t)
 	if err == nil {
 		out.compiled = true
+		out.planID = compile.GroupPlanID(plans)
+		out.staleAfter = compile.HubStaleAfter(plans)
 		for _, p := range plans {
 			out.byID[p.Group.ID] = p
 		}
@@ -98,13 +111,27 @@ func healthOf(h pool.MemberHealth) *healthView {
 
 type memberView struct {
 	pool.MemberStatus
-	// Target: the compiled choice. Active: carries the group now.
-	Target bool        `json:"target"`
-	Active bool        `json:"active"`
-	Health *healthView `json:"health"`
+	// Target: the compiled choice. ActualActive: the hub reported, in
+	// state ok, that its group table uses this member. ModelActive: the
+	// panel's model puts the group on this member (a computation, never
+	// shown as the member in use).
+	Target       bool        `json:"target"`
+	ActualActive bool        `json:"actual_active"`
+	ModelActive  bool        `json:"model_active"`
+	Health       *healthView `json:"health"`
 }
 
-type stateView struct {
+// actualView is the hub's report for the group (hubstate.Actual) plus an
+// alert message; see hubstate for the states.
+type actualView struct {
+	hubstate.Actual
+	AlertMessage string `json:"alert_message,omitempty"`
+}
+
+// modelView is the panel's own computation of the hub's state machine
+// from health samples (POST /api/region-groups/health). It is never an
+// observation of the hub.
+type modelView struct {
 	// Active is a member ID, "mmesh" (Mesh last hop) or "" (no member).
 	Active       string     `json:"active"`
 	Reason       string     `json:"reason"`
@@ -114,7 +141,7 @@ type stateView struct {
 	// Observed is false until health samples arrived (then Active is the
 	// compiled target).
 	Observed bool `json:"observed"`
-	// Source: the panel's own model of the hub's state machine.
+	// Source is always "panel_model".
 	Source string `json:"source"`
 	// ReturnBlockedBy says why the group has not gone back to its target:
 	// target_down, target_last_failed, recovery_timer or switch_cooldown.
@@ -135,7 +162,8 @@ type groupView struct {
 	Fwmark             string            `json:"fwmark,omitempty"`
 	Table              int               `json:"table,omitempty"`
 	MemberStatus       []memberView      `json:"member_status"`
-	State              stateView         `json:"state"`
+	Actual             actualView        `json:"actual"`
+	Model              modelView         `json:"model"`
 	InUseBy            []credentials.Ref `json:"in_use_by"`
 }
 
@@ -152,7 +180,14 @@ func groupRefs(t model.Topology, id string) []credentials.Ref {
 	return refs
 }
 
-func viewGroup(t model.Topology, g model.RegionGroup, plans groupPlans, runtime map[string]pool.Runtime) groupView {
+// groupSpec is what hubstate.Evaluate needs about the group.
+func (gp groupPlans) spec(t model.Topology, g model.RegionGroup) hubstate.GroupSpec {
+	p := gp.plan(t, g)
+	pol := p.Policy()
+	return hubstate.GroupSpec{ID: g.ID, Dynamic: gp.compiled && p.Dynamic, Members: append([]string(nil), pol.Try...), Mesh: pol.Mesh}
+}
+
+func viewGroup(t model.Topology, g model.RegionGroup, plans groupPlans, runtime map[string]pool.Runtime, hub groupHub) groupView {
 	p := plans.plan(t, g)
 	pol := p.Policy()
 	v := groupView{
@@ -179,7 +214,7 @@ func viewGroup(t model.Topology, g model.RegionGroup, plans groupPlans, runtime 
 	if observed && rt.Target != p.Selection.Target {
 		observed = false // computed for another target; restarts with the next sample
 	}
-	st := stateView{Source: "panel_model", Observed: observed, Active: p.Selection.Target, Reason: p.Selection.Reason}
+	st := modelView{Source: "panel_model", Observed: observed, Active: p.Selection.Target, Reason: p.Selection.Reason}
 	if p.Selection.Target == "" {
 		st.Reason, st.Alert = pool.ReasonNone, true
 	}
@@ -193,10 +228,22 @@ func viewGroup(t model.Topology, g model.RegionGroup, plans groupPlans, runtime 
 			st.ReturnBlockedBy, st.ReturnNotBefore = returnBlock(rt)
 		}
 	}
-	st.AlertMessage = alertMessage(t, g, st, p.Selection.Target)
-	v.State = st
+	st.AlertMessage = alertMessage(t, g, st.Alert, st.Reason, st.Active, p.Selection.Target)
+	v.Model = st
+	act := actualView{Actual: hub.actual(plans, plans.spec(t, g))}
+	if act.State == hubstate.StateOK {
+		act.AlertMessage = alertMessage(t, g, act.Alert, act.Reason, act.Active, p.Selection.Target)
+		if act.Alert && act.AlertMessage == "" {
+			act.AlertMessage = "枢纽报告这个组处于告警状态。"
+		}
+		if act.Hop == hubstate.HopBlackhole {
+			act.AlertMessage = strings.TrimSpace(act.AlertMessage + " 枢纽的组路由表现在是黑洞（Mesh 备路未封装或没有可用成员），这个组的流量被丢弃。")
+		}
+	}
+	v.Actual = act
 	for _, m := range p.Selection.Members {
-		mv := memberView{MemberStatus: m, Target: m.ID == p.Selection.Target, Active: m.ID == st.Active}
+		mv := memberView{MemberStatus: m, Target: m.ID == p.Selection.Target, ModelActive: m.ID == st.Active,
+			ActualActive: act.State == hubstate.StateOK && act.Active == m.ID}
 		if observed {
 			if h, ok := rt.Members[m.ID]; ok {
 				mv.Health = healthOf(h)
@@ -230,11 +277,11 @@ func nodeName(t model.Topology, id string) string {
 	return id
 }
 
-func alertMessage(t model.Topology, g model.RegionGroup, st stateView, target string) string {
-	if !st.Alert {
+func alertMessage(t model.Topology, g model.RegionGroup, alert bool, reason, active, target string) string {
+	if !alert {
 		return ""
 	}
-	switch st.Reason {
+	switch reason {
 	case pool.ReasonNone:
 		return "组内没有可用的出口，引用它的规则不会生效。"
 	case pool.ReasonHeld:
@@ -243,7 +290,7 @@ func alertMessage(t model.Topology, g model.RegionGroup, st stateView, target st
 		}
 		return fmt.Sprintf("首选 %s 不可用，它只能经中继或 Mesh 到达，枢纽不能切换这个组。", nodeName(t, target))
 	case pool.ReasonFallback:
-		return fmt.Sprintf("指定成员 %s 不可用，临时使用 %s；恢复后按切回规则回到指定成员。", nodeName(t, target), nodeName(t, st.Active))
+		return fmt.Sprintf("指定成员 %s 不可用，临时使用 %s；恢复后按切回规则回到指定成员。", nodeName(t, target), nodeName(t, active))
 	case pool.ReasonMesh:
 		return "组内所有 WireGuard 成员都不可用，正在走 Mesh 备路。"
 	}
@@ -276,14 +323,7 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		writeResErr(w, err)
 		return
 	}
-	plans, rt := plansOf(t), s.groupRuntime()
-	out := []groupView{}
-	for _, g := range sortedGroups(t) {
-		out = append(out, viewGroup(t, g, plans, rt))
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"groups": out, "default_group": t.Settings.DefaultGroup, "thresholds": thresholds(),
-	})
+	writeJSON(w, http.StatusOK, s.groupsBody(t))
 }
 
 func sortedGroups(t model.Topology) []model.RegionGroup {
@@ -303,7 +343,9 @@ func (s *Server) getGroup(w http.ResponseWriter, r *http.Request) {
 		writeResErr(w, groupNotFound(r.PathValue("id")))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"group": viewGroup(t, g, plansOf(t), s.groupRuntime()), "thresholds": thresholds()})
+	plans := plansOf(t)
+	hub := s.groupHub()
+	writeJSON(w, http.StatusOK, map[string]any{"group": viewGroup(t, g, plans, s.groupRuntime(), hub), "thresholds": thresholds(), "hub_state": hub.view(t, s.hubReachability(t), plans)})
 }
 
 // groupInput is the create/patch body. Absent fields are left unchanged
@@ -526,7 +568,7 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, _ := t.GroupByID(id)
-	writeJSON(w, http.StatusCreated, map[string]any{"group": viewGroup(t, g, plansOf(t), s.groupRuntime()), "apply_required": true})
+	writeJSON(w, http.StatusCreated, map[string]any{"group": s.oneGroupView(t, g), "apply_required": true})
 }
 
 func (s *Server) mutateGroupsCreate(in *groupInput, idOut *string) (model.Topology, error) {
@@ -593,7 +635,7 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, _ := t.GroupByID(id)
-	writeJSON(w, http.StatusOK, map[string]any{"group": viewGroup(t, g, plansOf(t), s.groupRuntime()), "apply_required": true})
+	writeJSON(w, http.StatusOK, map[string]any{"group": s.oneGroupView(t, g), "apply_required": true})
 }
 
 func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request) {
@@ -644,7 +686,7 @@ func (s *Server) putDefaultGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, _ := t.GroupByID(id)
-	writeJSON(w, http.StatusOK, map[string]any{"default_group": id, "group": viewGroup(t, g, plansOf(t), s.groupRuntime()), "apply_required": true})
+	writeJSON(w, http.StatusOK, map[string]any{"default_group": id, "group": s.oneGroupView(t, g), "apply_required": true})
 }
 
 // ----------------------------------------------------------- health ---
@@ -744,10 +786,7 @@ func (s *Server) postGroupHealth(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	plans, rt := plansOf(t), s.groupRuntime()
-	out := []groupView{}
-	for _, g := range sortedGroups(t) {
-		out = append(out, viewGroup(t, g, plans, rt))
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": out, "flipped": flipped})
+	body := s.groupsBody(t)
+	body["flipped"] = flipped
+	writeJSON(w, http.StatusOK, body)
 }

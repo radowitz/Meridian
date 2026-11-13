@@ -42,6 +42,14 @@ var ErrRuntimeRollbackRequired = errors.New("本机已安装 Meridian：回滚�
 // ErrMalformedState is returned when a manifest or journal cannot be read.
 var ErrMalformedState = errors.New("宿主事务状态文件损坏")
 
+// ErrHostAgentFailed means the host agent is configured but its health
+// probe failed before the transaction started; nothing was written.
+var ErrHostAgentFailed = errors.New("宿主执行通道不可用，已停止，未写入任何宿主文件")
+
+// ErrNoPrevious means a rollback was asked for but there is no previous
+// snapshot to go back to.
+var ErrNoPrevious = errors.New("没有可回滚的上一份配置")
+
 const manifestSchema = 1
 
 // ManagedFile is one host file Meridian owns.

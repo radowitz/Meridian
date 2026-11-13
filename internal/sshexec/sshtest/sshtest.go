@@ -25,6 +25,9 @@ type Server struct {
 	signer   ssh.Signer
 	password string
 	authKey  ssh.PublicKey
+	// offer limits the advertised methods ("password", "publickey"); nil
+	// offers both.
+	offer []string
 	// AuthAttempts counts password and public-key attempts (any outcome).
 	authAttempts int
 	commands     []string
@@ -98,6 +101,18 @@ func (s *Server) SetHandler(h func(cmd, stdin string) (string, uint32)) {
 	s.mu.Unlock()
 }
 
+// OfferOnly makes the server advertise only these methods ("password",
+// "publickey"), like sshd with PasswordAuthentication no. No arguments
+// restores the default (both).
+func (s *Server) OfferOnly(methods ...string) {
+	s.mu.Lock()
+	s.offer = append([]string(nil), methods...)
+	if len(methods) == 0 {
+		s.offer = nil
+	}
+	s.mu.Unlock()
+}
+
 // AuthAttempts is the number of authentication attempts so far.
 func (s *Server) AuthAttempts() int { s.mu.Lock(); defer s.mu.Unlock(); return s.authAttempts }
 
@@ -132,7 +147,19 @@ func (s *Server) serve() {
 func (s *Server) config() *ssh.ServerConfig {
 	s.mu.Lock()
 	signer := s.signer
+	offer := s.offer
 	s.mu.Unlock()
+	offers := func(m string) bool {
+		if offer == nil {
+			return true
+		}
+		for _, o := range offer {
+			if o == m {
+				return true
+			}
+		}
+		return false
+	}
 	cfg := &ssh.ServerConfig{
 		PasswordCallback: func(_ ssh.ConnMetadata, pw []byte) (*ssh.Permissions, error) {
 			s.mu.Lock()
@@ -152,6 +179,12 @@ func (s *Server) config() *ssh.ServerConfig {
 			}
 			return nil, errors.New("denied")
 		},
+	}
+	if !offers("password") {
+		cfg.PasswordCallback = nil
+	}
+	if !offers("publickey") {
+		cfg.PublicKeyCallback = nil
 	}
 	cfg.AddHostKey(signer)
 	return cfg

@@ -39,6 +39,8 @@ import type { ApiError } from "./api";
 import { href, useRouter, useStatus } from "./state";
 import type { RemoteAccessView, RemoteDeviceConfigResult, RemoteDevicePatch, RemoteDeviceView, RemoteMode, RemoteRuntimeView, RemoteSettingsPatch, RouterForward } from "./types";
 import {
+  RowActions,
+  TABLE_SCROLL,
   ApiErrorAlert,
   ApplyRequiredNotice,
   CopyButton,
@@ -165,7 +167,7 @@ export function ConfigOnceDialog({ result, title, onClose }: { result: RemoteDev
                 </Button>
                 <Tag>{MODE_TITLE[result.config.mode]}</Tag>
               </Space>
-              <pre className="config-pre" data-testid="config-text">
+              <pre className="config-pre" data-testid="config-text" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", overflowX: "hidden" }}>
                 {text}
               </pre>
               <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
@@ -591,9 +593,10 @@ export default function RemotePage() {
     () => [
       {
         title: "设备",
+        className: "cell-name",
         render: (_: unknown, d: RemoteDeviceView) => (
           <div>
-            <Space size={4} wrap>
+            <Space size={4}>
               <MobileOutlined />
               <Typography.Text strong>{d.name}</Typography.Text>
               {d.config_outdated ? (
@@ -604,13 +607,13 @@ export default function RemotePage() {
                 </Tooltip>
               ) : null}
             </Space>
-            {d.notes ? <div className="muted" style={{ fontSize: 12 }}>{d.notes}</div> : null}
+            {d.notes ? <div className="muted cell-note">{d.notes}</div> : null}
           </div>
         ),
       },
       {
         title: "模式",
-        width: 96,
+        className: "nowrap",
         render: (_: unknown, d: RemoteDeviceView) => (
           <Tooltip title={MODE_SHORT[d.mode]}>
             <Tag color={d.mode === "full" ? "blue" : "default"}>{MODE_TITLE[d.mode]}</Tag>
@@ -619,7 +622,7 @@ export default function RemotePage() {
       },
       {
         title: "地址",
-        width: 220,
+        className: "nowrap",
         render: (_: unknown, d: RemoteDeviceView) => (
           <div className="mono-small">
             <div>{d.ipv4}</div>
@@ -648,7 +651,7 @@ export default function RemotePage() {
       },
       {
         title: "密钥",
-        width: 110,
+        className: "nowrap",
         render: (_: unknown, d: RemoteDeviceView) => (
           <Tooltip title={d.preshared_key ? "带预共享密钥" : "没有预共享密钥"}>
             <span>
@@ -659,26 +662,26 @@ export default function RemotePage() {
       },
       {
         title: "启用",
-        width: 70,
         render: (_: unknown, d: RemoteDeviceView) => (
           <Switch size="small" checked={d.enabled} loading={act.busy === `enable:${d.id}`} onChange={(on) => setEnabled(d, on)} aria-label={`启用 ${d.name}`} />
         ),
       },
       {
-        title: "",
-        width: 250,
+        title: "操作",
+        fixed: "right" as const,
+        className: "cell-actions",
         render: (_: unknown, d: RemoteDeviceView) => (
-          <Space size={0} className="table-actions">
+          <RowActions
+            label={d.name}
+            more={[
+              { key: "edit", icon: <EditOutlined />, label: "编辑", onClick: () => setEditing(d) },
+              { key: "delete", icon: <DeleteOutlined />, label: "删除", danger: true, onClick: () => remove(d) },
+            ]}
+          >
             <Button type="link" size="small" icon={<SyncOutlined />} loading={act.busy === `regen:${d.id}`} onClick={() => regenerate(d)}>
               重新生成
             </Button>
-            <Button type="link" size="small" icon={<EditOutlined />} onClick={() => setEditing(d)}>
-              编辑
-            </Button>
-            <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => remove(d)}>
-              删除
-            </Button>
-          </Space>
+          </RowActions>
         ),
       },
     ],
@@ -762,7 +765,7 @@ export default function RemotePage() {
                   dataSource={v.devices}
                   pagination={false}
                   columns={columns}
-                  scroll={{ x: 1000 }}
+                  scroll={TABLE_SCROLL}
                   onRow={(d) => ({ "data-testid": `device-row-${d.id}` }) as React.HTMLAttributes<HTMLElement>}
                 />
               )}

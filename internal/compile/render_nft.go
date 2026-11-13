@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/validate"
 )
 
 type mssClamp struct {
@@ -21,7 +22,7 @@ func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPla
 	case model.RoleGateway:
 		return renderGatewayNFT(t, tunnels, exits, groups, mss4, mss6, decisions, clamps)
 	case model.RoleExit:
-		return renderExitNFT(t, n)
+		return renderExitNFT(t, n, tunnels, exits, groups)
 	default:
 		return renderTransitNFT(n, tunnels)
 	}
@@ -116,6 +117,16 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	}
 	sb.WriteString("    ip daddr @underlay4 drop comment \"clients cannot bypass the tunnel by talking to an endpoint\"\n")
 	sb.WriteString("    ip daddr 10.66.0.0/16 drop comment \"tunnel v4 is not a LAN destination\"\n")
+	// A LAN IPv6 prefix inside fc00::/7 is classified domestic right ahead
+	// of the ULA drop, exactly as wide as configured (validation keeps it
+	// clear of fd66::/48, the transit prefix, the device pool and the tunnel
+	// ULA). Table 100 holds it on-link on the LAN NIC, and the guard admits
+	// the domestic mark only there, so it reaches home hosts, never ROS's
+	// default route. A global LAN prefix keeps its place further down.
+	lanULA, isULA := lanULAPrefix(t)
+	if isULA {
+		fmt.Fprintf(&sb, "    ip6 daddr %s meta mark set %#x return comment \"ULA LAN prefix: home hosts only\"\n", lanULA, markDomestic)
+	}
 	sb.WriteString("    ip6 daddr fc00::/7 drop comment \"ULA, including fd66, never goes to ROS\"\n")
 	// Link-local and multicast must not be dropped here: RA and ND arrive
 	// on this interface and are delivered locally. Forwarded copies are
@@ -138,7 +149,7 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	// the main default, and the catch-all below would otherwise stuff them
 	// into the foreign tunnel.
 	fmt.Fprintf(&sb, "    ip daddr { 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } meta mark set %#x return\n", markDomestic)
-	if t.Settings.LANIPv6Prefix != "" {
+	if t.Settings.LANIPv6Prefix != "" && !isULA {
 		fmt.Fprintf(&sb, "    ip6 daddr %s meta mark set %#x return\n", t.Settings.LANIPv6Prefix, markDomestic)
 	}
 	sb.WriteString("    ip daddr @default4 meta mark set " + fmt.Sprintf("%#x", def.Mark) + " return\n")
@@ -237,6 +248,22 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 			fmt.Fprintf(&sb, "    ip6 saddr %s meta mark %#x snat to %s\n", rp.V6, m.Mark, m.TransitV6)
 		}
 	}
+	// This host's own queries to a switchable region group's resolver
+	// address (SmartDNS upstreams with -set-mark, render_dns.go). They leave
+	// with the source address of the tunnel interface; the hub selects the
+	// group table by source, so they get the group's transit address, like
+	// the group's LAN traffic above. Narrow on purpose: the group mark, the
+	// group's own resolver address, UDP/TCP 53. Only this host can produce
+	// such a packet: the mark is set either by the classifier, which runs on
+	// LAN (and mra) ingress only and drops every fc00::/7 destination before
+	// any rule could mark it, or by a local socket. Without the mark nothing
+	// is translated and the hub cannot route the query into any member.
+	for _, g := range groups {
+		if !g.Dynamic {
+			continue
+		}
+		fmt.Fprintf(&sb, "    ip6 daddr %s meta mark %#x meta l4proto { tcp, udp } th dport 53 snat ip6 to %s comment \"group %s resolver: this host's own queries\"\n", g.Resolver, g.Mark, g.TransitV6, verifyLabel(g.Group.ID))
+	}
 	if rp != nil {
 		// ROS has no route back to the pools, and LAN hosts may not route
 		// them to this host: domestic-direct and device-to-LAN traffic
@@ -249,7 +276,7 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	return sb.String()
 }
 
-func renderExitNFT(t model.Topology, n model.Node) string {
+func renderExitNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
 	wan := n.WANInterface
 	if wan == "" {
 		wan = "eth0"
@@ -259,6 +286,7 @@ func renderExitNFT(t model.Topology, n model.Node) string {
 	fmt.Fprintf(&sb, "# exit %s public NAT. Tunnel ULA and the LAN prefix are translated here, not on the home gateway.\n", n.ID)
 	writeAtomicReplace(&sb, tableMain)
 	sb.WriteString("table inet meridian {\n")
+	writeGroupResolverDNAT(&sb, n, tunnels, exits, groups)
 	sb.WriteString("  chain srcnat {\n    type nat hook postrouting priority srcnat; policy accept;\n")
 	if n.EgressV4 {
 		fmt.Fprintf(&sb, "    oifname \"%s\" ip saddr { %s, %s } masquerade\n", wan, lanNet(t), transitV4Net())
@@ -276,6 +304,52 @@ func renderExitNFT(t model.Topology, n model.Node) string {
 	}
 	sb.WriteString("}\n")
 	return sb.String()
+}
+
+// writeGroupResolverDNAT answers the region-group resolver addresses on an
+// exit the hub can switch a group to (a direct WireGuard tunnel from the
+// hub). A query to any address of validate.GroupResolverNet that arrives
+// from the hub's tunnel is DNATed to this exit's own tunnel resolver, the
+// address its SmartDNS binds (renderExitDNS). Connection tracking turns the
+// reply's source back into the resolver address the gateway asked, so the
+// answer is accepted whatever source the resolver picks, and no second
+// listener is needed. The reply goes to the group's transit address, which
+// this exit routes back into the tunnel (renderExitRoutes), the same return
+// path as the group's data. Every group address is answered, not only
+// those of the groups this exit is in today: a group that gains this exit
+// as a member then needs no new configuration here. Queries arriving on any
+// other interface (the WAN, the Mesh) are not translated. A topology with
+// no switchable group renders nothing here.
+func writeGroupResolverDNAT(sb *strings.Builder, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) {
+	any := false
+	for _, g := range groups {
+		any = any || g.Dynamic
+	}
+	e, ok := exitByID(exits, n.ID)
+	if !any || !ok || !switchable(e) {
+		return
+	}
+	if e.DNSULA == "" {
+		fmt.Fprintf(sb, "  # no tunnel resolver on %s: region-group resolver addresses are not answered here\n", n.ID)
+		return
+	}
+	var ifs []string
+	seen := map[string]bool{}
+	for _, tun := range tunnels {
+		if tun.East.ID != n.ID || tun.West.Role != model.RoleHub || tun.Standby || seen[tun.Iface()] {
+			continue
+		}
+		seen[tun.Iface()] = true
+		ifs = append(ifs, "\""+tun.Iface()+"\"")
+	}
+	if len(ifs) == 0 {
+		return
+	}
+	sortStrings(ifs)
+	sb.WriteString("  chain group_dns {\n    type nat hook prerouting priority dstnat; policy accept;\n")
+	fmt.Fprintf(sb, "    iifname { %s } ip6 daddr %s meta l4proto { tcp, udp } th dport 53 dnat ip6 to %s comment \"region-group resolver addresses: this exit's tunnel resolver\"\n",
+		strings.Join(ifs, ", "), validate.GroupResolverNet, e.DNSULA)
+	sb.WriteString("  }\n")
 }
 
 func renderTransitNFT(n model.Node, tunnels []Tunnel) string {
@@ -492,4 +566,19 @@ func panelPort(t model.Topology) int {
 		return fallback
 	}
 	return n
+}
+
+// ulaRange is fc00::/7. The gateway classifier drops forwarded traffic to it.
+var ulaRange = netip.MustParsePrefix("fc00::/7")
+
+// lanULAPrefix returns the LAN IPv6 prefix, masked, when it is a ULA: an
+// IPv6 network inside fc00::/7 of length /48 or longer (what validation
+// allows). Anything else, including a global prefix, returns false and
+// leaves the classifier as it is, so such traffic is still dropped.
+func lanULAPrefix(t model.Topology) (netip.Prefix, bool) {
+	p, err := netip.ParsePrefix(strings.TrimSpace(t.Settings.LANIPv6Prefix))
+	if err != nil || !p.Addr().Is6() || p.Addr().Is4In6() || p.Bits() < 48 || !ulaRange.Contains(p.Addr()) {
+		return netip.Prefix{}, false
+	}
+	return p.Masked(), true
 }

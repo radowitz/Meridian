@@ -343,7 +343,8 @@ type ConnectionTest struct {
 	OK         bool   `json:"ok"`
 	AuthMethod string `json:"auth_method,omitempty"` // password | key
 	// Code classifies a failure: unreachable, timeout, auth_failed,
-	// host_key_mismatch, host_key_untrusted, command_failed.
+	// auth_method_unavailable, host_key_mismatch, host_key_untrusted,
+	// command_failed.
 	Code       string `json:"code,omitempty"`
 	Error      string `json:"error,omitempty"`
 	OS         string `json:"os,omitempty"`

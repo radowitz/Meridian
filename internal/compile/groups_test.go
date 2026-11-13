@@ -268,9 +268,31 @@ func newHubHarness(t *testing.T, topo model.Topology) *hubHarness {
 			t.Fatal(err)
 		}
 	}
-	stub("ip", fmt.Sprintf(`if [ "$1" = link ]; then [ -f %q/link ]; exit; fi
-echo "ip $*" >> %q/ip.log
-`, h.ctrl, h.ctrl))
+	// ip: "link" answers from ctrl/link; route changes are logged and kept
+	// per family and table (the default that is not the metric-32767
+	// floor), so "route show" lists what a kernel would; ctrl/fail-<table>
+	// makes every change of that table fail.
+	stub("ip", strings.ReplaceAll(`if [ "$1" = link ]; then [ -f CTRL/link ]; exit; fi
+echo "ip $*" >> CTRL/ip.log
+fam=4
+if [ "$1" = -6 ]; then fam=6; fi
+if [ "$1" = -4 ] || [ "$1" = -6 ]; then shift; fi
+table=""; prev=""
+for a in "$@"; do [ "$prev" = table ] && table="$a"; prev="$a"; done
+if [ "$1 ${2:-}" = "route show" ]; then
+  [ -n "$table" ] && cat "CTRL/tbl$fam-$table" 2>/dev/null
+  echo "blackhole default metric 32767"
+  exit 0
+fi
+if [ -n "$table" ] && [ -f "CTRL/fail-$table" ]; then exit 1; fi
+if [ "$1 ${2:-}" = "route replace" ] && [ -n "$table" ]; then
+  case " $* " in *" metric 32767 "*) exit 0 ;; esac
+  shift 2; route=""
+  for a in "$@"; do [ "$a" = table ] && break; route="$route $a"; done
+  echo "${route# }" > "CTRL/tbl$fam-$table"
+fi
+exit 0
+`, "CTRL", h.ctrl))
 	stub("ping", fmt.Sprintf(`peer="${@: -1}"
 [ "$(cat %q/peer-$peer 2>/dev/null || echo 1)" = 1 ]
 `, h.ctrl))
@@ -472,7 +494,12 @@ func TestHubManualHoldAndFallback(t *testing.T) {
 			if rt.Active != wantActive || rt.Reason != wantReason || !rt.Alert {
 				t.Fatalf("model: %+v", rt)
 			}
-			touched := strings.Contains(h.log(), fmt.Sprintf("table %d", g.Table))
+			touched := false
+			for _, l := range strings.Split(h.log(), "\n") {
+				if strings.Contains(l, " route replace ") && strings.HasSuffix(l, fmt.Sprintf(" table %d", g.Table)) {
+					touched = true
+				}
+			}
 			if touched != (mode == model.OnFailureFallback) {
 				t.Fatalf("hold must not touch table %d; fallback must:\n%s", g.Table, h.log())
 			}

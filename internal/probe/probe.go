@@ -286,8 +286,8 @@ func (p *Prober) Run(ctx context.Context, spec Spec) Report {
 			if !SupportsFamily(s, spec.Family) {
 				t := p.now()
 				a, _ := Lookup(s)
-				results[i] = Result{Service: s, Family: spec.Family, StartedAt: t, FinishedAt: t, Category: CatUnknown,
-					Grade: GradeUnknown, Signal: SigFamily, Capability: a.Capability,
+				results[i] = Result{Service: s, Family: spec.Family, StartedAt: t, FinishedAt: t, Category: CatNotApplicable,
+					Grade: GradeNotApplicable, Signal: SigFamily, Capability: a.Capability,
 					Evidence: "该服务的公开检测方法只支持 IPv4，没有发出 IPv6 请求"}
 				return
 			}
