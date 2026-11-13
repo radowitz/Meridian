@@ -311,9 +311,21 @@ func (s *Server) postProvisionPreflight(w http.ResponseWriter, r *http.Request) 
 	if s.refuseDeployedElsewhere(w, node) {
 		return
 	}
+	// Every managed node gets its WireGuard key now (panel-side only), so the
+	// reviewed bundle already names real peer keys and stays the same when
+	// the peers are installed later.
+	t, _, err = s.ensureNodeKeys()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	node, _ = t.NodeByID(body.NodeID)
 	b, err := s.compileTopo(t)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if refuseNodePeerKeys(w, b, node.ID) {
 		return
 	}
 	ident, err := identityOf(cs, node)

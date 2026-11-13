@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/radowitz/meridian/internal/artifacts"
+	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/hostexec"
+	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/preflight"
 	"github.com/radowitz/meridian/internal/sshexec"
 	"github.com/radowitz/meridian/internal/sshexec/sshtest"
@@ -212,12 +214,17 @@ func TestProvisionPreflightPlanAndGates(t *testing.T) {
 		t.Fatalf("get: %d %s", rr.Code, rr.Body.String())
 	}
 
-	// First install without a reviewed preflight: refused before any key.
+	// First install without a reviewed preflight: refused before any key is
+	// rotated and before the script runs. (The preflight itself gives every
+	// managed node without a key its pair, panel-side only, so that peers'
+	// configurations never carry a placeholder; a refused provision must
+	// leave that key as it is.)
+	keyBefore := storedNode(t, s, "tw").PrivateKey
 	if rr := f.provision(""); rr.Code != http.StatusConflict || codeOf(t, rr.Body.Bytes()) != codePreflightRequired {
 		t.Fatalf("required: %d %s", rr.Code, rr.Body.String())
 	}
-	if storedNode(t, s, "tw").PrivateKey != "" || f.provisionScripts() != 0 {
-		t.Fatal("refused provision generated a key or ran the script")
+	if storedNode(t, s, "tw").PrivateKey != keyBefore || f.provisionScripts() != 0 {
+		t.Fatal("refused provision generated or rotated a key, or ran the script")
 	}
 
 	// Stale.
@@ -276,8 +283,8 @@ func TestProvisionPreflightPlanAndGates(t *testing.T) {
 	if rr := f.provision(rec.ID); rr.Code != http.StatusConflict || codeOf(t, rr.Body.Bytes()) != codePreflightChanged {
 		t.Fatalf("changed: %d %s", rr.Code, rr.Body.String())
 	}
-	if storedNode(t, s, "tw").PrivateKey != "" || f.provisionScripts() != 0 {
-		t.Fatal("a refused provision generated a key or ran the script")
+	if storedNode(t, s, "tw").PrivateKey != keyBefore || f.provisionScripts() != 0 {
+		t.Fatal("a refused provision generated or rotated a key, or ran the script")
 	}
 
 	// Passes: reviewed, re-run clean, script runs with the pinned identity.
@@ -670,5 +677,72 @@ func TestGatewayPortConflictNamesTheField(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &out)
 	if out.Preflight.Bundle == bundle || out.Preflight.Blocking {
 		t.Fatalf("after moving the port: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A first deployment installs nodes one at a time. The first node's
+// configuration names peers that have never been installed: the preflight
+// gives every managed node its key (panel-side only), so the script that
+// reaches the host never carries the public-key placeholder, and the
+// reviewed bundle stays the same when the peers are installed later.
+func TestFirstInstallPeersGetKeysBeforeAnyHostIsTouched(t *testing.T) {
+	f := newGateFix(t)
+	s := f.s
+	topo, _, _ := s.Store.Load()
+	var peers []string
+	for i := range topo.Nodes {
+		if topo.Nodes[i].Managed && topo.Nodes[i].Role != model.RoleGateway {
+			topo.Nodes[i].PublicKey, topo.Nodes[i].PrivateKey = "", ""
+			peers = append(peers, topo.Nodes[i].ID)
+		}
+	}
+	if err := s.Store.Save(topo); err != nil {
+		t.Fatal(err)
+	}
+	id := reviewPreflight(t, s, "tw")
+	after, _, _ := s.Store.Load()
+	for _, n := range after.Nodes {
+		if n.Managed && !compile.ValidWGKey(n.PublicKey) {
+			t.Errorf("managed node %s has no usable public key after the preflight: %q", n.ID, n.PublicKey)
+		}
+	}
+	if rr := f.provision(id); rr.Code != http.StatusOK {
+		t.Fatalf("provision after preflight: %d %s", rr.Code, rr.Body.String())
+	}
+	for _, in := range f.srv.Stdins() {
+		if strings.Contains(in, "EXAMPLE_PUBLIC_KEY_DO_NOT_USE") {
+			t.Fatal("a script sent to the host names a peer by the public-key placeholder")
+		}
+	}
+	if f.provisionScripts() != 1 {
+		t.Fatalf("provision scripts sent: %d, want 1", f.provisionScripts())
+	}
+	// The hub's key did not change when tw was installed.
+	hubBefore, _ := after.NodeByID("hk-hub")
+	final, _, _ := s.Store.Load()
+	hubAfter, _ := final.NodeByID("hk-hub")
+	if hubBefore.PublicKey != hubAfter.PublicKey {
+		t.Fatal("a peer's key changed during the node's install")
+	}
+	_ = peers
+
+	// An unmanaged peer whose key nobody entered cannot be generated: the
+	// panel refuses before connecting.
+	topo, _, _ = s.Store.Load()
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == "hk-hub" {
+			topo.Nodes[i].Managed, topo.Nodes[i].PublicKey, topo.Nodes[i].PrivateKey = false, "", ""
+		}
+	}
+	if err := s.Store.Save(topo); err != nil {
+		t.Fatal(err)
+	}
+	accepted := f.srv.Accepted()
+	rr := do(s, http.MethodPost, "/api/provision/preflight", mustJSON(map[string]any{"node_id": "tw"}))
+	if rr.Code != http.StatusUnprocessableEntity || !strings.Contains(rr.Body.String(), codePeerKeysMissing) {
+		t.Fatalf("keyless unmanaged peer: %d %s", rr.Code, rr.Body.String())
+	}
+	if f.srv.Accepted() != accepted {
+		t.Fatal("the refusal connected to the server")
 	}
 }

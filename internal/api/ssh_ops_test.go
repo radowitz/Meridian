@@ -477,6 +477,9 @@ func TestSSHFlowReusesOneLogin(t *testing.T) {
 func TestSSHRateLimitedAcrossOperations(t *testing.T) {
 	f := newGateFix(t)
 	id := f.preflight(t).ID
+	// The preflight gave the node its key (panel-side); nothing below may
+	// rotate it.
+	keyBefore := storedNode(t, f.s, "tw").PrivateKey
 	f.s.SSHPool.CloseAll()
 	f.srv.RefuseBeforeBanner("Not allowed at this time")
 	attempts := f.srv.AuthAttempts()
@@ -498,8 +501,8 @@ func TestSSHRateLimitedAcrossOperations(t *testing.T) {
 	if msg, _ := out["error"].(string); !strings.Contains(msg, "Not allowed at this time") || !strings.Contains(msg, "不是密码") || strings.Contains(msg, "EOF") {
 		t.Fatalf("provision message %q", msg)
 	}
-	if f.provisionScripts() != 0 || storedNode(t, f.s, "tw").PrivateKey != "" {
-		t.Fatal("ran or generated a key")
+	if f.provisionScripts() != 0 || storedNode(t, f.s, "tw").PrivateKey != keyBefore {
+		t.Fatal("ran, or generated or rotated a key")
 	}
 	rr := do(f.s, http.MethodPost, "/api/servers/"+f.id+"/test", nil)
 	var tr struct{ Test model.ConnectionTest }

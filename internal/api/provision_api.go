@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/radowitz/meridian/internal/apply"
+	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/credentials"
+	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/preflight"
 	"github.com/radowitz/meridian/internal/provision"
 	"github.com/radowitz/meridian/internal/sshexec"
@@ -38,6 +41,72 @@ var provisionRemoved = []string{"ssh_host", "ssh_port", "ssh_user", "private_key
 // script itself re-checks ownership on the host, keeps a journal and
 // compensates a failed run; the response says exactly what happened
 // (installed / refused / compensated / left behind / unknown).
+// ensureNodeKeys gives every managed node that has neither a private nor a
+// public key a WireGuard pair. It only touches the panel's stored topology:
+// no host is contacted. A first deployment installs nodes one at a time, and
+// each node's configuration names its peers' public keys; without this the
+// first node would be sent the placeholder for a peer that has never been
+// installed, and WireGuard on the host would refuse the file.
+func (s *Server) ensureNodeKeys() (model.Topology, []string, error) {
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
+	t, err := s.topology()
+	if err != nil {
+		return model.Topology{}, nil, err
+	}
+	var made []string
+	for i := range t.Nodes {
+		n := t.Nodes[i]
+		priv := strings.TrimSpace(n.PrivateKey)
+		if priv == "***" {
+			priv = ""
+		}
+		if !n.Managed || priv != "" || strings.TrimSpace(n.PublicKey) != "" {
+			continue
+		}
+		if _, changed, err := provision.ResolveNodeKey(&t, n.ID, provision.KeyGenerateIfMissing); err != nil {
+			return model.Topology{}, nil, err
+		} else if changed {
+			made = append(made, n.ID)
+		}
+	}
+	if len(made) > 0 {
+		if err := s.Store.Save(t); err != nil {
+			return model.Topology{}, nil, err
+		}
+	}
+	return t, made, nil
+}
+
+// refuseNodePeerKeys answers 422 when nodeID's own WireGuard configs in b
+// name a peer without a usable public key (an unmanaged peer whose key was
+// never entered, or a node that has a public key from elsewhere but an
+// invalid one). Nothing has been sent to the host at that point.
+func refuseNodePeerKeys(w http.ResponseWriter, b *compile.Bundle, nodeID string) bool {
+	probs := b.PeerKeyProblems(nodeID)
+	if len(probs) == 0 {
+		return false
+	}
+	seen := map[string]bool{}
+	var peers []string
+	for _, p := range probs {
+		if !seen[p.Peer] {
+			seen[p.Peer] = true
+			peers = append(peers, p.Peer)
+		}
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"code": codePeerKeysMissing,
+		"error": fmt.Sprintf("拒绝装机：节点 %s 的 WireGuard 配置里这些对端没有可用的公钥（缺失、仍是占位符或格式不对）：%s。"+
+			"受管节点的密钥由面板自动生成；这里列出的是不受管的对端，或公钥是手工填写且无效的节点：在拓扑里填入 44 字符的 base64 公钥，或清空后让面板生成。没有连接服务器。",
+			nodeID, strings.Join(peers, "、")),
+		"peer_key_problems": probs,
+		"outcome":           "not_started",
+		"node_id":           nodeID,
+	})
+	return true
+}
+
 func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	var body provisionBody
 	if err := decodeStrict(w, r, &body, []string{"node_id", "dry_run", "generate_keys", "preflight_id"}, provisionRemoved, false); err != nil {
@@ -149,6 +218,14 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		expect = "same"
 	}
 
+	// Peers that have never been installed still need a key before this
+	// node's configuration is compiled. A key made here changes the bundle,
+	// so the comparison with the reviewed preflight below refuses and the
+	// operator reviews again; the preflight itself normally made them.
+	if _, _, err := s.ensureNodeKeys(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	var key, pub string
 	if body.GenerateKeys {
 		// Rotate: store the new pair before compiling so peer configs carry
@@ -172,6 +249,9 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	b, err := s.compileTopo(t)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if refuseNodePeerKeys(w, b, node.ID) {
 		return
 	}
 	files := provision.FilesFor(b.Files, node.ID)
