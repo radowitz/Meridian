@@ -72,6 +72,9 @@ type Server struct {
 	// gateway's upstream record, through the host agent; hostexec.Client in
 	// main). Nil: with a backup hub the carrying hub is unknown.
 	Upstream UpstreamRuntime
+	// Sniff reads the name-sniffing forwarder's status through the host
+	// agent (hostexec.Client in main). Nil: unavailable.
+	Sniff SniffRuntime
 	// Prober is the host agent's read-only unlock probe (the same
 	// hostexec.Client as Host in main). Nil: the panel cannot probe and the
 	// scheduler records that, without inventing results.
@@ -149,6 +152,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/host", s.getHost)
 	mux.HandleFunc("GET /api/status", s.getStatus)
 	mux.HandleFunc("GET /api/upstream", s.getUpstream)
+	mux.HandleFunc("GET /api/sniff", s.getSniff)
+	mux.HandleFunc("PUT /api/sniff", s.putSniff)
 	mux.HandleFunc("POST /api/host/recover", s.postHostRecover)
 	mux.HandleFunc("POST /api/provision", s.postProvision)
 	mux.HandleFunc("GET /api/pools", s.getPools)
@@ -318,6 +323,9 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 	// the stored blocks.
 	if !imported {
 		t.RuleSets, t.ServiceGroups, t.MihomoImport = cur.RuleSets, cur.ServiceGroups, cur.MihomoImport
+		// settings.sniff is owned by /api/sniff (sniff.go): a document
+		// loaded before the setting changed must not turn it back.
+		t.Settings.Sniff = cur.Settings.Sniff
 	}
 	// Validate what will be stored: the slots the store will keep or give
 	// (the save reconciles again under the store lock, with the same result

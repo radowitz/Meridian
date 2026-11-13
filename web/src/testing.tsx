@@ -90,6 +90,12 @@ export const DEFAULTS: Record<string, Handler> = {
     rules: [],
   }),
   "GET /api/upstream": () => ({ mode: "single", known: false, source: "topology" }),
+  "GET /api/sniff": () => ({
+    setting: { enabled: false, ports: [80, 443], ech_public_names: ["cloudflare-ech.com"], record_names: false },
+    listen_port: 5358,
+    coverage: { by_name: ["能读到名字的 TCP"], address_only: ["所有 UDP"], costs: ["ECH 公共名"] },
+    runtime: { available: false, code: "agent_unavailable", message: "没有配置 host agent", present: false },
+  }),
   "GET /api/ssh-credentials": () => ({ credentials: [] }),
   "GET /api/socks-credentials": () => ({ credentials: [] }),
   "GET /api/servers": () => ({ servers: [] }),

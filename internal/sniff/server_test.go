@@ -3,7 +3,9 @@ package sniff
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -618,11 +620,11 @@ func TestInstallChecks(t *testing.T) {
 	}
 	gen := s.Health().Generation
 	bad := map[string]func([]Target) []Target{
-		"missing target": func(t []Target) []Target { return t[1:] },
-		"wrong mark":     func(t []Target) []Target { t[1].Mark = 0x199; return t },
-		"no resolver":    func(t []Target) []Target { t[2].Resolvers = nil; return t },
-		"bad resolver":   func(t []Target) []Target { t[2].Resolvers = []string{"resolver.example"}; return t },
-		"shared mark":    func(t []Target) []Target { t[3].Mark = t[2].Mark; return t },
+		"missing target":       func(t []Target) []Target { return t[1:] },
+		"wrong mark":           func(t []Target) []Target { t[1].Mark = 0x199; return t },
+		"reject with resolver": func(t []Target) []Target { t[4].Resolvers = []string{rsHK}; return t },
+		"bad resolver":         func(t []Target) []Target { t[2].Resolvers = []string{"resolver.example"}; return t },
+		"shared mark":          func(t []Target) []Target { t[3].Mark = t[2].Mark; return t },
 		"reject mismatch": func(t []Target) []Target {
 			t[4].Reject = false
 			t[4].Resolvers = []string{rsHK}
@@ -636,6 +638,14 @@ func TestInstallChecks(t *testing.T) {
 	}
 	if s.Health().Generation != gen {
 		t.Fatal("a refused install changed the rules")
+	}
+	// A target without resolvers is accepted since R3 (an exit reached only
+	// over the Mesh has no tunnel resolver): names decided to it fail with
+	// ErrNoResolvers instead of using another resolver (TestNoResolverTarget).
+	nr := fixtureTargets()
+	nr[2].Resolvers = nil
+	if err := s.Install(c, nr); err != nil {
+		t.Fatalf("target without resolvers refused: %v", err)
 	}
 }
 
@@ -875,10 +885,19 @@ func TestParseArgs(t *testing.T) {
 		{"--listen", "127.0.0.1:1", "--snapshot", "/a", "--targets", "/b", "--mode", "socks"},
 		{"--listen", "127.0.0.1:1", "--snapshot", "/a", "--targets", "/b", "--sniff-ports", "0"},
 		{"--listen", "127.0.0.1:1", "--snapshot", "/a", "--targets", "/b", "--max-sniff-bytes", "10"},
+		{"--listen", "127.0.0.1:1", "--snapshot", "/a", "--targets", "/b", "--addr-mark-bit", "0x3"},
+		{"--listen", "127.0.0.1:1", "--snapshot", "/a", "--targets", "/b", "--ech-public-names", "not a name"},
 	} {
 		if _, err := ParseArgs(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestParseArgsR3(t *testing.T) {
+	c, err := ParseArgs([]string{"--listen", "[::]:5358", "--snapshot", "/a", "--targets", "/b", "--ech-outer", "--ech-public-names", "Cloudflare-ECH.com,ech.example.net", "--addr-mark-bit", "0x1000000"})
+	if err != nil || !c.ECHOuter || strings.Join(c.ECHPublicNames, ",") != "cloudflare-ech.com,ech.example.net" || c.AddrMarkBit != 0x1000000 {
+		t.Fatalf("%+v %v", c, err)
 	}
 }
 
@@ -969,5 +988,128 @@ func TestAddrMark(t *testing.T) {
 	}
 	if d := h.dialLog(); len(d) != 2 || d[1] != "198.51.100.10:443 0x10a" {
 		t.Fatalf("dials %q", d)
+	}
+}
+
+// R3: a target without resolvers (an exit reached only over the Mesh, no
+// tunnel resolver) is installed; a name decided to it fails without asking
+// any other resolver, and a connection without a name still goes to its
+// original address with that target's mark.
+func TestNoResolverTarget(t *testing.T) {
+	rules, tail := fixtureRules()
+	ts := fixtureTargets()
+	ts[1].Resolvers = nil // exit:jp
+	rules = append([]ordered.Rule{{ID: "jpname", Target: "exit:jp", Mark: mJP, Entries: []ordered.Entry{sfx("jp.example.org")}}}, rules...)
+	h := newHarness(t, Config{}, rules, tail, ts)
+	expectReset(t, h.connectWrite("203.0.113.9:443", clientHello("www.jp.example.org")))
+	if r := h.last(1); r.Result != "resolve_failed" || r.Target != "exit:jp" {
+		t.Fatalf("%+v", r)
+	}
+	h.roundTrip(h.connect("203.0.113.200:443"), 0, []byte("SSH-2.0-test\r\n"))
+	if d := h.dialLog(); len(d) != 1 || d[0] != "203.0.113.200:443 0x102" {
+		t.Fatalf("dials %q", d)
+	}
+	if q := h.dn.queries(); len(q) != 0 {
+		t.Fatalf("queries %q", q)
+	}
+}
+
+// R3: targets are matched by mark. A static region group's rules carry its
+// member exit's mark: "group:static" and "exit:jp" share one target entry
+// (its label is the exit's), and the decision record keeps the rule's own
+// target name.
+func TestTargetsByMark(t *testing.T) {
+	rules, tail := fixtureRules()
+	rules = append([]ordered.Rule{{ID: "static", Target: "group:static", Mark: mJP, Entries: []ordered.Entry{sfx("dev.example.org")}}}, rules...)
+	h := newHarness(t, Config{}, rules, tail, fixtureTargets())
+	h.roundTrip(h.connect("203.0.113.5:443"), 0, clientHello("dev.example.org"))
+	if d := h.dialLog(); len(d) != 1 || d[0] != "198.51.100.30:443 0x102" {
+		t.Fatalf("dials %q", d)
+	}
+	if q := h.dn.queries(); len(q) != 1 || !strings.HasPrefix(q[0], rsJP+" ") {
+		t.Fatalf("queries %q", q)
+	}
+	if r := h.last(1); r.Target != "group:static" || r.Mark != mJP {
+		t.Fatalf("%+v", r)
+	}
+	// A mark the target file does not list is refused at install.
+	bad := append([]ordered.Rule{{ID: "x", Target: "group:static", Mark: 0x1ff, Entries: []ordered.Entry{sfx("x.example.org")}}}, rules...)
+	if err := New(Config{}).Install(ordered.Compile(bad, tail, -1), fixtureTargets()); err == nil {
+		t.Fatal("a rule mark without a target entry was installed")
+	}
+}
+
+// R3 ECH: with ECHOuter the cleartext name decides (the real name of a
+// GREASE ECH ClientHello), except for a configured ECH public name (and
+// names under it), which is decided by address; the record says which.
+func TestECHPublicNames(t *testing.T) {
+	h := defaultHarness(t, Config{ECHOuter: true, ECHPublicNames: []string{"example.net"}})
+	ech := func(n string) []byte { return records(helloMsg(helloOpts{sni: []string{n}, ech: true}), 1<<14) }
+	h.roundTrip(h.connect("203.0.113.201:443"), 0, ech("public.example.net"))
+	if r := h.last(1); r.Sniffed || r.Why != WhyECHPublic || r.By != ordered.ByAddr {
+		t.Fatalf("public name: %+v", r)
+	}
+	h.roundTrip(h.connect("203.0.113.5:443"), 0, ech("b.ai.example.org"))
+	if r := h.last(2); !r.Sniffed || r.Why != WhyECHOuter || r.RuleID != "ai" {
+		t.Fatalf("GREASE name: %+v", r)
+	}
+	d := h.dialLog()
+	if len(d) != 2 || d[0] != "203.0.113.201:443 0x102" || d[1] != "198.51.100.20:443 0x113" {
+		t.Fatalf("dials %q", d)
+	}
+}
+
+// R3: the target file can name the snapshot it belongs to; a pair from two
+// generations is refused (startup fails, a reload keeps the current pair).
+func TestSnapshotPair(t *testing.T) {
+	dir := t.TempDir()
+	snap := []byte(`{"version":1,"rules":[],"quic_at":-1,"tail":{"domestic_geosite":"","direct_mark":100,"default":"group:hk","default_mark":266}}`)
+	other := []byte(`{"version":1,"rules":[],"quic_at":-1,"tail":{"domestic_geosite":"","direct_mark":100,"default":"group:hk","default_mark":266} }`)
+	sum := sha256.Sum256(snap)
+	tf := fmt.Sprintf(`{"version":1,"snapshot_sha256":%q,"targets":[{"target":"direct","mark":100,"resolvers":["192.0.2.53:53"]},{"target":"group:hk","mark":266,"resolvers":["[fd66::53:a]:53"]}]}`, hex.EncodeToString(sum[:]))
+	cfg := Config{SnapshotPath: filepath.Join(dir, "decide.json"), TargetsPath: filepath.Join(dir, "targets.json"), ListsDir: dir}
+	if err := os.WriteFile(cfg.TargetsPath, []byte(tf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.SnapshotPath, snap, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg)
+	if err := s.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	gen := s.Health().Generation
+	if err := os.WriteFile(cfg.SnapshotPath, other, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(); err == nil || !strings.Contains(err.Error(), "two generations") {
+		t.Fatalf("mismatched pair loaded: %v", err)
+	}
+	if h := s.Health(); h.Generation != gen || h.LastReloadError == "" {
+		t.Fatalf("%+v", h)
+	}
+}
+
+// MarkFromSocket off Linux (and on a socket without the bit) reports mark
+// 0, which no target has: the connection is reset, never decided by the
+// forwarder's own address view.
+func TestMarkFromSocketNoBit(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		if c, err := l.Accept(); err == nil {
+			c.Close()
+		}
+	}()
+	c, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if m, ok := MarkFromSocket(0x01000000)(c); m != 0 || !ok {
+		t.Fatalf("mark %#x ok %v", m, ok)
 	}
 }

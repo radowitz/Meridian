@@ -72,6 +72,7 @@ func CheckBundle(t model.Topology, files map[string]string) []Item {
 	auto = append(auto, keyPlaceholderItem(files))
 	auto = append(auto, remoteAccessItem(t, files, gwp))
 	auto = append(auto, resolverItems(t, files, gwp)...)
+	auto = append(auto, sniffItem(t, files, gwp))
 	items := make([]Item, 0, len(auto)+24)
 	for _, it := range auto {
 		it.Scope = ScopeAutomated
@@ -81,6 +82,9 @@ func CheckBundle(t model.Topology, files map[string]string) []Item {
 	items = append(items, humanItems(t)...)
 	if t.RemoteAccess.Active() {
 		items = append(items, remoteHumanItems(t)...)
+	}
+	if t.SniffOn() {
+		items = append(items, sniffOtherItems()...)
 	}
 	items = append(items,
 		Item{
@@ -666,4 +670,67 @@ func CheckSysctl(values map[string]string) []Item {
 		out = append(out, Item{ID: w.id, Status: Pass, Title: w.title, Detail: w.key + "=" + got})
 	}
 	return out
+}
+
+// sniffItem: the name-sniffing forwarder in the generated gateway files
+// (compile/render_sniff.go). Off: nothing of it may be there.
+func sniffItem(t model.Topology, files map[string]string, gwp string) Item {
+	const id, title = "sniff_config", "按域名嗅探：接管、失败关闭与限制出站的生成配置"
+	nft := files[gwp+"etc/nftables.d/meridian.nft"]
+	unit := files[gwp+"etc/systemd/system/meridian-sniff.service"]
+	if !t.SniffOn() {
+		if strings.Contains(nft, "sniff_") || unit != "" {
+			return Item{ID: id, Status: Fail, Title: title, Detail: "按域名嗅探没有开启，生成的网关配置里却有它的链或单元。"}
+		}
+		return Item{ID: id, Status: Skip, Title: title, Detail: "没有开启按域名嗅探：全部连接按目的地址分类。"}
+	}
+	need := map[string]string{
+		"只接管新连接的第一个 SYN":           "tcp flags & (fin | syn | rst | ack) != syn return",
+		"不接管本机地址":                  "fib daddr type local return",
+		"重定向到转发服务":                 "meta l4proto tcp redirect to :",
+		"转发服务端口只收重定向的连接":           "ct status & dnat == 0 drop",
+		"其他监听保持标记 0":               "meta mark set 0x00000000",
+		"转发服务的出站没有合法标记一律丢弃":        `counter name "sniff_denied" drop comment "fail closed`,
+		"转发服务的出站按标记换成中转源地址":        "snat ip to 10.66.200.",
+		"转发服务停止时不回落（单元在停止后关闭标记继承）": "ExecStopPost=+/usr/sbin/sysctl -q -w net.ipv4.tcp_fwmark_accept=0",
+		"专用账号": "User=meridian-sniff",
+	}
+	var missing []string
+	for label, needle := range need {
+		if !strings.Contains(nft+unit, needle) {
+			missing = append(missing, label)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) > 0 {
+		return Item{ID: id, Status: Fail, Title: title, Detail: "生成配置缺少：" + strings.Join(missing, "、")}
+	}
+	return Item{ID: id, Status: Pass, Title: title, Detail: "生成配置里有接管链、重定向、转发服务出站限制（按 uid 和标记）、中转源地址和单元。是否已加载、服务是否在跑由 meridian-verify.sh 和面板的嗅探状态显示；运行时证明见 netns 测试项。"}
+}
+
+// sniffOtherItems: the forwarder's runtime and real-client evidence, and
+// its documented limits.
+func sniffOtherItems() []Item {
+	return []Item{
+		{
+			ID: "netns_sniff", Status: Unknown, Scope: ScopeIntegration,
+			Title:  "按域名嗅探的命名空间测试",
+			Detail: "未执行（面板不代跑）。sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run 'TestNetnsSniff' -v，在隔离的 Linux 主机上跑并存档日志：共用地址的两个域名分别从不同出口出去、不经网关 DNS 也按名字分流、停机时连接失败且没有包从局域网口或错误的隧道出去、无标记出站被拒绝、读不到名字时与地址分类一致、出口解析不向国内解析器发查询、远程接入、规则热更新。",
+		},
+		{
+			ID: "sniff_real_client", Status: PendingSignoff, Scope: ScopeHuman,
+			Title:  "按域名嗅探的真实设备表现",
+			Detail: "待人工签收。在开启后的真实网关上，用一台用自己加密 DNS 的设备访问两个按规则去不同地区、共用 CDN 地址的站点，确认各自的出口地区；停掉 meridian-sniff.service，确认网页连接失败而不是绕过；面板「最近决策」与实际一致。",
+		},
+		{
+			ID: "sniff_ech_residual", Status: KnownLimitation, Scope: ScopeLimitation,
+			Title:  "ECH 与读不到名字的连接",
+			Detail: "带 ECH 扩展的连接按明文名字判断（GREASE ECH 时是真名字）；明文名字是已知 ECH 公共名时按地址判断；真启用 ECH 而公共名不在列表里时会按公共名分流。UDP（含 QUIC）、其他端口、没有 SNI/Host 的连接仍按地址。",
+		},
+		{
+			ID: "sniff_relay_drain", Status: KnownLimitation, Scope: ScopeLimitation,
+			Title:  "中继被淘汰时转发服务的已建立连接",
+			Detail: "转发流量的 TCP 在中继被淘汰时会被重置以便重连到其他中继；转发服务自己发起的连接不会，留在原中继上直到结束。新连接按新的权重分配。",
+		},
+	}
 }

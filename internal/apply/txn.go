@@ -793,6 +793,20 @@ func (t *txn) converge(from, to Manifest, toFiles map[string]string, tag string)
 		old, ok := from.fileHash("etc/smartdns/smartdns.conf")
 		r.DNS = !ok || old != h
 	}
+	// The name-sniffing forwarder keeps its connections across an install
+	// that changed only its rule pair: with the same unit file it is
+	// reloaded (SIGHUP after meridian-up.sh loaded the new ruleset),
+	// otherwise restarted like every unit.
+	for _, u := range r.Units {
+		if u != hostexec.SniffUnit {
+			continue
+		}
+		p := "etc/systemd/system/" + u
+		h, _ := to.fileHash(p)
+		if old, ok := from.fileHash(p); ok && old == h && contains(from.Units, u) {
+			r.Reload = append(r.Reload, u)
+		}
+	}
 	return t.call(hostexec.ActionActivate, tag+"-activate", r)
 }
 

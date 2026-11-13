@@ -348,6 +348,9 @@ type Settings struct {
 	// PathQuality is the relay-sharing policy (pathquality.go). Nil means
 	// the defaults; only used with two or more relays.
 	PathQuality *PathQuality `json:"path_quality,omitempty"`
+
+	// Sniff is the name-sniffing TCP forwarder (sniff.go). Nil means off.
+	Sniff *SniffSettings `json:"sniff,omitempty"`
 }
 
 // NAT64 is the placeholder for a future translator in front of a pure-v6

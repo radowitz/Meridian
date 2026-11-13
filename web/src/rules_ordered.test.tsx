@@ -305,3 +305,54 @@ describe("rules: remaining gaps (accept by code, subscription credentials, move 
     await waitFor(() => expect(screen.getByTestId("rule-pos-imp")).toHaveTextContent("1"));
   });
 });
+
+describe("rules: name sniffing", () => {
+  it("shows what is decided by name and by address, saves the setting and lists recent decisions without names", async () => {
+    const api = fakeApi({
+      ...ORDERED_DEFAULTS,
+      "GET /api/topology": () => topo(),
+      "GET /api/sniff": () => ({
+        setting: { enabled: true, ports: [80, 443], ech_public_names: ["cloudflare-ech.com"], record_names: false },
+        listen_port: 5358,
+        coverage: { by_name: ["嗅探端口上能读到名字的 TCP"], address_only: ["所有 UDP，包括 QUIC"], costs: ["ECH 公共名字的误差"] },
+        runtime: {
+          available: true,
+          present: true,
+          active: "active",
+          health: { ready: true, mode: "redirect", listen: "[::]:5358", generation: 2, rules: 3, targets: ["group:hk"], mac_rules: false, mac_lookup: true, active: 1, max_conns: 2048, record_names: false, ech_outer: true, counters: { decided_by_name: 4, decided_by_address_no_sni: 1 } },
+          recent: {
+            record_names: false,
+            connections: [
+              { start: "2026-11-14T00:00:00Z", source: "192.168.100.50", dest: "203.0.113.1:443", proto: "tls", sniffed: true, rule_index: 0, rule_id: "m1", target: "group:hk", result: "ok", decide_ms: 3, generation: 2 },
+              { start: "2026-11-14T00:00:01Z", source: "192.168.100.50", dest: "203.0.113.2:443", why: "no_sni", sniffed: false, rule_index: -1, target: "group:hk", result: "ok", decide_ms: 1, generation: 2 },
+            ],
+          },
+        },
+      }),
+      "PUT /api/sniff": (r) => ({ setting: { ...(r.body as object), ports: [443] } }),
+    });
+    renderAt("#/rules");
+    expect(await screen.findByTestId("sniff-coverage")).toHaveTextContent("所有 UDP，包括 QUIC");
+    expect(screen.getByTestId("sniff-runtime")).toHaveTextContent("按名字 4 · 按地址 1");
+    expect(await screen.findByText("没有 SNI")).toBeInTheDocument();
+    await userEvent.clear(screen.getByLabelText("嗅探端口"));
+    await userEvent.type(screen.getByLabelText("嗅探端口"), "443");
+    await userEvent.click(screen.getByRole("button", { name: btn("保存设置") }));
+    await waitFor(() => expect(api.find("PUT /api/sniff")).toHaveLength(1));
+    expect(api.find("PUT /api/sniff")[0].body).toEqual({ enabled: true, ports: [443], ech_public_names: ["cloudflare-ech.com"], record_names: false });
+  });
+
+  it("sends the device MAC to the rule tester", async () => {
+    const api = fakeApi({
+      ...ORDERED_DEFAULTS,
+      "GET /api/topology": () => topo(),
+      "POST /api/rules/test": () => ({ reason: "域名后缀", target: "group:hk" }),
+    });
+    renderAt("#/rules");
+    await userEvent.type(await screen.findByLabelText("测试域名"), "x.m1.example.net");
+    await userEvent.type(screen.getByLabelText("测试设备 MAC"), "02:00:00:00:00:01");
+    await userEvent.click(screen.getByRole("button", { name: btn("判断") }));
+    await waitFor(() => expect(api.find("POST /api/rules/test")).toHaveLength(1));
+    expect(api.find("POST /api/rules/test")[0].body).toEqual({ name: "x.m1.example.net", address: "", source_mac: "02:00:00:00:00:01" });
+  });
+});

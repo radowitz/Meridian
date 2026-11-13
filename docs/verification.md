@@ -88,7 +88,8 @@
 6. 网关：`sudo bash deploy/verify-smartdns.sh`、`sudo bash deploy/verify-host-exec.sh`，重启后 `--boot`；重启后再跑一次 `meridian-verify.sh`，`chnroute_loaded` 仍为 PASS（证明重载时重新加入了保存的批次）。重启后还要存 `docker compose logs meridian`：局域网口用 DHCP 时应看到 `meridian-bind-waiting` 若干行和一行 `meridian-bind-ready`，`docker inspect -f '{{.RestartCount}}'` 为 0（以前这里是几次 `bind: cannot assign requested address` 崩溃重启）；租约一直不来时应在 `MERIDIAN_BIND_WAIT` 后看到 `meridian-bind-not-ready` 一次。
 7. 隔离 Linux 主机：`sudo bash deploy/verify-mesh-veth.sh`（它按固定命令搭这一跳，不运行编译出的 `meridian-mesh-up.sh`；后者这次有改动——表 170 复制路由时补上设备、Mesh 解析成员出口的表 171——由上面 `TestNetnsGroupDNSFailover` 的 Mesh 阶段运行）。
 8. 在可以随意重装的主机上（不是生产网关、不是在跑别的服务的出口）：远端节点「预检 → 第一次装机 → 撤回」，网关「撤回 → 重新预检 → 安装」，按下面「装机前预检」「撤回与恢复」的实机项核对并存档。
-9. 人工签收（各自存档）：测试机 DNS / WebRTC / 断隧道 / 抓包；真实出口与地区组切换；Cloudflare Mesh 部署、健康、撤回；路由器转发；手机蜂窝拨入两种模式（[远程接入](remote-access.md)「验证」）；解锁平台结论（[unlock-methods.md](unlock-methods.md)「需要人工在真实平台上核对的事项」）。
+9. 按域名嗅探（只在开启时）：隔离 Linux 主机上 `sudo MERIDIAN_NETNS_TEST=1 ./compile.test -test.run '^(TestNetnsSniff|TestNetnsSniffRelaySharing)$' -test.v`（通过的样子见下面「按域名嗅探」），网关上按同一节的实机项核对。
+10. 人工签收（各自存档）：测试机 DNS / WebRTC / 断隧道 / 抓包；真实出口与地区组切换；Cloudflare Mesh 部署、健康、撤回；路由器转发；手机蜂窝拨入两种模式（[远程接入](remote-access.md)「验证」）；解锁平台结论（[unlock-methods.md](unlock-methods.md)「需要人工在真实平台上核对的事项」）。
 
 ## 路径
 
@@ -301,6 +302,29 @@ docker run --rm --network none --platform linux/amd64 -v /tmp/compile.test:/comp
 - [ ] 手动规则优先于自动表。示例里的 `api.example.com` 钉在美国池。
 - [ ] 把 Netflix 改到机房出口时，校验报 `residential_required`，不能保存。
 - [ ] 台湾规则失败时不会自动改去日本。解锁结果只在同一个地区组里换成员。
+
+## 按域名嗅探（settings.sniff）
+
+等级：代码级回归，加上本机 Docker 特权容器（`meridian:local`，linux/amd64 模拟，内核 6.10 linuxkit，nft 1.1.3）里的命名空间测试；**不是网关上的证据**，没有真实客户端、真实隧道或真实出口。
+
+- `go test ./internal/sniff`（含 `-race`）：按标记匹配目标（静态组与成员出口共用、没有解析器的目标、未列出的标记拒绝安装）、ECH 公共名字与外层名字、快照与目标文件成对（哈希不符时保留旧规则）、`--addr-mark-bit` / `--ech-public-names` 参数、`MarkFromSocket` 读不到时报 0（连接被重置）。原有 `TestInstallChecks` 的「没有解析器」一项从「拒绝」移到「接受」（只经 Mesh 的出口没有隧道解析器），按名字决定到它的连接仍然失败（`TestNoResolverTarget`）。
+- `go test ./internal/compile -run 'Sniff|RuleSetNamesUnique'`：关闭时逐字节不变（6 种拓扑：示例、远程接入、主备枢纽、多中继分担、嵌套出口、仅 TCP 的外部出口，都带直连、拒绝、服务组、CIDR、关键词规则；示例里同时有只带 IPv4 和双栈的目标）；目标文件完整（转发核心自己的 `Install` 接受编译出的一对、分类链设置的每个标记都有目标、解析器与网关 SmartDNS 一致、输出链放行的正是这些解析器和查询标记）；链的顺序、兜底表不变、每个出口和组标记的转发服务 SNAT、所有网关隧道都在合法出口里；单元的命令行能被转发核心的参数解析接受；校验拒绝的设置；`meridian-verify.sh` 只在开启时多出检查并能被 `bash -n` 解析；规则数 ≥17 时集合名不再重复。
+- `go test ./internal/hostexec ./internal/apply -run 'Sniff|Reload'`：`reload` 只能用于 activate 且必须在单元列表里；activate 在 `meridian.service` 之后对它 `reload-or-restart`；状态读取（没有套接字、正常、非 JSON、不接受参数）；名单发布后只给正在运行的服务发重载；安装事务：开启装上并启动、只改规则时重载、改设置时重启、运行态回滚、关闭时停掉并删文件、回滚再装回、撤回时移除。
+- `go test ./internal/api -run 'Sniff|RuleTester'`、`go test ./internal/mihomo -run NameAware`：设置接口与校验、运行状态透传、测试器按 MAC；导入时只有关键词标记被放宽，QUIC 仍阻止。
+- 命名空间测试（opt-in，root）：
+
+```
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/compile.test ./internal/compile
+docker run --rm --privileged --network none --platform linux/amd64 -v /tmp/compile.test:/compile.test:ro \
+  -e MERIDIAN_NETNS_TEST=1 --entrypoint /compile.test meridian:local -test.run '^TestNetnsSniff' -test.v
+```
+
+  需要 `ip`、`nft`、`bash`、`setpriv`（不需要 ping 和 python3）。`TestNetnsSniff`：局域网口叫 `enp3s0`，隧道是两端同 MAC、关闭 ARP 的 veth（像 WireGuard 一样的三层链路），对端命名空间按中转源地址判断出口；转发服务就是 `meridian sniff`，以 uid 65530、只带 `CAP_NET_ADMIN` 运行。阶段与通过的样子：A 开启前建立的连接开启后继续回显；B 同一个地址 `203.0.113.110` 上两个名字（HTTP Host 和 TLS SNI 各一次）分别从 hk 组和 us 组的中转地址出去，IPv6 客户端、关键词规则也对；C 读不到名字时与分类链一致（CIDR 规则、解析器学进某规则集合的地址、默认组），关掉 `tcp_fwmark_accept` 时这种连接被重置；D 每个名字只在自己目标的解析器上被问，国内解析器只看到直连名字，直连连接从网关的局域网地址到 ROS，拒绝规则被拒绝；E 远程接入设备同样；F 转发服务自己不带标记、端口不对、目的是私有地址、标记不在任何目标里、DNS 标记不对的出站都被丢弃且 `sniff_denied` 计数增加，合法的一条通过，root 的连接不受影响；G 规则热更新（nft 加载 + 改写一对文件 + SIGHUP）期间持续新建连接，全部成功，先旧目标后新目标；H 杀掉转发服务后被接管的连接约 0.1 秒内被拒绝，对端和 ROS 都没有看到包；全程 ROS 没有收到任何发往境外测试地址的包。最后一行 `meridian-netns-sniff-test-ok`。`TestNetnsSniffRelaySharing`：两条中继分担时转发服务的 24 条连接分布在两条中继的腿上、源地址是默认组的中转地址、没有走备用枢纽；`share_apply backup …` 之后的 8 条只走备用枢纽的腿。最后一行 `meridian-netns-sniff-sharing-test-ok`。
+  `TestSniffNFTLoadAll`（`-e MERIDIAN_NFT_TEST=1`）：上面 6 种拓扑开启后的网关规则集各在一个新命名空间里 `nft -c` / `nft -f` 通过。
+  2026-11-14 在开发机的这个容器里各跑通过（日志没有存档到 `docs/evidence/`）；在 Debian 13 真实内核上**没有执行过**。
+- [ ] 隔离 Linux 主机（主会话，未执行）：上面的命令换成真实内核：`sudo MERIDIAN_NETNS_TEST=1 MERIDIAN_NFT_TEST=1 ./compile.test -test.run '^(TestNetnsSniff|TestNetnsSniffRelaySharing|TestSniffNFTLoadAll)$' -test.v`，再用 `go test -c ./internal/sniff` 的二进制跑 `sudo MERIDIAN_NETNS_TEST=1 ./sniff.test -test.run '^TestLinuxSocketOptions$' -test.v`，存档日志。
+- [ ] 实机（主会话，未执行）：开启后安装，`meridian-verify.sh` 里 `PASS sniff_active`、`PASS sniff_confine`、`PASS sniff_fwmark_accept`、`PASS sniff_account`；`id meridian-sniff` 是 65530；面板规则页的状态为运行中；关闭设置再安装后 `getent passwd meridian-sniff` 为空、`sysctl net.ipv4.tcp_fwmark_accept` 为 0、`nft list chain inet meridian sniff_mark` 不存在。
+- [ ] 人工签收（未执行）：见[测试设备](test-device.md)「按域名嗅探」。
 
 ## 回滚
 

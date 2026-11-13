@@ -222,6 +222,9 @@ func (s *Server) buildImport(w http.ResponseWriter, b importBody, fetch bool) (m
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error(), "code": code})
 		return t, nil, nil, false
 	}
+	// The forwarder covers keyword matching on sniffed TCP; the preview
+	// relaxes only that (mihomo.NameCoveredCodes).
+	o.NameAware = t.SniffOn()
 	p, plan := mihomo.Build(t, cfg, o, s.providerContent(t, fetch))
 	// The written result must validate like any rule the panel saves.
 	next := t
@@ -523,7 +526,11 @@ func (s *Server) refList(t model.Topology) ([]model.Rule, []ordered.Rule, []stri
 				notes = append(notes, "读不到 geosite "+r.Geosite+" 名单，只用了显式域名")
 			}
 		case model.MatchKeyword:
-			notes = append(notes, "关键词规则「"+r.Name+"」在网关上只匹配名单里含这个词的名字；这里按子串判断（mihomo 的语义）")
+			if t.SniffOn() {
+				notes = append(notes, "关键词规则「"+r.Name+"」：嗅探端口上能读到名字的 TCP 按子串判断（与这里相同）；其余流量只匹配名单里含这个词的名字")
+			} else {
+				notes = append(notes, "关键词规则「"+r.Name+"」在网关上只匹配名单里含这个词的名字；这里按子串判断（mihomo 的语义）")
+			}
 		}
 		tg := t.ResolveTarget(r)
 		rules = append(rules, r)
@@ -537,6 +544,16 @@ func (s *Server) refList(t model.Topology) ([]model.Rule, []ordered.Rule, []stri
 			} else if ad, err := netip.ParseAddr(a); err == nil {
 				ref.Sources = append(ref.Sources, netip.PrefixFrom(ad, ad.BitLen()))
 			}
+		}
+		// A device rule by MAC matches only that device, as on the gateway
+		// ("ether saddr"; the forwarder's neighbour lookup). Without this the
+		// tester treated it as a rule for every client.
+		if r.SourceMAC != "" {
+			mac, ok := ordered.NormMAC(r.SourceMAC)
+			if !ok {
+				mac = "invalid:" + r.SourceMAC // never matches
+			}
+			ref.SourceMAC = mac
 		}
 		refs = append(refs, ref)
 	}
@@ -557,6 +574,8 @@ func (s *Server) postRuleTest(w http.ResponseWriter, r *http.Request) {
 		Proto   string `json:"proto"`
 		Port    int    `json:"port"`
 		Source  string `json:"source"`
+		// SourceMAC is the client's MAC (device rules by MAC).
+		SourceMAC string `json:"source_mac"`
 	}
 	if err := decodeBody(w, r, &b); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("请求格式错误"))
@@ -608,6 +627,14 @@ func (s *Server) postRuleTest(w http.ResponseWriter, r *http.Request) {
 	req := ordered.Request{Name: q.Name, Addr: q.Addr, Proto: b.Proto, Port: b.Port}
 	if b.Source != "" {
 		req.Source, _ = netip.ParseAddr(strings.TrimSpace(b.Source))
+	}
+	if b.SourceMAC != "" {
+		mac, ok := ordered.NormMAC(b.SourceMAC)
+		if !ok {
+			writeErr(w, http.StatusUnprocessableEntity, errors.New("MAC 地址不合法"))
+			return
+		}
+		req.SourceMAC = mac
 	}
 	m := ordered.Compile(refs, tail, quicAt).Decide(req)
 	out := map[string]any{"reason": m.Reason, "target": m.Target, "notes": notes, "quic_rejected": m.QUICRejected}

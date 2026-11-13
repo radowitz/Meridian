@@ -18,6 +18,8 @@ import type {
   RuleRef,
   RuleSet,
   RuleSetView,
+  SniffSettings,
+  SniffView,
   RuleSetAuthInput,
   RuleTestResult,
   ServiceGroup,
@@ -509,5 +511,8 @@ export const deleteServiceGroup = (id: string) => request<{ deleted: string }>("
 export const importPreview = (body: ImportRequest) => request<ImportPreview>("POST", "/api/rules/import/preview", body);
 export const importConfirm = (body: ImportRequest) =>
   request<{ imported: number; services: number; rule_sets: number; default_group: string; digest: string }>("POST", "/api/rules/import/confirm", body);
-export const testRule = (name: string, address: string) => request<RuleTestResult>("POST", "/api/rules/test", { name, address });
+export const testRule = (name: string, address: string, sourceMAC = "") =>
+  request<RuleTestResult>("POST", "/api/rules/test", sourceMAC ? { name, address, source_mac: sourceMAC } : { name, address });
+export const getSniff = () => request<SniffView>("GET", "/api/sniff");
+export const putSniff = (s: SniffSettings) => request<{ setting: SniffView["setting"] }>("PUT", "/api/sniff", s);
 export const ruleAnalysis = () => request<{ rules: RuleAnalysis[]; notes?: string[] | null; shared_address: string; upgrade_notes?: string[] }>("GET", "/api/rules/analysis");

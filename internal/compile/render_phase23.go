@@ -503,7 +503,7 @@ func renderVerifyScript(t model.Topology, tunnels []Tunnel, exits []ExitPlan, gr
 		}
 		raPeers = strings.Join(peers, "\n")
 	}
-	return strings.NewReplacer(
+	out := strings.NewReplacer(
 		"@IFACE@", shQuote(iface),
 		"@GWADDR@", shQuote(gwAddr),
 		"@ROS4@", shQuote(ros),
@@ -532,7 +532,40 @@ func renderVerifyScript(t model.Topology, tunnels []Tunnel, exits []ExitPlan, gr
 		"@TUNIFS@", shQuote(strings.Join(gatewayTunnelIfaces(tunnels), " ")),
 		"@GRPDNS@", shQuote(strings.Join(grpDNS, "\n")),
 	).Replace(verifyScriptBody)
+	if t.SniffOn() {
+		out = strings.Replace(out, "\nemit \"evidence: $evdir\"\n", "\n"+sniffVerifyBlock+"\nemit \"evidence: $evdir\"\n", 1)
+	}
+	return out
 }
+
+// sniffVerifyBlock: the name-sniffing forwarder on the gateway (only with
+// settings.sniff on; the script is unchanged without it).
+var sniffVerifyBlock = fmt.Sprintf(`# --- name-sniffing forwarder (settings.sniff) ---------------------------------
+if ! command -v systemctl >/dev/null 2>&1; then
+  unknown sniff_active "systemctl not found; %[1]s was not checked"
+elif run sniff-active systemctl is-active %[1]s; then
+  pass sniff_active "%[1]s is active (evidence sniff-active.txt)"
+else
+  fail sniff_active "%[1]s is not active: every redirected connection is refused (fail closed) until it runs (journalctl -u %[1]s)"
+fi
+if run sniff-chains nft list chain inet meridian sniff_confine && grep -q 'sniff_denied' "$evdir/sniff-chains.txt"; then
+  pass sniff_confine "the forwarder's output is confined (chain sniff_confine loaded; evidence sniff-chains.txt)"
+else
+  fail sniff_confine "chain sniff_confine is not loaded: the forwarder's output is not confined (evidence sniff-chains.txt)"
+fi
+if [ "$(cat /proc/sys/net/ipv4/tcp_fwmark_accept 2>/dev/null)" = 1 ]; then
+  pass sniff_fwmark_accept "net.ipv4.tcp_fwmark_accept=1: connections without a name get the address classification"
+else
+  fail sniff_fwmark_accept "net.ipv4.tcp_fwmark_accept is not 1: connections without a name are refused (the unit sets it at start)"
+fi
+if [ "$(getent passwd %[2]s | cut -d: -f3)" = %[3]d ]; then
+  pass sniff_account "account %[2]s has uid %[3]d (the uid the ruleset confines)"
+else
+  fail sniff_account "account %[2]s is missing or does not have uid %[3]d"
+fi
+notrun netns_sniff "isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run 'TestNetnsSniff' -v (archive the log)"
+pending sniff_real_client "a device with its own encrypted DNS opens two sites that share a CDN address and go to different regions by rule; each leaves in its region; with %[1]s stopped the pages fail instead of bypassing"
+`, SniffUnit, SniffUser, SniffUID)
 
 // verifyLANClient4 is a host address of the LAN prefix that is neither the
 // gateway nor ROS, counting down from the last host (a source address the

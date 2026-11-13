@@ -376,13 +376,13 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 
 ### 按域名嗅探的转发核心（`meridian sniff`，`internal/sniff`）
 
-这一节只描述转发核心本身（子命令、解析、决定、在目标处重新解析、限制、状态）。透明接管（TPROXY 或 REDIRECT 的 nft 规则）、单元与安装事务、按专用用户拒绝无标记出站、服务停止时的失败关闭、面板显示和命名空间测试都还**没有**接上；在接上并测过之前，网关的数据面与之前完全相同，只按地址分类。
+这一节描述转发核心本身（子命令、解析、决定、在目标处重新解析、限制、状态）。它怎样接进网关的数据面（接管、标记、失败关闭、安装、更新、面板）见下一节「按域名嗅探的转发（受管数据面）」。设置关闭时网关的数据面与之前完全相同，只按地址分类。
 
 **分工。** 能从连接本身读到名字的 TCP 由它按名字决定；读不到名字的 TCP 按原目的地址决定；UDP（包括 QUIC）不经过它，继续由分类链按地址集合打标记。它只选择标记：打上标记之后的隧道、中继分担、主备枢纽和出口切换仍由内核数据面负责。
 
 **解析（按公开规范独立实现，没有参照或复制 mihomo、sing-box 或 SmartDNS 的代码）。** TLS：RFC 8446 §5.1 的记录层，ClientHello 可以跨多条握手记录、也可以跨多个 TCP 段到达，在 ClientHello 完整之前出现别的记录类型、长度为 0 或超过 2^14 的记录都算畸形；§4.1.2 的 ClientHello 和 §4.2 的扩展（同一扩展出现两次算畸形），RFC 6066 的 `server_name`（两个 `host_name` 算畸形，地址字面量不算名字）。HTTP/1：RFC 9112 的请求行和头部字段（obs-fold、冒号前的空白、多个 `Host` 都算畸形；可以接受单独的 LF），absolute-form 和 CONNECT 的 authority 优先于 `Host`（§3.2.2），`Host` 里的端口去掉，地址字面量不算名字。`PRI * HTTP/2.0`（h2c 直连前言）没有可读的名字。用标准库 TLS 客户端写出的 ClientHello 做了交叉核对（`TestTLSStdlibClientHello`）。
 
-**ECH。** 带 `encrypted_client_hello`（0xfe0d，以及旧的 0xffce）的 ClientHello，明文里的 `server_name` 是外层名字：真用 ECH 时它是 ECH 提供方的公共名字，不是用户要访问的站点；客户端只是发 GREASE ECH 扩展时它又恰好是真名字。线上无法区分这两种情况（这正是 ECH 的目的）。**默认按原目的地址决定**（与用户确认的方案一致），外层名字只记在 `Result.OuterName` 里，不当作真名字。代价：Chrome、Firefox 等在没有 ECH 配置时也发 GREASE ECH，默认设置下这些浏览器的 TLS 连接大多会落到按地址的结果。`--ech-outer` 改成按外层名字决定（对 GREASE 是真名字；对真 ECH 是按提供方的公共名字分流），是否打开由安装决定。
+**ECH。** 带 `encrypted_client_hello`（0xfe0d，以及旧的 0xffce）的 ClientHello，明文里的 `server_name` 是外层名字：真用 ECH 时它是 ECH 提供方的公共名字，不是用户要访问的站点；客户端只是发 GREASE ECH 扩展时它又恰好是真名字。线上无法区分这两种情况（这正是 ECH 的目的）。子命令不带参数时按原目的地址决定，外层名字只记在 `Result.OuterName` 里。`--ech-outer` 改成按外层名字决定，`--ech-public-names a,b` 列出已知的 ECH 公共名字：外层名字是其中之一（或在它之下）时仍按地址决定（近期决策里记为 `ech_public`），否则按外层名字（记为 `ech_outer`）。网关安装用的是 `--ech-outer --ech-public-names cloudflare-ech.com`（设置 `sniff.ech_public_names` 可改），理由：Chrome、Firefox 等在没有 ECH 配置时也发 GREASE ECH，只按地址会让这些浏览器的大部分 TLS 连接绕开按名字的判断。**剩余误差**：真启用 ECH、而提供方的公共名字不在列表里的连接，会按那个公共名字匹配规则（通常落到默认组），不是按用户访问的站点。
 
 **读不到名字时。** 没有 SNI、SNI 不是主机名、ECH（默认）、既不是 TLS 也不是 HTTP/1、畸形、超过读取上限、嗅探期限内数据不够（`timeout`）或一个字节都没有（`no_data`，服务器先说话的协议）、客户端半关闭（`eof`）、目的端口不在 `--sniff-ports` 里：都按原目的地址求值，连接原目的地址，**已经读到的字节一个不少地先发给上游**。
 
@@ -414,6 +414,38 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 **留给接管与安装的接口。** `--mode tproxy` 时监听套接字设 `IP_TRANSPARENT`/`IPV6_TRANSPARENT`，原目的地址是连接的本地地址（`OrigDstLocal`）；`--mode redirect` 时用 `SO_ORIGINAL_DST`（`OrigDstRedirect`）。出站套接字带 `SO_MARK`（需要 `CAP_NET_ADMIN`；非 Linux 上非零标记一律失败，不会无标记发出）。转发核心对读不到名字的连接自己按地址求值，但这个求值看不到 SmartDNS 运行时写进各规则集合的地址（按名字学到的地址），所以「名字规则的站点 + 读不到名字」的连接会落到 CIDR/中国地址/默认组，而不是分类链会给的那条规则。要与按地址的路径完全一致，安装可以让分类链先打标记、经 `net.ipv4.tcp_fwmark_accept` 把 SYN 的标记带到接受的套接字，并设置 `Server.AddrMark`（用 `SocketMark` 读出）；未知标记时连接失败。这一步没有实现在子命令里。
 
 以上只有单元测试、回环上的转发测试和本机 Docker 里（特权容器、无网络）对 `SO_MARK`、透明监听、邻居表读取和 nft redirect 后 `SO_ORIGINAL_DST` 的测试（`TestLinuxSocketOptions`，需 `MERIDIAN_NETNS_TEST=1` 和 root），**没有在任何真实网关上运行过**。
+
+### 按域名嗅探的转发（受管数据面，设置 `sniff`）
+
+**设置。** 拓扑设置 `settings.sniff = {enabled, ports, ech_public_names, record_names}`，默认关闭；端口默认 80、443（最多 16 个，22、53、853 和转发服务自己的端口 5358 被拒绝），ECH 公共名字默认 `cloudflare-ech.com`，记录名字默认关闭。关闭（或缺省）时编译出的每个文件与没有这个设置时逐字节相同（`TestSniffOffByteIdentical`，加上原有的 golden 测试不变）。面板的 `PUT /api/sniff` 保存它；整份拓扑保存不会改动它（与远程接入一样由自己的接口管理）。下一次安装到网关时生效。
+
+**接管方式：REDIRECT。** 选它而不是 TPROXY 的原因：NAT 只对新连接求值，所以开启前已经建立的连接保持原来的路径、开启后被重定向的连接一直被重定向到它结束；被重定向的包变成发往本机的包，不再经过转发钩子，服务停止时内核直接回 RST，不可能落回按地址的转发路径。全部规则都在 `table inet meridian` 里，与其余规则同一个 nft 事务原子加载；兜底表 `inet meridian_guard` 和开机兜底文件一字不改。
+
+**标记。** 新增一个位 `0x01000000`（接管位）：在 0x00ff0000（中继分担位）之上，与出口标记 0x101…、国内 0x64、拒绝 0x65、0x4d72 等都不重叠。链的顺序：
+
+1. `prerouting`（mangle）：`classify` 之后、`relay_share` 之前跳到 `sniff_mark`：只对新连接的第一个 SYN（`ct state new`，`tcp flags` 只有 SYN），目的端口在接管列表里，已有分类标记，目的不是本机地址（`fib daddr type local`），不是私有、组播、局域网（含 IPv6 前缀）、远程接入地址池、`fc00::/7`、`fe80::/10`，也不是已知 DoH 地址的 443（那些仍由 `doh` 链拒绝）。满足时 `meta mark |= 0x01000000`，分类标记留在低位。带接管位的包不在出口标记范围里，所以不进 `relay_share`（不分配中继、不计数），也不匹配任何 `fwmark` 路由规则或兜底表的放行规则——即使重定向因故没有发生，兜底表也会把它丢掉。
+2. `sniff_redirect`（nat，dstnat）：带接管位的包 `redirect to :5358`（v4、v6 各一条）。
+3. `sniff_input`（input，优先级 -10）：发往 5358 但不是重定向来的连接丢弃（`ct status & dnat == 0`）；其余本机收到的、不带接管位的 TCP 包把标记清零。原因见下一条。
+4. 服务单元在启动前打开 `net.ipv4.tcp_fwmark_accept=1`、停止后关闭：被接受的套接字带着 SYN 的 fwmark（分类标记 | 接管位）。转发核心的 `--addr-mark-bit 0x1000000` 读出它（`MarkFromSocket`），去掉接管位，就是分类链给这条连接的标记；读不到名字的连接直接用这个标记对应的目标——包括解析器运行时学进各规则集合的地址（转发核心自己的地址判断看不到这些集合），所以与按地址的路径完全一致。没有接管位、读不出标记（例如这个 sysctl 被关掉）或标记不在目标文件里：连接被重置（失败关闭），不退回转发核心自己的地址判断。第 3 步的清零保证打开这个全局开关后，网关上其他监听（SSH、面板、DNS 的 TCP）接受的连接仍是标记 0，和以前一样。
+
+**转发服务自己的出站。** 服务以固定的 uid/gid 65530（账号 `meridian-sniff`，在 systemd 动态用户范围 61184–65519 之外、`nobody` 之下）运行，只有 `CAP_NET_ADMIN`（给套接字打 `SO_MARK`）。规则集按数字 uid 匹配（`meta skuid 65530`），所以加载规则集从不依赖账号数据库；账号本身只在单元运行时存在（`ExecStartPre=+/usr/local/sbin/meridian-sniff-user.sh add`、`ExecStopPost=+… del`），停止、禁用或移除单元时账号随之删除；这个 uid 或名字已被别人占用时单元拒绝启动（被接管的连接失败，不会绕过）。它的出站：
+
+- `sniff_route`（route，只在中继分担时）：带出口标记的 TCP（目的端口不是 53）跳到 `relay_share`：与转发流量同一张按权重的分配表、同一组中继表；切到备用枢纽时（`share_apply`）新连接也跟着走。没有中继分担时用表 102，与网关自己的组解析查询一样跟着主备枢纽切换。
+- `sniff_mss`（output）：SYN 的 MSS 按 `mss` 链同样的数值压低（含 Mesh 出口的按标记压低）。
+- `sniff_out` / `sniff_confine`（output，优先级 10，在路由链改标记之后）：只放行 ① 被接管连接上的回包（`ct direction reply`）；② 目标文件里每个解析器、按它自己的查询标记的 DNS（TCP/UDP 53）；③ 国内标记、目的端口在接管列表里、从局域网口出去的 TCP；④ 出口或地区组标记（去掉中继位后在出口标记范围内）、目的端口在接管列表里、目的不是私有或特殊地址、从网关的某条隧道出去的 TCP。其余一律计数（`sniff_denied`）并丢弃。
+- `transit_snat`：它的出口和地区组标记的连接换成该标记的中转源地址（与局域网流量相同），枢纽据此选出口。
+
+**目标文件与 DNS 标记。** 编译器为快照里每个标记写一个目标（`/etc/meridian/sniff/targets.json`，与 `decide.json` 成对，文件里记着快照的 SHA-256），解析器与网关 SmartDNS 的选择一致：出口用它的隧道解析地址（有备用枢纽时用 `fd66::54:<i>`），**不带标记**（主表的 `fd66::/48` 指向当前的西向隧道，与 SmartDNS 一样）；没有隧道解析地址的出口（只经 Mesh）没有解析器，按名字决定到它的连接失败（SmartDNS 对这类名字也只回 SOA）；可切换的地区组用 `fd66::53:<k>`，带组标记（`transit_snat` 已有的那条规则把它换成组的中转源地址）；不可切换的组用目标成员出口的标记和解析器；直连用国内解析器，带国内标记 0x64；拒绝没有解析器。转发核心现在按**标记**匹配目标（标记决定数据面怎么走、谁来解析）：静态地区组和它的成员出口、被解锁结果移到某成员的组规则，共用一个目标项。
+
+**更新顺序。** 规则、规则集合、服务组改指向都经安装事务：所有文件先写好（每个文件临时文件 + 改名），然后 `meridian.service`（`meridian-up.sh`）原子加载新规则集，再由 host agent 对转发服务 `systemctl reload-or-restart`（SIGHUP，单元文件没变时；变了就重启）。所以先是 nft 有新标记和集合、紧接着转发服务换成新的一对规则，差距是一次 SIGHUP 的时间；转发核心只接受快照与目标文件哈希相符的一对，读到一新一旧时保留旧的一对（重载）或不启动（启动时，systemd 1 秒后重试）。名单或规则集更新经 host agent 的固定名单动作：文件发布、派生、加载 nft 集合之后，对正在运行的转发服务 `try-reload-or-restart`。
+
+**失败关闭。** 服务停止或崩溃：被重定向的 SYN 收到 RST（`TestNetnsSniff` H 阶段，约 0.1 秒），不会经地址路径转出去；`Restart=always`，1 秒后重启。`inet meridian` 整张表不在时没有重定向，兜底表照旧丢弃所有未分类的转发。表在而服务的出站不合规：`sniff_confine` 丢弃。客户端绕不开：只接管 SYN，一个 TCP 连接没有 SYN 就建立不起来；不在接管列表里的端口、UDP（含 QUIC）按设计走地址路径。
+
+**安装、撤回、回滚。** 单元、`meridian-sniff-user.sh`、目标文件都是安装清单里的文件，单元在清单的单元列表里：关闭设置、运行态回滚到没有它的版本、撤回都由 host agent 的固定动作 `systemctl disable --now` 停掉它（停止时账号和 `tcp_fwmark_accept` 一并收回，运行目录 `/run/meridian-sniff` 由 systemd 删除），再删掉文件；回滚到有它的版本时重新启用。规则集里的链属于 `inet meridian`，随这张表一起替换或删除。
+
+**面板。** 规则页「按域名嗅探（TCP）」：设置、按名字 / 仍按地址 / 代价三段说明、网关上的状态（经 host agent 的无参数只读接口 `/v1/sniff/status` 读状态套接字）和最近决策（按名字还是按地址、原因、规则、目标、结果；名字只在打开记录时出现）。概览有一个状态块。规则测试器可以填设备 MAC（以前忽略按 MAC 的规则）。mihomo 导入：设置开启时，只有转发服务真正覆盖的标记——关键词（`keyword_expanded`、`ruleset_keywords`）——不再阻止确认，并注明仍按地址的部分；QUIC 相关的标记照旧要接受。
+
+**已知限制。** 中继被淘汰时，转发流量的 TCP 会被 `relay_drain` 重置以便重连，转发服务自己发起的连接不会（`relay_drain` 只看转发钩子），留在原中继上直到结束；新连接按新的权重分配。转发服务连接的是目标解析器给的地址，不是客户端自己解析的地址。所有被接管的连接经用户态转发。
 
 ## 名单源
 

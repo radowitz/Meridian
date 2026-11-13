@@ -89,6 +89,11 @@ type Resources struct {
 	// DNS asks activate/health to restart/check the gateway resolver: the
 	// host smartdns.service if installed, else the meridian-smartdns container.
 	DNS bool `json:"dns,omitempty"`
+	// Reload names units of Units that activate reloads (systemctl
+	// reload-or-restart: SIGHUP when running, a start otherwise) instead of
+	// restarting: their unit file is unchanged and only files they re-read
+	// on SIGHUP changed (the name-sniffing forwarder's rule pair).
+	Reload []string `json:"reload,omitempty"`
 }
 
 // Empty reports whether no resource is named.
@@ -182,6 +187,14 @@ func Validate(req Request) error {
 		}
 		seen[n] = true
 	}
+	for _, u := range r.Reload {
+		if !contains(r.Units, u) {
+			return fmt.Errorf("reload 的 unit %q 不在 units 里", u)
+		}
+	}
+	if len(r.Reload) > 0 && req.Action != ActionActivate {
+		return errors.New("reload 只用于 activate")
+	}
 	if (req.Action == ActionRollback || req.Action == ActionWithdraw) && r.DNS {
 		return errors.New("rollback / withdraw 不管理解析器的生命周期")
 	}
@@ -209,7 +222,7 @@ func fingerprint(req Request) string {
 	r := req.Resources
 	norm := Resources{
 		Units: sortedCopy(r.Units), Interfaces: sortedCopy(r.Interfaces), NFTTables: sortedCopy(r.NFTTables),
-		RouteTables: append([]int(nil), r.RouteTables...), DNS: r.DNS,
+		RouteTables: append([]int(nil), r.RouteTables...), DNS: r.DNS, Reload: sortedCopy(r.Reload),
 	}
 	sort.Ints(norm.RouteTables)
 	b, _ := json.Marshal(struct {
@@ -352,6 +365,8 @@ type Agent struct {
 	// PreflightRoot replaces "/" for the files the install pre-check and
 	// the upstream status read (tests only).
 	PreflightRoot string
+	// SniffSocketPath replaces SniffSocket (tests only).
+	SniffSocketPath string
 
 	once   sync.Once
 	sem    chan struct{}
@@ -407,7 +422,8 @@ func (a *Agent) init() {
 }
 
 // Handler serves POST /v1/action, /v1/probe, /v1/lists, /v1/lists/status,
-// /v1/remote-access/status, /v1/upstream/status and /v1/preflight.
+// /v1/remote-access/status, /v1/upstream/status, /v1/preflight and
+// /v1/sniff/status.
 func (a *Agent) Handler() http.Handler {
 	a.init()
 	mux := http.NewServeMux()
@@ -418,6 +434,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/remote-access/status", a.serveRemoteAccessStatus)
 	mux.HandleFunc("POST /v1/upstream/status", a.serveUpstreamStatus)
 	mux.HandleFunc("POST /v1/preflight", a.servePreflight)
+	mux.HandleFunc("POST /v1/sniff/status", a.serveSniffStatus)
 	return mux
 }
 
@@ -643,11 +660,17 @@ func (a *Agent) activate(ctx context.Context, r Resources) Result {
 		if x.fails {
 			break
 		}
-		if out, err := x.cmd(a.StepTimeout, "systemctl", "restart", u); err != nil {
-			x.step("restart "+u, false, err.Error()+"\n"+out+"\n"+x.journal(u))
+		verb := "restart"
+		if contains(r.Reload, u) {
+			// After meridian.service above: the forwarder re-reads its rule
+			// pair once nft carries the new marks and sets.
+			verb = "reload-or-restart"
+		}
+		if out, err := x.cmd(a.StepTimeout, "systemctl", verb, u); err != nil {
+			x.step(verb+" "+u, false, err.Error()+"\n"+out+"\n"+x.journal(u))
 			break
 		}
-		x.step("restart "+u, true, "")
+		x.step(verb+" "+u, true, "")
 	}
 	dns := ""
 	if r.DNS && !x.fails {

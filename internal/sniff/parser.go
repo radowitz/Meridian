@@ -53,6 +53,11 @@ const (
 	WhyEOF        = "eof"          // the client closed before a decision
 	WhySkipped    = "skipped_port" // the destination port is not sniffed
 	WhyReadFailed = "read_failed"  // other read error
+	// Server-side refinements of WhyECH in the recent record (not parser
+	// results): the cleartext name decided (Config.ECHOuter), or it is one
+	// of Config.ECHPublicNames and the address decided.
+	WhyECHOuter  = "ech_outer"
+	WhyECHPublic = "ech_public"
 )
 
 // Result of a sniff.

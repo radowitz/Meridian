@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/radowitz/meridian/internal/ordered"
 )
 
 // ParseArgs reads the flags of "meridian sniff".
@@ -25,7 +27,7 @@ func ParseArgs(args []string) (Config, error) {
 	c := DefaultConfig()
 	fs := flag.NewFlagSet("sniff", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var neigh, ports string
+	var neigh, ports, echPublic, markBit string
 	fs.StringVar(&c.Listen, "listen", "", "TCP address:port the kernel delivers connections to")
 	fs.StringVar(&c.Mode, "mode", c.Mode, "tproxy (IP_TRANSPARENT listener) or redirect (SO_ORIGINAL_DST)")
 	fs.StringVar(&c.SnapshotPath, "snapshot", "", "ordered rule snapshot (decide.json)")
@@ -44,6 +46,8 @@ func ParseArgs(args []string) (Config, error) {
 	fs.IntVar(&c.RecentSize, "recent", c.RecentSize, "recent decisions kept in memory")
 	fs.BoolVar(&c.RecordNames, "record-names", false, "keep sniffed names in the in-memory recent record")
 	fs.BoolVar(&c.ECHOuter, "ech-outer", false, "decide ECH connections by the outer (public) server name instead of the address")
+	fs.StringVar(&echPublic, "ech-public-names", "", "with --ech-outer: ECH public names (and names under them) still decided by address, comma separated")
+	fs.StringVar(&markBit, "addr-mark-bit", "", "take unnamed connections' target from the accepted socket's mark carrying this bit (hex; tcp_fwmark_accept)")
 	fs.DurationVar(&c.StatsInterval, "stats-interval", c.StatsInterval, "counter log period (0: none)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -61,6 +65,20 @@ func ParseArgs(args []string) (Config, error) {
 		return c, errors.New("snapshot and targets are required")
 	}
 	c.NeighIfaces = splitList(neigh)
+	for _, n := range splitList(echPublic) {
+		d, ok := ordered.NormDomain(n)
+		if !ok {
+			return c, fmt.Errorf("ech-public-names: %q is not a domain name", n)
+		}
+		c.ECHPublicNames = append(c.ECHPublicNames, d)
+	}
+	if markBit != "" {
+		v, err := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(markBit), "0x"), 16, 32)
+		if err != nil || v == 0 || v&(v-1) != 0 {
+			return c, fmt.Errorf("addr-mark-bit: one bit in hex, not %q", markBit)
+		}
+		c.AddrMarkBit = uint32(v)
+	}
 	if c.RecentSize == 0 {
 		c.RecentSize = -1 // "--recent 0": no record
 	}
@@ -159,6 +177,9 @@ func Main(args []string) int {
 	default:
 		s.OrigDst = OrigDstRedirect
 	}
+	if cfg.AddrMarkBit != 0 {
+		s.AddrMark = MarkFromSocket(cfg.AddrMarkBit)
+	}
 	if len(cfg.NeighIfaces) > 0 {
 		nt, err := NewNeighborTable(cfg.NeighIfaces)
 		if err != nil {
@@ -190,8 +211,8 @@ func Main(args []string) int {
 		go func() { _ = (&http.Server{Handler: s.StatusHandler(), ReadHeaderTimeout: 5 * time.Second}).Serve(sl) }()
 	}
 	h = s.Health()
-	log.Printf("%s: listen %s mode %s, %d rules, %d targets, generation %d, sniff-timeout %v, max-sniff-bytes %d, max-conns %d/%d per source, MAC lookup %v, ECH by outer name %v, names recorded %v",
-		ReadyMarker, cfg.Listen, cfg.Mode, h.Rules, len(h.Targets), h.Generation, cfg.SniffTimeout, cfg.MaxSniffBytes, cfg.MaxConns, cfg.MaxPerSource, h.MACLookup, cfg.ECHOuter, cfg.RecordNames)
+	log.Printf("%s: listen %s mode %s, %d rules, %d targets, generation %d, sniff-timeout %v, max-sniff-bytes %d, max-conns %d/%d per source, MAC lookup %v, ECH by outer name %v (%d public names by address), address mark bit %#x, names recorded %v",
+		ReadyMarker, cfg.Listen, cfg.Mode, h.Rules, len(h.Targets), h.Generation, cfg.SniffTimeout, cfg.MaxSniffBytes, cfg.MaxConns, cfg.MaxPerSource, h.MACLookup, cfg.ECHOuter, len(cfg.ECHPublicNames), cfg.AddrMarkBit, cfg.RecordNames)
 
 	sig := make(chan os.Signal, 4)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)

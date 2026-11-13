@@ -107,6 +107,16 @@ tshark -r "$D/tcp-ctl.pcap" -T fields -e frame.time_relative -e ip.src -e ip.dst
 - 苹果检测名字和苹果的地址可以保留；**其他所有域名换成 `name-1`、`name-2`…，其他所有公网地址换成文档地址段**（`192.0.2.x`、`198.51.100.x`、`203.0.113.x`、`2001:db8::/32`），对应关系不留在记录里。
 - 不放 HTTP 正文、Cookie 或任何请求头（`-s 256` 只截到请求行附近；摘要里只写请求行和状态行）。
 
+## 按域名嗅探
+
+只在拓扑设置 `sniff` 开启并安装之后做。测试设备不需要改什么；用它自己的加密 DNS（浏览器的 DoH）更能说明问题，因为网关的解析器此时学不到地址。
+
+1. 选两个按规则去不同地区、并且共用同一家 CDN 地址的站点（规则页的测试器可以先确认它们命中不同规则）。分别打开，用各自站点上显示访问来源的页面或出口地址检测页确认地区；面板规则页「最近决策」里两条连接都是「按名字」，目标与规则一致（要看名字时临时打开记录名字，签收后关掉）。
+2. 在网关上 `sudo systemctl stop meridian-sniff.service`，刷新这两个站点：应当打不开（连接被拒绝），而不是从别的出口或家宽打开；`sudo systemctl start meridian-sniff.service` 后恢复。
+3. 抓包（同上面的方法，只截头部）：第 2 步期间局域网口上没有发往这两个站点地址的 SYN 去往 ROS。
+
+记录里写明当时浏览器是否启用了 ECH（Chrome 的 `chrome://flags` 或 Firefox 的 `network.dns.echconfig.enabled`）：真启用 ECH 的站点按明文的公共名字或按地址判断，见[架构](architecture.md)「按域名嗅探的转发」。
+
 ## 签收记录
 
 这台设备上做的 DNS 泄漏、WebRTC、断隧道和抓包是[验收清单](verification.md)里的「实机人工签收」，仓库测试、面板和 `meridian-verify.sh` 都替代不了。每做一项，记下日期、当时的拓扑版本（面板快照）、这台设备的 IPv4/IPv6 默认路由（`ip route`、`ip -6 route` 或 `route print` 的输出），以及截图或 pcap 的存档位置。没有记录的项目按「待人工签收」处理。

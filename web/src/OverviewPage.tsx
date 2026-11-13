@@ -9,6 +9,7 @@ import { ACTUAL_CODE, CarryingLine, actualTag } from "./ExitsPage";
 import { JOURNAL_STATE, checkSummary } from "./MeshDeploy";
 import { serverReadiness } from "./ServersPage";
 import { RelaySharingView } from "./RelaySharing";
+import { SniffSummary } from "./Sniff";
 import { href, useStatus, useTopologyDoc } from "./state";
 import {
   ApiErrorAlert,
@@ -116,6 +117,7 @@ export default function OverviewPage() {
   const remote = useApi(() => api.getRemoteAccess(), []);
   const unlock = useApi(() => api.getUnlockJobs(), []);
   const upstream = useApi(() => api.getUpstream(), []);
+  const sniff = useApi(() => api.getSniff(), []);
 
   const nodeName = (id: string) => doc.topo?.nodes.find((n) => n.id === id)?.name ?? id;
 
@@ -400,6 +402,10 @@ export default function OverviewPage() {
             <RelaySharingView s={upstream.data.sharing} compact />
           </Tile>
         ) : null}
+
+        <Tile title="按域名嗅探" to={href("rules")}>
+          <TileData state={sniff}>{(d) => <SniffSummary v={d} />}</TileData>
+        </Tile>
 
         <Tile title="名单" to={href("lists")}>
           <TileData state={lists}>

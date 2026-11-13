@@ -427,3 +427,29 @@ func TestFlagClasses(t *testing.T) {
 		t.Fatal("address-only flag blocks a name-aware import")
 	}
 }
+
+// R3: with the name-sniffing forwarder on, only what it covers is relaxed:
+// keyword rows (37) no longer block and say what stays address-only; the
+// QUIC rows (39, 40) still block until accepted.
+func TestNameAwareRelaxesOnlyKeywords(t *testing.T) {
+	cfg, _ := Parse(SynthConfig)
+	o := fullOptions()
+	delete(o.Accept, 37)
+	delete(o.Accept, 39)
+	o.NameAware = true
+	p, _ := Build(synthTopo(), cfg, o, content)
+	kw := findRow(p, 37)
+	if kw.Status == "blocked" || !kw.Flags[0].NameCovered || !strings.Contains(kw.Flags[0].Message, "UDP") {
+		t.Fatalf("keyword row %+v", kw)
+	}
+	if q := findRow(p, 39); q.Status != "blocked" || q.Flags[0].NameCovered {
+		t.Fatalf("QUIC row relaxed: %+v", q)
+	}
+	found := false
+	for _, n := range p.Notes {
+		found = found || strings.Contains(n, "按域名嗅探") && strings.Contains(n, "ECH")
+	}
+	if !found {
+		t.Fatalf("notes do not say what stays address-only: %v", p.Notes)
+	}
+}

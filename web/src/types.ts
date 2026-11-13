@@ -241,6 +241,8 @@ export interface ImportFlag {
   class?: string;
   /** Accepted for this line or through accept_codes. */
   accepted?: boolean;
+  /** The gateway's name-sniffing forwarder executes this by name for sniffed TCP; it does not block. */
+  name_covered?: boolean;
 }
 
 /** One accept code across the preview. */
@@ -355,6 +357,8 @@ export interface Settings {
   list_source?: "domestic" | "overseas" | "automatic";
   /** Relay-sharing policy (two or more relays); absent = defaults. */
   path_quality?: PathQuality;
+  /** Name-sniffing TCP forwarder (absent: off). */
+  sniff?: SniffSettings | null;
 }
 
 /** One manual override of the automatic relay weights (off unless listed). */
@@ -2133,4 +2137,72 @@ export interface WSSView {
   verification: string;
   interruption: string;
   order: string;
+}
+
+// ------------------------------------------------- name-sniffing forwarder ---
+
+export interface SniffSettings {
+  enabled: boolean;
+  ports?: number[] | null;
+  ech_public_names?: string[] | null;
+  record_names?: boolean;
+}
+
+/** One recent decision of the forwarder (in memory on the gateway only). */
+export interface SniffRecord {
+  start: string;
+  source: string;
+  dest?: string;
+  proto?: string;
+  /** Only when name recording is on. */
+  name?: string;
+  ech?: boolean;
+  /** Why no name was used ("" when sniffed). */
+  why?: string;
+  sniffed: boolean;
+  by?: string;
+  rule_index: number;
+  rule_id?: string;
+  target?: string;
+  mark?: number;
+  upstream?: string;
+  result: string;
+  error?: string;
+  decide_ms: number;
+  generation: number;
+}
+
+export interface SniffHealth {
+  ready: boolean;
+  mode: string;
+  listen: string;
+  generation: number;
+  loaded_at?: string;
+  rules: number;
+  targets: string[] | null;
+  mac_rules: boolean;
+  mac_lookup: boolean;
+  last_reload_at?: string;
+  last_reload_error?: string;
+  active: number;
+  max_conns: number;
+  record_names: boolean;
+  ech_outer: boolean;
+  counters: Record<string, number> | null;
+}
+
+export interface SniffView {
+  setting: { enabled: boolean; ports: number[]; ech_public_names: string[]; record_names: boolean; configured?: SniffSettings | null };
+  listen_port: number;
+  coverage: { by_name: string[]; address_only: string[]; costs: string[] };
+  runtime: {
+    available: boolean;
+    code?: string;
+    message?: string;
+    present: boolean;
+    active?: string;
+    health?: SniffHealth | null;
+    recent?: { record_names: boolean; connections: SniffRecord[] | null } | null;
+    read_at?: string;
+  };
 }

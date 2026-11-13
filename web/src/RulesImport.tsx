@@ -365,6 +365,7 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
                           ) : f.severity === "block" ? (
                             <Tag color="red">阻止</Tag>
                           ) : null}
+                          {f.name_covered ? <Tag color="blue">嗅探按名字执行</Tag> : null}
                           {f.message}
                           {f.by?.length ? `（${f.by.join("、")}）` : ""}
                         </div>
@@ -748,6 +749,7 @@ function AuthFormItems({ required = false }: { required?: boolean }) {
 export function RuleTester() {
   const [name, setName] = useState("");
   const [addr, setAddr] = useState("");
+  const [mac, setMac] = useState("");
   const [res, setRes] = useState<RuleTestResult | null>(null);
   const [error, setError] = useState<api.ApiError | null>(null);
   return (
@@ -758,11 +760,12 @@ export function RuleTester() {
       <Space wrap>
         <Input placeholder="域名，例如 www.example.com" value={name} onChange={(e) => setName(e.target.value)} aria-label="测试域名" style={{ width: 260 }} />
         <Input placeholder="地址（可选）" value={addr} onChange={(e) => setAddr(e.target.value)} aria-label="测试地址" style={{ width: 200 }} />
+        <Input placeholder="设备 MAC（可选，按设备的规则）" value={mac} onChange={(e) => setMac(e.target.value)} aria-label="测试设备 MAC" style={{ width: 240 }} />
         <Button
           onClick={async () => {
             setError(null);
             try {
-              setRes(await api.testRule(name.trim(), addr.trim()));
+              setRes(await api.testRule(name.trim(), addr.trim(), mac.trim()));
             } catch (e) {
               setError(e instanceof api.ApiError ? e : new api.ApiError(0, {}));
             }

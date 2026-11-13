@@ -152,6 +152,7 @@ func Run(t model.Topology) Result {
 	out.Issues = append(out.Issues, checkSafe(t)...)
 	out.Issues = append(out.Issues, CheckGroups(t)...)
 	out.Issues = append(out.Issues, CheckRemoteAccess(t)...)
+	out.Issues = append(out.Issues, checkSniff(t)...)
 	if t.Settings.DefaultGroup == "" {
 		out.Issues = append(out.Issues, Issue{
 			Code: "no_default_exit", Severity: SeverityError, Field: "default_group",

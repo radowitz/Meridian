@@ -181,7 +181,16 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	if q := quicChain(rules, in, markExitBase, guardLastExitMark(exits, groups...)); q != "" {
 		sb.WriteString(q)
 	}
+	snp := planSniff(t, exits, groups, decisions)
+	if snp != nil {
+		writeSniffNFT(&sb, t, snp, in, rp, gatewayTunnelIfaces(tunnels), sp != nil, mss4, mss6, clamps)
+	}
 	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname %s jump classify\n", in)
+	if snp != nil {
+		// Before relay_share: a redirected SYN carries markSniff, so it is
+		// outside the exit-mark range and gets no relay assignment.
+		fmt.Fprintf(&sb, "    iifname %s meta l4proto tcp jump sniff_mark\n", in)
+	}
 	if sp != nil {
 		// After classification: an exit-marked packet gets its connection's
 		// relay (assigned once, when the connection is new).
@@ -293,6 +302,9 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 			continue
 		}
 		fmt.Fprintf(&sb, "    ip6 daddr %s meta mark %#x meta l4proto { tcp, udp } th dport 53 snat ip6 to %s comment \"group %s resolver: this host's own queries\"\n", g.Resolver, g.Mark, g.TransitV6, verifyLabel(g.Group.ID))
+	}
+	if snp != nil {
+		writeSniffSNAT(&sb, markPlans(exits, groups))
 	}
 	if rp != nil {
 		// ROS has no route back to the pools, and LAN hosts may not route

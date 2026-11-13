@@ -488,6 +488,20 @@ func planRules(t model.Topology, exits []ExitPlan, groups []GroupPlan, decisions
 		n++
 		out = append(out, rp)
 	}
+	// "r<n>6" (rule n's IPv6 set) is also the name of rule 10n+6's IPv4
+	// set: with 17 or more rules and an IPv6-carrying target among the
+	// first ones, the ruleset declared one set twice with two types and
+	// did not load. Only a colliding name changes (to "r<n>_6"), so every
+	// ruleset that loaded before is unchanged.
+	v4 := map[string]bool{}
+	for _, rp := range out {
+		v4[rp.Set4] = true
+	}
+	for i := range out {
+		if !out[i].QUIC && v4[out[i].Set6] {
+			out[i].Set6 = strings.TrimSuffix(out[i].Set6, "6") + "_6"
+		}
+	}
 	return out
 }
 

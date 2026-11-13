@@ -38,7 +38,19 @@ type Flag struct {
 	// Accepted: an accept flag the operator accepted, for this line
 	// (Options.Accept) or for every row with this code (AcceptCodes).
 	Accepted bool `json:"accepted,omitempty"`
+	// NameCovered: the gateway's name-sniffing forwarder executes this by
+	// name for sniffed TCP (Options.NameAware), so it does not block; it
+	// stays inexact for what the forwarder does not see (NameCoveredNote).
+	NameCovered bool `json:"name_covered,omitempty"`
 }
+
+// NameCoveredCodes are the address-only flags the name-sniffing forwarder
+// really covers: keyword matching, which it executes as a substring on the
+// sniffed name. The QUIC codes stay: the forwarder sees no UDP.
+var NameCoveredCodes = map[string]bool{"keyword_expanded": true, "ruleset_keywords": true}
+
+// NameCoveredNote is what stays address-only for a covered flag.
+const NameCoveredNote = "按名字执行只覆盖嗅探端口上能读到名字的 TCP；UDP（含 QUIC）、其他端口、ECH 公共名、没有 SNI/Host 的连接仍按地址，含这个词的名字在那些连接上仍落到后面的规则"
 
 // AcceptCodes are the codes of accept flags, which Options.AcceptCodes
 // may accept for every row at once.
@@ -212,9 +224,11 @@ type Options struct {
 	// AtStart puts the imported block before the panel's own rules
 	// (default: after them).
 	AtStart bool
-	// NameAware: the gateway decides name-bearing connections by name
-	// (a later forwarder); address-only flags then do not block. Always
-	// false today.
+	// NameAware: the gateway's name-sniffing forwarder is on
+	// (settings.sniff): the address-only flags it really covers
+	// (NameCoveredCodes) do not block; they are marked NameCovered and keep
+	// a note on what stays address-only. Other address-only flags (QUIC)
+	// still block until accepted.
 	NameAware bool
 }
 
@@ -1010,7 +1024,9 @@ func (b *builder) finish() {
 			st = "info"
 		}
 		for k, f := range row.Flags {
-			if o.NameAware && f.Class == ClassAddress {
+			if o.NameAware && NameCoveredCodes[f.Code] {
+				row.Flags[k].NameCovered = true
+				row.Flags[k].Message += "。网关已开启按域名嗅探：" + NameCoveredNote
 				continue
 			}
 			switch f.Severity {
@@ -1069,10 +1085,18 @@ func (b *builder) finish() {
 		"顺序：和 mihomo 一样自上而下、第一条命中生效。导入的规则作为一段放在面板规则列表的"+map[bool]string{true: "最前面", false: "手工规则之后"}[o.AtStart]+"；手工规则不会被改动。",
 		"直连（DIRECT）= 用国内解析器解析、直连出去，只用于规则（或内置国内名单）明确指定的名字；其它名字由出口的解析器解析并走隧道，即使出口给的是中国地址。",
 		"内置国内名单（geosite cn）和中国地址直连（chnroute）排在所有规则之后、默认组之前：规则总是优先。",
-		"网关按解析出的目的地址分流：两个指向不同目标的名字解析到同一个地址时，网关分不清它们的连接，该地址按列表里更靠前的规则走。",
+		addressNote(o.NameAware),
 		"导入的配置只读取 rules、rule-providers、proxy-groups 三段；proxies 等其它内容在解析后立即丢弃，不保存、不记录、不返回。")
 	p.CanConfirm = p.Blocking == 0 && len(plan.Rules)+len(plan.Services) > 0
 	p.Digest = plan.digest()
+}
+
+func addressNote(nameAware bool) string {
+	if nameAware {
+		return "网关已开启按域名嗅探：嗅探端口（默认 80、443）上能读到 TLS SNI 或 HTTP Host 的 TCP 按名字自上而下匹配，共用地址的名字各走各的规则，关键词按子串生效。" +
+			"其余流量仍按解析出的目的地址分流：UDP（含 QUIC）、其他端口、ECH 公共名和没有 SNI/Host 的连接；两个指向不同目标的名字解析到同一个地址时，这些连接按列表里更靠前的规则走。"
+	}
+	return "网关按解析出的目的地址分流：两个指向不同目标的名字解析到同一个地址时，网关分不清它们的连接，该地址按列表里更靠前的规则走。"
 }
 
 // Entries are a rule's match entries for the analysis: static ones, and a

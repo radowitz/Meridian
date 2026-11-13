@@ -20,6 +20,8 @@ package sniff
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,6 +77,18 @@ type Config struct {
 	// GREASE ECH extension). Off (default): ECH connections are decided by
 	// address, as the user's plan states.
 	ECHOuter bool
+	// ECHPublicNames are known ECH public names (normalized): with
+	// ECHOuter, an ECH ClientHello whose cleartext name is one of them or
+	// under one of them is decided by address after all (that name is a
+	// provider's front, not the site).
+	ECHPublicNames []string
+	// AddrMarkBit, when non-zero, makes connections without a usable name
+	// take the target of the address classifier's own mark: the install
+	// sets this bit (with the classification mark) on the SYNs it redirects
+	// here and turns on net.ipv4.tcp_fwmark_accept, so an accepted socket
+	// carries the SYN's fwmark (MarkFromSocket). A socket without the bit,
+	// or whose mark is not a target of the current target file, is reset.
+	AddrMarkBit uint32
 	// SniffPorts restricts sniffing to these destination ports (empty:
 	// every port); other connections are decided by address at once,
 	// without waiting for client data (server-first protocols).
@@ -110,8 +124,14 @@ func DefaultConfig() Config {
 // snapshot: every target the snapshot can decide, with its mark and
 // resolvers.
 type TargetsFile struct {
-	Version int      `json:"version"`
-	Targets []Target `json:"targets"`
+	Version int `json:"version"`
+	// SnapshotSHA256 pairs the file with one snapshot: when set, the
+	// snapshot's bytes must hash to it, otherwise the pair is not loaded
+	// (the install writes both files before it signals a reload; a reload
+	// or a restart that catches one file new and the other old keeps the
+	// rules it has, or does not start, instead of mixing generations).
+	SnapshotSHA256 string   `json:"snapshot_sha256,omitempty"`
+	Targets        []Target `json:"targets"`
 }
 
 // ruleState is one atomically installed rule list with its targets.
@@ -224,9 +244,19 @@ func (s *Server) logf(format string, args ...any) {
 
 // Install checks c against targets and makes the pair current atomically:
 // a connection being decided keeps the pair it started with, the next one
-// gets the new pair, and there is never a moment without rules. Every
-// target c can decide must be in targets with the same mark and at least
-// one resolver (reject targets need neither); otherwise nothing changes.
+// gets the new pair, and there is never a moment without rules.
+//
+// Targets are matched by mark: the mark is what the kernel data plane
+// routes, so it alone decides where a connection goes and which resolver
+// answers for it. Every (target, mark) c can decide must have an entry with
+// that mark (reject decisions need none); an entry's name is only a label.
+// Two rule targets with the same mark (a static region group and its
+// member exit, or a group rule moved to a member by the unlock map) share
+// the entry. An entry without resolvers is allowed: names decided to it
+// fail (ErrNoResolvers), as the gateway resolver answers such names with
+// nothing (an exit reached only over the Mesh has no tunnel resolver);
+// connections without a name still go to their original address.
+// Otherwise nothing changes.
 func (s *Server) Install(c *ordered.Compiled, targets []Target) error {
 	if c == nil {
 		return errors.New("no rules")
@@ -250,28 +280,25 @@ func (s *Server) Install(c *ordered.Compiled, targets []Target) error {
 				return fmt.Errorf("target %s: resolver %q is not address:port", t.Name, r)
 			}
 		}
-		if !t.Reject && len(t.Resolvers) == 0 {
-			return fmt.Errorf("target %s: no resolver", t.Name)
+		if t.Reject && len(t.Resolvers) > 0 {
+			return fmt.Errorf("target %s: a reject target has no resolver", t.Name)
 		}
 		st.targets[t.Name] = t
 		st.byMark[t.Mark] = t
 	}
 	for _, tm := range c.Targets() {
-		t, ok := st.targets[tm.Target]
+		t, ok := st.byMark[tm.Mark]
 		if tm.Action == "reject" {
 			if ok && !t.Reject {
-				return fmt.Errorf("target %s is a reject target in the rules", tm.Target)
+				return fmt.Errorf("rule target %s (mark %#x) rejects, the target file's %s does not", tm.Target, tm.Mark, t.Name)
 			}
 			continue
 		}
 		if !ok {
-			return fmt.Errorf("rules decide target %s, which the target file does not list", tm.Target)
+			return fmt.Errorf("rules decide target %s with mark %#x, which the target file does not list", tm.Target, tm.Mark)
 		}
 		if t.Reject {
-			return fmt.Errorf("target %s rejects in the target file but not in the rules", tm.Target)
-		}
-		if t.Mark != tm.Mark {
-			return fmt.Errorf("target %s: mark %#x in the rules, %#x in the target file", tm.Target, tm.Mark, t.Mark)
+			return fmt.Errorf("target %s (mark %#x) rejects in the target file but not in the rules", tm.Target, tm.Mark)
 		}
 	}
 	st.gen = s.gen.Add(1)
@@ -319,6 +346,12 @@ func LoadFiles(cfg Config) (*ordered.Compiled, []Target, error) {
 	}
 	if tf.Version != TargetsVersion {
 		return nil, nil, fmt.Errorf("targets: version %d", tf.Version)
+	}
+	if tf.SnapshotSHA256 != "" {
+		sum := sha256.Sum256(b)
+		if got := hex.EncodeToString(sum[:]); got != strings.ToLower(tf.SnapshotSHA256) {
+			return nil, nil, fmt.Errorf("targets belong to snapshot %.12s…, the snapshot on disk is %.12s… (a pair from two generations)", tf.SnapshotSHA256, got)
+		}
 	}
 	return c, tf.Targets, nil
 }
@@ -507,7 +540,7 @@ func (s *Server) Decide(c Conn) (d ordered.Decision, name string, ok bool) {
 
 func (s *Server) decide(st *ruleState, c Conn) (ordered.Decision, string) {
 	name := c.Sniff.Name
-	if name == "" && c.Sniff.ECH && s.cfg.ECHOuter {
+	if name == "" && c.Sniff.ECH && s.cfg.ECHOuter && !s.echPublic(c.Sniff.OuterName) {
 		name = c.Sniff.OuterName
 	}
 	req := ordered.Request{Name: name, Addr: c.OrigDst.Addr(), Proto: "tcp", Port: int(c.OrigDst.Port()), Source: c.Source.Addr(), SourceMAC: c.MAC}
@@ -550,6 +583,15 @@ func (s *Server) handle(c net.Conn) {
 		conn.MAC = s.Neighbors(src.Addr())
 	}
 	d, name := s.decide(st, conn)
+	if conn.Sniff.ECH {
+		// The record says which ECH case applied: the cleartext name was
+		// used, or it is a known ECH public name and the address decided.
+		if name != "" {
+			rec.Why = WhyECHOuter
+		} else if s.cfg.ECHOuter {
+			rec.Why = WhyECHPublic
+		}
+	}
 	if name == "" && s.AddrMark != nil {
 		if m, ok := s.AddrMark(c); ok {
 			t, known := st.byMark[m]
@@ -569,7 +611,7 @@ func (s *Server) handle(c net.Conn) {
 	if s.cfg.RecordNames {
 		rec.Name = name
 	}
-	t, known := st.targets[d.Target]
+	t, known := st.byMark[d.Mark]
 	if d.Action == "reject" || (known && t.Reject) {
 		s.finish(&rec, "rejected")
 		reset(c)
@@ -768,6 +810,32 @@ func (s *Server) pipe(client, up net.Conn, clientDone bool) {
 	go cp(up, client)
 	cp(client, up)
 	wg.Wait()
+}
+
+// echPublic: name is a configured ECH public name or under one.
+func (s *Server) echPublic(name string) bool {
+	for _, p := range s.cfg.ECHPublicNames {
+		if ordered.Under(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// MarkFromSocket is Server.AddrMark for an install that marks redirected
+// SYNs with bit and the classification mark (Config.AddrMarkBit): the
+// accepted socket's SO_MARK (net.ipv4.tcp_fwmark_accept) with bit cleared.
+// A mark without bit, or one that cannot be read, is reported as mark 0,
+// which no target has, so the connection is reset rather than decided by
+// the forwarder's own (weaker) address view.
+func MarkFromSocket(bit uint32) func(net.Conn) (uint32, bool) {
+	return func(c net.Conn) (uint32, bool) {
+		m, err := SocketMark(c)
+		if err != nil || bit == 0 || m&bit == 0 {
+			return 0, true
+		}
+		return m &^ bit, true
+	}
 }
 
 func (s *Server) sniffPort(p uint16) bool {

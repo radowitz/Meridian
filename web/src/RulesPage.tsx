@@ -37,6 +37,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import { ImportDrawer, RuleSetsSection, RuleTester, ServiceGroupsSection, specLabel } from "./RulesImport";
+import { SniffSection } from "./Sniff";
 import { href, useRouter, useTopologyDoc } from "./state";
 import type { Issue, Rule, RuleAnalysis, Topology } from "./types";
 import { ApiErrorAlert, EmptyState, IssueList, Link, Page, StatusTag, TABLE_SCROLL, TopologyDocBar, groupLabel, isDuplicateGroupName, regionLabel, useConfirmDanger } from "./ui";
@@ -974,6 +975,7 @@ export default function RulesPage() {
       {ordered ? (
         <>
           <RuleTester />
+          <SniffSection />
           <ServiceGroupsSection topo={topo} dirty={doc.dirty} onChanged={() => void doc.reload()} />
           <RuleSetsSection dirty={doc.dirty} onChanged={() => void doc.reload()} />
           <ImportDrawer open={importing} topo={topo} onClose={() => setImporting(false)} onDone={() => void doc.reload()} />

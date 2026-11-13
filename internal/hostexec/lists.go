@@ -223,6 +223,11 @@ func (a *Agent) UpdateLists(ctx context.Context, req ListsRequest) (lists.Report
 			}
 		},
 		AfterPublish: func(ctx context.Context, rep *lists.Report) {
+			// The forwarder reads rule-set, geosite, keyword and China
+			// files at (re)load: after nft has the new sets, it re-reads.
+			if w := (&run{a: a, ctx: ctx}).reloadSniff(); w != "" {
+				rep.Warnings = append(rep.Warnings, w)
+			}
 			split := rep.ChnrouteChanged && a.smartDNSUsesDNSSplit()
 			if !rep.DNSChanged && !split {
 				return

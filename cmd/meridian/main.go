@@ -96,6 +96,7 @@ func main() {
 		// the agent's parameterless /v1/remote-access/status.
 		RemoteStatus: hostClient,
 		Upstream:     hostClient,
+		Sniff:        hostClient,
 		// The gateway install pre-check is the agent's read-only
 		// /v1/preflight (paths validated, fixed programs).
 		HostPreflight: hostClient,
