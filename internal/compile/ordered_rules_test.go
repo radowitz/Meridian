@@ -494,5 +494,68 @@ func TestUnlistedDomesticDNSDefaultOff(t *testing.T) {
 	}
 	if resolverLine(t, b, "proxied.example") != resolverLine(t, b2, "proxied.example") {
 		t.Fatal("a rule's resolver line depends on unlisted_domestic_dns")
+
+// TestRuleSetAddressSetsAreDeclared: every address set the manifest names
+// (the host's derive step flushes and fills each of them in one nft batch)
+// is declared in the gateway ruleset, for targets with and without IPv6.
+// On a real gateway the manifest named the IPv6 set of rule-set rules whose
+// target carries no IPv6; the ruleset did not declare it, the batch failed
+// and the install was rolled back.
+func TestRuleSetAddressSetsAreDeclared(t *testing.T) {
+	topo := defaults.Example()
+	var rules []model.Rule
+	rd := ordered.MemReader{RuleSets: map[string][]ordered.Entry{}}
+	var targets []string
+	for _, g := range topo.Groups {
+		targets = append(targets, g.ID)
+	}
+	for i, g := range targets {
+		id := fmt.Sprintf("rs-%d", i)
+		r := rr(fmt.Sprintf("r-%d", i), model.MatchRuleSet, "", g)
+		r.RuleSet = id
+		rules = append(rules, r)
+		topo.RuleSets = append(topo.RuleSets, model.RuleSet{ID: id, Name: id, URL: "https://example.org/" + id + ".list"})
+		rd.RuleSets[id] = []ordered.Entry{
+			{Kind: ordered.Suffix, Value: fmt.Sprintf("s%d.example", i)},
+			{Kind: ordered.CIDR, Prefix: netip.MustParsePrefix(fmt.Sprintf("198.51.100.%d/32", i+1))},
+			{Kind: ordered.CIDR, Prefix: netip.MustParsePrefix(fmt.Sprintf("2001:db8:%x::/48", i+1))},
+		}
+	}
+	topo.Rules, topo.RulesOrdered = rules, true
+	b, err := Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := ordered.ParseManifest([]byte(b.File("nodes/gw/etc/meridian/rules/order.conf")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := ordered.Derive(m, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nft := b.File("nodes/gw/etc/nftables.d/meridian.nft")
+	v4only, dual := 0, 0
+	for _, s := range m.Sets {
+		if s.CIDR4 == "" {
+			continue
+		}
+		// Coverage is read from the ruleset, not from the manifest under test.
+		if strings.Contains(nft, "  set "+s.CIDR4+"6 {") {
+			dual++
+		} else {
+			v4only++
+		}
+	}
+	if v4only == 0 || dual == 0 {
+		t.Fatalf("the example topology no longer covers both cases (IPv4-only targets: %d, dual-stack: %d)", v4only, dual)
+	}
+	if len(d.CIDR) == 0 {
+		t.Fatal("no address sets derived")
+	}
+	for name := range d.CIDR {
+		if !strings.Contains(nft, "  set "+name+" {") {
+			t.Errorf("the derive batch fills set %s, which the gateway ruleset does not declare", name)
+		}
 	}
 }

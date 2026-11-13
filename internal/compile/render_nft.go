@@ -113,7 +113,7 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 		// (lists.DeriveOrdered), never by the resolver, never expiring.
 		if rp.CIDR4 != "" {
 			writeSet(&sb, rp.CIDR4, "ipv4_addr", false, nil)
-			if !rp.FilterAAAA {
+			if rp.CIDR6 != "" {
 				writeSet(&sb, rp.CIDR6, "ipv6_addr", false, nil)
 			}
 		}
@@ -714,7 +714,7 @@ func ruleMatches(rp rulePlan) []string {
 	}
 	if rp.CIDR4 != "" {
 		out = append(out, "ip daddr @"+rp.CIDR4)
-		if !rp.FilterAAAA {
+		if rp.CIDR6 != "" {
 			out = append(out, "ip6 daddr @"+rp.CIDR6)
 		}
 	}

@@ -475,7 +475,15 @@ func planRules(t model.Topology, exits []ExitPlan, groups []GroupPlan, decisions
 			Action:     action,
 		}
 		if r.MatchType == model.MatchRuleSet {
-			rp.CIDR4, rp.CIDR6 = fmt.Sprintf("r%dc", n), fmt.Sprintf("r%dc6", n)
+			// The IPv6 set exists only where the target carries IPv6:
+			// the ruleset declares it under the same condition, and the
+			// host's derive step flushes every set the manifest names —
+			// naming an undeclared one made that batch (and with it the
+			// whole install) fail on a real gateway.
+			rp.CIDR4 = fmt.Sprintf("r%dc", n)
+			if tg.V6 {
+				rp.CIDR6 = fmt.Sprintf("r%dc6", n)
+			}
 		}
 		n++
 		out = append(out, rp)
