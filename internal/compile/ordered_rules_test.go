@@ -494,6 +494,8 @@ func TestUnlistedDomesticDNSDefaultOff(t *testing.T) {
 	}
 	if resolverLine(t, b, "proxied.example") != resolverLine(t, b2, "proxied.example") {
 		t.Fatal("a rule's resolver line depends on unlisted_domestic_dns")
+	}
+}
 
 // TestRuleSetAddressSetsAreDeclared: every address set the manifest names
 // (the host's derive step flushes and fills each of them in one nft batch)
