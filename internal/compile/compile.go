@@ -245,6 +245,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			add(prefix+"usr/local/sbin/meridian-update-geosite.sh", renderGeositeScript(t))
 		case model.RoleExit:
 			add(prefix+"etc/smartdns/smartdns.conf", renderExitDNS(n, tunnels))
+			add(prefix+"etc/systemd/system/"+SmartDNSUnit, renderSmartDNSUnit())
 		}
 	}
 	return b, nil

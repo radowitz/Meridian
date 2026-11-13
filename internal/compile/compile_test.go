@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -300,9 +301,23 @@ func TestExitUpRestartsSmartDNSAfterTunnels(t *testing.T) {
 	}
 	up := b.File("nodes/tw/usr/local/sbin/meridian-up.sh")
 	wg := strings.Index(up, "wg-quick up")
-	restart := strings.Index(up, "systemctl restart smartdns.service")
+	restart := strings.Index(up, "systemctl restart meridian-smartdns.service")
 	if wg < 0 || restart < wg {
 		t.Fatal("exit meridian-up.sh must restart smartdns after WireGuard is up")
+	}
+	// The resolver is the panel-delivered binary under Meridian's own unit;
+	// the distribution's smartdns.service is never touched on a remote node.
+	if regexp.MustCompile(`(^|[^-])smartdns\.service`).MatchString(up) {
+		t.Fatal("exit meridian-up.sh must not use the distribution's smartdns.service")
+	}
+	unit := b.File("nodes/tw/etc/systemd/system/meridian-smartdns.service")
+	if !strings.Contains(unit, "ExecStart=/usr/local/sbin/meridian-smartdns -f -x -p - -c /etc/smartdns/smartdns.conf") {
+		t.Fatalf("exit resolver unit:\n%s", unit)
+	}
+	for _, f := range []string{"nodes/ali/etc/systemd/system/wstunnel-meridian.service", "nodes/ali/etc/systemd/system/wstunnel-client-ali-hub-wss.service", "nodes/gw/etc/systemd/system/wstunnel-client-gw-ali.service"} {
+		if body := b.File(f); body == "" || (!strings.Contains(body, "ExecStart=/usr/local/sbin/meridian-wstunnel ") || strings.Contains(body, "/usr/local/bin/wstunnel")) {
+			t.Fatalf("%s must run the panel-delivered wstunnel:\n%s", f, body)
+		}
 	}
 	if b.File("nodes/tw/etc/smartdns/smartdns.conf") == "" {
 		t.Fatal("exit has no resolver config")

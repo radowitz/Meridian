@@ -68,7 +68,79 @@ const (
 	CodeHostSummary     = "host_summary"
 	CodeForwardEnable   = "forwarding_enable"
 	CodeGatewayDNS      = "gateway_dns_runtime"
+
+	// CodePlatform (info) names the supported platform the host matched
+	// and what that means for the install (packages, legacy iptables).
+	CodePlatform = "platform_supported"
+	// CodePackageUnavailable: a package the install needs is missing and
+	// apt has no candidate for it.
+	CodePackageUnavailable = "package_unavailable"
+	// CodeArtifact (info) is the plan for one panel-delivered binary:
+	// transfer and install, or keep (the host already has the pinned digest).
+	CodeArtifact = "artifact_plan"
+	// CodeForeignBinary (info): the host has its own wstunnel or SmartDNS
+	// (another path, the distribution package); Meridian neither uses,
+	// overwrites nor removes it.
+	CodeForeignBinary = "foreign_binary"
+	// CodeMemoryBudget: MemAvailable against the explicit budget of what the
+	// node runs (MemHeadroomKB + MemSmartDNSKB + MemWstunnelKB). Blocking
+	// when the plan needs a local resolver and the budget does not fit.
+	CodeMemoryBudget = "memory_budget"
+	// CodeResolverBind: the node's resolver config would bind a wildcard
+	// address or nothing at all (SmartDNS then binds [::]:53 by default).
+	CodeResolverBind = "resolver_bind_unsafe"
 )
+
+// Memory budget of a remote node, in KiB (MemAvailable before the install).
+const (
+	// MemHeadroomKB: apt-get/dpkg, bash and wg-quick while installing.
+	MemHeadroomKB = 48 * 1024
+	// MemSmartDNSKB: the pinned SmartDNS with the exit config (cache-size
+	// 4096, two upstreams, binds on the tunnel addresses only).
+	MemSmartDNSKB = 48 * 1024
+	// MemWstunnelKB: one wstunnel server or client process.
+	MemWstunnelKB = 32 * 1024
+)
+
+// Platform is one supported operating system release on one architecture.
+type Platform struct {
+	OSID    string `json:"os_id"`
+	Version string `json:"os_version"`
+	Arch    string `json:"arch"`
+	Name    string `json:"name"`
+}
+
+// SupportedPlatforms are the platforms the install is built for. Anything
+// else is refused (os_unsupported / arch_unsupported): other distributions
+// and releases differ in package names and versions, and the panel-delivered
+// binaries exist only for x86_64 and aarch64.
+var SupportedPlatforms = []Platform{
+	{OSID: "debian", Version: "12", Arch: "x86_64", Name: "Debian 12 x86_64"},
+	{OSID: "debian", Version: "13", Arch: "x86_64", Name: "Debian 13 x86_64"},
+	{OSID: "ubuntu", Version: "20.04", Arch: "aarch64", Name: "Ubuntu 20.04 aarch64"},
+}
+
+func supportedList() string {
+	var s []string
+	for _, p := range SupportedPlatforms {
+		s = append(s, p.Name)
+	}
+	return strings.Join(s, "、")
+}
+
+// Artifact is one panel-delivered binary as the panel has it (the API fills
+// Context.Artifacts from internal/artifacts).
+type Artifact struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Arch    string `json:"arch"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+	// Available: the panel holds a copy verified against the pin; Error
+	// says why not.
+	Available bool   `json:"available"`
+	Error     string `json:"error,omitempty"`
+}
 
 // Finding is one result of the evaluation.
 type Finding struct {
@@ -134,6 +206,36 @@ type Context struct {
 	// Ports are the topology sources of the ports the bundle binds; a
 	// port_in_use finding names the field to change.
 	Ports []PortSource
+	// Artifacts are the panel-delivered binaries for every architecture.
+	Artifacts []Artifact
+}
+
+// BinaryPlan is what the install does with one panel-delivered binary.
+type BinaryPlan struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+	Arch    string `json:"arch,omitempty"`
+	Path    string `json:"path"`
+	SHA256  string `json:"sha256,omitempty"`
+	Size    int64  `json:"size,omitempty"`
+	// Action: install (transfer, verify, install), keep (the host already
+	// has exactly the pinned digest: no transfer), replace (a Meridian copy
+	// with another digest is replaced), refuse.
+	Action string `json:"action"`
+	// Transfer: the bytes must be sent to the host.
+	Transfer bool   `json:"transfer"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// PackageState is one distribution package of the install plan.
+type PackageState struct {
+	Package   string `json:"package"`
+	Command   string `json:"command"`
+	Present   bool   `json:"present"`
+	Installed string `json:"installed,omitempty"`
+	Candidate string `json:"candidate,omitempty"`
+	// Action: none (command present) | install (apt-get) | unavailable.
+	Action string `json:"action"`
 }
 
 // Ownership states.
@@ -147,11 +249,17 @@ const (
 
 // Evaluation is the result for one node.
 type Evaluation struct {
-	Ownership string    `json:"ownership"`
-	Blocking  bool      `json:"blocking"`
-	Findings  []Finding `json:"findings"`
-	Changes   []Change  `json:"changes"`
-	Counts    struct {
+	Ownership string `json:"ownership"`
+	// Platform is the supported platform the host matched ("" = none).
+	Platform string `json:"platform,omitempty"`
+	// Binaries is the plan for each panel-delivered binary.
+	Binaries []BinaryPlan `json:"binaries,omitempty"`
+	// Packages is the plan for each distribution package the install needs.
+	Packages []PackageState `json:"package_plan,omitempty"`
+	Blocking bool           `json:"blocking"`
+	Findings []Finding      `json:"findings"`
+	Changes  []Change       `json:"changes"`
+	Counts   struct {
 		Blocking int `json:"blocking"`
 		Warning  int `json:"warning"`
 		Info     int `json:"info"`
@@ -222,6 +330,8 @@ func Evaluate(r Report, fp Footprint, ctx Context) Evaluation {
 	}
 	e.ownership()
 	e.system()
+	e.binaries()
+	e.memory()
 	e.paths()
 	e.interfaces()
 	e.listens()
@@ -309,9 +419,14 @@ func (e *eval) ownership() {
 			"登录服务器检查 /var/lib/meridian/node/manifest；确认后移走它（连同它描述的资源）再重新预检。")
 	case m.Node == e.ctx.NodeID && m.Deployment == e.ctx.Deployment:
 		e.out.Ownership = OwnSame
-		e.own = Owned{Files: m.Files, Interfaces: m.Interfaces, Units: m.Units, NFTTables: m.NFTTables, Tables: m.Tables}
-		if e.own.Files == nil {
-			e.own.Files = map[string]string{}
+		e.own = Owned{Files: map[string]string{}, Interfaces: m.Interfaces, Units: m.Units, NFTTables: m.NFTTables, Tables: m.Tables}
+		for p, h := range m.Files {
+			e.own.Files[p] = h
+		}
+		for _, a := range m.Artifacts {
+			if _, ok := e.own.Files[a.Path]; !ok {
+				e.own.Files[a.Path] = a.SHA256
+			}
 		}
 		_, e.own.DNS = m.Files["/etc/smartdns/smartdns.conf"]
 		e.add(Info, CodeOwnInstall, "/var/lib/meridian/node/manifest",
@@ -343,26 +458,7 @@ func (e *eval) system() {
 		e.add(Blocking, CodeNotRoot, "uid", fmt.Sprintf("登录用户不是 root（uid %s）：装机要写 /etc、启动接口和服务，需要 root。", who),
 			"把服务器的 SSH 用户改成 root（服务器页编辑），或为 root 配置密钥登录。这一版不支持经 sudo 提权。")
 	}
-	switch {
-	case r.OSID == "":
-		e.add(Blocking, CodeOSUnsupported, "os", "读不到发行版信息（/etc/os-release），不能确认软件包和配置兼容。",
-			"在 Debian 12 或 13 上部署。")
-	case r.OSID != "debian" || (r.OSVersion != "12" && r.OSVersion != "13"):
-		name := r.OSPretty
-		if name == "" {
-			name = r.OSID + " " + r.OSVersion
-		}
-		e.add(Blocking, CodeOSUnsupported, "os",
-			fmt.Sprintf("系统是 %s。只支持 Debian 12 / 13：装机脚本用 apt 安装 wireguard-tools、nftables、smartdns，其它发行版和版本的软件包名、版本（尤其 SmartDNS 对生成配置里指令的支持）没有验证过。", name),
-			"换用 Debian 12 或 13 的服务器，或把这台主机重装为 Debian 12/13。")
-	}
-	switch r.Arch {
-	case "x86_64", "aarch64":
-	case "":
-		e.add(Blocking, CodeArchUnsupported, "arch", "读不到 CPU 架构。", "重新预检；仍然读不到时检查 uname 是否可用。")
-	default:
-		e.add(Blocking, CodeArchUnsupported, "arch", fmt.Sprintf("CPU 架构 %s 不支持（只支持 x86_64 和 aarch64；wstunnel 等二进制按架构区分）。", r.Arch), "换用 x86_64 或 aarch64 的服务器。")
-	}
+	e.platform()
 	if maj, min, ok := kernelVersion(r.Kernel); ok && (maj < 5 || maj == 5 && min < 6) {
 		e.add(Blocking, CodeKernelTooOld, "kernel", fmt.Sprintf("内核 %s 早于 5.6，没有内置 WireGuard。", r.Kernel), "升级到发行版的较新内核（Debian 12/13 自带的即可）。")
 	}
@@ -383,7 +479,7 @@ func (e *eval) system() {
 		// package is required for it.
 		var tools []string
 		for _, p := range e.fp.Packages {
-			if p.Package != "smartdns" && !r.Commands[p.Command] {
+			if !r.Commands[p.Command] {
 				tools = append(tools, p.Command+"（"+p.Package+"）")
 			}
 		}
@@ -405,22 +501,26 @@ func (e *eval) system() {
 		need = nil
 	}
 	if len(need) > 0 && !r.Commands["apt-get"] {
-		e.add(Blocking, CodeNoApt, "apt-get", "需要安装 "+strings.Join(need, "、")+"，但主机上没有 apt-get。", "在 Debian 12/13 上部署，或先手动装好这些软件包。")
+		e.add(Blocking, CodeNoApt, "apt-get", "需要安装 "+strings.Join(need, "、")+"，但主机上没有 apt-get。", "在支持的系统（"+supportedList()+"）上部署，或先手动装好这些软件包。")
 	}
-	if containsStr(need, "smartdns") && r.Versions["smartdns-candidate"] == "" && r.Commands["apt-get"] {
-		e.add(Blocking, CodeSmartDNSMissing, "smartdns", "这个节点要运行出口解析器 SmartDNS，但主机上没有安装，apt 也查不到可安装的版本（apt-cache policy smartdns 没有 Candidate）。",
-			"在服务器上执行 apt-get update 后重新预检；Debian 12/13 的官方源里有 smartdns。")
-	}
-	for _, b := range e.fp.Binaries {
-		if !r.Commands[b] {
-			asset := map[string]string{"x86_64": "linux_amd64", "aarch64": "linux_arm64"}[r.Arch]
-			hint := ""
-			if asset != "" {
-				hint = "（这台是 " + r.Arch + "，下载 " + asset + " 的发行包）"
+	if !e.ctx.Gateway {
+		for _, p := range e.fp.Packages {
+			ps := PackageState{Package: p.Package, Command: p.Command, Present: r.Commands[p.Command], Action: "none"}
+			if st, ok := r.Packages[p.Package]; ok {
+				ps.Installed, ps.Candidate = st.Installed, st.Candidate
 			}
-			e.add(Blocking, CodeWstunnelMissing, "/usr/local/bin/wstunnel",
-				"这个节点的配置要用 wstunnel（WSS 承载），主机上没有 wstunnel；面板不会替你下载二进制。",
-				"从 https://github.com/erebe/wstunnel/releases 下载固定版本"+hint+"，校验后放到 /usr/local/bin/wstunnel（0755），然后重新预检。")
+			if !ps.Present {
+				ps.Action = "install"
+				// Only a report that lists packages (pkg lines) can say that
+				// apt has no candidate; an older report is not judged.
+				if _, listed := r.Packages[p.Package]; listed && ps.Candidate == "" && r.Commands["apt-get"] {
+					ps.Action = "unavailable"
+					e.add(Blocking, CodePackageUnavailable, p.Package,
+						fmt.Sprintf("这个节点需要 %s（命令 %s），主机上没有，apt 也查不到可安装的版本（apt-cache policy 没有 Candidate）。", p.Package, p.Command),
+						"在服务器上执行 apt-get update（确认软件源可用）后重新预检；面板只经 apt 安装发行版自带的这个包。")
+				}
+			}
+			e.out.Packages = append(e.out.Packages, ps)
 		}
 	}
 	if r.MemAvailKB >= 0 || r.MemTotalKB >= 0 {
@@ -432,6 +532,230 @@ func (e *eval) system() {
 	}
 	if r.DiskAvailKB >= 0 && r.DiskAvailKB < 200*1024 {
 		e.add(Warning, CodeLowDisk, "/", fmt.Sprintf("根分区只剩 %s：安装软件包和写配置可能失败。", kb(r.DiskAvailKB)), "先清理磁盘空间。")
+	}
+}
+
+// platform checks the host against SupportedPlatforms.
+func (e *eval) platform() {
+	r := e.r
+	name := r.OSPretty
+	if name == "" {
+		name = strings.TrimSpace(r.OSID + " " + r.OSVersion)
+	}
+	if r.OSID == "" {
+		e.add(Blocking, CodeOSUnsupported, "os", "读不到发行版信息（/etc/os-release），不能确认软件包和配置兼容。",
+			"在支持的系统上部署："+supportedList()+"。")
+		return
+	}
+	if e.ctx.Gateway {
+		// The gateway install (deploy/debian/install.sh) is built for
+		// Debian 12/13 on x86_64 or aarch64 and installs no package; the
+		// remote-node matrix below does not apply to it.
+		if r.OSID != "debian" || (r.OSVersion != "12" && r.OSVersion != "13") {
+			e.add(Blocking, CodeOSUnsupported, "os", fmt.Sprintf("网关系统是 %s。网关只支持 Debian 12 / 13（安装脚本 deploy/debian/install.sh 按 Debian 写）。", name), "在 Debian 12 或 13 上安装网关。")
+			return
+		}
+		switch r.Arch {
+		case "x86_64", "aarch64":
+			e.out.Platform = fmt.Sprintf("Debian %s %s（网关）", r.OSVersion, r.Arch)
+		default:
+			e.add(Blocking, CodeArchUnsupported, "arch", fmt.Sprintf("网关的 CPU 架构 %s 不支持（只支持 x86_64 和 aarch64）。", orDash(r.Arch)), "换用 x86_64 或 aarch64 的主机。")
+		}
+		return
+	}
+	var osOK []Platform
+	for _, p := range SupportedPlatforms {
+		if p.OSID == r.OSID && p.Version == r.OSVersion {
+			osOK = append(osOK, p)
+		}
+	}
+	if len(osOK) == 0 {
+		e.add(Blocking, CodeOSUnsupported, "os",
+			fmt.Sprintf("系统是 %s，不在支持范围内（只支持 %s）。其它发行版和版本的软件包名、版本和默认防火墙没有验证过，装机脚本不会在上面运行。", name, supportedList()),
+			"换用支持的系统（"+supportedList()+"），或把这台主机重装为其中之一。")
+		return
+	}
+	switch r.Arch {
+	case "":
+		e.add(Blocking, CodeArchUnsupported, "arch", "读不到 CPU 架构。", "重新预检；仍然读不到时检查 uname 是否可用。")
+		return
+	case "x86_64", "aarch64":
+	default:
+		e.add(Blocking, CodeArchUnsupported, "arch", fmt.Sprintf("CPU 架构 %s 不支持（只支持 x86_64 和 aarch64；面板下发的 wstunnel 和 SmartDNS 按架构区分）。", r.Arch), "换用 x86_64 或 aarch64 的服务器。")
+		return
+	}
+	for _, p := range osOK {
+		if p.Arch == r.Arch {
+			e.out.Platform = p.Name
+			detail := ""
+			if p.OSID == "ubuntu" {
+				detail = "Ubuntu 20.04 自带的 nftables（0.9.3）和 wireguard-tools 由装机经 apt 安装（--no-install-recommends，不会装 wireguard-dkms，也不改 iptables 的 alternatives）；生成的 nft 规则在这个版本上是否全部被接受只能在装机时由 meridian-up.sh 的 nft -c 检查，失败会在激活前停止并补偿。"
+			}
+			e.add(Info, CodePlatform, "platform", "支持的平台："+p.Name+"（"+name+"）。"+detail, "")
+			return
+		}
+	}
+	var arches []string
+	for _, p := range osOK {
+		arches = append(arches, p.Arch)
+	}
+	e.add(Blocking, CodeArchUnsupported, "arch",
+		fmt.Sprintf("%s 只在 %s 上支持，这台是 %s：这个组合没有验证过。", name, strings.Join(arches, "、"), r.Arch),
+		"换用支持的组合（"+supportedList()+"）。")
+}
+
+// artifactFor is the panel's copy of name for the host's architecture.
+func (e *eval) artifactFor(name string) (Artifact, bool) {
+	for _, a := range e.ctx.Artifacts {
+		if a.Name == name && a.Arch == e.r.Arch {
+			return a, true
+		}
+	}
+	return Artifact{}, false
+}
+
+// binaries plans every panel-delivered binary the bundle runs: the panel
+// must hold a verified copy for this architecture; the host path is
+// Meridian's own (ArtifactPath); a copy already there with exactly the
+// pinned digest is kept without a transfer; a file there that the manifest
+// does not record is somebody else's and refuses the install. A wstunnel
+// or SmartDNS that another service installed elsewhere is only reported.
+func (e *eval) binaries() {
+	r := e.r
+	for _, name := range e.fp.Binaries {
+		path := ArtifactPath(name)
+		bp := BinaryPlan{Name: name, Path: path, Arch: r.Arch, Action: "refuse"}
+		a, ok := e.artifactFor(name)
+		code := CodeWstunnelMissing
+		what := "wstunnel（WSS 承载）"
+		if name == "smartdns" {
+			code = CodeSmartDNSMissing
+			what = "出口解析器 SmartDNS"
+		}
+		switch {
+		case r.Arch == "":
+			bp.Detail = "架构未知"
+			e.out.Binaries = append(e.out.Binaries, bp)
+			continue
+		case !ok:
+			bp.Detail = "面板没有这个架构的固定版本"
+			e.add(Blocking, code, path,
+				fmt.Sprintf("这个节点要运行%s，但面板没有为 %s 固定 %s 的版本：不能下发，也不会跳过它。", what, r.Arch, name),
+				"换用 x86_64 或 aarch64 的服务器。")
+			e.out.Binaries = append(e.out.Binaries, bp)
+			continue
+		case !a.Available:
+			bp.Version, bp.SHA256, bp.Size = a.Version, a.SHA256, a.Size
+			bp.Detail = a.Error
+			e.add(Blocking, code, path,
+				fmt.Sprintf("这个节点要运行%s，但面板里 %s %s（%s）的二进制不可用：%s。面板只下发与固定摘要一致的副本，不会让主机自己下载，也不会跳过它。", what, name, a.Version, r.Arch, orDash(a.Error)),
+				"用包含固定二进制的面板镜像（构建时下载并校验，见 deploy/Dockerfile；离线构建把上游文件放进 deploy/artifacts/），或把校验过的文件放进 MERIDIAN_ARTIFACTS_DIR 指定的目录后重启面板，然后重新预检。")
+			e.out.Binaries = append(e.out.Binaries, bp)
+			continue
+		}
+		bp.Version, bp.SHA256, bp.Size = a.Version, a.SHA256, a.Size
+		pi, seen := r.Paths[path]
+		_, owned := e.own.Files[path]
+		switch {
+		case !seen:
+			if r.Complete {
+				e.add(Blocking, CodePathOccupied, path, "预检没有报告这个路径的状态（脚本拒绝了这个参数或输出不完整）。", "重新预检。")
+			}
+		case !pi.Exists:
+			bp.Action, bp.Transfer = "install", true
+			bp.Detail = fmt.Sprintf("经 SSH 传输 %s，主机上校验 SHA-256 后安装", kb((a.Size+1023)/1024))
+		case pi.Type != "file":
+			e.add(Blocking, CodePathOccupied, path, fmt.Sprintf("Meridian 的二进制路径 %s 上是%s，不是普通文件。", path, pi.Type), "确认它属于谁，移走后重新预检。面板不会覆盖它。")
+		case pi.SHA256 == a.SHA256:
+			bp.Action = "keep"
+			bp.Detail = "主机上已是固定版本（摘要一致），不传输"
+		case owned:
+			bp.Action, bp.Transfer = "replace", true
+			bp.Detail = "受管副本的摘要与固定版本不同：传输并校验后替换（失败时恢复原文件）"
+		default:
+			e.add(Blocking, CodePathOccupied, path,
+				fmt.Sprintf("%s 已经存在，但不在 Meridian 的受管清单里，摘要也不是固定版本（%s）。", path, orDash(pi.SHA256)),
+				"确认这个文件是谁放的：不是 Meridian 装的就移走它后重新预检。面板不会覆盖不属于它的文件。")
+		}
+		if bp.Action != "refuse" {
+			e.change("binary", bp.Action, path, fmt.Sprintf("%s %s（%s，sha256 %s）", name, a.Version, r.Arch, a.SHA256[:12]))
+			e.add(Info, CodeArtifact, path, fmt.Sprintf("%s %s（%s）：%s。", name, a.Version, r.Arch, bp.Detail), "")
+		}
+		e.out.Binaries = append(e.out.Binaries, bp)
+	}
+	// Somebody else's wstunnel / SmartDNS on the host.
+	var foreign []string
+	if r.Commands["wstunnel"] {
+		v := r.Versions["wstunnel"]
+		foreign = append(foreign, "wstunnel"+paren(v))
+	}
+	if st, ok := r.Packages["smartdns"]; ok && st.Installed != "" {
+		if e.out.Ownership != OwnSame || !e.ownsPackage("smartdns") {
+			foreign = append(foreign, "smartdns 软件包 "+st.Installed)
+		}
+	} else if r.Commands["smartdns"] && !e.ctx.Gateway {
+		foreign = append(foreign, "smartdns"+paren(r.Versions["smartdns"]))
+	}
+	if len(foreign) > 0 && !e.ctx.Gateway {
+		e.add(Info, CodeForeignBinary, strings.Join(foreign, " "),
+			"主机上已有 "+strings.Join(foreign, "、")+"。Meridian 不使用、不覆盖也不删除它们：它运行自己下发的 /usr/local/sbin/meridian-wstunnel、/usr/local/sbin/meridian-smartdns（单元 meridian-smartdns.service）；端口冲突在下面单独检查。", "")
+	}
+}
+
+func paren(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "（" + s + "）"
+}
+
+func (e *eval) ownsPackage(p string) bool {
+	return e.r.Manifest != nil && containsStr(e.r.Manifest.Packages, p)
+}
+
+// memory checks MemAvailable against the node's budget. A node whose plan
+// needs a local resolver is blocked when the budget does not fit (it never
+// runs without its resolver and never falls back to another one); other
+// nodes get a warning. Processes this install already runs (an update)
+// are part of the used memory and not counted again.
+func (e *eval) memory() {
+	if e.ctx.Gateway {
+		return
+	}
+	r := e.r
+	need := int64(MemHeadroomKB)
+	parts := []string{fmt.Sprintf("装机余量 %s", kb(MemHeadroomKB))}
+	running := func(unit string) bool { return e.out.Ownership == OwnSame && containsStr(e.own.Units, unit) }
+	if e.fp.DNS && !running("meridian-smartdns.service") {
+		need += MemSmartDNSKB
+		parts = append(parts, fmt.Sprintf("SmartDNS %s", kb(MemSmartDNSKB)))
+	}
+	if containsStr(e.fp.Binaries, "wstunnel") {
+		already := false
+		for _, u := range e.own.Units {
+			already = already || (e.out.Ownership == OwnSame && strings.HasPrefix(u, "wstunnel-"))
+		}
+		if !already {
+			need += MemWstunnelKB
+			parts = append(parts, fmt.Sprintf("wstunnel %s", kb(MemWstunnelKB)))
+		}
+	}
+	budget := strings.Join(parts, " + ")
+	switch {
+	case r.MemAvailKB < 0 && e.fp.DNS:
+		e.add(Blocking, CodeMemoryBudget, "memory", "读不到可用内存（MemAvailable），不能确认出口解析器的内存预算（"+budget+"）。",
+			"重新预检；仍然读不到时检查 /proc/meminfo。面板不会在不确定时去掉解析器或改用别的解析器。")
+	case r.MemAvailKB < 0:
+	case r.MemAvailKB < need && e.fp.DNS:
+		e.add(Blocking, CodeMemoryBudget, "memory",
+			fmt.Sprintf("可用内存 %s，低于这个节点的预算 %s（%s）。这个节点的配置要在本机运行出口解析器：面板不会跳过它、不会改用国内或别的解析器，也不会在它起不来时声称节点可用。", kb(r.MemAvailKB), kb(need), budget),
+			"先释放内存（停掉不用的服务或容器）或换一台内存更多的服务器，然后重新预检。")
+	case r.MemAvailKB < need:
+		e.add(Warning, CodeMemoryBudget, "memory",
+			fmt.Sprintf("可用内存 %s，低于这个节点的预算 %s（%s）：装机和隧道进程可能挤占已有服务。", kb(r.MemAvailKB), kb(need), budget),
+			"确认已有服务的内存余量后再继续。")
+	default:
+		e.add(Info, CodeMemoryBudget, "memory", fmt.Sprintf("内存预算 %s（%s），可用 %s：够用。解析器只绑定隧道地址。", kb(need), budget, kb(r.MemAvailKB)), "")
 	}
 }
 
@@ -648,7 +972,7 @@ func (e *eval) listenerOwned(lp ListenPlan, l Listener) bool {
 			return true
 		}
 		if lp.Owner == "smartdns" && e.own.DNS {
-			if unit == "smartdns.service" {
+			if unit == "smartdns.service" || unit == "meridian-smartdns.service" {
 				return true
 			}
 			if id := CgroupContainer(l.Cgroup); id != "" && e.ctx.Gateway {
@@ -666,7 +990,9 @@ func (e *eval) listenerOwned(lp ListenPlan, l Listener) bool {
 			}
 		}
 	}
-	if lp.Owner == "smartdns" && l.Process == "smartdns" && e.own.DNS {
+	// ss prints the 15-character comm: "meridian-smartd" for the
+	// panel-delivered binary.
+	if lp.Owner == "smartdns" && (l.Process == "smartdns" || l.Process == "meridian-smartd") && e.own.DNS {
 		return true
 	}
 	return false
@@ -740,6 +1066,29 @@ func (e *eval) listens() {
 		}
 		if !conflict {
 			e.change("listen", "bind", res, lp.Owner)
+		}
+	}
+	// A remote resolver binds tunnel addresses only. Without any bind line
+	// SmartDNS would bind [::]:53 by default, a wildcard bind answers the
+	// whole internet: both refuse the install.
+	if e.fp.DNS && !e.ctx.Gateway {
+		n, wild := 0, []string{}
+		for _, lp := range e.fp.Listens {
+			if lp.Owner != "smartdns" {
+				continue
+			}
+			n++
+			if lp.Wildcard {
+				wild = append(wild, fmt.Sprintf("%s %s:%d", lp.Proto, lp.Addr, lp.Port))
+			}
+		}
+		switch {
+		case n == 0:
+			e.add(Blocking, CodeResolverBind, "/etc/smartdns/smartdns.conf", "这个节点的解析器配置没有 bind 行：SmartDNS 会默认绑定 [::]:53，对整个公网应答。",
+				"检查拓扑里这个出口的隧道地址（解析器只绑定隧道地址）；修正后重新预检。")
+		case len(wild) > 0:
+			e.add(Blocking, CodeResolverBind, "/etc/smartdns/smartdns.conf", "这个节点的解析器配置绑定了通配地址（"+strings.Join(wild, "、")+"），会对公网应答。",
+				"出口解析器只能绑定隧道地址；修正拓扑后重新预检。")
 		}
 	}
 	// Port 53 listeners that are not in the way (loopback stubs, WARP):
@@ -1120,7 +1469,12 @@ func (e *eval) environment() {
 		}
 	}
 	if strings.Contains(r.Iptables, "legacy") {
-		e.add(Info, CodeIptablesLegacy, "iptables", "iptables 用的是 legacy 后端（"+r.Iptables+"）：它的规则不在 nft 里，FORWARD/INPUT 策略已按 iptables -S 检查。", "")
+		e.add(Info, CodeIptablesLegacy, "iptables",
+			"iptables 用的是 legacy 后端（"+r.Iptables+"）。面板不切换后端、不改 alternatives、不动已有的 legacy 规则。"+
+				"Meridian 的 nft 表（inet meridian 等）和 legacy 的 iptables 表都挂在内核同一组 netfilter 钩子上：一个包依次经过两边的链，"+
+				"同一钩子上按优先级从小到大（legacy 的 mangle −150、nat 目的 −100、filter 0、nat 源 100，与 nft 的 mangle/dstnat/filter/srcnat 同值；同值时先后不保证）；"+
+				"任何一边的 drop 都是最终的，一边的 accept 不能放行另一边丢弃的包；一条连接的 NAT 由先处理它的 nat 链决定。"+
+				"预检检查了 legacy filter 表 INPUT/FORWARD 的默认策略（iptables -S）；不检查 legacy 链里的单条规则（例如只丢某个端口或接口的 DROP/REJECT）、legacy nat 表里会改写隧道流量的规则，以及 legacy mangle 表打的 MARK 是否与 Meridian 的标记冲突。", "")
 	}
 	// Input policy: a public listener behind an INPUT policy of DROP.
 	var public []string
@@ -1148,7 +1502,11 @@ func (e *eval) plan() {
 	r := e.r
 	for _, p := range e.fp.Packages {
 		if !e.ctx.Gateway && !r.Commands[p.Command] {
-			e.change("package", "install", p.Package, "apt-get install（失败补偿时不卸载）")
+			detail := "apt-get install --no-install-recommends（失败补偿时不卸载）"
+			if st, ok := r.Packages[p.Package]; ok && st.Candidate != "" {
+				detail = "apt-get install --no-install-recommends，候选版本 " + st.Candidate + "（失败补偿时不卸载）"
+			}
+			e.change("package", "install", p.Package, detail)
 		}
 	}
 	if e.fp.Forward4 && r.Sysctl["net.ipv4.ip_forward"] != "1" {

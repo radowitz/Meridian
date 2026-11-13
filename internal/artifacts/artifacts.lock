@@ -1,0 +1,24 @@
+# Meridian panel-delivered binaries: the one place their versions and
+# digests are pinned. deploy/Dockerfile (deploy/fetch-artifacts.sh) reads
+# this file at image build time and the panel embeds it (catalog.go), so the
+# build and the running panel can never disagree about what is acceptable.
+#
+# Columns (whitespace separated):
+#   name version arch binary_sha256 binary_size source_sha256 source_kind member url
+#
+#   arch           uname -m of the target host (x86_64, aarch64)
+#   binary_sha256  SHA-256 of the executable as installed on the host
+#   source_sha256  SHA-256 of the upstream download (the release archive, or
+#                  the binary itself when source_kind is "raw")
+#   source_kind    tar.gz (extract member) | raw (the download is the binary)
+#
+# wstunnel 11.1.0 (erebe/wstunnel, BSD-3-Clause): static Linux builds. The
+# archive digests are the ones in the release's checksums.txt; the binary
+# digests were computed from the extracted member.
+wstunnel 11.1.0 x86_64 62b26d0ee0f2211cef15fa1b85173fe687bc6698121842bf324359b412afc151 13752784 512edf4e7bb64fc133522220123514868fae75b5bae4124b53e396787276aa23 tar.gz wstunnel https://github.com/erebe/wstunnel/releases/download/v11.1.0/wstunnel_11.1.0_linux_amd64.tar.gz
+wstunnel 11.1.0 aarch64 a2e4e02bf63a7608ae82625b1a0a16dc00d562e0a0326c26f22b26e84a857459 10851944 148895f957a68be39e2b65d28c5f2065b9c58c4a0cfd48c560b2b3267f398464 tar.gz wstunnel https://github.com/erebe/wstunnel/releases/download/v11.1.0/wstunnel_11.1.0_linux_arm64.tar.gz
+# SmartDNS Release48.4 = 1.2026.08.05-0921 (pymumu/smartdns, GPL-3.0):
+# the release's standalone static-pie executables. The digests equal the
+# asset digests GitHub publishes for the release.
+smartdns 1.2026.08.05-0921 x86_64 8adb80ce14d3a90a852d1dcc14d6a485ff0b65622d7ef294c4b8f1d0f51eb645 6030712 8adb80ce14d3a90a852d1dcc14d6a485ff0b65622d7ef294c4b8f1d0f51eb645 raw - https://github.com/pymumu/smartdns/releases/download/Release48.4/smartdns-x86_64
+smartdns 1.2026.08.05-0921 aarch64 1208c5562046c71913c3df88ad4e3ed0a3410161ff77ce4a60cdd63936bf1b27 5301472 1208c5562046c71913c3df88ad4e3ed0a3410161ff77ce4a60cdd63936bf1b27 raw - https://github.com/pymumu/smartdns/releases/download/Release48.4/smartdns-aarch64

@@ -54,6 +54,15 @@ services:
       MERIDIAN_WEB_DIR: /usr/share/meridian/web
       MERIDIAN_HOST_SOCKET: /run/meridian-host/agent.sock
       MERIDIAN_HOST_TOKEN_FILE: /run/secrets/meridian-host.token
+      # Panel-delivered binaries (wstunnel, SmartDNS for remote exits): the
+      # image carries them read-only at /usr/share/meridian/artifacts,
+      # fetched and verified when it was built (deploy/Dockerfile). To use
+      # another verified copy instead, mount it read-only and point this at
+      # it; files are still checked against the pins compiled into the
+      # panel (internal/artifacts/artifacts.lock), so this cannot change the
+      # version or digest. The gateway's own wstunnel (WSS client) is written
+      # through the /usr/local/sbin mount above by the install transaction.
+      # MERIDIAN_ARTIFACTS_DIR: /usr/share/meridian/artifacts
     restart: unless-stopped
 
   # Optional. Enable after the first install has written

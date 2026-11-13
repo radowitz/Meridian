@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/defaults"
 	"github.com/radowitz/meridian/internal/preflight"
@@ -110,12 +112,28 @@ func TestProvisionScriptInjectionAndGuards(t *testing.T) {
 	if !strings.Contains(script, "install -d -m 700 '/etc/wireguard'") || !strings.Contains(script, "chmod 600 \"$tmp\"") {
 		t.Fatal("WireGuard configs must be written 0600 in a 0700 dir")
 	}
-	// Exit nodes get a resolver install before any write and a start check after up.
-	install := strings.Index(script, "apt-get install -y -o Dpkg::Options::=--force-confold smartdns")
-	up := strings.Index(script, "/usr/local/sbin/meridian-up.sh\n")
-	active := strings.Index(script, "MERIDIAN_SMARTDNS_ACTIVE")
-	if install < 0 || install > strings.Index(script, "cat > ") || active < up {
+	// Exit nodes get the panel-delivered resolver verified before the
+	// journal opens, installed before any config is written, and a start
+	// check after up; the distribution package is never installed.
+	bound := ScriptWith("台湾出口", injected, Options{NodeID: "tw", Deployment: "dep-1", ServerID: "srv-1", Bundle: strings.Repeat("a", 64), Run: "r1", Expect: "none", Artifacts: fakeArtifacts(injected)})
+	check := strings.Index(bound, "m_art_check 'smartdns' '/usr/local/sbin/meridian-smartdns' ")
+	install := strings.Index(bound, "m_art_install 'smartdns' '/usr/local/sbin/meridian-smartdns' ")
+	up := strings.Index(bound, "/usr/local/sbin/meridian-up.sh\n")
+	active := strings.Index(bound, "MERIDIAN_SMARTDNS_ACTIVE")
+	if check < 0 || check > strings.Index(bound, "m_begin\n") || install < 0 || install > strings.Index(bound, "cat > ") || active < up {
 		t.Fatal("exit provision must install SmartDNS before writing and verify it after meridian-up")
+	}
+	if strings.Contains(bound, "smartdns\n") && strings.Contains(bound, "apt-get install -y -o Dpkg") || regexp.MustCompile(`apt-get install[^\n]*smartdns`).MatchString(bound) {
+		t.Fatal("the distribution's smartdns package must not be installed")
+	}
+	if !strings.Contains(bound, "apt-get install -y --no-install-recommends $m_need") {
+		t.Fatal("packages must be installed without recommends (no wireguard-dkms on Ubuntu 20.04)")
+	}
+	// The unbound script refuses as before, and a bound one without the
+	// binaries its units need refuses before anything else.
+	noArt := ScriptWith("x", injected, Options{NodeID: "tw", Deployment: "dep-1", ServerID: "srv-1", Bundle: strings.Repeat("a", 64), Run: "r1", Expect: "none"})
+	if refuse := strings.Index(noArt, "MERIDIAN_REFUSED artifact_missing"); refuse < 0 || refuse > strings.Index(noArt, "m_begin\n") {
+		t.Fatal("a script without the needed binaries must refuse first")
 	}
 	cmd := exec.Command("bash", "-n")
 	cmd.Stdin = strings.NewReader(script)
@@ -274,6 +292,7 @@ func newSandbox(t *testing.T) *sandbox {
   "link show "*) [ -f "$SANDBOX/link-$3" ] && exit 0; exit 1 ;;
   "-o link show") echo "1: lo: <UP>"; echo "2: eth0: <UP>"; for f in "$SANDBOX"/link-*; do [ -f "$f" ] && echo "9: ${f##*/link-}: <UP>"; done ;;
   "link del "*) [ "$FAIL_IPDEL" = 1 ] && exit 1; rm -f "$SANDBOX/link-$3" ;;
+  *"rule del "*|*"route del "*) exit 1 ;;
 esac
 exit 0`)
 	stub("wg-quick", `if [ "$1" = up ]; then n=$(basename "$2" .conf); touch "$SANDBOX/link-$n"; fi; exit 0`)
@@ -315,8 +334,48 @@ func (sb *sandbox) rooted(script string) string {
 	return r.Replace(script)
 }
 
+// fakeBinary is the test stand-in for a panel-delivered binary.
+func fakeBinary(name string) []byte {
+	return []byte("#!/bin/sh\n# fake " + name + " for tests\nexit 0\n")
+}
+
+// fakeArtifacts are Options.Artifacts for the binaries files need, staged.
+func fakeArtifacts(files map[string]string) []Artifact {
+	var out []Artifact
+	for _, b := range preflight.FootprintOf(files).Binaries {
+		data := fakeBinary(b)
+		out = append(out, Artifact{Name: b, Version: "1.0-test", SHA256: artifacts.SHA256Of(data), Size: int64(len(data)), Staged: true})
+	}
+	return out
+}
+
+var stagedRe = regexp.MustCompile(`(?m)^m_art_check '([a-z]+)' '[^']+' '([0-9a-f]{64})' staged$`)
+
+// stage puts data where the panel's sshexec.Connector.Stage would.
+func (sb *sandbox) stage(name string, data []byte) {
+	sb.t.Helper()
+	dir := filepath.Join(sb.root, "var/lib/meridian/stage")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		sb.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+		sb.t.Fatal(err)
+	}
+}
+
+// run stages the fake binaries a script expects (as the panel does before
+// every run that transfers them) unless MERIDIAN_TEST_NOSTAGE=1 is given.
 func (sb *sandbox) run(script string, env ...string) (string, int) {
 	sb.t.Helper()
+	nostage := false
+	for _, e := range env {
+		nostage = nostage || e == "MERIDIAN_TEST_NOSTAGE=1"
+	}
+	for _, m := range stagedRe.FindAllStringSubmatch(script, -1) {
+		if data := fakeBinary(m[1]); !nostage && artifacts.SHA256Of(data) == m[2] {
+			sb.stage(m[1], data)
+		}
+	}
 	cmd := exec.Command("bash", "-s")
 	cmd.Stdin = strings.NewReader(sb.rooted(script))
 	cmd.Env = append([]string{"PATH=" + sb.bin + ":/usr/bin:/bin:/usr/sbin:/sbin", "SANDBOX=" + sb.root, "LC_ALL=C"}, env...)
@@ -352,7 +411,7 @@ func testScript(t *testing.T, node, expect string) (string, map[string]string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := Options{NodeID: node, Deployment: "dep-1", ServerID: "srv-1", Bundle: preflight.BundleDigest(files), Run: "run-1", Expect: expect}
+	o := Options{NodeID: node, Deployment: "dep-1", ServerID: "srv-1", Bundle: preflight.BundleDigest(files), Run: "run-1", Expect: expect, Artifacts: fakeArtifacts(files)}
 	if err := CheckOptions(o); err != nil {
 		t.Fatal(err)
 	}
@@ -385,8 +444,20 @@ func TestProvisionScriptCommitsManifest(t *testing.T) {
 	}
 	// The manifest is what the next preflight reads.
 	r := preflight.Parse(preflight.Header + "\nmanifest-begin\n" + prefixLines("manifest ", man) + "manifest-end\n" + preflight.EndMarker + "\n")
-	if r.Manifest == nil || r.Manifest.Node != "tw" || r.Manifest.Deployment != "dep-1" || len(r.Manifest.Files) != len(files) {
+	// Every bundle file plus the panel-delivered resolver binary.
+	if r.Manifest == nil || r.Manifest.Node != "tw" || r.Manifest.Deployment != "dep-1" || len(r.Manifest.Files) != len(files)+1 {
 		t.Fatalf("manifest round trip %+v", r.Manifest)
+	}
+	fake := fakeBinary("smartdns")
+	if h := r.Manifest.Files["/usr/local/sbin/meridian-smartdns"]; h != artifacts.SHA256Of(fake) || len(r.Manifest.Artifacts) != 1 ||
+		r.Manifest.Artifacts[0] != (preflight.ManifestArtifact{Name: "smartdns", Version: "1.0-test", Path: "/usr/local/sbin/meridian-smartdns", SHA256: h}) {
+		t.Fatalf("binary not recorded: %+v", r.Manifest.Artifacts)
+	}
+	if got := sb.read("/usr/local/sbin/meridian-smartdns"); got != string(fake) || sb.exists("/var/lib/meridian/stage/smartdns") {
+		t.Fatalf("binary not installed from the stage (%q)", got)
+	}
+	if st, err := os.Stat(filepath.Join(sb.root, "usr/local/sbin/meridian-smartdns")); err != nil || st.Mode().Perm() != 0o755 {
+		t.Fatalf("binary mode %v %v", st, err)
 	}
 
 	// A second first-install script is refused: the manifest is there now.
@@ -536,5 +607,185 @@ func TestProvisionScriptUnboundRefuses(t *testing.T) {
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bash -n: %v\n%s", err, out)
+	}
+}
+
+// ------------------------------------------- panel-delivered binaries ---
+
+// scriptWith builds the bound script of node with the given artifacts.
+func scriptWith(t *testing.T, node, expect string, arts []Artifact) (string, map[string]string) {
+	t.Helper()
+	b, err := compile.Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := FilesFor(b.Files, node)
+	kp, _ := GenerateKeypair()
+	injected, err := InjectPrivate(files, kp.Private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := Options{NodeID: node, Deployment: "dep-1", ServerID: "srv-1", Bundle: preflight.BundleDigest(files), Run: "run-1", Expect: expect, Artifacts: arts}
+	if err := CheckOptions(o); err != nil {
+		t.Fatal(err)
+	}
+	return ScriptWith("test", injected, o), injected
+}
+
+// A staged binary with the wrong digest is refused on the host before the
+// journal opens: nothing changed, the bad copy is deleted.
+func TestProvisionRefusesStagedDigestMismatch(t *testing.T) {
+	sb := newSandbox(t)
+	script, files := testScript(t, "tw", "none")
+	sb.stage("smartdns", []byte("tampered\n"))
+	out, code := sb.run(script, "MERIDIAN_TEST_NOSTAGE=1")
+	if code != 3 || !strings.Contains(out, "MERIDIAN_REFUSED artifact_digest_mismatch") || strings.Contains(out, "MERIDIAN_PROVISION_OK") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if sb.exists("/var/lib/meridian/stage/smartdns") || sb.exists("/usr/local/sbin/meridian-smartdns") || sb.exists("/var/lib/meridian/node/journal") {
+		t.Fatal("a refused run changed the host")
+	}
+	for p := range files {
+		if sb.exists(p) {
+			t.Fatalf("%s written by a refused run", p)
+		}
+	}
+	// Not staged at all: refused the same way.
+	out, code = sb.run(script, "MERIDIAN_TEST_NOSTAGE=1")
+	if code != 3 || !strings.Contains(out, "MERIDIAN_REFUSED artifact_missing") {
+		t.Fatalf("not staged: %d %s", code, out)
+	}
+	if strings.Contains(sb.read("/calls.log"), "apt-get install") {
+		t.Fatal("a refused run installed packages")
+	}
+}
+
+// The host already has exactly the pinned digest: nothing is transferred
+// (the script carries "present"), the copy is verified and kept, and the
+// manifest still records it. A copy changed since the preflight is refused.
+func TestProvisionKeepsMatchingBinary(t *testing.T) {
+	sb := newSandbox(t)
+	fake := fakeBinary("smartdns")
+	arts := fakeArtifacts(nil)
+	arts = append(arts, Artifact{Name: "smartdns", Version: "1.0-test", SHA256: artifacts.SHA256Of(fake), Size: int64(len(fake))})
+	script, _ := scriptWith(t, "tw", "none", arts)
+	if strings.Contains(script, "m_art_install 'smartdns'") || !strings.Contains(script, "m_art_check 'smartdns' '/usr/local/sbin/meridian-smartdns' '"+artifacts.SHA256Of(fake)+"' present") {
+		t.Fatal("a kept binary must be checked, not installed")
+	}
+	os.WriteFile(filepath.Join(sb.root, "usr/local/sbin/meridian-smartdns"), fake, 0o755)
+	out, code := sb.run(script)
+	if code != 0 || !strings.Contains(out, "MERIDIAN_PROVISION_OK") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	man := strings.ReplaceAll(sb.read("/var/lib/meridian/node/manifest"), sb.root, "")
+	if !strings.Contains(man, "file /usr/local/sbin/meridian-smartdns "+artifacts.SHA256Of(fake)) || !strings.Contains(man, "artifact smartdns 1.0-test /usr/local/sbin/meridian-smartdns ") || strings.Contains(man, "orphan /usr/local/sbin/meridian-smartdns") {
+		t.Fatalf("kept binary not in the manifest:\n%s", man)
+	}
+	// Update with the binary kept again: still a file, not an orphan.
+	upd, _ := scriptWith(t, "tw", "same", arts)
+	if out, code = sb.run(upd); code != 0 {
+		t.Fatalf("update %d %s", code, out)
+	}
+	man = strings.ReplaceAll(sb.read("/var/lib/meridian/node/manifest"), sb.root, "")
+	if strings.Contains(man, "orphan /usr/local/sbin/meridian-smartdns") || !strings.Contains(man, "file /usr/local/sbin/meridian-smartdns ") {
+		t.Fatalf("kept binary became an orphan:\n%s", man)
+	}
+	// Changed on the host since the preflight: refused before anything.
+	os.WriteFile(filepath.Join(sb.root, "usr/local/sbin/meridian-smartdns"), []byte("changed\n"), 0o755)
+	if out, code = sb.run(upd); code != 3 || !strings.Contains(out, "MERIDIAN_REFUSED artifact_changed") {
+		t.Fatalf("changed copy: %d %s", code, out)
+	}
+}
+
+// A file at Meridian's binary path that the manifest does not record is
+// never overwritten.
+func TestProvisionRefusesForeignBinaryPath(t *testing.T) {
+	sb := newSandbox(t)
+	script, _ := testScript(t, "tw", "none")
+	os.WriteFile(filepath.Join(sb.root, "usr/local/sbin/meridian-smartdns"), []byte("someone else's\n"), 0o755)
+	out, code := sb.run(script)
+	if code != 3 || !strings.Contains(out, "MERIDIAN_REFUSED artifact_path_foreign") {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if sb.read("/usr/local/sbin/meridian-smartdns") != "someone else's\n" {
+		t.Fatal("foreign file overwritten")
+	}
+}
+
+// An update that replaces a binary restarts the units that run it; a
+// failed update restores the previous binary (compensation).
+func TestProvisionReplacesBinaryAndCompensates(t *testing.T) {
+	sb := newSandbox(t)
+	script, _ := testScript(t, "ali", "none")
+	if out, code := sb.run(script); code != 0 {
+		t.Fatalf("first install %d %s", code, out)
+	}
+	old := sb.read("/usr/local/sbin/meridian-wstunnel")
+	if old != string(fakeBinary("wstunnel")) {
+		t.Fatalf("wstunnel not installed: %q", old)
+	}
+	// A new pinned version (another digest) for the update.
+	next := []byte("#!/bin/sh\n# fake wstunnel 2\nexit 0\n")
+	arts := []Artifact{{Name: "wstunnel", Version: "2.0-test", SHA256: artifacts.SHA256Of(next), Size: int64(len(next)), Staged: true}}
+	upd, _ := scriptWith(t, "ali", "same", arts)
+	os.Remove(filepath.Join(sb.root, "calls.log"))
+	sb.stage("wstunnel", next)
+	out, code := sb.run(upd)
+	if code != 0 || sb.read("/usr/local/sbin/meridian-wstunnel") != string(next) {
+		t.Fatalf("update %d %s", code, out)
+	}
+	if calls := sb.read("/calls.log"); !strings.Contains(calls, "systemctl try-restart wstunnel-client-ali-hub-wss.service wstunnel-meridian.service") {
+		t.Fatalf("units of the replaced binary not restarted:\n%s", calls)
+	}
+	// Another update that fails after the binary was replaced: the binary
+	// of the last good install comes back.
+	third := []byte("#!/bin/sh\n# fake wstunnel 3\nexit 0\n")
+	arts = []Artifact{{Name: "wstunnel", Version: "3.0-test", SHA256: artifacts.SHA256Of(third), Size: int64(len(third)), Staged: true}}
+	upd, _ = scriptWith(t, "ali", "same", arts)
+	sb.stage("wstunnel", third)
+	// The first "enable --now" fails (the new install); the restored
+	// previous meridian-up.sh then runs normally.
+	sys := "#!/bin/bash\necho \"systemctl $*\" >> \"$SANDBOX/calls.log\"\nif [ \"$1\" = enable ] && [ \"$2\" = --now ] && [ -f \"$SANDBOX/fail-once\" ]; then rm -f \"$SANDBOX/fail-once\"; exit 1; fi\nexit 0\n"
+	os.WriteFile(filepath.Join(sb.bin, "systemctl"), []byte(sys), 0o755)
+	os.WriteFile(filepath.Join(sb.root, "fail-once"), nil, 0o644)
+	out, code = sb.run(upd)
+	if code == 0 || !strings.Contains(out, "MERIDIAN_COMPENSATED") {
+		t.Fatalf("failed update %d %s", code, out)
+	}
+	if sb.read("/usr/local/sbin/meridian-wstunnel") != string(next) {
+		t.Fatal("previous binary not restored by the compensation")
+	}
+}
+
+// A node an earlier version provisioned with the distribution's
+// smartdns.service (manifest "pkg smartdns"): the update stops it before
+// the panel-delivered resolver starts, and a failed update restores it.
+func TestProvisionMigratesLegacySmartDNSService(t *testing.T) {
+	sb := newSandbox(t)
+	script, _ := testScript(t, "tw", "none")
+	if out, code := sb.run(script); code != 0 {
+		t.Fatalf("install %d %s", code, out)
+	}
+	man := sb.read("/var/lib/meridian/node/manifest")
+	os.WriteFile(filepath.Join(sb.root, "var/lib/meridian/node/manifest"), []byte(man+"pkg smartdns\n"), 0o600)
+	// smartdns.service is active and enabled.
+	sys := "#!/bin/bash\necho \"systemctl $*\" >> \"$SANDBOX/calls.log\"\ncase \" $* \" in *' smartdns.service '*) case \"$1\" in is-active) [ -f \"$SANDBOX/legacy-stopped\" ] && exit 1; echo active; exit 0;; is-enabled) [ -f \"$SANDBOX/legacy-stopped\" ] && exit 1; echo enabled; exit 0;; disable) touch \"$SANDBOX/legacy-stopped\";; enable|start) rm -f \"$SANDBOX/legacy-stopped\";; esac;; esac\nif [ \"$1\" = enable ] && [ \"$2\" = --now ] && [ -f \"$SANDBOX/fail-once\" ]; then rm -f \"$SANDBOX/fail-once\"; exit 1; fi\nexit 0\n"
+	os.WriteFile(filepath.Join(sb.bin, "systemctl"), []byte(sys), 0o755)
+	upd, _ := testScript(t, "tw", "same")
+	os.WriteFile(filepath.Join(sb.root, "fail-once"), nil, 0o644)
+	out, code := sb.run(upd)
+	if code == 0 || !strings.Contains(out, "MERIDIAN_COMPENSATED") {
+		t.Fatalf("failed update %d %s", code, out)
+	}
+	calls := sb.read("/calls.log")
+	if !strings.Contains(calls, "systemctl disable --now smartdns.service") || !strings.Contains(calls, "systemctl start smartdns.service") || sb.exists("/legacy-stopped") {
+		t.Fatalf("legacy smartdns.service not stopped and restored:\n%s", calls)
+	}
+	os.Remove(filepath.Join(sb.root, "calls.log"))
+	if out, code = sb.run(upd); code != 0 {
+		t.Fatalf("update %d %s", code, out)
+	}
+	if !sb.exists("/legacy-stopped") || !strings.Contains(sb.read("/var/lib/meridian/node/manifest"), "pkg smartdns") {
+		t.Fatal("legacy smartdns.service must stay stopped and the package recorded")
 	}
 }

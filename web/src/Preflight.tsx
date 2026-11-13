@@ -8,7 +8,7 @@ import { CheckCircleFilled, CloseCircleFilled, ExclamationCircleFilled, InfoCirc
 import { Alert, Collapse, Space, Tag, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { ApiError } from "./api";
-import type { LoginHelp, PreflightChange, PreflightFinding, PreflightRecord } from "./types";
+import type { LoginHelp, PreflightBinary, PreflightChange, PreflightFinding, PreflightPackage, PreflightRecord } from "./types";
 import { href } from "./state";
 import { CopyButton, Facts, Link, Mono, TimeText } from "./ui";
 
@@ -37,6 +37,7 @@ const CHANGE_KIND: Record<string, string> = {
   package: "软件包",
   sysctl: "内核参数",
   state: "受管记录",
+  binary: "面板下发的二进制",
 };
 
 const CHANGE_ACTION: Record<string, string> = {
@@ -48,7 +49,87 @@ const CHANGE_ACTION: Record<string, string> = {
   enable: "启用",
   install: "安装",
   set: "设置",
+  keep: "保留",
 };
+
+const BINARY_ACTION: Record<PreflightBinary["action"], { label: string; color: string }> = {
+  install: { label: "传输并安装", color: "blue" },
+  replace: { label: "传输并替换", color: "gold" },
+  keep: { label: "已是固定版本，不传输", color: "green" },
+  refuse: { label: "不能下发", color: "red" },
+};
+
+const PACKAGE_ACTION: Record<PreflightPackage["action"], { label: string; color: string }> = {
+  none: { label: "已有", color: "green" },
+  install: { label: "apt 安装", color: "blue" },
+  unavailable: { label: "apt 没有候选版本", color: "red" },
+};
+
+function kb(v: number | undefined): string {
+  if (v === undefined || v < 0) return "未知";
+  if (v >= 1024 * 1024) return `${(v / 1024 / 1024).toFixed(1)} GB`;
+  return `${Math.floor(v / 1024)} MB`;
+}
+
+/** Platform, versions, binaries and packages: what this install brings to the host. */
+export function InstallPlan({ rec }: { rec: PreflightRecord }) {
+  const bins = rec.binaries ?? [];
+  const pkgs = rec.package_plan ?? [];
+  return (
+    <div data-testid="preflight-install-plan" style={{ marginTop: 12 }}>
+      <Typography.Text strong>安装计划</Typography.Text>
+      <Facts
+        items={[
+          [
+            "平台",
+            rec.platform ? (
+              <Tag key="p" color="green" data-testid="preflight-platform">
+                {rec.platform}
+              </Tag>
+            ) : (
+              <Tag key="p" color="red" data-testid="preflight-platform">
+                不在支持范围
+              </Tag>
+            ),
+          ],
+          ["架构", <Mono key="a">{rec.host.arch || "未知"}</Mono>],
+          ["内存", <span key="m">{`共 ${kb(rec.host.mem_total_kb)}，可用 ${kb(rec.host.mem_avail_kb)}`}</span>],
+        ]}
+      />
+      {bins.length > 0 ? (
+        <div data-testid="preflight-binaries" style={{ marginTop: 6 }}>
+          <Typography.Text type="secondary">面板下发的二进制（固定版本，按架构区分，主机不下载任何东西；激活前在主机上再校验 SHA-256）：</Typography.Text>
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {bins.map((b) => (
+              <li key={b.name} className="mono-small" data-binary={b.name} data-action={b.action}>
+                <Tag color={BINARY_ACTION[b.action]?.color}>{BINARY_ACTION[b.action]?.label ?? b.action}</Tag>
+                {b.name} {b.version ?? ""}（{b.arch || "?"}）→ {b.path}
+                {b.sha256 ? <Typography.Text type="secondary">{` sha256 ${b.sha256.slice(0, 16)}…`}</Typography.Text> : null}
+                {b.size ? <Typography.Text type="secondary">{`，${kb(Math.ceil(b.size / 1024))}`}</Typography.Text> : null}
+                {b.detail ? <Typography.Text type="secondary">（{b.detail}）</Typography.Text> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {pkgs.length > 0 ? (
+        <div data-testid="preflight-packages" style={{ marginTop: 6 }}>
+          <Typography.Text type="secondary">发行版软件包（缺的经 apt 安装，--no-install-recommends，失败补偿时不卸载）：</Typography.Text>
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {pkgs.map((p) => (
+              <li key={p.package} className="mono-small" data-package={p.package} data-action={p.action}>
+                <Tag color={PACKAGE_ACTION[p.action]?.color}>{PACKAGE_ACTION[p.action]?.label ?? p.action}</Tag>
+                {p.package}
+                {p.installed ? <Typography.Text type="secondary">{` 已安装 ${p.installed}`}</Typography.Text> : null}
+                {p.action === "install" && p.candidate ? <Typography.Text type="secondary">{` 候选 ${p.candidate}`}</Typography.Text> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /** Why execution is not possible with this result, or null when it is. */
 export function preflightBlockedReason(rec: PreflightRecord | null | undefined, now = new Date()): string | null {
@@ -106,6 +187,7 @@ export function PreflightReport({ rec }: { rec: PreflightRecord }) {
           ],
         ]}
       />
+      <InstallPlan rec={rec} />
       {groups.map(({ sev, items }) =>
         items.length === 0 ? null : (
           <div key={sev} data-testid={`preflight-${sev}`} style={{ marginTop: 12 }}>
@@ -219,6 +301,14 @@ export function PreflightReport({ rec }: { rec: PreflightRecord }) {
 export function LoginHelpView({ help }: { help: LoginHelp }) {
   return (
     <div data-testid="login-help" style={{ marginTop: 8 }}>
+      {help.offered_methods && help.offered_methods.length > 0 ? (
+        <div data-testid="login-offered" style={{ marginBottom: 4 }}>
+          <Typography.Text type="secondary">服务器提供的登录方式：</Typography.Text>
+          {help.offered_methods.map((m) => (
+            <Tag key={m}>{m}</Tag>
+          ))}
+        </div>
+      ) : null}
       <ol style={{ margin: "0 0 8px", paddingLeft: 18 }}>
         {help.steps.map((s) => (
           <li key={s}>{s}</li>

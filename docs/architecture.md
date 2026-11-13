@@ -343,9 +343,9 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 
 ### 流程：脚本 → 报告 → 评估 → 关卡
 
-1. **脚本**（`internal/preflight` 的 `Script()`）：一份固定、可审阅的 bash 脚本，对所有节点是同一段文本，拓扑、目标和请求里的东西都不插进去。唯一的参数是这个节点的包要写的主机路径：每个都要过 `preflight.ValidatePaths`（绝对路径、已规范化、只含字母数字和 `._/@+-`、不含 `..`、只在 Meridian 写的那几个目录下、最多 256 个），由 `preflight.Args` 单引号包好；`sshexec.RunPreflight` 连接前再按同样的形状检查一遍，脚本里也再判一次（被拒的参数只报告 `note path argument refused`，不碰）。脚本经已固定指纹的 SSH 通道以 `bash -s -- <路径>` 从标准输入执行。它只运行打印状态的命令（`id`、`uname`、`ip … show`、`ss -Hlntup`、`nft list chains`、`iptables -S`、`systemctl is-active/is-enabled/show -p MainPID`、`dpkg-query`、`apt-cache policy`、`sha256sum`、`head`、`grep`），每条 15 秒上限、标准输入是 `/dev/null`，不写任何文件，**不输出文件内容**（WireGuard 配置里有私钥：只报告类型、大小、前 12 行是否提到 Meridian、SHA-256），整份输出截在 256 KiB + 1 字节。
+1. **脚本**（`internal/preflight` 的 `Script()`）：一份固定、可审阅的 bash 脚本，对所有节点是同一段文本，拓扑、目标和请求里的东西都不插进去。唯一的参数是这个节点的包要写的主机路径：每个都要过 `preflight.ValidatePaths`（绝对路径、已规范化、只含字母数字和 `._/@+-`、不含 `..`、只在 Meridian 写的那几个目录下、最多 256 个），由 `preflight.Args` 单引号包好；`sshexec.RunPreflight` 连接前再按同样的形状检查一遍，脚本里也再判一次（被拒的参数只报告 `note path argument refused`，不碰）。脚本经已固定指纹的 SSH 通道以 `bash -s -- <路径>` 从标准输入执行。它只运行打印状态的命令（`id`、`uname`、`ip … show`、`ss -Hlntup`、`nft list chains`、`iptables -S`、`systemctl is-active/is-enabled/show -p MainPID`、`dpkg-query`、`apt-cache policy`、`nft/wg/wstunnel --version`、`sha256sum`、`head`、`grep`），每条 15 秒上限、标准输入是 `/dev/null`，不写任何文件，**不输出文件内容**（WireGuard 配置里有私钥：只报告类型、大小、前 12 行是否提到 Meridian、SHA-256），整份输出截在 256 KiB + 1 字节。
 2. **报告**：按行的 `键 值…` 格式，首行 `meridian-preflight 1`，末行 `meridian-preflight-end`。`preflight.Parse` 不会失败：报告头之前的登录横幅被忽略；没有报告头、没有结束行、超长或超行数的报告标为不完整；每个值去掉控制字符、双向控制符和非法 UTF-8 并截到 400 个字符；地址、端口、路径、单元名、表名都按各自的形状校验，不符就丢掉；结束行之后的内容、清单块之外的清单行一律忽略。
-3. **评估**（`preflight.FootprintOf` + `preflight.Evaluate`）：从这个节点**编译出来的文件**推出它会建的东西——接口和地址、监听端口（WireGuard `ListenPort`、wstunnel 服务端和客户端、SmartDNS 的 `bind`）、main 表路由和黑洞兜底、策略规则与优先级、路由表号与名字、防火墙标记、nft 表、systemd 单元、要装的软件包和必须已存在的二进制——再和报告逐项对比，得到带严重度（阻断 / 警告 / 信息）、稳定代码、中文说明（发现了什么）、处理办法和受影响资源的结论，外加「拟执行的变更」清单。
+3. **评估**（`preflight.FootprintOf` + `preflight.Evaluate`）：从这个节点**编译出来的文件**推出它会建的东西——接口和地址、监听端口（WireGuard `ListenPort`、wstunnel 服务端和客户端、SmartDNS 的 `bind`）、main 表路由和黑洞兜底、策略规则与优先级、路由表号与名字、防火墙标记、nft 表、systemd 单元、要装的软件包和面板要下发的二进制（单元的 `ExecStart` 指向 `/usr/local/sbin/meridian-wstunnel` / `meridian-smartdns`）——再和报告逐项对比，得到带严重度（阻断 / 警告 / 信息）、稳定代码、中文说明（发现了什么）、处理办法和受影响资源的结论，外加「拟执行的变更」清单。
 4. **关卡**（`internal/api/preflight.go`、`provision_api.go`）：见下面「执行前复核」。
 
 网关走同样的评估：`meridian-host` 新增只读动作 `POST /v1/preflight`（参数只有同样校验过的路径；程序只从固定表里取：`ip`、`nft`、`ss`、`iptables`、`ip6tables`、`systemctl`、`wg`，参数固定；文件直接读、不回传内容；不占动作锁），用 `preflight.Line` 输出同一种报告。网关的「属于谁」来自安装清单（`apply.Installed`），带 Meridian 标记但不在清单里的文件交给安装事务的旧版接管去决定。
@@ -356,13 +356,16 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 | --- | --- | --- |
 | `report_incomplete` | 阻断 | 报告没有头、没有结束行、被截断或超限 |
 | `not_root` | 阻断 | 登录用户不是 uid 0（这一版不支持 sudo） |
-| `os_unsupported` | 阻断 | 不是 Debian 12 / 13（或读不到 `/etc/os-release`）：装机脚本用 apt 装 wireguard-tools、nftables、smartdns，其他发行版的包名和 SmartDNS 版本没有验证 |
-| `arch_unsupported` | 阻断 | 不是 x86_64 / aarch64 |
+| `os_unsupported` | 阻断 | 远端节点：发行版和版本不在支持表里（Debian 12、Debian 13、Ubuntu 20.04；读不到 `/etc/os-release` 也算）。网关：不是 Debian 12 / 13。见下面「支持的平台」 |
+| `arch_unsupported` | 阻断 | 不是 x86_64 / aarch64，或发行版和架构的组合不在支持表里（例如 Debian 13 aarch64、Ubuntu 20.04 x86_64 的远端节点） |
 | `kernel_too_old` | 阻断 | 内核早于 5.6（没有内置 WireGuard） |
 | `no_systemd` | 阻断 | 不是 systemd 系统 |
 | `no_apt` | 阻断 | 缺命令要装包，但没有 apt-get |
-| `smartdns_unavailable` | 阻断 | 节点要跑出口解析器，没装且 apt 查不到候选版本 |
-| `wstunnel_missing` | 阻断 | 节点有 wstunnel 单元但主机上没有 wstunnel（面板不下载二进制；提示按架构选 linux_amd64 / linux_arm64） |
+| `smartdns_unavailable` | 阻断 | 节点要跑出口解析器，但面板没有这台主机架构的已校验 SmartDNS（镜像里缺文件、加载或发送前摘要不符、没有这个架构的固定版本）。不会跳过解析器，也不会让主机自己下载 |
+| `wstunnel_missing` | 阻断 | 节点（含网关）有 wstunnel 单元，但面板没有这台主机架构的已校验 wstunnel。主机上有没有别的 wstunnel 不再相关：Meridian 只运行自己下发的 `/usr/local/sbin/meridian-wstunnel` |
+| `package_unavailable` | 阻断 | 远端节点缺 `wg` / `nft` / `ip`，而 `apt-cache policy` 查不到对应包（wireguard-tools / nftables / iproute2）的候选版本 |
+| `memory_budget` | 阻断 / 警告 / 信息 | 远端节点：可用内存（MemAvailable）对比这个节点的预算——装机余量 48 MB + SmartDNS 48 MB（有出口解析器时）+ wstunnel 32 MB（有 WSS 时）；更新时已经在跑的受管进程不重复计算。要本机解析器的节点低于预算（或读不到可用内存）时阻断，其他节点低于预算时警告，够用时信息 |
+| `resolver_bind_unsafe` | 阻断 | 远端解析器配置没有 `bind` 行（SmartDNS 会默认绑 `[::]:53`）或绑了通配地址 |
 | `forward_policy_drop` | 阻断 | 节点要转发，而 iptables/ip6tables 的 FORWARD 策略是 DROP/REJECT，或别的 nft 表有 `hook forward` 且 `policy drop` 的链（通常是 Docker）。Meridian 自己的转发链 `policy accept` 救不回被别的表丢掉的包；面板**不会**替你改 Docker 或别的防火墙 |
 | `interface_exists` | 阻断 | 要建的接口名已存在且不在受管清单里 |
 | `port_in_use` | 阻断 | 要绑定的 协议/地址/端口 已有监听：通配地址和同端口任何监听冲突，具体地址只和同地址或通配监听冲突（回环上的 systemd-resolved、WARP 不算冲突）；只有「有证据属于这次安装」的不算（见下面「什么算我们的」）。占用者按进程名、容器名、systemd 单元或 WireGuard 接口名写出；端口来自拓扑字段时，结论带 `fix`（`{kind: node|link, id, field, label}`）并在处理办法里写明改哪个对象的哪个字段，面板链接到那个编辑器（见下面「端口从哪里来」）；SmartDNS 的 53/853 是固定的，处理办法是让占用者别绑通配地址 |
@@ -385,16 +388,19 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 | `firewall_manager` | 警告 | ufw / firewalld 在运行 |
 | `modified_since_install` | 警告 | 受管文件在上次装机后被改过，会被覆盖 |
 | `previous_run_leftovers` | 警告 | 上一次失败已补偿，但 journal 记了残留（例如保留的软件包） |
-| `docker_present`、`docker_missing`、`cloudflare_warp`、`wireguard_present`、`dns_listeners`、`nft_tables_present`、`netfilter_persistent`、`iptables_legacy`、`existing_install`、`forwarding_enable`、`host_summary` | 信息 | 认出来并说明是什么：Docker、主机级 WARP（`warp-svc`、`CloudflareWARP`、`inet cloudflare-warp`、100.96.0.0/12 地址）、别的 WireGuard 接口和端口、53 端口上不冲突的监听、别的 nft 表、legacy iptables、这次会全局打开转发等 |
+| `docker_present`、`docker_missing`、`cloudflare_warp`、`wireguard_present`、`dns_listeners`、`nft_tables_present`、`netfilter_persistent`、`iptables_legacy`、`existing_install`、`forwarding_enable`、`host_summary` | 信息 | 认出来并说明是什么：Docker、主机级 WARP（`warp-svc`、`CloudflareWARP`、`inet cloudflare-warp`、100.96.0.0/12 地址）、别的 WireGuard 接口和端口、53 端口上不冲突的监听、别的 nft 表、legacy iptables（连同下面「与 iptables-legacy 共存」的说明）、这次会全局打开转发等 |
+| `platform_supported`、`artifact_plan`、`foreign_binary` | 信息 | 匹配到的支持平台；每个面板下发的二进制要「传输并安装 / 已是固定版本不传输 / 替换」；主机上别的服务装的 wstunnel 或 smartdns 软件包（不使用、不覆盖、不删除） |
 
-**不检查**（随每个结果返回，面板里也显示）：放行规则是否覆盖 Meridian 的端口；云厂商安全组和上游 NAT；别的服务以后会不会改网络（Docker 重启、WARP 重连、nftables 重载）；SmartDNS 上游、wstunnel 证书和域名；sudo。预检不修改任何东西，发现的冲突由你处理。
+**不检查**（随每个结果返回，面板里也显示）：放行规则是否覆盖 Meridian 的端口；云厂商安全组和上游 NAT；别的服务以后会不会改网络（Docker 重启、WARP 重连、nftables 重载）；SmartDNS 上游、wstunnel 证书和域名（面板下发的二进制只核对架构、路径和 SHA-256，预检里不执行它们）；这台主机的 nft 版本能否接受生成的规则（装机时 `meridian-up.sh` 先 `nft -c`）；iptables-legacy 主机上 legacy 链里的单条规则、nat 改写和 MARK；sudo。预检不修改任何东西，发现的冲突由你处理。
+
+预检结果（`preflight` 记录）还带 `platform`（匹配到的支持平台）、`binaries`（每个面板下发的二进制：名字、版本、架构、主机路径、SHA-256、大小、`install|keep|replace|refuse`、是否要传输）和 `package_plan`（每个发行版包：命令在不在、已装版本、apt 候选、`none|install|unavailable`），面板「安装计划」里逐项显示。
 
 ### 什么算「我们的」
 
 只有在主机上已有**本节点、本面板**（远端：节点清单的节点和部署 ID 都对上；网关：面板的安装清单）的安装时，才会有资源被认作这次安装自己的，而且每一项都要有证据，否则照常算冲突：
 
-- 文件、接口、单元、nft 表、路由表：在受管清单里。
-- 监听：所在 WireGuard 接口在清单里（`wg show all listen-port`）；或套接字所在的 cgroup（`ss -Hlntu --cgroup`，经 sock_diag 读取，不需要访问进程）是清单里的单元；或监听解析器端口的是清单里有解析器配置时的 `smartdns.service`，网关上则是 docker compose 管的固定容器 `meridian-smartdns`（宿主代理用固定参数 `docker inspect --format '{{.Id}} {{.State.Running}}' meridian-smartdns` 取它的 ID，与套接字 cgroup 里的容器 ID 比对）。宿主代理的 systemd 单元只有 CAP_NET_ADMIN，`ss -p` 看不到进程名，所以网关上靠 cgroup；读不到 cgroup（旧版 iproute2）时不认，仍报冲突。
+- 文件、接口、单元、nft 表、路由表：在受管清单里。面板下发的二进制：清单里的 `file` 行（远端另有 `artifact <名字> <版本> <路径> <sha256>` 行；网关是安装清单的 `artifacts`）。
+- 监听：所在 WireGuard 接口在清单里（`wg show all listen-port`）；或套接字所在的 cgroup（`ss -Hlntu --cgroup`，经 sock_diag 读取，不需要访问进程）是清单里的单元（新装的出口解析器是清单里的 `meridian-smartdns.service`，进程名 `meridian-smartd`）；或监听解析器端口的是清单里有解析器配置时的 `smartdns.service`（以前的版本用发行版包装的解析器），网关上则是 docker compose 管的固定容器 `meridian-smartdns`（宿主代理用固定参数 `docker inspect --format '{{.Id}} {{.State.Running}}' meridian-smartdns` 取它的 ID，与套接字 cgroup 里的容器 ID 比对）。宿主代理的 systemd 单元只有 CAP_NET_ADMIN，`ss -p` 看不到进程名，所以网关上靠 cgroup；读不到 cgroup（旧版 iproute2）时不认，仍报冲突。
 - 地址和路由：在清单里的接口上；或这份包自己写的 lo 中转地址（`ip addr replace … dev lo`）及内核为它加的路由；与包里完全相同的路由。
 - 策略规则：查清单里的路由表、`iif` 是清单里的接口，或与包里同优先级、同标记的规则。
 
@@ -429,7 +435,18 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 
 ### 登录方式不被接受
 
-`auth_failed`（服务器试了并拒绝这份凭据）和 `auth_method_unavailable`（服务器根本不提供这种登录方式）分开报告。连接测试、预检和装机在这两种情况下都附带 `login_help`：凭据是密钥时给出它的公钥（`authorized_keys` 一行）和该做的步骤（必要时先开 `PubkeyAuthentication`）；凭据是密码而服务器只收密钥时，列出面板里已有密钥凭据的公钥，没有就提示先生成一把。只含公钥，不含任何秘密。
+`auth_failed`（服务器试了并拒绝这份凭据）和 `auth_method_unavailable`（服务器根本不提供这种登录方式）分开报告。握手时面板记下服务器**实际提供**的登录方式（`password` / `publickey` / `keyboard-interactive`，只探测、不发送任何东西），放进错误、连接测试结果（`offered_methods`）和 `login_help`（`offered_methods`、`publickey_offered`）。只有服务器提供 `publickey` 时才建议改用密钥、给出可复制的公钥：
+
+| 凭据 | 结果 | `login_help` |
+| --- | --- | --- |
+| 密钥 | `auth_failed`（服务器收公钥，但不认这把） | 这把密钥的公钥 + 追加到 `authorized_keys` 的步骤 |
+| 密钥 | `auth_method_unavailable`，服务器只提供密码（例如经端口转发才能到、只收密码的 IX） | **不给公钥**；提示给这台服务器添加密码凭据并把认证方式改为密码——用密码时面板全部功能可用；想改用密钥要先在服务器上开 `PubkeyAuthentication` |
+| 密码 | `auth_failed`，服务器只提供密码 | 更新密码；不提密钥 |
+| 密码 | `auth_failed`，服务器也提供公钥 | 更新密码；也可以改用密钥（列出面板密钥凭据的公钥） |
+| 密码 | `auth_method_unavailable`，服务器只收公钥 | 列出面板密钥凭据的公钥，没有就提示先生成一把 |
+| 密码 | `auth_method_unavailable`，也没有公钥 | 说明服务器提供的方式，检查 `sshd_config`；不提密钥 |
+
+只含公钥，不含任何秘密。这些行为由 `TestLoginHelp` 在进程内 SSH 服务器上覆盖，没有在真实服务器上执行过。
 
 ### API
 
@@ -439,10 +456,68 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 | `GET /api/provision/preflight/{node}` | | `{"preflight", "stale"}` |
 | `GET /api/provision/state` | | `{"nodes": {节点: 最近一次装机的结果}}` |
 | `POST /api/host/preflight` | `{}`（不接受任何字段） | `{"preflight": 预检结果}`；503 `host_unavailable`，502 `preflight_failed` |
-| `POST /api/provision` | `{node_id, generate_keys?, preflight_id?}` | 见上；预检类拒绝 409 `preflight_required` / `preflight_stale` / `preflight_blocked` / `preflight_changed` / `bundle_changed` / `target_changed` / `node_busy`，远端复核拒绝 409 `provision_refused`，失败 502 `provision_failed_compensated` / `provision_failed_leftovers` |
+| `POST /api/provision` | `{node_id, generate_keys?, preflight_id?}` | 见上；预检类拒绝 409 `preflight_required` / `preflight_stale` / `preflight_blocked` / `preflight_changed` / `bundle_changed` / `target_changed` / `node_busy`，面板的二进制副本不可用 409 `artifact_unavailable`、传输失败 502 `artifact_stage_failed`（这两种 `outcome: "not_started"`，主机上什么都没装），远端复核拒绝 409 `provision_refused`（`reason` 含 `artifact_missing` / `artifact_digest_mismatch` / `artifact_changed` / `artifact_path_foreign` / `resolver_bind_unsafe`），失败 502 `provision_failed_compensated` / `provision_failed_leftovers` |
+| `GET /api/artifacts` | | `{"artifacts": [{name, version, arch, sha256, size, source_url, host_path, available, error?}]}`：面板下发的二进制和面板是否持有已校验副本（不含内容） |
 | `POST /api/apply` | `{install:true, preflight_id?}` | 同样的预检类拒绝；宿主代理不支持预检时 503 `host_unavailable` |
 
-代码：`internal/preflight`（脚本、解析、评估）、`internal/provision`（装机脚本的复核、journal、补偿、清单）、`internal/sshexec`（`RunPreflight`）、`internal/hostexec/preflight.go`（网关预检动作）、`internal/api/preflight.go` 与 `provision_api.go`（关卡、记录、登录帮助）、`web/src/Preflight.tsx`（审阅界面）。
+代码：`internal/preflight`（脚本、解析、评估）、`internal/provision`（装机脚本的复核、journal、补偿、清单）、`internal/artifacts`（固定版本与校验）、`internal/sshexec`（`RunPreflight`、`Stage`）、`internal/hostexec/preflight.go`（网关预检动作）、`internal/api/preflight.go` 与 `provision_api.go`（关卡、记录、登录帮助）、`web/src/Preflight.tsx`（审阅界面）。
+
+## 面板下发的二进制与支持的平台
+
+### 二进制从哪里来、怎么固定
+
+wstunnel 和 SmartDNS 由面板自己提供，目标主机**从不下载**任何东西（几台服务器连不上境外下载源，网关连不上 Docker Hub 和 raw.githubusercontent.com）。
+
+- **唯一的固定处**：`internal/artifacts/artifacts.lock`。每行一个「名字 版本 架构 二进制 SHA-256 大小 上游下载 SHA-256 来源类型 成员 URL」。面板用 `go:embed` 把它编进二进制（`artifacts.Pins()`），镜像构建用同一个文件下载。
+
+| 名字 | 版本 | 架构 | 二进制 SHA-256 | 大小 | 上游 |
+| --- | --- | --- | --- | --- | --- |
+| wstunnel | 11.1.0 | x86_64 | `62b26d0ee0f2211cef15fa1b85173fe687bc6698121842bf324359b412afc151` | 13752784 | `wstunnel_11.1.0_linux_amd64.tar.gz`（`512edf4e…`，与 release 的 checksums.txt 一致），静态 PIE |
+| wstunnel | 11.1.0 | aarch64 | `a2e4e02bf63a7608ae82625b1a0a16dc00d562e0a0326c26f22b26e84a857459` | 10851944 | `wstunnel_11.1.0_linux_arm64.tar.gz`（`148895f9…`），静态 |
+| smartdns | 1.2026.08.05-0921（Release48.4） | x86_64 | `8adb80ce14d3a90a852d1dcc14d6a485ff0b65622d7ef294c4b8f1d0f51eb645` | 6030712 | release 资产 `smartdns-x86_64`（GitHub 公布的资产摘要与此相同），静态 PIE |
+| smartdns | 1.2026.08.05-0921（Release48.4） | aarch64 | `1208c5562046c71913c3df88ad4e3ed0a3410161ff77ce4a60cdd63936bf1b27` | 5301472 | release 资产 `smartdns-aarch64`，静态 PIE |
+
+- **镜像构建**（`deploy/Dockerfile` 的 `artifacts` 阶段，`deploy/fetch-artifacts.sh`）：按锁文件从固定的 GitHub release URL 下载（或者用 `deploy/artifacts/` 里操作员事先放好的同名上游文件——离线构建），先核对上游文件的 SHA-256，再取出可执行文件核对大小和 SHA-256，任何一项不符构建失败；结果放进镜像里只读的 `/usr/share/meridian/artifacts/<名字>-<架构>`，旁边写 `manifest.txt`（名字 版本 架构 SHA-256 大小 文件）。构建需要能访问 `deb.debian.org`（`artifacts` 阶段装 curl）和 `github.com` / `objects.githubusercontent.com`（release 资产的下载跳转）；Mac 上 `docker buildx build --platform linux/amd64` 照常可用。二进制不进 git（`deploy/artifacts/.gitignore`）。
+- **面板加载与再校验**（`artifacts.Load`）：启动时读 `MERIDIAN_ARTIFACTS_DIR`（默认 `/usr/share/meridian/artifacts`），每个文件按编进来的固定值核对大小和 SHA-256，`manifest.txt` 存在时每一项也必须与固定值一致；不符的那个二进制记为不可用并写日志。每次发送前（`Bundle.Read`）再读一遍、再核对一次；这时不符的会被标为不可用，装机以 409 `artifact_unavailable` 拒绝，什么都没发送。换目录只能换来源，换不了版本和摘要。`GET /api/artifacts` 和部署页「面板下发的二进制」显示固定版本和面板副本的状态。
+
+### 下发：远端节点
+
+1. **预检**多问二进制的主机路径（`/usr/local/sbin/meridian-wstunnel`、`/usr/local/sbin/meridian-smartdns`；这两个路径的 SHA-256 算到 64 MiB，其他文件仍是 4 MiB），按报告里的架构选固定版本：路径不存在 → `install`（要传输）；已经是固定摘要 → `keep`（**不传输**）；清单记着是我们的但摘要不同 → `replace`；有文件但不在清单里 → `path_occupied` 阻断；面板没有这个架构的已校验副本 → `wstunnel_missing` / `smartdns_unavailable` 阻断。
+2. **传输**（`sshexec.Connector.Stage`）：在同一流程的连接池连接上（预检复跑、传输、装机脚本共用一次登录）开第二个会话，执行**固定的接收命令**：`head -c <大小>` 从标准输入读到 `/var/lib/meridian/stage/<名字>.part`（目录 0700、文件 0600），核对大小和 SHA-256，通过才改名，否则删掉部分文件。命令里只有名字（`wstunnel` / `smartdns`）、64 位十六进制摘要和大小（1 … 64 MiB）会变，构造前全部校验；面板发送前也核对一次内容。没有任意命令接口；二进制不经 shell heredoc。
+3. **装机脚本**（`provision.ScriptWith`，`Options.Artifacts`）：节点的单元要用的二进制必须都在选项里，否则脚本一开始就 `MERIDIAN_REFUSED artifact_missing`。在 journal 打开**之前**（`m_art_check`）：暂存文件要存在且摘要等于固定值（不符就删掉并 `artifact_digest_mismatch`）；目标路径上已有文件而清单不记它 → `artifact_path_foreign`；`keep` 的副本要仍是固定摘要（`artifact_changed`）。拒绝时主机上什么都没改。事务里（`m_art_install`）：`m_track` 备份旧文件，复制到目标目录里的临时文件、0755、再核对一次摘要、改名就位；替换了的二进制在 `meridian-up.sh` 之后 `systemctl try-restart` 用它的单元。失败的装机补偿时恢复旧文件、删掉新文件，与其他文件一样。
+4. **清单**：二进制是普通的 `file <路径> <sha256>` 行（这次没重写、保留的也照样记，不会变成 `orphan`），另加 `artifact <名字> <版本> <路径> <sha256>`。撤回按 `file` 行删除（摘要不符就保留并列出），`artifact` 行逐项校验（名字、路径、版本、摘要不认识就整次拒绝）。
+
+### 下发：网关
+
+网关的 WSS 客户端（`wstunnel-client-*.service`）也用同一份已校验副本。安装到网关时（`apply.Applier.Artifacts` / `Arch`，架构取面板进程的 `runtime.GOARCH`，与宿主相同），面板经已有的 `/usr/local/sbin` 绑定挂载写 `/usr/local/sbin/meridian-wstunnel`，作为安装事务的一部分：安装清单记 `artifacts`（名字、版本、架构、路径、SHA-256、大小）；`converge` 先放二进制再写单元，摘要已对的不重写，不在任何一份清单里的同名文件拒绝覆盖，替换前把旧副本存进事务的暂存目录，补偿时放回；没有单元再用它时随单元一起删除（被改过的保留并警告）。面板没有已校验副本时安装在写任何宿主文件之前被拒绝。网关上的 SmartDNS 仍然是 compose 里的容器，不变。
+
+### 归属：只用 Meridian 自己的路径
+
+主机上别的服务自己装的 `/usr/local/bin/wstunnel`（例如一台机器 443 上已有的 wstunnel）或发行版的 smartdns 包与 `smartdns.service`：**不使用、不覆盖、不删除**（`foreign_binary` 信息）。出口解析器改由 Meridian 自己的单元 `meridian-smartdns.service` 运行面板下发的二进制（`/usr/local/sbin/meridian-smartdns -f -x -p - -c /etc/smartdns/smartdns.conf`），远端节点不再从 apt 装 smartdns。`/etc/smartdns/smartdns.conf` 被别人的配置占着时照旧 `path_occupied` 阻断。以前的版本装过发行版 smartdns（清单有 `pkg smartdns`）的节点更新时，脚本先停用 `smartdns.service` 再启动新单元（它占着隧道地址的 53），失败的更新会按装机前的状态把它恢复；软件包保留。
+
+### 出口解析器的配置与 SmartDNS 版本
+
+出口（`compile.renderExitDNS`）的配置只用 `speed-check-mode none`、`cache-size 4096`、`bind <隧道 v4>:53`、`bind-tcp <隧道 v4>:53`、`bind [<隧道 ULA>]:53`、`bind-tcp [<隧道 ULA>]:53`、`server 1.1.1.1`、`server 8.8.8.8`。在固定版本 Release48.4 的源码里核对过：`src/dns_conf/dns_conf.c` 的配置表有 `bind`（`_config_bind_ip_udp`）、`bind-tcp`、`server`（`_config_server_udp`）、`speed-check-mode`、`cache-size`（`CONF_SSIZE`）；`src/dns_conf/bind.c` 的地址解析接受 `[IPv6]:端口`。同一文件里 `_config_add_default_server_if_needed` 在**没有任何 bind** 时自动绑 `[::]:53`，所以没有 bind 或绑通配地址的配置在预检（`resolver_bind_unsafe`）和装机脚本里都被拒绝。命令行 `-f`、`-x`、`-p -`、`-c` 来自这个版本的帮助文本。网关的配置用到更多指令（`-set-mark`、`nftset`、`domain-set`、`bind-tls` 等），但网关继续用 compose 里的容器镜像，不用这份二进制。**这些都只是对源码和文档的核对，固定版本没有在真实主机上运行过。**
+
+### 支持的平台
+
+远端节点只支持下表；其他发行版、版本、架构组合和 5.6 以前的内核（没有内置 WireGuard）都被拒绝并说明（`os_unsupported` / `arch_unsupported` / `kernel_too_old`）。网关仍是 Debian 12 / 13（x86_64 或 aarch64），它不装软件包。
+
+| 平台 | 说明 |
+| --- | --- |
+| Debian 12 x86_64 | apt 装缺的 wireguard-tools / nftables / iproute2；Debian 12 自带的较旧 smartdns 包不再使用 |
+| Debian 13 x86_64 | 同上 |
+| Ubuntu 20.04 aarch64 | 内核 5.15（HWE），没有 `nft`、iptables 是 legacy 后端、ufw 已装未启用、netfilter-persistent 在运行。nftables（0.9.3）和缺的 wireguard-tools 列进安装计划，经 apt 安装（`--no-install-recommends`：不会装 wireguard-dkms）|
+
+缺的包经 `apt-get install -y --no-install-recommends` 安装；预检脚本用 `dpkg-query` 和 `apt-cache policy` 报告已装版本和候选版本（`pkg` 行），没有候选版本时 `package_unavailable` 阻断。生成的 nft 规则能否被 Ubuntu 20.04 的 nft 0.9.3 接受**没有验证过**：`meridian-up.sh` 每次先 `nft -c`，不接受就在转发、路由和服务之前停止，装机按失败补偿。
+
+### 与 iptables-legacy 共存
+
+面板**不切换** iptables 后端、不改 alternatives、不装 iptables 包、不动已有的 legacy 规则；只在缺 `nft` 时装 nftables 包（它不改 alternatives，也不启用 nftables.service）。在 5.15 内核上，legacy 的 x_tables 表和 Meridian 的 nf_tables 表都注册在同一组 netfilter 钩子上：一个包在每个钩子上按优先级从小到大经过两边的链（legacy 的 mangle −150、nat 目的 −100、filter 0、nat 源 100，nft 的 `mangle` / `dstnat` / `filter` / `srcnat` 是同样的数值，同值时谁先谁后不保证）。任何一边的 `drop` 都是最终的，一边的 `accept` 只结束那一条链，救不回另一边丢掉的包；一条连接的 NAT 在第一个包上由先处理它的 nat 链决定。所以：legacy filter 表 FORWARD 的 DROP 策略（Docker 设的）照样会丢掉隧道转发——预检按 `iptables -S` 报 `forward_policy_drop`（阻断；用 DOCKER-USER 解决是后续一步）。**检查的**：legacy filter 表 INPUT / FORWARD 的默认策略。**不检查的**：legacy 链里的单条规则（只丢某个端口或接口的 DROP/REJECT）、legacy nat 表里可能改写隧道流量的规则、legacy mangle 表打的 MARK 是否与 Meridian 的标记冲突。
+
+### 内存预算
+
+远端节点的预算（`preflight.MemHeadroomKB` 等）：装机余量 48 MB（apt/dpkg、bash、wg-quick）+ 出口解析器 48 MB（固定版本的 SmartDNS，`cache-size 4096`，只绑隧道地址）+ wstunnel 32 MB；更新时已经在跑的受管进程不再计算。可用内存（MemAvailable）低于预算时：要本机解析器的节点**阻断**（`memory_budget`）——不跳过解析器、不改用国内或别的解析器、不在解析器起不来时声称节点可用（装机脚本最后检查 `meridian-smartdns.service` 必须在运行，否则失败补偿）；没有解析器的节点只警告。真实主机里最小的两台（共约 440 MB、约 940 MB，可用都约 200 MB）在预算之内；原来 `low_memory`（可用 < 256 MB 或总量 < 512 MB）的警告保留。预算数值是估计，没有在这些主机上测过实际占用。
 
 ## 撤回与失败后的恢复
 
@@ -466,7 +541,7 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 - **journal 模式（恢复中断的装机）**：journal 为 `running`（会话被硬切断、进程被杀）或 `incomplete`（补偿没做完）时，按这次运行的工作目录（`run-<ID>/`：actions、备份、装机前的 pre-* 状态、`params`）跑**与装机失败时完全相同的补偿**（两边共用 `compensateLib`）：新建的文件和目录删除、被替换的文件恢复、这次新建的接口和 nft 表删除、新增的规则和路由删除、sysctl 恢复、更新时重跑恢复后的 `meridian-up.sh`；每一步可以重复执行。`params` 是装机开 journal 时最后写的：没有它就说明这次运行还没动过主机，恢复只关闭 journal。工作目录不见了、或有动作却没有 `params`，拒绝（`journal_unrecoverable`），只能登录服务器按 journal 手工处理。恢复完成后，之前完整装好的版本（如果有）照旧在，之后可以再按清单撤回。
 - **旧版清理（`legacy`）**：给没有清单的旧版安装。**只看固定路径和名字**：`/etc/wireguard/mNN[w].conf`、`meridian-*` / `wstunnel-meridian*` / `wstunnel-client-*` 单元文件、`/usr/local/sbin/meridian-*`、`/etc/nftables.d/meridian*.nft`、`/etc/sysctl.d/99-meridian.conf`、`/etc/iproute2/rt_tables.d/meridian.conf`、`/etc/smartdns/smartdns.conf`——每个都必须是普通文件且前 12 行提到 Meridian——以及 `/etc/meridian/` 下的文件；接口只取这些 WireGuard 配置的，nft 表只取这些 nft 文件里声明的，路由表只取这个 rt_tables 文件列出的。不带标记的同名文件（例如别人的 `m15.conf`）不碰。旧版的 main 表黑洞路由没有任何记录，脚本**不猜**，只提示去查 `ip route show type blackhole`。确认的清单在执行前重新扫描，有变化就拒绝。界面上要输入节点 ID 并单独提示这是旧版清理。
 
-保留（**按设计**）：装机时装上的软件包（wireguard-tools、nftables、smartdns 等，卸载可能牵连别的软件）；运行中的 sysctl 值（转发、rp_filter，到重启或你自己改之前保持）；SmartDNS 不是 Meridian 装的时它的服务（配置被删，继续用内存里的旧配置直到重启）；清单之外的一切——Docker 和容器、别的 WireGuard 接口、WARP、别的 nft 表、别的文件。每次结果都列出「已移除 / 保留 / 没能移除」。
+保留（**按设计**）：装机时装上的软件包（wireguard-tools、nftables，以及以前的版本装的 smartdns，卸载可能牵连别的软件）；面板下发的二进制不是软件包，按清单的 `file` 行删除；运行中的 sysctl 值（转发、rp_filter，到重启或你自己改之前保持）；SmartDNS 不是 Meridian 装的时它的服务（配置被删，继续用内存里的旧配置直到重启）；清单之外的一切——Docker 和容器、别的 WireGuard 接口、WARP、别的 nft 表、别的文件。每次结果都列出「已移除 / 保留 / 没能移除」。
 
 ### 状态与持久化
 

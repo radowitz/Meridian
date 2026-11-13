@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/model"
 )
 
@@ -353,12 +354,14 @@ fi
 		// The exit resolver binds to tunnel addresses, which only exist once
 		// the WireGuard interfaces above are up. A boot-time start before
 		// that fails to bind, so restart it here. Provision installs it.
+		// The resolver is the panel-delivered binary under its own unit
+		// (SmartDNSUnit), never the distribution's smartdns.service.
 		sb.WriteString(`if [ -f /etc/smartdns/smartdns.conf ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
-  if systemctl cat smartdns.service >/dev/null 2>&1; then
-    systemctl enable smartdns.service >/dev/null 2>&1 || true
-    systemctl restart smartdns.service || echo "smartdns restart failed; exit resolver is down" >&2
+  if systemctl cat ` + SmartDNSUnit + ` >/dev/null 2>&1; then
+    systemctl enable ` + SmartDNSUnit + ` >/dev/null 2>&1 || true
+    systemctl restart ` + SmartDNSUnit + ` || echo "` + SmartDNSUnit + ` restart failed; exit resolver is down" >&2
   else
-    echo "smartdns.service is not installed; exit resolver is down" >&2
+    echo "` + SmartDNSUnit + ` is not installed; exit resolver is down" >&2
   fi
 fi
 `)
@@ -580,7 +583,7 @@ func renderWstunnelServer(n model.Node, tunnels []Tunnel) string {
 	)
 	return systemdUnit(
 		"Meridian wstunnel server (restrict-to local WireGuard, real certificate)",
-		"/usr/local/bin/wstunnel "+strings.Join(args, " "),
+		artifacts.HostPath(artifacts.Wstunnel)+" "+strings.Join(args, " "),
 	)
 }
 
@@ -599,10 +602,39 @@ func renderWstunnelClient(tun Tunnel) string {
 		port = 443
 	}
 	exec := fmt.Sprintf(
-		"/usr/local/bin/wstunnel client -L 'udp://127.0.0.1:%d:127.0.0.1:%d?timeout_sec=0' --http-upgrade-path-prefix %s --tls-verify-certificate wss://%s:%d",
-		tun.ClientUDP, tun.WGPort, prefix, host, port,
+		"%s client -L 'udp://127.0.0.1:%d:127.0.0.1:%d?timeout_sec=0' --http-upgrade-path-prefix %s --tls-verify-certificate wss://%s:%d",
+		artifacts.HostPath(artifacts.Wstunnel), tun.ClientUDP, tun.WGPort, prefix, host, port,
 	)
 	return systemdUnit("Meridian wstunnel client for "+tun.LinkID+" ("+tun.Mode+")", exec)
+}
+
+// SmartDNSUnit runs an exit's resolver: the panel-delivered SmartDNS
+// binary (artifacts.HostPath) with the bundle's /etc/smartdns/smartdns.conf.
+// It is a Meridian unit of the bundle (manifest-owned, removed by a
+// withdraw); the distribution's smartdns package and smartdns.service are
+// not used on remote nodes. The config binds only tunnel addresses, which
+// exist once the WireGuard interfaces are up: before that the bind fails
+// and systemd retries; meridian-up.sh restarts it after the interfaces.
+// No pid file (-p -), log to the journal (-x, foreground -f).
+const SmartDNSUnit = "meridian-smartdns.service"
+
+func renderSmartDNSUnit() string {
+	return fmt.Sprintf(`# Meridian exit resolver (panel-delivered SmartDNS %s).
+[Unit]
+Description=Meridian exit resolver (SmartDNS bound to tunnel addresses only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%s -f -x -p - -c /etc/smartdns/smartdns.conf
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+`, artifacts.Version(artifacts.SmartDNS), artifacts.HostPath(artifacts.SmartDNS))
 }
 
 func systemdUnit(desc, exec string) string {

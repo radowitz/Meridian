@@ -70,6 +70,7 @@ export const DEFAULTS: Record<string, Handler> = {
   "GET /api/host": () => ({ installed: null, pending: null, agent: { ok: false, error: "测试：没有宿主执行通道" } }),
   "POST /api/diff": () => ({ diff: "（没有变化）\n", order: [], issues: [] }),
   "GET /api/lists/job": () => ({ job: null }),
+  "GET /api/artifacts": () => ({ artifacts: [] }),
   "GET /api/unlock/jobs": () => ({ jobs: [], running: "", catalog: [], available: false }),
   "GET /api/mesh": () => ({
     dataplane: "unverified",

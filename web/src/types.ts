@@ -458,10 +458,54 @@ export interface PreflightRecord {
   not_checked: string[];
   /** none | same | other | legacy | unknown */
   ownership: string;
+  /** The supported platform the host matched ("" = none: refused). */
+  platform?: string;
+  /** What the install does with each panel-delivered binary. */
+  binaries?: PreflightBinary[];
+  /** Distribution packages the install needs (remote nodes). */
+  package_plan?: PreflightPackage[];
   blocking: boolean;
   findings: PreflightFinding[];
   changes: PreflightChange[];
   counts: { blocking: number; warning: number; info: number };
+}
+
+/** One panel-delivered binary (wstunnel, SmartDNS) of a preflight plan. */
+export interface PreflightBinary {
+  name: string;
+  version?: string;
+  arch?: string;
+  path: string;
+  sha256?: string;
+  size?: number;
+  /** install (transfer, verify, install) | keep (pinned digest already there) | replace | refuse */
+  action: "install" | "keep" | "replace" | "refuse";
+  transfer: boolean;
+  detail?: string;
+}
+
+/** One distribution package of the install plan. */
+export interface PreflightPackage {
+  package: string;
+  command: string;
+  present: boolean;
+  installed?: string;
+  candidate?: string;
+  /** none | install | unavailable */
+  action: "none" | "install" | "unavailable";
+}
+
+/** A pinned binary the panel delivers, and whether it holds a verified copy. */
+export interface ArtifactView {
+  name: string;
+  version: string;
+  arch: string;
+  sha256: string;
+  size: number;
+  source_url: string;
+  host_path: string;
+  available: boolean;
+  error?: string;
 }
 
 /** How to get a login the server accepts. Public keys only. */
@@ -474,8 +518,12 @@ export interface LoginHelp {
   credential_name?: string;
   /** The credential's public key, to append to authorized_keys. */
   public_key?: string;
-  /** Panel-held key credentials (password credential, server wants keys). */
+  /** Panel-held key credentials (only when the server offers publickey). */
   key_credentials?: { id: string; name: string; public_key: string }[];
+  /** Login methods the server offered, as far as the handshake learned them. */
+  offered_methods?: string[];
+  /** The server offers publickey login: only then is a key suggested. */
+  publickey_offered?: boolean;
   steps: string[];
 }
 
@@ -506,6 +554,8 @@ export interface ConnectionTest {
   error?: string;
   /** ssh_rate_limited: the panel does not connect again before at + retry_after seconds. */
   retry_after?: number;
+  /** Login methods the server offered when the login failed. */
+  offered_methods?: string[];
   os?: string;
   kernel?: string;
   arch?: string;

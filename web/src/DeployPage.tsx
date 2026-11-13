@@ -1249,6 +1249,67 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
 
 // ---------------------------------------------------------- installed now ---
 
+/** The binaries the panel delivers itself: pinned version and digest per
+ * architecture, and whether the panel holds a verified copy. */
+function ArtifactsCard() {
+  const arts = useApi(() => api.listArtifacts(), []);
+  const list = arts.data?.artifacts ?? [];
+  const missing = list.filter((a) => !a.available);
+  const versions = [...new Map(list.map((a) => [a.name, `${a.name} ${a.version}`])).values()].join("、");
+  return (
+    <Section title="面板下发的二进制">
+      <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+        wstunnel 和 SmartDNS 由面板按架构（x86_64 / aarch64）提供固定版本，随节点配置经 SSH 传到主机的 /usr/local/sbin/meridian-*，主机不需要也不会自己下载；面板在加载和每次发送前校验 SHA-256，主机在激活前再校验一次，不一致就拒绝安装。主机上别的服务自己装的 wstunnel 或 smartdns 不会被覆盖或删除。
+      </Typography.Paragraph>
+      {missing.length > 0 ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 8 }}
+          data-testid="artifacts-missing"
+          message={`${missing.length} 个二进制没有可用的已校验副本：需要它们的节点会在预检里被阻断`}
+          description={missing.map((a) => `${a.name} ${a.version}（${a.arch}）：${a.error ?? "不可用"}`).join("；")}
+        />
+      ) : null}
+      <DataView state={arts} rows={2}>
+        {() => (
+          <Collapse
+            size="small"
+            items={[
+              {
+                key: "list",
+                label: versions ? `固定版本：${versions}` : "固定版本",
+                children: (
+                  <Table
+                    size="small"
+                    pagination={false}
+                    rowKey={(a) => `${a.name}-${a.arch}`}
+                    dataSource={list}
+                    scroll={TABLE_SCROLL}
+                    data-testid="artifacts-table"
+                    columns={[
+                      { title: "名称", dataIndex: "name" },
+                      { title: "版本", dataIndex: "version" },
+                      { title: "架构", dataIndex: "arch" },
+                      { title: "SHA-256", dataIndex: "sha256", render: (v: string) => <Mono>{v.slice(0, 16) + "…"}</Mono> },
+                      { title: "主机路径", dataIndex: "host_path", render: (v: string) => <Mono>{v}</Mono> },
+                      {
+                        title: "面板副本",
+                        dataIndex: "available",
+                        render: (v: boolean, a) => (v ? <StatusTag kind="ok">已校验</StatusTag> : <StatusTag kind="failed" title={a.error}>不可用</StatusTag>),
+                      },
+                    ]}
+                  />
+                ),
+              },
+            ]}
+          />
+        )}
+      </DataView>
+    </Section>
+  );
+}
+
 function CurrentInstall({ host }: { host: HostStatus }) {
   const { status } = useStatus();
   const m = host.installed;
@@ -1360,6 +1421,7 @@ export default function DeployPage() {
       <PendingChanges nodeName={nodeName} />
       <InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} />
       <RemoteNodes nodes={remote} servers={servers.data?.servers} onWithdrawn={() => void deployments.reload()} />
+      <ArtifactsCard />
       <DeploymentRecords state={deployments} onChanged={() => void deployments.reload()} />
       <Section title="当前安装">
         <DataView state={host} rows={4}>

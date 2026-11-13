@@ -251,7 +251,12 @@ func (a *Agent) Preflight(ctx context.Context, req PreflightRequest) PreflightRe
 	paths := append([]string(nil), req.Paths...)
 	sort.Strings(paths)
 	for _, p := range paths {
-		w("path", append([]string{p}, inspectPath(filepath.Join(root, p))...)...)
+		limit := int64(4 << 20)
+		if preflight.IsArtifactPath(p) {
+			// Panel-delivered binaries are hashed up to the delivery bound.
+			limit = 64 << 20
+		}
+		w("path", append([]string{p}, inspectPath(filepath.Join(root, p), limit)...)...)
 		if strings.HasPrefix(p, "/etc/systemd/system/") && ValidUnit(filepath.Base(p)) {
 			unit(filepath.Base(p))
 		}
@@ -332,8 +337,9 @@ func rtNames(text string, w func(string, ...string)) {
 }
 
 // inspectPath reports a path the way the remote script does: type, size,
-// whether the first 12 lines mention Meridian, SHA-256 (files up to 4 MiB).
-func inspectPath(p string) []string {
+// whether the first 12 lines mention Meridian, SHA-256 (files up to limit
+// bytes: 4 MiB, 64 MiB for a panel-delivered binary).
+func inspectPath(p string, limit int64) []string {
 	st, err := os.Lstat(p)
 	if err != nil {
 		return []string{"absent"}
@@ -360,10 +366,10 @@ func inspectPath(p string) []string {
 		}
 	}
 	sum := "-"
-	if st.Size() <= 4<<20 {
+	if st.Size() <= limit {
 		if _, err := f.Seek(0, io.SeekStart); err == nil {
 			h := sha256.New()
-			if _, err := io.Copy(h, io.LimitReader(f, 4<<20)); err == nil {
+			if _, err := io.Copy(h, io.LimitReader(f, limit)); err == nil {
 				sum = hex.EncodeToString(h.Sum(nil))
 			}
 		}

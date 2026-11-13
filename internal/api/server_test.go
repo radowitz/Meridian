@@ -34,7 +34,7 @@ func newTest(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return &Server{Store: st, DataDir: dir}
+	return &Server{Store: st, DataDir: dir, Artifacts: testArtifacts(t, filepath.Join(dir, "artifacts"))}
 }
 
 func TestHealthAndSeedAndRedact(t *testing.T) {

@@ -15,11 +15,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/radowitz/meridian/internal/apply"
+	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/defaults"
@@ -89,6 +91,10 @@ type Server struct {
 	job   *jobHandle
 	// keyMu serialises key resolution so two installs cannot generate two keys.
 	keyMu sync.Mutex
+	// Artifacts are the panel-delivered binaries (internal/artifacts),
+	// loaded and verified at startup. Nil: none available; installs that
+	// need one are refused by the preflight.
+	Artifacts *artifacts.Bundle
 	// SecretsDir holds the credential store (servers, SSH credentials,
 	// Cloudflare accounts and their secrets). Empty means <DataDir>/secrets.
 	// It is never part of a snapshot, the topology or an export.
@@ -152,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerRemoteAccess(mux)
 	s.registerSSHOps(mux)
 	s.registerPreflight(mux)
+	mux.HandleFunc("GET /api/artifacts", s.getArtifacts)
 	s.registerWithdraw(mux)
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
@@ -746,7 +753,14 @@ func (s *Server) resolveKey(nodeID string, policy provision.KeyPolicy) (model.To
 }
 
 func (s *Server) applier(install bool) apply.Applier {
-	return apply.Applier{DataDir: s.DataDir, Install: install, LocalID: localNodeID, HostRoot: s.HostRoot, Host: s.Host, Activate: s.Activate}
+	a := apply.Applier{DataDir: s.DataDir, Install: install, LocalID: localNodeID, HostRoot: s.HostRoot, Host: s.Host, Activate: s.Activate}
+	// The gateway's binaries (wstunnel for a WSS client) come from the same
+	// verified bundle as the remote nodes'. main always loads one; a nil
+	// bundle (bare test servers) leaves binaries unmanaged.
+	if s.Artifacts != nil {
+		a.Artifacts, a.Arch = s.Artifacts, artifacts.UnameArch(runtime.GOARCH)
+	}
+	return a
 }
 
 func (s *Server) bodyOrStored(r *http.Request) (model.Topology, error) {

@@ -130,7 +130,31 @@ sudo bash deploy/verify-smartdns.sh qq.com     # 或者指定域名
 - [ ] 解析测试域名后，它的 A 记录出现在 `nft list set inet meridian direct4` 里。
 - [ ] 最后一行是 `meridian-smartdns-verify-ok`。
 
-境外出口上的解析器由 SSH 装机安装（`apt-get install smartdns`，装机期间用临时 `policy-rc.d` 挡住发行版默认配置的自启），`meridian-up.sh` 在隧道起来后重启它，装机输出里应有 `MERIDIAN_SMARTDNS_ACTIVE`。在网关上用 `dig @<出口隧道 ULA> example.com` 应有应答。
+境外出口上的解析器是面板下发的固定版本 SmartDNS（1.2026.08.05-0921，按架构选 x86_64 / aarch64，经 SSH 传输、主机上核对 SHA-256 后装到 `/usr/local/sbin/meridian-smartdns`），由 `meridian-smartdns.service` 运行，不再从 apt 安装；`meridian-up.sh` 在隧道起来后重启它，装机输出里应有 `MERIDIAN_SMARTDNS_ACTIVE`。在网关上用 `dig @<出口隧道 ULA> example.com` 应有应答。**这一项在真实出口上还没有执行过。**
+
+## 面板下发的二进制与支持平台
+
+等级：自动化测试（已有）+ 实机人工签收（未执行）。
+
+自动化测试覆盖（不下载任何东西，用假二进制和进程内 SSH 服务器）：
+
+- `internal/artifacts`：锁文件解析与拒绝、按架构选择、加载时缺文件 / 大小不符 / 摘要不符 / `manifest.txt` 不一致各自不可用、使用时再校验（`TestLoadAndRead`）；`deploy/fetch-artifacts.sh` 用本地副本通过、上游或二进制摘要不符时构建失败、缺本地副本时去下载（桩 `curl` 失败）（`TestFetchScriptVerifiesWithoutDownloading`）。
+- `internal/preflight`：Debian 12、Debian 13、Ubuntu 20.04 aarch64 的夹具和不支持的组合（`TestPlatformMatrix`）、二进制计划（传输 / 已是固定摘要不传输 / 别人的文件阻断 / 面板副本不可用阻断）、内存预算、解析器绑定、已有安装（含受管容器与新解析器单元）的更新不被阻断。
+- `internal/provision`（沙箱）：暂存文件摘要不符在激活前拒绝且主机不变、已是固定摘要时只核对不安装、别人的文件不覆盖、替换后重启用它的单元且失败时补偿放回旧文件、旧版 `smartdns.service` 的停用与恢复、撤回删除二进制。
+- `internal/api`：经连接池的一次登录完成预检复跑、传输、装机；面板副本加载后被改动时 409 拒绝且什么都没发送；网关安装写入并记录 wstunnel；登录提示的各种组合。
+- `internal/apply`：网关二进制在安装事务里写入、失败补偿放回旧版本、不再需要时删除、别人的同名文件不覆盖。
+
+镜像构建：在 Mac 上 `docker buildx build --platform linux/amd64 -f deploy/Dockerfile .` 时，`artifacts` 阶段从 GitHub 下载并核对了四个固定文件（见提交说明里的构建记录）；这只证明下载地址和摘要正确。
+
+实机签收（**都还没有做**）：
+
+- [ ] 在一台 Debian 12 x86_64、一台 Debian 13 x86_64 和那台 Ubuntu 20.04 aarch64 上预检：「安装计划」的平台、架构、包和二进制动作与主机一致。
+- [ ] 装机输出有 `MERIDIAN_SMARTDNS_ACTIVE`；`sha256sum /usr/local/sbin/meridian-smartdns` 等于锁文件对应架构的值；`ss -lunp` 里 53 只在隧道地址上，进程是 `meridian-smartd`。
+- [ ] 中继（WSS）装机后 `wstunnel-meridian.service` 在运行，`/usr/local/sbin/meridian-wstunnel --version` 是 11.1.0；主机上原有的 `/usr/local/bin/wstunnel` 未被改动。
+- [ ] 再装一次：预检显示二进制「已是固定版本，不传输」。
+- [ ] Ubuntu 20.04：装了 nftables 之后 `update-alternatives --display iptables` 仍是 legacy，legacy 规则（`iptables-legacy-save`）与装机前相同，`nft -c -f /etc/nftables.d/meridian.nft` 通过。
+- [ ] 撤回后 `/usr/local/sbin/meridian-*` 和 `meridian-smartdns.service` 不在了，别的服务的 wstunnel / smartdns 仍在。
+- [ ] 网关有 WSS 链路时「安装到网关」写入 `/usr/local/sbin/meridian-wstunnel`，`wstunnel-client-*.service` 在运行。
 
 DoH 只能拦截清单内的公共解析器。用非常见的 DoH 地址仍可能绕过，这是已知边界，不要把它写成「绝对不泄漏」。
 
@@ -412,7 +436,7 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 
 预检只读；除了下面单独写明的 2026-11-13 只读运行，以下都是仓库里的自动化证据，没有在真实主机上执行过。
 
-- 自动化回归（`go test ./internal/preflight`）：脚本参数校验（所有示例节点的路径都接受；`..`、相对路径、shell 元字符、引号、空格、换行、通配、目录外路径、超长、超量、重复一律拒绝）；脚本 `bash -n`（装了 shellcheck 时也跑）；静态检查脚本里没有任何改动主机的命令或写文件的重定向；在本机用 `bash -s --` 真跑一遍脚本，报告完整、被拒参数由脚本自己拒绝、不含文件内容；解析器对垃圾、截断、超长、超行数、控制字符 / 双向控制符 / 非法 UTF-8、伪造路径、清单块外的清单行、结束行之后的内容的处理；评估器对夹具 `testdata/*.txt`：干净的 Debian 13、Ubuntu 20.04 aarch64（无 nft、legacy iptables、内存 440 MB）、Docker `FORWARD DROP`（iptables-nft 与纯 nft 两种来源，每个协议族只报一次）、已有 `wg0/wg1/wg2`（51820 被占、10.66.11.0/24 与 10.66.0.0/16 重叠、10.67.0.0/24 与 10.8.0.0/24 不误报）、443/80 被 nginx 占用和另一个 wstunnel、53 端口（resolved / WARP 不冲突，通配或同地址冲突）、主机级 WARP（规则排在 main 之前）、空中继（转发将被打开）、忙中继（端口转发器不误报）、root / 架构 / 内核 / systemd / 发行版 / apt / SmartDNS 候选、清单三种归属与旧版标记文件、journal 中断与带残留的补偿、网关模式（安装清单的归属、标记文件交给接管、防火墙标记冲突）。
+- 自动化回归（`go test ./internal/preflight`）：脚本参数校验（所有示例节点的路径都接受；`..`、相对路径、shell 元字符、引号、空格、换行、通配、目录外路径、超长、超量、重复一律拒绝）；脚本 `bash -n`（装了 shellcheck 时也跑）；静态检查脚本里没有任何改动主机的命令或写文件的重定向；在本机用 `bash -s --` 真跑一遍脚本，报告完整、被拒参数由脚本自己拒绝、不含文件内容；解析器对垃圾、截断、超长、超行数、控制字符 / 双向控制符 / 非法 UTF-8、伪造路径、清单块外的清单行、结束行之后的内容的处理；评估器对夹具 `testdata/*.txt`：干净的 Debian 13、Debian 12（可用内存约 200 MB）、Ubuntu 20.04 aarch64（支持的平台：无 nft 时 nftables 列进安装计划、legacy iptables 不切换、内存 440 MB；Docker 的 FORWARD DROP 仍阻断）、Docker `FORWARD DROP`（iptables-nft 与纯 nft 两种来源，每个协议族只报一次）、已有 `wg0/wg1/wg2`（51820 被占、10.66.11.0/24 与 10.66.0.0/16 重叠、10.67.0.0/24 与 10.8.0.0/24 不误报）、443/80 被 nginx 占用和另一个 wstunnel、53 端口（resolved / WARP 不冲突，通配或同地址冲突）、主机级 WARP（规则排在 main 之前）、空中继（转发将被打开）、忙中继（端口转发器不误报）、root / 架构 / 内核 / systemd / 发行版与支持平台矩阵 / apt 与包候选 / 面板下发二进制的可用性、按架构选择和「已是固定摘要不传输」 / 内存预算 / 解析器绑定、清单三种归属与旧版标记文件、journal 中断与带残留的补偿、网关模式（安装清单的归属、标记文件交给接管、防火墙标记冲突）。
 - 自动化回归（`go test ./internal/provision`）：装机脚本在本机沙箱里（主机路径挪到临时目录，`ip`、`nft`、`systemctl`、`wg-quick`、`apt-get` 等换成有状态的桩）真跑：成功写受管清单并能被预检读回；同一节点的更新通过复核、别的节点被 `manifest_changed` 拒绝、第一次装机遇到已有清单被 `manifest_appeared` 拒绝；`systemctl` 失败时补偿（新文件和目录删除、被替换的文件恢复、新接口和 nft 表删除、单元停用、sysctl 恢复、软件包保留并列出、journal 为 `compensated`）；接口删不掉时列为残留、journal 为 `incomplete`，再跑被脚本自己拒绝；没有绑定目标的脚本拒绝运行。
 - 自动化回归（`go test ./internal/api -run 'Preflight|Provision|LoginHelp|Gateway'`）：计划视图里的目标身份、受管资源和变更；第一次装机缺 `preflight_id`、过期、记录被替换、包摘要变化、目标身份变化（换凭据）、审阅结果有阻断、执行前重跑出现阻断、出现新警告都被拒绝，且都没有生成密钥、没有发送装机脚本；通过时脚本绑定到预检（`M_EXPECT`、`M_BUNDLE`）；之后的更新照样重跑预检；补偿 / 残留 / 远端复核拒绝 / 没有成功标记各自的代码和 `outcome`；响应、日志和数据目录里没有密码和私钥；登录方式不被接受时给出公钥；网关安装的第一次必须预检、阻断时不激活、宿主代理不支持预检时 503。`go test ./internal/hostexec -run Preflight`：网关预检动作只运行固定的只读命令、不回传文件内容、拒绝坏路径和未知字段、输出触顶时报告不完整。
 - 自动化回归（`npm --prefix web test`）：远端节点的预检对话框（目标、按严重度分组的发现和处理办法、变更清单、阻断时执行按钮不可用并写明原因、重新预检后带 `preflight_id` 执行、执行前复核出现新问题时留在对话框里显示新结果、残留与保留项、登录帮助里的公钥）；网关第一次安装前必须预检、带 `preflight_id` 安装；服务器页连接测试失败时显示可复制的公钥。

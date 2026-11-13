@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 
 	"github.com/radowitz/meridian/internal/apply"
+	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/preflight"
@@ -67,6 +68,24 @@ type Options struct {
 	// script starts) or "same" (the manifest must still name this node and
 	// deployment).
 	Expect string
+	// Artifacts are the panel-delivered binaries the node's units run
+	// (preflight.Footprint.Binaries), for the host's architecture. Every
+	// binary the bundle needs must be listed, or the script refuses.
+	Artifacts []Artifact
+}
+
+// Artifact is one panel-delivered binary of a provision run.
+type Artifact struct {
+	Name    string
+	Version string
+	SHA256  string
+	Size    int64
+	// Staged: the panel sent the bytes to artifacts.StagePath(Name) on this
+	// host before the script runs (sshexec.Connector.Stage); the script
+	// verifies them and installs them at artifacts.HostPath(Name). Not
+	// staged: the preflight saw exactly SHA256 at the host path already,
+	// the script verifies that and keeps the file.
+	Staged bool
 }
 
 var optRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -84,7 +103,36 @@ func CheckOptions(o Options) error {
 	if o.Expect != "none" && o.Expect != "same" {
 		return errors.New("provision expect 只能是 none 或 same")
 	}
+	seen := map[string]bool{}
+	for _, a := range o.Artifacts {
+		switch {
+		case !artifacts.ValidName(a.Name) || seen[a.Name]:
+			return fmt.Errorf("provision 二进制 %q 不合法或重复", a.Name)
+		case !optRe.MatchString(a.Version) || !strings.ContainsAny(a.Version[:1], "0123456789"):
+			return fmt.Errorf("provision 二进制 %s 的版本不合法", a.Name)
+		case !artifacts.ValidSHA256(a.SHA256):
+			return fmt.Errorf("provision 二进制 %s 的摘要不合法", a.Name)
+		case a.Size <= 0 || a.Size > artifacts.MaxSize:
+			return fmt.Errorf("provision 二进制 %s 的大小不合法", a.Name)
+		}
+		seen[a.Name] = true
+	}
 	return nil
+}
+
+// missingArtifacts lists the binaries the files need that o does not carry.
+func missingArtifacts(fp preflight.Footprint, o Options) []string {
+	var out []string
+	for _, b := range fp.Binaries {
+		found := false
+		for _, a := range o.Artifacts {
+			found = found || a.Name == b
+		}
+		if !found {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 var (
@@ -135,6 +183,12 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		o = Options{NodeID: "unbound", Deployment: "unbound", ServerID: "unbound", Run: "unbound", Expect: "none", Bundle: strings.Repeat("0", 64)}
 	}
 	fp := preflight.FootprintOf(files)
+	if miss := missingArtifacts(fp, o); len(miss) > 0 {
+		sb.WriteString("# The node's units run panel-delivered binaries this script does not carry: " + strings.Join(miss, " ") + "\n")
+		sb.WriteString("echo 'MERIDIAN_REFUSED artifact_missing'\n")
+		sb.WriteString("echo 'meridian: the provision script does not carry the binaries the units need; refusing to run' >&2\n")
+		sb.WriteString("exit 3\n")
+	}
 	var ifaces, units, nfts, tables, prios, dsts []string
 	for _, i := range fp.Interfaces {
 		if ifaceNameRe.MatchString(i.Name) {
@@ -172,23 +226,44 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		}
 	}
 	sort.Strings(dsts)
-	needWstunnel := len(fp.Binaries) > 0
+	var artPaths, artLines []string
+	for _, a := range o.Artifacts {
+		artPaths = append(artPaths, artifacts.HostPath(a.Name))
+		artLines = append(artLines, a.Name+" "+a.Version+" "+artifacts.HostPath(a.Name)+" "+a.SHA256)
+	}
 	fmt.Fprintf(&sb, "M_NODE=%s\nM_DEPLOYMENT=%s\nM_SERVER=%s\nM_BUNDLE=%s\nM_RUN=%s\nM_EXPECT=%s\n",
 		shellQuote(o.NodeID), shellQuote(o.Deployment), shellQuote(o.ServerID), shellQuote(o.Bundle), shellQuote(o.Run), shellQuote(o.Expect))
 	fmt.Fprintf(&sb, "M_IFACES=%s\nM_UNITS=%s\nM_NFT=%s\nM_TABLES=%s\nM_PRIOS=%s\nM_DSTS=%s\n",
 		shellQuote(strings.Join(ifaces, " ")), shellQuote(strings.Join(units, " ")), shellQuote(strings.Join(nfts, " ")),
 		shellQuote(strings.Join(tables, " ")), shellQuote(strings.Join(prios, " ")), shellQuote(strings.Join(dsts, " ")))
+	fmt.Fprintf(&sb, "M_STAGE=%s\nM_ARTPATHS=%s\nM_ARTLINES=%s\n", shellQuote(artifacts.StageDir), shellQuote(strings.Join(artPaths, " ")), shellQuote(strings.Join(artLines, "\n")))
 	sb.WriteString(provisionPrelude)
-	if needWstunnel {
-		sb.WriteString("command -v wstunnel >/dev/null 2>&1 || m_refuse wstunnel_missing 'wstunnel is missing. Install a pinned release from https://github.com/erebe/wstunnel/releases to /usr/local/bin/wstunnel'\n")
+	_, hasDNS := files["/etc/smartdns/smartdns.conf"]
+	if hasDNS && !resolverBindsTunnelOnly(fp) {
+		// The remote resolver binds tunnel addresses only: without a bind
+		// line SmartDNS binds [::]:53, a wildcard answers the internet.
+		sb.WriteString("m_refuse resolver_bind_unsafe 'the resolver config binds a wildcard address or nothing (SmartDNS would answer on [::]:53)'\n")
+	}
+	// Panel-delivered binaries: verified on the host before anything
+	// changes (the staged bytes, or the copy the preflight saw).
+	for _, a := range o.Artifacts {
+		mode := "present"
+		if a.Staged {
+			mode = "staged"
+		}
+		fmt.Fprintf(&sb, "m_art_check %s %s %s %s\n", shellQuote(a.Name), shellQuote(artifacts.HostPath(a.Name)), shellQuote(a.SHA256), mode)
 	}
 	sb.WriteString("{\n")
 	sb.WriteString("m_begin\n")
 	sb.WriteString("export DEBIAN_FRONTEND=noninteractive\n")
 	sb.WriteString(packageInstall)
-	_, hasDNS := files["/etc/smartdns/smartdns.conf"]
+	for _, a := range o.Artifacts {
+		if a.Staged {
+			fmt.Fprintf(&sb, "m_art_install %s %s %s\n", shellQuote(a.Name), shellQuote(artifacts.HostPath(a.Name)), shellQuote(a.SHA256))
+		}
+	}
 	if hasDNS {
-		sb.WriteString(smartDNSInstall)
+		sb.WriteString(legacySmartDNSStop)
 	}
 	paths := make([]string, 0, len(files))
 	for p := range files {
@@ -222,6 +297,20 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 	sb.WriteString("if [ -x /usr/local/sbin/meridian-up.sh ]; then\n")
 	sb.WriteString("  /usr/local/sbin/meridian-up.sh\n")
 	sb.WriteString("fi\n")
+	// A replaced binary only takes effect when its units restart (enable
+	// --now in meridian-up.sh leaves a running unit alone).
+	for _, a := range o.Artifacts {
+		if !a.Staged {
+			continue
+		}
+		var us []string
+		for _, u := range artifactUnits(files, a.Name) {
+			us = append(us, shellQuote(u))
+		}
+		if len(us) > 0 {
+			fmt.Fprintf(&sb, "if grep -qx %s \"$M_WORK/actions\"; then systemctl try-restart %s; fi\n", shellQuote("file-replaced "+artifacts.HostPath(a.Name)), strings.Join(us, " "))
+		}
+	}
 	if hasDNS {
 		sb.WriteString(smartDNSStart)
 	}
@@ -236,7 +325,7 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 // that changes the host is one { … } </dev/null group: bash reads it whole
 // before running it, and no command in it can consume the script that
 // bash reads from stdin.
-const provisionPrelude = provisionGuard + compensateLib + provisionTxn
+const provisionPrelude = provisionGuard + compensateLib + provisionTxn + artifactLib
 
 // provisionGuard re-validates the target before anything changes.
 const provisionGuard = `M_ROOT=''
@@ -309,6 +398,11 @@ m_compensate() {
   done
   if grep -qx 'pkg smartdns' "$M_WORK/actions" 2>/dev/null; then
     systemctl disable --now smartdns.service >/dev/null 2>&1 || m_left unit 'smartdns.service still running'
+  fi
+  # An earlier version's smartdns.service this run stopped: back to how it was.
+  if grep -qx 'unit-stopped smartdns.service' "$M_WORK/actions" 2>/dev/null; then
+    if [ "$(m_pre_unit smartdns.service 2)" = enabled ]; then systemctl enable smartdns.service >/dev/null 2>&1 || m_left unit 'smartdns.service could not be re-enabled'; fi
+    if [ "$(m_pre_unit smartdns.service 3)" = active ]; then systemctl start smartdns.service >/dev/null 2>&1 || m_left unit 'smartdns.service could not be restarted'; fi
   fi
   if grep -qx "file-new $M_ROOT/etc/meridian/mesh-sidecar.compose.yml" "$M_WORK/actions" 2>/dev/null && command -v docker >/dev/null 2>&1; then
     docker compose -f "$M_ROOT/etc/meridian/mesh-sidecar.compose.yml" down >/dev/null 2>&1 || m_left container 'mesh sidecar (docker compose down failed)'
@@ -439,12 +533,22 @@ m_commit() {
     awk '$1=="file-new" || $1=="file-replaced" {print $2}' "$M_WORK/actions" | sort -u | while read -r p; do
       echo "file $p $(sha256sum -- "$p" | cut -c1-64)"
     done
+    # Panel-delivered binaries this run kept (already the pinned digest)
+    # are still installed files of this node.
+    for p in $M_ARTPATHS; do
+      grep -qE "^(file-new|file-replaced) $p\$" "$M_WORK/actions" || echo "file $p $(sha256sum -- "$p" | cut -c1-64)"
+    done
     if [ -f "$M_MANIFEST" ]; then
       awk '$1=="file" || $1=="orphan" {print $2}' "$M_MANIFEST" | sort -u | while read -r p; do
-        grep -qE "^(file-new|file-replaced) $p\$" "$M_WORK/actions" || echo "orphan $p"
+        grep -qE "^(file-new|file-replaced) $p\$" "$M_WORK/actions" && continue
+        case " $M_ARTPATHS " in *" $p "*) continue ;; esac
+        echo "orphan $p"
       done
       grep '^pkg ' "$M_MANIFEST" || true
     fi
+    printf '%s\n' "$M_ARTLINES" | while read -r p_name p_ver p_path p_sum; do
+      [ -n "$p_name" ] && echo "artifact $p_name $p_ver $p_path $p_sum"
+    done
     for p in $M_IFACES; do echo "iface $p"; done
     for p in $M_UNITS; do echo "unit $p"; done
     for p in $M_NFT; do echo "nft inet $p"; done
@@ -458,11 +562,15 @@ m_commit() {
   sed -i 's/^state running$/state done/' "$M_JOURNAL"
   M_DONE=1
   rm -rf "$M_WORK"
+  rmdir -- "$M_STAGE" 2>/dev/null || true
 }
 `
 
 // packageInstall installs only what is missing, one package per missing
 // command, and records each for the manifest (never removed on failure).
+// --no-install-recommends: on Ubuntu 20.04 wireguard-tools recommends
+// wireguard-dkms, which the 5.15 kernel does not need; nothing here
+// installs iptables or changes its alternatives (the legacy backend stays).
 const packageInstall = `m_need=""
 command -v wg >/dev/null 2>&1 || m_need="$m_need wireguard-tools"
 command -v nft >/dev/null 2>&1 || m_need="$m_need nftables"
@@ -470,51 +578,117 @@ command -v ip >/dev/null 2>&1 || m_need="$m_need iproute2"
 if [ -n "$m_need" ]; then
   apt-get update -y
   # shellcheck disable=SC2086
-  apt-get install -y $m_need
+  apt-get install -y --no-install-recommends $m_need
   for m_p in $m_need; do m_note "pkg $m_p"; done
 fi
 `
 
-// smartDNSInstall installs the resolver before any config is replaced. The
-// distro package would otherwise start with its stock config (bind [::]:53 on
-// a public host), so a temporary policy-rc.d holds the service until our
-// config is in place, unless the host already has its own policy-rc.d.
-const smartDNSInstall = `if ! command -v smartdns >/dev/null 2>&1; then
-  hold_rc=0
-  if [ ! -e /usr/sbin/policy-rc.d ]; then
-    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
-    chmod 755 /usr/sbin/policy-rc.d
-    hold_rc=1
+// resolverBindsTunnelOnly: the resolver config has at least one bind and
+// none on a wildcard address (SmartDNS binds [::]:53 when none is given).
+func resolverBindsTunnelOnly(fp preflight.Footprint) bool {
+	n := 0
+	for _, l := range fp.Listens {
+		if l.Owner != "smartdns" {
+			continue
+		}
+		if l.Wildcard {
+			return false
+		}
+		n++
+	}
+	return n > 0
+}
+
+// artifactCheck and artifactInstall verify and install a panel-delivered
+// binary. m_art_check runs before the journal opens (a refusal changes
+// nothing): a staged copy must have the pinned digest (a wrong one is
+// deleted), the host path must not be somebody else's file; a kept copy
+// must still have the pinned digest. m_art_install runs inside the
+// transaction: the old file is backed up by m_track, the new one is copied
+// next to its destination, checked again and renamed into place.
+const artifactLib = `m_art_check() {
+  local name=$1 path=$2 sum=$3 mode=$4 got f
+  if [ "$mode" = staged ]; then
+    f=$M_STAGE/$name
+    if [ ! -f "$f" ] || [ -L "$f" ]; then m_refuse artifact_missing "the panel-delivered $name was not staged at $f"; fi
+    got=$(sha256sum -- "$f" | cut -c1-64)
+    if [ "$got" != "$sum" ]; then rm -f -- "$f"; m_refuse artifact_digest_mismatch "the staged $name has SHA-256 $got, pinned $sum"; fi
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      if [ "$M_EXPECT" != same ] || ! grep -q "^file $path " "$M_MANIFEST" 2>/dev/null; then
+        m_refuse artifact_path_foreign "$path exists and is not recorded in the Meridian manifest"
+      fi
+    fi
+  else
+    if [ ! -f "$path" ] || [ -L "$path" ]; then m_refuse artifact_missing "$path is gone since the preflight"; fi
+    got=$(sha256sum -- "$path" | cut -c1-64)
+    if [ "$got" != "$sum" ]; then m_refuse artifact_changed "$path has SHA-256 $got since the preflight, pinned $sum"; fi
   fi
-  apt-get update -y || true
-  if ! apt-get install -y -o Dpkg::Options::=--force-confold smartdns; then
-    if [ "$hold_rc" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi
-    echo 'smartdns is not installable from apt. Install a pinned release from https://github.com/pymumu/smartdns/releases, then rerun.' >&2
+}
+m_art_install() {
+  local name=$1 path=$2 sum=$3 tmp
+  m_track "$path"
+  install -d -m 755 "${path%/*}"
+  tmp=$(mktemp "${path%/*}/.meridian.XXXXXX")
+  m_note tmp "$tmp"
+  cp -- "$M_STAGE/$name" "$tmp"
+  chmod 755 "$tmp"
+  if [ "$(sha256sum -- "$tmp" | cut -c1-64)" != "$sum" ]; then
+    echo "meridian: $name changed while it was installed; nothing was activated" >&2
     exit 1
   fi
-  m_note "pkg smartdns"
-  if [ "$hold_rc" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi
+  mv -f "$tmp" "$path"
+  rm -f -- "$M_STAGE/$name"
+}
+`
+
+// legacySmartDNSStop: a node an earlier version provisioned ran the
+// distribution's smartdns.service (manifest "pkg smartdns": Meridian
+// installed the package). It holds the tunnel addresses' port 53, so it is
+// stopped and disabled before the panel-delivered resolver starts; a
+// failed run restores its previous state (m_compensate). The package stays
+// installed. A smartdns.service Meridian did not install is never touched
+// (the preflight refuses a foreign config at /etc/smartdns/smartdns.conf).
+const legacySmartDNSStop = `if [ "$M_EXPECT" = same ] && grep -qx 'pkg smartdns' "$M_MANIFEST" 2>/dev/null && command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-active --quiet smartdns.service 2>/dev/null || systemctl is-enabled --quiet smartdns.service 2>/dev/null; then
+    m_note "unit-stopped smartdns.service"
+    systemctl disable --now smartdns.service >/dev/null 2>&1 || { echo 'meridian: could not stop the previous smartdns.service' >&2; exit 1; }
+  fi
 fi
 `
 
 // smartDNSStart runs after meridian-up.sh, when the tunnel addresses the
 // resolver binds to exist. meridian-up.sh on exits restarts it already; this
-// covers other roles and proves the unit is active.
+// proves the unit is active. A resolver that does not come up fails the run
+// (compensated): the node is never reported as working without it.
 const smartDNSStart = `if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
-  systemctl enable smartdns.service >/dev/null 2>&1 || true
-  if ! systemctl is-active --quiet smartdns.service; then
-    systemctl restart smartdns.service
+  systemctl enable ` + compile.SmartDNSUnit + ` >/dev/null 2>&1 || true
+  if ! systemctl is-active --quiet ` + compile.SmartDNSUnit + `; then
+    systemctl restart ` + compile.SmartDNSUnit + `
   fi
-  if ! systemctl is-active --quiet smartdns.service; then
-    echo 'smartdns.service is not active after provision' >&2
-    systemctl status --no-pager smartdns.service >&2 || true
+  if ! systemctl is-active --quiet ` + compile.SmartDNSUnit + `; then
+    echo '` + compile.SmartDNSUnit + ` is not active after provision' >&2
+    systemctl status --no-pager ` + compile.SmartDNSUnit + ` >&2 || true
     exit 1
   fi
   echo MERIDIAN_SMARTDNS_ACTIVE
 else
-  echo 'no systemd: start smartdns -c /etc/smartdns/smartdns.conf yourself' >&2
+  echo 'no systemd: the exit resolver cannot run' >&2
+  exit 1
 fi
 `
+
+// artifactUnits are the units of files whose ExecStart runs name.
+func artifactUnits(files map[string]string, name string) []string {
+	var out []string
+	needle := "ExecStart=" + artifacts.HostPath(name)
+	for p, body := range files {
+		if strings.HasPrefix(p, "/etc/systemd/system/") && strings.Contains(body, needle) {
+			out = append(out, strings.TrimPrefix(p, "/etc/systemd/system/"))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // FilesFor returns host paths (no nodes/<id> prefix) for one node.
 func FilesFor(bundle map[string]string, nodeID string) map[string]string {

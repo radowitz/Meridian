@@ -1,0 +1,81 @@
+Linux exit-12 6.1.0-28-amd64 #1 SMP Debian (login banner before the report is ignored)
+meridian-preflight 1
+uid 0
+arch x86_64
+kernel 6.1.0-28-amd64
+os-id debian
+os-version "12"
+os-codename bookworm
+os-pretty "Debian GNU/Linux 12 (bookworm)"
+systemd yes
+mem-total-kb 962560
+mem-avail-kb 204800
+disk-avail-kb 15000000
+cmd wg no
+cmd wg-quick no
+cmd nft yes
+cmd ip yes
+cmd ss yes
+cmd iptables no
+cmd ip6tables no
+cmd apt-get yes
+cmd dpkg-query yes
+cmd systemctl yes
+cmd smartdns no
+cmd wstunnel no
+cmd docker no
+cmd curl yes
+cmd python3 yes
+cmd sha256sum yes
+cmd timeout yes
+sysctl net.ipv4.ip_forward 0
+sysctl net.ipv6.conf.all.forwarding 0
+sysctl net.ipv4.conf.all.rp_filter 0
+link lo
+link eth0
+addr lo 127.0.0.1/8
+addr lo ::1/128
+addr eth0 192.0.2.10/24
+addr eth0 2001:db8:10::10/64
+addr eth0 fe80::1/64
+route4 default via 192.0.2.1 dev eth0 onlink
+route4 192.0.2.0/24 dev eth0 proto kernel scope link src 192.0.2.10
+route6 2001:db8:10::/64 dev eth0 proto kernel metric 256 pref medium
+route6 fe80::/64 dev eth0 proto kernel metric 256 pref medium
+route6 default via fe80::1 dev eth0 metric 1024 pref medium
+rule4 0:	from all lookup local
+rule4 32766:	from all lookup main
+rule4 32767:	from all lookup default
+rule6 0:	from all lookup local
+rule6 32766:	from all lookup main
+rtable4 local route
+rtable6 local route
+rtname 255 local
+rtname 254 main
+rtname 253 default
+rtname 0 unspec
+ss udp   UNCONN 0      0          0.0.0.0:68         0.0.0.0:*    users:(("dhclient",pid=401,fd=7))
+ss tcp   LISTEN 0      128        0.0.0.0:22         0.0.0.0:*    users:(("sshd",pid=512,fd=3))
+ss tcp   LISTEN 0      128           [::]:22            [::]:*    users:(("sshd",pid=512,fd=4))
+unit docker.service inactive not-found 0
+unit containerd.service inactive not-found 0
+unit nftables.service inactive disabled 0
+unit netfilter-persistent.service inactive not-found 0
+unit ufw.service inactive not-found 0
+unit firewalld.service inactive not-found 0
+unit smartdns.service inactive not-found 0
+unit systemd-resolved.service inactive not-found 0
+unit warp-svc.service inactive not-found 0
+nftables-conf flush
+proc warp-svc no
+proc dockerd no
+proc smartdns no
+proc wstunnel no
+version nft nftables v1.0.6 (Lester Gooch #5)
+candidate smartdns 40+dfsg-1
+pkg wireguard-tools - 1.0.20210914-1+b1
+pkg nftables 1.0.6-2+deb12u2 1.0.6-2+deb12u2
+pkg iproute2 6.1.0-3 6.1.0-3
+pkg smartdns - 40+dfsg-1
+@PATHS@
+meridian-preflight-end

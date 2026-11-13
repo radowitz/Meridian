@@ -66,9 +66,11 @@ var notChecked = []string{
 	"不检查放行规则是否覆盖 Meridian 的端口（只看 INPUT/FORWARD 的默认策略和别的表的 drop 链）",
 	"不检查云厂商安全组、上游防火墙或 NAT：端口能否从外面到达要在装好后看握手",
 	"不检查别的服务以后会不会改动网络（Docker 重启、WARP 重连、nftables 重载）",
-	"不检查 SmartDNS 上游、wstunnel 证书和域名是否可用",
+	"不检查 SmartDNS 上游、wstunnel 证书和域名是否可用；面板下发的 wstunnel / SmartDNS 只核对架构、路径和 SHA-256，不在预检里执行它们",
+	"不检查 nft 规则能否被这台主机的 nft 版本接受（Ubuntu 20.04 是 0.9.3）：装机时 meridian-up.sh 先 nft -c，失败会在激活前停止并补偿",
+	"iptables-legacy 主机只看 filter 表 INPUT/FORWARD 的默认策略，不逐条检查 legacy 规则、nat 改写和 MARK",
 	"不检查 sudo：只接受 root 登录",
-	"不修改任何东西：发现的冲突要由你处理，面板这一版不会替你改 Docker 或别的防火墙规则",
+	"不修改任何东西：发现的冲突要由你处理，面板这一版不会替你改 Docker 或别的防火墙规则（面板只下发并安装它自己的固定版本 wstunnel / SmartDNS 到 /usr/local/sbin/meridian-*，主机不需要自己下载）",
 }
 
 // targetIdentity is what a preflight result is bound to.
@@ -242,7 +244,7 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 		return nil, err
 	}
 	fp := preflight.FootprintOf(files)
-	args, err := preflight.Args(fp.Files)
+	args, err := preflight.Args(fp.PreflightPaths())
 	if err != nil {
 		return nil, &credentials.Error{Code: codePreflightFailed, Msg: "节点的文件路径不能交给预检：" + err.Error()}
 	}
@@ -252,7 +254,7 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 	}
 	rep := preflight.Parse(res.Output)
 	rep.Source = "ssh"
-	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep, Ports: s.portSources(n.ID)})
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep, Ports: s.portSources(n.ID), Artifacts: s.artifactContext()})
 	now := time.Now().UTC()
 	if res.AuthMethod != "" {
 		ident.AuthMethod = res.AuthMethod
@@ -563,6 +565,9 @@ func ownedOf(m apply.Manifest) *preflight.Owned {
 		// key: hashes are not comparable, so none is given.
 		o.Files["/"+strings.TrimPrefix(f.Path, "/")] = ""
 	}
+	for _, x := range m.Artifacts {
+		o.Files["/"+strings.TrimPrefix(x.Path, "/")] = x.SHA256
+	}
 	return o
 }
 
@@ -580,16 +585,17 @@ func (s *Server) runHostPreflight(ctx context.Context, files map[string]string) 
 		return nil, err
 	}
 	fp := preflight.FootprintOf(files)
-	if err := preflight.ValidatePaths(fp.Files); err != nil {
+	paths := fp.PreflightPaths()
+	if err := preflight.ValidatePaths(paths); err != nil {
 		return nil, &credentials.Error{Code: codePreflightFailed, Msg: "网关的文件路径不能交给预检：" + err.Error()}
 	}
-	text, err := p.Preflight(ctx, fp.Files)
+	text, err := p.Preflight(ctx, paths)
 	if err != nil {
 		return nil, err
 	}
 	rep := preflight.Parse(text)
 	rep.Source = "host-agent"
-	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: localNodeID, Deployment: dep, Gateway: true, Owned: ownedOf(inst), Ports: s.portSources(localNodeID)})
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: localNodeID, Deployment: dep, Gateway: true, Owned: ownedOf(inst), Ports: s.portSources(localNodeID), Artifacts: s.artifactContext()})
 	now := time.Now().UTC()
 	rec := &preflightRecord{ID: "pf-" + randHex(8), Kind: "gateway", NodeID: localNodeID, NodeName: "网关", Role: string(model.RoleGateway),
 		Deployment: dep, Bundle: preflight.BundleDigest(files), FirstInstall: inst.Empty() || inst.Withdrawn(), At: now, ExpiresAt: now.Add(preflightTTL),
@@ -712,7 +718,10 @@ type keyHint struct {
 }
 
 // loginHelp tells the operator how to get a login the server accepts. It
-// carries only public keys.
+// carries only public keys, and only when the server offers publickey
+// login: a password-only server (for example one reached through a port
+// forward that only allows passwords) stays fully usable with its
+// password credential and is never told to switch to a key.
 type loginHelp struct {
 	Code           string    `json:"code"`
 	Method         string    `json:"method"` // the credential's: password | key
@@ -722,10 +731,14 @@ type loginHelp struct {
 	CredentialName string    `json:"credential_name,omitempty"`
 	PublicKey      string    `json:"public_key,omitempty"`
 	KeyCredentials []keyHint `json:"key_credentials,omitempty"`
-	Steps          []string  `json:"steps"`
+	// Offered are the login methods the server offered (as far as the
+	// handshake learned them); KeyOffered says whether publickey is one.
+	Offered    []string `json:"offered_methods,omitempty"`
+	KeyOffered bool     `json:"publickey_offered"`
+	Steps      []string `json:"steps"`
 }
 
-func (s *Server) loginHelpFor(cs *credentials.Store, serverID, code string) *loginHelp {
+func (s *Server) loginHelpFor(cs *credentials.Store, serverID, code string, offered []string) *loginHelp {
 	if code != sshexec.CodeAuthFailed && code != sshexec.CodeAuthMethodUnavailable {
 		return nil
 	}
@@ -737,28 +750,61 @@ func (s *Server) loginHelpFor(cs *credentials.Store, serverID, code string) *log
 	if err != nil {
 		return nil
 	}
-	h := &loginHelp{Code: code, User: sv.User, Address: sv.Address, CredentialID: c.ID, CredentialName: c.Name, Steps: []string{}}
+	keyOK := false
+	pwOK := false
+	for _, m := range offered {
+		keyOK = keyOK || m == "publickey"
+		pwOK = pwOK || m == "password" || m == "keyboard-interactive"
+	}
+	h := &loginHelp{Code: code, User: sv.User, Address: sv.Address, CredentialID: c.ID, CredentialName: c.Name, Offered: offered, KeyOffered: keyOK, Steps: []string{}}
 	where := fmt.Sprintf("%s@%s 的 ~/.ssh/authorized_keys", sv.User, sv.Address)
+	offeredText := "服务器没有告诉面板它接受哪些方式"
+	if len(offered) > 0 {
+		offeredText = "服务器提供的登录方式：" + strings.Join(offered, "、")
+	}
+	keys := func() {
+		for _, k := range cs.SSHCredentials() {
+			if k.Kind == credentials.KindPrivateKey && k.PublicKey != "" && len(h.KeyCredentials) < 8 {
+				h.KeyCredentials = append(h.KeyCredentials, keyHint{ID: k.ID, Name: k.Name, PublicKey: k.PublicKey})
+			}
+		}
+		sort.Slice(h.KeyCredentials, func(i, j int) bool { return h.KeyCredentials[i].Name < h.KeyCredentials[j].Name })
+	}
 	if c.Kind == credentials.KindPrivateKey {
 		h.Method = model.AuthKey
-		h.PublicKey = c.PublicKey
 		if code == sshexec.CodeAuthMethodUnavailable {
-			h.Steps = append(h.Steps, "服务器没有提供公钥登录：在 sshd_config 里设 PubkeyAuthentication yes 并重载 sshd")
+			// The server does not offer publickey at all: its public key is
+			// of no use there, so none is shown.
+			if pwOK {
+				h.Steps = append(h.Steps, "服务器不提供公钥登录（"+offeredText+"）：在凭据页添加这台服务器的密码凭据，在服务器页把认证方式改为密码并选它；用密码登录，面板的全部功能都可以用",
+					"想改用密钥时，先在服务器的 sshd_config 里设 PubkeyAuthentication yes 并重载 sshd，再重新「测试连接」")
+			} else {
+				h.Steps = append(h.Steps, "服务器既没有提供公钥登录，也没有提供密码登录（"+offeredText+"）：检查服务器的 sshd_config 后重新「测试连接」")
+			}
+			return h
 		}
-		h.Steps = append(h.Steps, "把下面这把公钥追加到 "+where+"（一行，权限 600，目录 700）", "然后在服务器页重新「测试连接」")
+		h.PublicKey = c.PublicKey
+		h.KeyOffered = true
+		h.Steps = append(h.Steps, "服务器接受公钥登录，但没有接受这把密钥：把下面这把公钥追加到 "+where+"（一行，权限 600，目录 700）", "然后在服务器页重新「测试连接」")
 		return h
 	}
 	h.Method = model.AuthPassword
 	if code == sshexec.CodeAuthFailed {
 		h.Steps = append(h.Steps, "服务器接受密码登录，但这份密码没有通过：在凭据页更新密码后重新测试")
+		if keyOK {
+			keys()
+			if len(h.KeyCredentials) > 0 {
+				h.Steps = append(h.Steps, "这台服务器也提供公钥登录：也可以把下面一把密钥的公钥追加到 "+where+"，再在服务器页把认证方式改为密钥并选这份凭据")
+			}
+		}
 		return h
 	}
-	for _, k := range cs.SSHCredentials() {
-		if k.Kind == credentials.KindPrivateKey && k.PublicKey != "" && len(h.KeyCredentials) < 8 {
-			h.KeyCredentials = append(h.KeyCredentials, keyHint{ID: k.ID, Name: k.Name, PublicKey: k.PublicKey})
-		}
+	if !keyOK {
+		// Password not offered and no publickey either: no key advice.
+		h.Steps = append(h.Steps, "服务器不接受密码登录，也没有提供公钥登录（"+offeredText+"）：检查服务器的 sshd_config（PasswordAuthentication / PubkeyAuthentication）后重新「测试连接」")
+		return h
 	}
-	sort.Slice(h.KeyCredentials, func(i, j int) bool { return h.KeyCredentials[i].Name < h.KeyCredentials[j].Name })
+	keys()
 	if len(h.KeyCredentials) > 0 {
 		h.Steps = append(h.Steps, "服务器只接受密钥登录：把面板里一把密钥的公钥追加到 "+where+"，再在服务器页把认证方式改为密钥并选这份凭据")
 	} else {
@@ -769,7 +815,7 @@ func (s *Server) loginHelpFor(cs *credentials.Store, serverID, code string) *log
 
 // writeSSHErrHelp is writeSSHErr plus login help for login failures.
 func (s *Server) writeSSHErrHelp(w http.ResponseWriter, cs *credentials.Store, serverID string, err error) {
-	if h := s.loginHelpFor(cs, serverID, sshexec.CodeOf(err)); h != nil {
+	if h := s.loginHelpFor(cs, serverID, sshexec.CodeOf(err), sshexec.OfferedOf(err)); h != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "code": sshexec.CodeOf(err), "login_help": h})
 		return
 	}

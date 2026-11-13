@@ -155,17 +155,21 @@ Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧
 
 **装机前预检。** 在「部署 → 远端节点」点「生成密钥并下发」或「下发」，面板先经已固定指纹的 SSH 运行一份固定的**只读**预检脚本，列出：目标（服务器、地址、端口、固定指纹、凭据）、要做的变更（新建或替换的文件、接口、监听端口、路由、规则、nft 表、服务、软件包、会打开的转发）和与主机上已有东西的冲突（按「阻断 / 警告 / 信息」分组，每条都写了发现了什么、怎么处理）。有阻断项时「执行」按钮不可用，面板这一版**不能跳过**阻断项，也**不会替你改**别的服务（例如 Docker 的 `FORWARD DROP`）。确认后执行，面板在执行前还会在同一台主机上再预检一次，结果变了就拒绝并显示新结果。安装到网关同理：「安装前预检」经 `meridian-host` 的只读动作做同样的检查，第一次安装前必须先做。
 
-预检会拒绝的典型情况：不是 Debian 12 / 13（例如 Ubuntu 20.04）、不是 x86_64 / aarch64、不是 root、没有 systemd；FORWARD 策略是 DROP（通常是 Docker）；接口名、监听端口（WireGuard、WSS 443、wstunnel 本地端口、解析器的隧道地址:53）、隧道地址或路由与已有的重叠；路由表、防火墙标记、`inet meridian` 已被别人用；要写的路径上有不属于 Meridian 的文件（例如另一份 `/etc/smartdns/smartdns.conf`）；主机已被另一个节点或另一个面板装过；需要 wstunnel 却没有。完整列表、判定方法和它**不检查**的东西见 [架构](architecture.md)「装机前预检」。
+预检会拒绝的典型情况：不是支持的系统（Debian 12 / 13 x86_64、Ubuntu 20.04 aarch64 以外的发行版、版本或架构组合）、不是 root、没有 systemd；FORWARD 策略是 DROP（通常是 Docker）；接口名、监听端口（WireGuard、WSS 443、wstunnel 本地端口、解析器的隧道地址:53）、隧道地址或路由与已有的重叠；路由表、防火墙标记、`inet meridian` 已被别人用；要写的路径上有不属于 Meridian 的文件（例如另一份 `/etc/smartdns/smartdns.conf`）；主机已被另一个节点或另一个面板装过；面板没有这台主机架构的已校验 wstunnel / SmartDNS（`wstunnel_missing` / `smartdns_unavailable`，面板镜像缺文件或摘要不符时）；要跑解析器而可用内存低于预算（`memory_budget`）。完整列表、判定方法和它**不检查**的东西见 [架构](architecture.md)「装机前预检」。
 
 第一次装机失败时，脚本会补偿：撤掉这次新建的文件、接口、nft 表、规则、路由和服务，恢复被替换的文件和 sysctl；装上的软件包保留并列出。撤不掉的会逐项列出，也写在服务器的 `/var/lib/meridian/node/journal`；在处理之前，下一次预检会阻止再装。遇到「上一次装机没有正常结束」（`previous_run_incomplete`）时，在部署页对这个节点点「恢复中断的装机」：面板先只读列出这次运行做过的事，你确认后按服务器上的工作目录跑同一套补偿（见第 9 节）。工作目录不在了时面板会拒绝并说明，这时才需要登录服务器按 journal 手工处理。
 
 **旧版本装过的远端节点**（没有 `/var/lib/meridian/node/manifest`）会被预检判为 `legacy_install` 而拒绝：面板无法确认这些文件属于哪个节点，也无法准确补偿。在部署页对这个节点做「旧版清理」（第 9 节）：只处理固定路径上带 Meridian 标记的文件和它们声明的接口、服务、nft 表、路由表，先列清单、你确认后才删。也可以手工停用并移走旧文件。之后按第一次装机处理。
 
-**登录方式不被接受**时（例如服务器只收密钥），连接测试和预检会直接说明是「服务器不提供这种登录方式」还是「这份凭据被拒」，并给出可以复制的公钥（面板保存的密钥凭据的公钥，不含任何秘密）和把它加进 `authorized_keys` 的步骤。
+**登录方式不被接受**时，连接测试和预检会直接说明是「服务器不提供这种登录方式」还是「这份凭据被拒」，并列出服务器实际提供的登录方式。只有服务器提供公钥登录时，才建议改用密钥并给出可以复制的公钥（面板保存的密钥凭据的公钥，不含任何秘密）和把它加进 `authorized_keys` 的步骤；只收密码的服务器（例如只能经端口转发到达、只开密码登录的那台）用它的密码凭据就能完成全部操作，面板只会提示改用密码凭据。
 
-以上预检、复核和补偿只在仓库的自动化测试里跑过（进程内 SSH 服务器、假宿主代理、带桩命令的本机沙箱），**还没有在真实服务器上执行过**。
+**不用再手装 wstunnel 和 SmartDNS。** 面板镜像里带着固定版本的 wstunnel 11.1.0 和 SmartDNS 1.2026.08.05-0921（Release48.4），各有 x86_64 和 aarch64 两份，版本和 SHA-256 写死在 `internal/artifacts/artifacts.lock`。装机时面板按预检看到的架构，经同一条 SSH 连接把需要的那份传到服务器（主机上已经是同一摘要就不传），服务器在激活任何东西之前再核对一次摘要，不符就拒绝、什么都不改。它们装在 Meridian 自己的路径 `/usr/local/sbin/meridian-wstunnel`、`/usr/local/sbin/meridian-smartdns`，出口解析器由单元 `meridian-smartdns.service` 运行，只绑隧道地址；服务器上原有的 `/usr/local/bin/wstunnel` 或发行版的 smartdns 不会被覆盖或删除，远端节点也不再从 apt 装 smartdns。网关的 WSS 客户端用的 wstunnel 也由「安装到网关」写到网关的 `/usr/local/sbin/meridian-wstunnel`。目标主机不需要访问任何境外下载源。
 
-wstunnel 需要单独安装到 `/usr/local/bin/wstunnel`，版本请钉死你核对过的 [erebe/wstunnel](https://github.com/erebe/wstunnel/releases) release。脚本不会从网络上直接下载二进制。
+**构建镜像需要联网一次**：`docker buildx build --platform linux/amd64 -f deploy/Dockerfile …` 的 `artifacts` 阶段要访问 `deb.debian.org`（装 curl）和 `github.com` / `objects.githubusercontent.com`（下载上面四个文件），下载后核对 SHA-256，不符则构建失败。构建机连不上 GitHub 时，把四个上游文件（`wstunnel_11.1.0_linux_amd64.tar.gz`、`wstunnel_11.1.0_linux_arm64.tar.gz`、`smartdns-x86_64`、`smartdns-aarch64`，即锁文件里 URL 的最后一段）放进 `deploy/artifacts/` 再构建，同样核对摘要。部署页「面板下发的二进制」显示面板持有的副本是否通过校验。
+
+**支持的远端系统**：Debian 12 / 13（x86_64）和 Ubuntu 20.04（aarch64，内核 5.15）。缺的 wireguard-tools、nftables 会列进预检的安装计划并经 apt 安装（不装推荐包）；Ubuntu 20.04 上不会切换 iptables 的 legacy 后端，也不碰已有的 legacy 规则（两者如何共存、预检看了什么没看什么，见[架构](architecture.md)「与 iptables-legacy 共存」）。其他系统、架构和 5.6 以前的内核被拒绝并说明原因。要在本机跑出口解析器的节点，可用内存低于预算（装机余量 48 MB + SmartDNS 48 MB，有 WSS 再加 32 MB）时预检阻断，不会去掉解析器或改用别的解析器。
+
+以上预检、二进制下发、复核和补偿只在仓库的自动化测试里跑过（进程内 SSH 服务器、假宿主代理、带桩命令的本机沙箱、假二进制），**还没有在真实服务器上执行过**；固定版本的 wstunnel / SmartDNS 也没有在 Ubuntu 20.04 arm64 或 Debian 12 上实际运行过。
 
 ## 5. 服务器、密钥与 Cloudflare
 
@@ -289,7 +293,7 @@ sudo docker compose -f deploy/docker-compose.yml --profile dns up -d
 1. 「生成撤回计划」：面板经已固定指纹的 SSH 在**部署时的那台主机**上只读运行固定的撤回脚本，列出服务器上清单记录的服务、接口、路由表、nft 表和文件，以及要保留的东西。清单属于别的节点、别的面板部署或别的服务器时直接拒绝并说明原因；服务器的地址或指纹和部署时不同也拒绝。
 2. 输入节点 ID 确认后执行。计划生成之后服务器上的状态变了会被拒绝（重新生成计划即可）。
 3. 结果分三列：已移除 / 保留（有意）/ 没能移除。装机后被你改过的文件不会被删除，会列在「没能移除」里；处理后再撤回一次（可以重复执行，已经不在的东西跳过）。
-4. 有意保留：装上的软件包（wireguard-tools、nftables、smartdns 等）、运行中的转发和 rp_filter 值（到重启前不变）、清单之外的一切（Docker、WARP、别的 WireGuard 接口和 nft 表）。
+4. 有意保留：装上的软件包（wireguard-tools、nftables，以前的版本装的 smartdns）、运行中的转发和 rp_filter 值（到重启前不变）、清单之外的一切（Docker、WARP、别的 WireGuard 接口和 nft 表）。
 
 节点上还部署着 Mesh 时先在 Mesh 部署卡片撤回 Mesh（它按部署时的主机和 Cloudflare 账户撤回），再撤回节点。服务器已经不存在（VPS 已删除）时可以「放弃」：记录标为已放弃并解除绑定，面板明确说明它**没有核实**服务器上是否还有东西。
 

@@ -181,7 +181,7 @@ func TestWithdrawManifestScopedAndIdempotent(t *testing.T) {
 
 	p := plan(t, sb, wopts("tw", WithdrawManifest, WithdrawPlan, ""))
 	joined := strings.Join(p.Plan, "\n")
-	for _, want := range []string{"iface m14 present", "nft inet meridian present", "file /etc/wireguard/m14.conf present", "table 150 flush", "route 10.66.0.0/16 blackhole"} {
+	for _, want := range []string{"iface m14 present", "nft inet meridian present", "file /etc/wireguard/m14.conf present", "table 150 flush", "route 10.66.0.0/16 blackhole", "file /usr/local/sbin/meridian-smartdns present", "unit meridian-smartdns.service"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("plan lacks %q:\n%s", want, joined)
 		}
@@ -209,7 +209,7 @@ func TestWithdrawManifestScopedAndIdempotent(t *testing.T) {
 			t.Fatalf("%s left behind", p)
 		}
 	}
-	for _, gone := range []string{"/link-m14", "/nft-meridian", "/rule4-150", "/rule6-150", "/bh-10.66.0.0_16", "/bh-fd66___48", "/active-meridian-unlock.timer", "/var/lib/meridian/node/manifest", "/etc/meridian"} {
+	for _, gone := range []string{"/usr/local/sbin/meridian-smartdns", "/link-m14", "/nft-meridian", "/rule4-150", "/rule6-150", "/bh-10.66.0.0_16", "/bh-fd66___48", "/active-meridian-unlock.timer", "/var/lib/meridian/node/manifest", "/etc/meridian"} {
 		if sb.exists(gone) {
 			t.Fatalf("%s left", gone)
 		}

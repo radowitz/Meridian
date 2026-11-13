@@ -76,6 +76,9 @@ type Manifest struct {
 	RouteTables []int         `json:"route_tables"`
 	Sidecars    []string      `json:"sidecars"`
 	DNS         bool          `json:"dns"`
+	// Artifacts are the panel-delivered binaries this install put on the
+	// host (artifacts.go).
+	Artifacts []ManagedArtifact `json:"artifacts,omitempty"`
 	// Origin is "legacy" for a manifest built by adopting a host installed
 	// by a version without manifests (see adoptLegacy); empty otherwise.
 	Origin string `json:"origin,omitempty"`
@@ -759,6 +762,11 @@ func (t *txn) converge(from, to Manifest, toFiles map[string]string, tag string)
 		if err := os.Remove(filepath.Join(root, filepath.FromSlash(f.Path))); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+	}
+	// Binaries first: a unit that runs one is never written (and never
+	// activated) without the verified binary in place.
+	if err := t.convergeArtifacts(from, to); err != nil {
+		return err
 	}
 	planned, err := a.prepareHost(toFiles)
 	if err != nil {

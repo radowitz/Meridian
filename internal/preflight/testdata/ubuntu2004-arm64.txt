@@ -52,11 +52,17 @@ ss tcp   LISTEN 0      128          0.0.0.0:2222       0.0.0.0:*    users:(("ssh
 ss tcp   LISTEN 0      4096         0.0.0.0:8443       0.0.0.0:*    users:(("xray",pid=900,fd=5))
 unit docker.service active enabled 811
 unit nftables.service inactive not-found 0
-unit netfilter-persistent.service inactive not-found 0
+unit netfilter-persistent.service active enabled 0
+unit ufw.service inactive enabled 0
 unit smartdns.service inactive not-found 0
 unit systemd-resolved.service active enabled 600
 nftables-conf absent
 proc warp-svc no
 proc dockerd yes
+version wg wireguard-tools v1.0.20200513 - https://git.zx2c4.com/wireguard-tools/
+pkg wireguard-tools 1.0.20200513-1~20.04.2 1.0.20200513-1~20.04.2
+pkg nftables - 0.9.3-2
+pkg iproute2 5.5.0-1ubuntu1 5.5.0-1ubuntu1
+pkg smartdns - -
 @PATHS@
 meridian-preflight-end

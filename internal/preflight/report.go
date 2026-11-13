@@ -140,11 +140,28 @@ type NodeManifest struct {
 	Installed  int64             `json:"installed,omitempty"`
 	Files      map[string]string `json:"files"` // path → sha256
 	Orphans    []string          `json:"orphans,omitempty"`
-	Interfaces []string          `json:"interfaces"`
-	Units      []string          `json:"units"`
-	NFTTables  []string          `json:"nft_tables"`
-	Tables     []int             `json:"route_tables"`
-	Packages   []string          `json:"packages,omitempty"`
+	// Artifacts are the panel-delivered binaries the install put on the
+	// host ("artifact <name> <version> <path> <sha256>").
+	Artifacts  []ManifestArtifact `json:"artifacts,omitempty"`
+	Interfaces []string           `json:"interfaces"`
+	Units      []string           `json:"units"`
+	NFTTables  []string           `json:"nft_tables"`
+	Tables     []int              `json:"route_tables"`
+	Packages   []string           `json:"packages,omitempty"`
+}
+
+// ManifestArtifact is one panel-delivered binary in a node manifest.
+type ManifestArtifact struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Path    string `json:"path"`
+	SHA256  string `json:"sha256"`
+}
+
+// PkgState is one distribution package as the host reports it.
+type PkgState struct {
+	Installed string `json:"installed,omitempty"` // "" = not installed
+	Candidate string `json:"candidate,omitempty"` // "" = apt has none
 }
 
 // NodeJournal is the provision journal at /var/lib/meridian/node/journal.
@@ -198,10 +215,13 @@ type Report struct {
 	Procs        map[string]bool      `json:"procs"`
 	Paths        map[string]PathInfo  `json:"paths"`
 	Versions     map[string]string    `json:"versions"`
-	Containers   map[string]Container `json:"containers"`
-	Manifest     *NodeManifest        `json:"manifest,omitempty"`
-	Journal      *NodeJournal         `json:"journal,omitempty"`
-	Source       string               `json:"source,omitempty"`
+	// Packages: installed version and apt candidate of the packages the
+	// install may need ("pkg" lines; absent from older reports).
+	Packages   map[string]PkgState  `json:"packages,omitempty"`
+	Containers map[string]Container `json:"containers"`
+	Manifest   *NodeManifest        `json:"manifest,omitempty"`
+	Journal    *NodeJournal         `json:"journal,omitempty"`
+	Source     string               `json:"source,omitempty"`
 }
 
 func newReport() Report {
@@ -210,7 +230,7 @@ func newReport() Report {
 		Commands: map[string]bool{}, Sysctl: map[string]string{}, WGPorts: map[string]int{},
 		RTNames: map[int]string{}, TableRoutes: map[string]bool{}, TableDefault: map[string]bool{},
 		Units: map[string]UnitState{}, Procs: map[string]bool{}, Paths: map[string]PathInfo{},
-		Versions: map[string]string{}, Containers: map[string]Container{}, Policies: []Policy{}, Links: []string{}, WGLinks: []string{},
+		Versions: map[string]string{}, Packages: map[string]PkgState{}, Containers: map[string]Container{}, Policies: []Policy{}, Links: []string{}, WGLinks: []string{},
 		Addrs: []Addr{}, Routes: []Route{}, Rules: []Rule{}, Listeners: []Listener{}, NFTTables: []string{}, Chains: []Chain{},
 	}
 }
@@ -473,6 +493,18 @@ func Parse(text string) Report {
 				}
 				r.Paths[f[0]] = pi
 			}
+		case "pkg":
+			// "pkg <name> <installed|-> <candidate|->"
+			if len(f) == 3 && validName(f[0]) && len(r.Packages) < 16 {
+				ps := PkgState{}
+				if f[1] != "-" && validName(f[1]) {
+					ps.Installed = f[1]
+				}
+				if f[2] != "-" && validName(f[2]) {
+					ps.Candidate = f[2]
+				}
+				r.Packages[f[0]] = ps
+			}
 		case "version", "candidate":
 			if len(f) >= 1 && validName(f[0]) && len(r.Versions) < 16 {
 				v := strings.TrimSpace(strings.TrimPrefix(rest, f[0]))
@@ -585,6 +617,11 @@ func parseManifestLine(m *NodeManifest, f []string) {
 	case "pkg":
 		if validName(f[1]) && len(m.Packages) < 32 {
 			m.Packages = append(m.Packages, f[1])
+		}
+	case "artifact":
+		// "artifact <name> <version> <path> <sha256>"
+		if len(f) == 5 && validName(f[1]) && validName(f[2]) && IsArtifactPath(f[3]) && isHex64(f[4]) && len(m.Artifacts) < 8 {
+			m.Artifacts = append(m.Artifacts, ManifestArtifact{Name: f[1], Version: f[2], Path: f[3], SHA256: f[4]})
 		}
 	}
 }

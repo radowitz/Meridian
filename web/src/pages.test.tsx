@@ -1716,7 +1716,37 @@ describe("deploy: install pre-check for remote nodes", () => {
     expect(screen.queryByText("脚本已在服务器上执行完毕")).toBeNull();
   });
 
-  it("offers the public key to copy when the server does not accept the login method", async () => {
+  it("offers the public key to copy only when the server offers publickey login", async () => {
+    setup({
+      "POST /api/provision/preflight": () =>
+        reply(502, {
+          error: "美国机 拒绝了 root 的密钥登录（服务器接受密钥登录，但这份凭据没有通过）",
+          code: "auth_failed",
+          login_help: {
+            code: "auth_failed",
+            method: "key",
+            user: "root",
+            address: "198.51.100.40",
+            credential_id: "cred-1",
+            credential_name: "运维密钥",
+            public_key: PUBKEY,
+            offered_methods: ["publickey"],
+            publickey_offered: true,
+            steps: ["服务器接受公钥登录，但没有接受这把密钥：把下面这把公钥追加到 root@198.51.100.40 的 ~/.ssh/authorized_keys", "然后在服务器页重新「测试连接」"],
+          },
+        }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    const help = await screen.findByTestId("login-help");
+    expect(help).toHaveTextContent(PUBKEY);
+    expect(help).toHaveTextContent("authorized_keys");
+    expect(within(help).getByTestId("login-offered")).toHaveTextContent("publickey");
+    expect(within(help).getByRole("button", { name: /复制公钥/ })).toBeInTheDocument();
+    expect(screen.getByTestId("preflight-execute")).toBeDisabled();
+  });
+
+  it("keeps a password-only server on its password: no key, no public key to copy", async () => {
     setup({
       "POST /api/provision/preflight": () =>
         reply(502, {
@@ -1729,19 +1759,97 @@ describe("deploy: install pre-check for remote nodes", () => {
             address: "198.51.100.40",
             credential_id: "cred-1",
             credential_name: "运维密钥",
-            public_key: PUBKEY,
-            steps: ["服务器没有提供公钥登录：在 sshd_config 里设 PubkeyAuthentication yes 并重载 sshd", "把下面这把公钥追加到 root@198.51.100.40 的 ~/.ssh/authorized_keys"],
+            offered_methods: ["password"],
+            publickey_offered: false,
+            steps: [
+              "服务器不提供公钥登录（服务器提供的登录方式：password）：在凭据页添加这台服务器的密码凭据，在服务器页把认证方式改为密码并选它；用密码登录，面板的全部功能都可以用",
+              "想改用密钥时，先在服务器的 sshd_config 里设 PubkeyAuthentication yes 并重载 sshd，再重新「测试连接」",
+            ],
           },
         }),
     });
     renderAt("#/deploy");
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     const help = await screen.findByTestId("login-help");
-    expect(help).toHaveTextContent(PUBKEY);
-    expect(help).toHaveTextContent("PubkeyAuthentication yes");
-    expect(within(help).getByRole("button", { name: /复制公钥/ })).toBeInTheDocument();
+    expect(help).toHaveTextContent("密码凭据");
+    expect(within(help).getByTestId("login-offered")).toHaveTextContent("password");
+    expect(help).not.toHaveTextContent(PUBKEY);
+    expect(within(help).queryByRole("button", { name: /复制公钥/ })).toBeNull();
     expect(screen.getByText("服务器不接受这种登录方式")).toBeInTheDocument();
+  });
+
+  it("shows platform, architecture, binaries and packages of the install plan", async () => {
+    setup({
+      "POST /api/provision/preflight": () => ({
+        preflight: CLEAN({
+          host: { os: "Ubuntu 20.04.6 LTS", arch: "aarch64", kernel: "5.15.0-1045-oracle", mem_total_kb: 450560, mem_avail_kb: 204800, complete: true },
+          platform: "Ubuntu 20.04 aarch64",
+          binaries: [
+            { name: "smartdns", version: "1.2026.08.05-0921", arch: "aarch64", path: "/usr/local/sbin/meridian-smartdns", sha256: "1208c556".padEnd(64, "0"), size: 5301472, action: "install", transfer: true, detail: "经 SSH 传输 5178 MB，主机上校验 SHA-256 后安装" },
+            { name: "wstunnel", version: "11.1.0", arch: "aarch64", path: "/usr/local/sbin/meridian-wstunnel", sha256: "a2e4e02b".padEnd(64, "0"), size: 10851944, action: "keep", transfer: false, detail: "主机上已是固定版本（摘要一致），不传输" },
+          ],
+          package_plan: [
+            { package: "wireguard-tools", command: "wg", present: true, installed: "1.0.20200513-1~20.04.2", candidate: "1.0.20200513-1~20.04.2", action: "none" },
+            { package: "nftables", command: "nft", present: false, candidate: "0.9.3-2", action: "install" },
+          ],
+          changes: [{ kind: "binary", action: "install", resource: "/usr/local/sbin/meridian-smartdns", detail: "smartdns 1.2026.08.05-0921（aarch64）" }],
+        }),
+      }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    const plan = await screen.findByTestId("preflight-install-plan");
+    expect(within(plan).getByTestId("preflight-platform")).toHaveTextContent("Ubuntu 20.04 aarch64");
+    expect(plan).toHaveTextContent("aarch64");
+    expect(plan).toHaveTextContent("共 440 MB，可用 200 MB");
+    const bins = within(plan).getByTestId("preflight-binaries");
+    expect(bins.querySelector('[data-binary="smartdns"]')).toHaveTextContent("传输并安装");
+    expect(bins.querySelector('[data-binary="smartdns"]')).toHaveTextContent("/usr/local/sbin/meridian-smartdns");
+    expect(bins.querySelector('[data-binary="wstunnel"]')).toHaveTextContent("已是固定版本，不传输");
+    expect(bins).toHaveTextContent("主机不下载任何东西");
+    const pkgs = within(plan).getByTestId("preflight-packages");
+    expect(pkgs.querySelector('[data-package="nftables"]')).toHaveTextContent("apt 安装");
+    expect(pkgs.querySelector('[data-package="nftables"]')).toHaveTextContent("候选 0.9.3-2");
+    expect(pkgs.querySelector('[data-package="wireguard-tools"]')).toHaveTextContent("已有");
+    await userEvent.click(screen.getByText(/拟执行的变更（1 项）/));
+    expect(await screen.findByTestId("preflight-changes")).toHaveTextContent("面板下发的二进制");
+    expect(screen.getByTestId("preflight-execute")).toBeEnabled();
+  });
+
+  it("marks an unsupported platform in the plan", async () => {
+    setup({
+      "POST /api/provision/preflight": () => ({
+        preflight: preflightRec({
+          platform: "",
+          findings: [{ severity: "blocking", code: "os_unsupported", resource: "os", message: "系统是 Ubuntu 22.04，不在支持范围内（只支持 Debian 12 x86_64、Debian 13 x86_64、Ubuntu 20.04 aarch64）。", action: "换用支持的系统。" }],
+          counts: { blocking: 1, warning: 0, info: 0 },
+        }),
+      }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    expect(await screen.findByTestId("preflight-platform")).toHaveTextContent("不在支持范围");
+    expect(screen.getByTestId("preflight-blocking")).toHaveTextContent("Ubuntu 20.04 aarch64");
     expect(screen.getByTestId("preflight-execute")).toBeDisabled();
+  });
+});
+
+describe("deploy: panel-delivered binaries", () => {
+  it("lists the pinned binaries and warns when a verified copy is missing", async () => {
+    fakeApi({
+      "GET /api/artifacts": () => ({
+        artifacts: [
+          { name: "smartdns", version: "1.2026.08.05-0921", arch: "aarch64", sha256: "1208c556".padEnd(64, "0"), size: 5301472, source_url: "https://github.com/pymumu/smartdns/releases/download/Release48.4/smartdns-aarch64", host_path: "/usr/local/sbin/meridian-smartdns", available: true },
+          { name: "wstunnel", version: "11.1.0", arch: "x86_64", sha256: "62b26d0e".padEnd(64, "0"), size: 13752784, source_url: "https://github.com/erebe/wstunnel/releases/download/v11.1.0/wstunnel_11.1.0_linux_amd64.tar.gz", host_path: "/usr/local/sbin/meridian-wstunnel", available: false, error: "wstunnel-x86_64 的 SHA-256 不对：拒绝使用" },
+        ],
+      }),
+    });
+    renderAt("#/deploy");
+    const missing = await screen.findByTestId("artifacts-missing");
+    expect(missing).toHaveTextContent("1 个二进制没有可用的已校验副本");
+    expect(missing).toHaveTextContent("wstunnel 11.1.0（x86_64）");
+    expect(screen.getByText(/固定版本：smartdns 1.2026.08.05-0921、wstunnel 11.1.0/)).toBeInTheDocument();
+    expect(screen.getByText(/主机不需要也不会自己下载/)).toBeInTheDocument();
   });
 });
 
@@ -1800,6 +1908,8 @@ describe("servers: login help", () => {
             method: "password",
             user: "root",
             address: "192.0.2.10",
+            offered_methods: ["publickey"],
+            publickey_offered: true,
             key_credentials: [{ id: "cred-key", name: "面板密钥", public_key: PUBKEY }],
             steps: ["服务器只接受密钥登录：把面板里一把密钥的公钥追加到 root@192.0.2.10 的 ~/.ssh/authorized_keys"],
           },
@@ -1813,6 +1923,7 @@ describe("servers: login help", () => {
     expect(help).toHaveTextContent("面板密钥 的公钥");
     expect(help).toHaveTextContent(PUBKEY);
     expect(help).toHaveTextContent("authorized_keys");
+    expect(within(help).getByTestId("login-offered")).toHaveTextContent("publickey");
     expect(webStorageDump()).not.toContain(PUBKEY);
   });
 });

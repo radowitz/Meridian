@@ -24,9 +24,11 @@ type Footprint struct {
 	NFTTables  []string       `json:"nft_tables"`
 	Marks      []string       `json:"fwmarks"`
 	Units      []string       `json:"units"`
-	// Packages are the Debian packages the install script installs when the
-	// command is missing; Binaries must already exist (wstunnel is never
-	// installed by the panel).
+	// Packages are the distribution packages the install script installs
+	// (apt-get) when the command is missing. Binaries are the panel-delivered
+	// executables (wstunnel, smartdns) the bundle's units run from their
+	// Meridian-owned paths (ArtifactPath); the panel sends them with the
+	// bundle, verified by SHA-256, and the host never downloads anything.
 	Packages []PackagePlan `json:"packages"`
 	Binaries []string      `json:"binaries"`
 	// Forwarding: the install turns on IPv4 / IPv6 forwarding.
@@ -100,7 +102,48 @@ var (
 	reLoAddr     = regexp.MustCompile(`(?m)^\s*ip (?:-6 )?addr (?:replace|add) '?([0-9a-fA-F:./]+)'? dev '?lo'?\s*$`)
 	reForward4   = regexp.MustCompile(`(?m)^\s*net\.ipv4\.ip_forward\s*=\s*1`)
 	reForward6   = regexp.MustCompile(`(?m)^\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1`)
+	reArtifact   = regexp.MustCompile(`(?m)^\s*ExecStart=/usr/local/sbin/meridian-(wstunnel|smartdns)(\s|$)`)
 )
+
+// ArtifactNames are the panel-delivered binaries (internal/artifacts).
+var ArtifactNames = []string{"smartdns", "wstunnel"}
+
+// ArtifactPath is the Meridian-owned host path of a panel-delivered binary
+// (internal/artifacts.HostPath; this package imports no other Meridian
+// package, a test keeps the two equal).
+func ArtifactPath(name string) string { return "/usr/local/sbin/meridian-" + name }
+
+// IsArtifactPath reports whether p is one of the ArtifactPath values.
+func IsArtifactPath(p string) bool {
+	for _, n := range ArtifactNames {
+		if p == ArtifactPath(n) {
+			return true
+		}
+	}
+	return false
+}
+
+// ArtifactPaths are the host paths of fp's binaries: the preflight asks
+// about them (size and SHA-256) next to the bundle's files.
+func (fp Footprint) ArtifactPaths() []string {
+	out := make([]string, 0, len(fp.Binaries))
+	for _, b := range fp.Binaries {
+		out = append(out, ArtifactPath(b))
+	}
+	return out
+}
+
+// PreflightPaths is every path the preflight must report for fp: the
+// bundle's files and the binaries' host paths.
+func (fp Footprint) PreflightPaths() []string {
+	out := append([]string(nil), fp.Files...)
+	for _, p := range fp.ArtifactPaths() {
+		if !containsStr(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // FootprintOf derives the footprint from one node's host files (absolute
 // paths, as provision.FilesFor returns them).
@@ -120,7 +163,7 @@ func FootprintOf(files map[string]string) Footprint {
 			tables[n] = true
 		}
 	}
-	wstunnel := false
+	binaries := map[string]bool{}
 	for _, p := range paths {
 		body := files[p]
 		fp.Files = append(fp.Files, p)
@@ -142,8 +185,8 @@ func FootprintOf(files map[string]string) Footprint {
 			fp.Interfaces = append(fp.Interfaces, ip)
 		case dir == "/etc/systemd/system" && (strings.HasSuffix(base, ".service") || strings.HasSuffix(base, ".timer")):
 			fp.Units = append(fp.Units, base)
-			if strings.HasPrefix(base, "wstunnel-") {
-				wstunnel = true
+			for _, m := range reArtifact.FindAllStringSubmatch(body, -1) {
+				binaries[m[1]] = true
 			}
 			if m := reWSServer.FindStringSubmatch(body); m != nil {
 				if l, ok := listenOf("tcp", m[1], m[2], base); ok {
@@ -260,11 +303,12 @@ func FootprintOf(files map[string]string) Footprint {
 		PackagePlan{Package: "wireguard-tools", Command: "wg"},
 		PackagePlan{Package: "nftables", Command: "nft"},
 		PackagePlan{Package: "iproute2", Command: "ip"})
-	if fp.DNS {
-		fp.Packages = append(fp.Packages, PackagePlan{Package: "smartdns", Command: "smartdns"})
-	}
-	if wstunnel {
-		fp.Binaries = append(fp.Binaries, "wstunnel")
+	// SmartDNS is not a package any more: remote resolvers run the
+	// panel-delivered binary (Binaries), the gateway's runs in Compose.
+	for _, n := range ArtifactNames {
+		if binaries[n] {
+			fp.Binaries = append(fp.Binaries, n)
+		}
 	}
 	return fp
 }

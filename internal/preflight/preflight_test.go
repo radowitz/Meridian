@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/defaults"
 	"github.com/radowitz/meridian/internal/model"
@@ -48,7 +49,7 @@ func fixture(t *testing.T, name string, fp Footprint, paths map[string]string, e
 		t.Fatal(err)
 	}
 	var b strings.Builder
-	for _, p := range fp.Files {
+	for _, p := range fp.PreflightPaths() {
 		if v, ok := paths[p]; ok {
 			b.WriteString("path " + p + " " + v + "\n")
 		} else {
@@ -93,7 +94,19 @@ func find(ev Evaluation, code string) []Finding {
 	return out
 }
 
-func remote(node string) Context { return Context{NodeID: node, Deployment: "dep-test"} }
+func remote(node string) Context {
+	return Context{Artifacts: testArts, NodeID: node, Deployment: "dep-test"}
+}
+
+// testArts are the panel's pinned binaries, all available (the real pins
+// of internal/artifacts: names, versions, digests and sizes).
+var testArts = func() []Artifact {
+	var out []Artifact
+	for _, p := range artifacts.Pins() {
+		out = append(out, Artifact{Name: p.Name, Version: p.Version, Arch: p.Arch, SHA256: p.SHA256, Size: p.Size, Available: true})
+	}
+	return out
+}()
 
 // Every finding carries a code, a message and, when it blocks, what to do.
 func checkShape(t *testing.T, ev Evaluation) {
@@ -119,8 +132,17 @@ func TestFootprintOfExitHubRelay(t *testing.T) {
 		joinPrefixes(exit.Interfaces[0].Addresses) != "10.66.11.2/30, fd66:0:0:11::2/64" {
 		t.Fatalf("exit interfaces %+v", exit.Interfaces)
 	}
-	if !exit.DNS || !exit.Forward4 || !exit.Forward6 || !exit.SysctlAll || len(exit.Binaries) != 0 {
+	// The exit resolver is the panel-delivered SmartDNS, not a package.
+	if !exit.DNS || !exit.Forward4 || !exit.Forward6 || !exit.SysctlAll || strings.Join(exit.Binaries, ",") != "smartdns" {
 		t.Fatalf("exit flags %+v", exit)
+	}
+	for _, p := range exit.Packages {
+		if p.Package == "smartdns" {
+			t.Fatalf("smartdns must not be an apt package any more: %+v", exit.Packages)
+		}
+	}
+	if strings.Join(exit.ArtifactPaths(), ",") != "/usr/local/sbin/meridian-smartdns" || !containsStr(exit.PreflightPaths(), "/usr/local/sbin/meridian-smartdns") {
+		t.Fatalf("exit artifact paths %v", exit.ArtifactPaths())
 	}
 	var dns []string
 	for _, l := range exit.Listens {
@@ -172,6 +194,11 @@ func TestFootprintOfExitHubRelay(t *testing.T) {
 	if !containsStr(gw.Marks, "0x4d72") || !containsStr(gw.NFTTables, "inet meridian_guard") {
 		t.Fatalf("gateway marks %v nft %v", gw.Marks, gw.NFTTables)
 	}
+	// The gateway's WSS client runs the panel-delivered wstunnel; its
+	// SmartDNS is the Compose container (no binary).
+	if strings.Join(gw.Binaries, ",") != "wstunnel" {
+		t.Fatalf("gateway binaries %v", gw.Binaries)
+	}
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
@@ -213,42 +240,264 @@ func TestCleanDebian13ExitPasses(t *testing.T) {
 			ifaces = append(ifaces, c.Action+" "+c.Resource)
 		}
 	}
-	if strings.Join(pkgs, ",") != "wireguard-tools,smartdns" || strings.Join(ifaces, ",") != "create m04" {
+	if strings.Join(pkgs, ",") != "wireguard-tools" || strings.Join(ifaces, ",") != "create m04" {
 		t.Fatalf("changes pkgs=%v ifaces=%v", pkgs, ifaces)
+	}
+	// The resolver binary is planned as a panel transfer of the pinned
+	// x86_64 build, not an apt install.
+	pin, _ := artifacts.PinFor("smartdns", "x86_64")
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Action != "install" || !ev.Binaries[0].Transfer || ev.Binaries[0].SHA256 != pin.SHA256 ||
+		ev.Binaries[0].Path != "/usr/local/sbin/meridian-smartdns" || ev.Platform != "Debian 13 x86_64" {
+		t.Fatalf("binary plan %+v platform %q", ev.Binaries, ev.Platform)
+	}
+	bin := false
+	for _, c := range ev.Changes {
+		bin = bin || (c.Kind == "binary" && c.Action == "install" && c.Resource == "/usr/local/sbin/meridian-smartdns" && strings.Contains(c.Detail, pin.Version))
+	}
+	if !bin || !has(ev, Info, CodeMemoryBudget) || !has(ev, Info, CodePlatform) {
+		t.Fatalf("binary change / budget missing: %v %+v", codes(ev, ""), ev.Changes)
+	}
+	// The host already has exactly the pinned digest: no transfer.
+	r := fixture(t, "clean-debian13.txt", fp, map[string]string{"/usr/local/sbin/meridian-smartdns": fmt.Sprintf("file %d no %s", pin.Size, pin.SHA256)}, "")
+	ev = Evaluate(r, fp, remote("hk-resi"))
+	if ev.Blocking || len(ev.Binaries) != 1 || ev.Binaries[0].Action != "keep" || ev.Binaries[0].Transfer {
+		t.Fatalf("matching digest must skip the transfer: %+v %v", ev.Binaries, codes(ev, Blocking))
+	}
+	// A file at Meridian's path that is not ours and not the pin: refused.
+	r = fixture(t, "clean-debian13.txt", fp, map[string]string{"/usr/local/sbin/meridian-smartdns": "file 100 no " + strings.Repeat("3", 64)}, "")
+	ev = Evaluate(r, fp, remote("hk-resi"))
+	if po := find(ev, CodePathOccupied); len(po) != 1 || po[0].Resource != "/usr/local/sbin/meridian-smartdns" || ev.Binaries[0].Action != "refuse" {
+		t.Fatalf("foreign file at the binary path: %v %+v", codes(ev, ""), ev.Binaries)
+	}
+}
+
+// The panel holds no verified copy (missing, digest mismatch at load) or
+// no copy for this architecture: the install is refused, the resolver is
+// never skipped.
+func TestArtifactUnavailableBlocks(t *testing.T) {
+	exit := FootprintOf(nodeFiles(t, "hk-resi"))
+	broken := append([]Artifact(nil), testArts...)
+	for i := range broken {
+		if broken[i].Name == "smartdns" && broken[i].Arch == "x86_64" {
+			broken[i].Available, broken[i].Error = false, "smartdns-x86_64 的 SHA-256 是 00，固定的是 8a：拒绝使用"
+		}
+	}
+	ev := Evaluate(fixture(t, "clean-debian13.txt", exit, nil, ""), exit, Context{NodeID: "hk-resi", Deployment: "dep-test", Artifacts: broken})
+	checkShape(t, ev)
+	sm := find(ev, CodeSmartDNSMissing)
+	if len(sm) != 1 || sm[0].Severity != Blocking || !strings.Contains(sm[0].Message, "SHA-256") || !strings.Contains(sm[0].Message, "不会跳过") || ev.Binaries[0].Action != "refuse" {
+		t.Fatalf("digest mismatch at the panel: %+v", sm)
+	}
+	// No artifacts loaded at all: the relay's wstunnel is refused too.
+	relay := FootprintOf(nodeFiles(t, "ali"))
+	ev = Evaluate(fixture(t, "clean-debian13.txt", relay, nil, ""), relay, Context{NodeID: "ali", Deployment: "dep-test"})
+	if !has(ev, Blocking, CodeWstunnelMissing) {
+		t.Fatalf("relay without wstunnel artifact %v", codes(ev, ""))
+	}
+}
+
+// Per-architecture selection: the aarch64 host gets the aarch64 pin.
+func TestArtifactPerArch(t *testing.T) {
+	relay := FootprintOf(nodeFiles(t, "ali"))
+	r := fixture(t, "clean-debian13.txt", relay, nil, "")
+	r.OSID, r.OSVersion, r.Arch = "ubuntu", "20.04", "aarch64"
+	ev := Evaluate(r, relay, remote("ali"))
+	pin, _ := artifacts.PinFor("wstunnel", "aarch64")
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Arch != "aarch64" || ev.Binaries[0].SHA256 != pin.SHA256 || ev.Binaries[0].Size != pin.Size {
+		t.Fatalf("aarch64 selection %+v", ev.Binaries)
+	}
+	x86, _ := artifacts.PinFor("wstunnel", "x86_64")
+	if x86.SHA256 == pin.SHA256 {
+		t.Fatal("the two architectures must have different pins")
 	}
 }
 
 // Ubuntu 20.04 on aarch64 with kernel 5.15, no nft binary, iptables-legacy
-// and Docker's FORWARD DROP, ~440 MB of RAM.
-func TestUbuntu2004Arm64Refused(t *testing.T) {
+// and Docker's FORWARD DROP, ~440 MB of RAM: a supported platform now.
+// nftables is planned as an apt install, the resolver as the aarch64 build
+// of the pinned SmartDNS, the legacy backend is reported with how the two
+// coexist; Docker's FORWARD DROP still blocks (handled in a later step).
+func TestUbuntu2004Arm64Supported(t *testing.T) {
 	fp := FootprintOf(nodeFiles(t, "hk-resi"))
 	ev := Evaluate(fixture(t, "ubuntu2004-arm64.txt", fp, nil, ""), fp, remote("hk-resi"))
 	checkShape(t, ev)
-	for _, c := range []string{CodeOSUnsupported, CodeForwardDrop} {
-		if !has(ev, Blocking, c) {
-			t.Fatalf("missing blocking %s: %v", c, codes(ev, ""))
-		}
+	if strings.Join(codes(ev, Blocking), ",") != CodeForwardDrop {
+		t.Fatalf("only Docker's FORWARD DROP may block: %v", codes(ev, Blocking))
 	}
-	for _, c := range []string{CodeArchUnsupported, CodeKernelTooOld, CodeNoApt, CodePortInUse} {
+	for _, c := range []string{CodeOSUnsupported, CodeArchUnsupported, CodeKernelTooOld, CodeNoApt, CodePortInUse, CodePackageUnavailable} {
 		if has(ev, "", c) {
 			t.Fatalf("unexpected %s: %v", c, codes(ev, ""))
 		}
 	}
-	if !has(ev, Warning, CodeLowMemory) || !has(ev, Info, CodeIptablesLegacy) || !has(ev, Info, CodeDNSListeners) {
+	if !has(ev, Warning, CodeLowMemory) || !has(ev, Info, CodeIptablesLegacy) || !has(ev, Info, CodeDNSListeners) || !has(ev, Info, CodePlatform) || !has(ev, Info, CodeMemoryBudget) {
 		t.Fatalf("findings %v", codes(ev, ""))
 	}
 	if fd := find(ev, CodeForwardDrop); len(fd) != 1 || !strings.Contains(fd[0].Message, "iptables filter 表 FORWARD 策略 DROP") {
 		t.Fatalf("forward drop %+v", fd)
 	}
-	if os := find(ev, CodeOSUnsupported); !strings.Contains(os[0].Message, "Ubuntu 20.04") {
-		t.Fatalf("os %+v", os)
+	if ev.Platform != "Ubuntu 20.04 aarch64" {
+		t.Fatalf("platform %q", ev.Platform)
+	}
+	// ufw installed but inactive is not a firewall manager in the way;
+	// netfilter-persistent active is reported.
+	if has(ev, "", CodeFirewallManager) || !has(ev, Info, CodeNetfilterPersis) {
+		t.Fatalf("ufw / netfilter-persistent %v", codes(ev, ""))
+	}
+	leg := find(ev, CodeIptablesLegacy)[0].Message
+	for _, s := range []string{"不切换后端", "netfilter 钩子", "drop 都是最终的", "不检查 legacy 链里的单条规则"} {
+		if !strings.Contains(leg, s) {
+			t.Fatalf("legacy coexistence statement lacks %q: %s", s, leg)
+		}
 	}
 	installs := false
 	for _, c := range ev.Changes {
-		installs = installs || (c.Kind == "package" && c.Resource == "nftables")
+		installs = installs || (c.Kind == "package" && c.Resource == "nftables" && strings.Contains(c.Detail, "0.9.3"))
 	}
 	if !installs {
-		t.Fatal("missing nft binary is not shown as a package install")
+		t.Fatalf("missing nft binary is not shown as a package install with its candidate: %+v", ev.Changes)
+	}
+	pin, _ := artifacts.PinFor("smartdns", "aarch64")
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Arch != "aarch64" || ev.Binaries[0].SHA256 != pin.SHA256 || ev.Binaries[0].Action != "install" {
+		t.Fatalf("aarch64 resolver %+v", ev.Binaries)
+	}
+	var nft PackageState
+	for _, p := range ev.Packages {
+		if p.Package == "nftables" {
+			nft = p
+		}
+	}
+	if nft.Action != "install" || nft.Candidate != "0.9.3-2" || nft.Present {
+		t.Fatalf("nftables plan %+v", nft)
+	}
+	// Without Docker's FORWARD DROP the host is installable.
+	raw := strings.Replace(string(mustRead(t, "testdata/ubuntu2004-arm64.txt")), "ipt ipv4 -P FORWARD DROP\n", "ipt ipv4 -P FORWARD ACCEPT\n", 1)
+	ev = Evaluate(parseWithPaths(t, raw, fp, nil), fp, remote("hk-resi"))
+	if ev.Blocking {
+		t.Fatalf("Ubuntu 20.04 arm64 without FORWARD DROP blocked: %v", codes(ev, Blocking))
+	}
+	// apt has no candidate for nftables: refused with the reason.
+	raw = strings.Replace(raw, "pkg nftables - 0.9.3-2\n", "pkg nftables - -\n", 1)
+	ev = Evaluate(parseWithPaths(t, raw, fp, nil), fp, remote("hk-resi"))
+	if pu := find(ev, CodePackageUnavailable); len(pu) != 1 || pu[0].Resource != "nftables" || pu[0].Severity != Blocking {
+		t.Fatalf("no candidate %v", codes(ev, ""))
+	}
+}
+
+// Debian 12 x86_64 with ~200 MB available on ~940 MB: an exit installs
+// (wireguard-tools from apt with its candidate, the pinned SmartDNS, not
+// Debian 12's older smartdns package).
+func TestDebian12ExitPasses(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	ev := Evaluate(fixture(t, "debian12.txt", fp, nil, ""), fp, remote("hk-resi"))
+	checkShape(t, ev)
+	if ev.Blocking || ev.Platform != "Debian 12 x86_64" || !has(ev, Info, CodeMemoryBudget) {
+		t.Fatalf("debian 12 %v %q", codes(ev, ""), ev.Platform)
+	}
+	wg := false
+	for _, c := range ev.Changes {
+		wg = wg || (c.Kind == "package" && c.Resource == "wireguard-tools" && strings.Contains(c.Detail, "1.0.20210914-1+b1"))
+		if c.Kind == "package" && c.Resource == "smartdns" {
+			t.Fatal("Debian 12's smartdns package must not be installed")
+		}
+	}
+	if !wg || len(ev.Binaries) != 1 || ev.Binaries[0].Name != "smartdns" || ev.Binaries[0].Action != "install" {
+		t.Fatalf("debian 12 plan %+v %+v", ev.Changes, ev.Binaries)
+	}
+}
+
+// Supported platforms only: Debian 12/13 on x86_64, Ubuntu 20.04 on
+// aarch64. Other releases, distributions and combinations are refused.
+func TestPlatformMatrix(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	for _, tc := range []struct {
+		id, ver, arch, want string
+	}{
+		{"debian", "12", "x86_64", ""},
+		{"debian", "13", "x86_64", ""},
+		{"ubuntu", "20.04", "aarch64", ""},
+		{"debian", "13", "aarch64", CodeArchUnsupported},
+		{"ubuntu", "20.04", "x86_64", CodeArchUnsupported},
+		{"ubuntu", "22.04", "aarch64", CodeOSUnsupported},
+		{"debian", "11", "x86_64", CodeOSUnsupported},
+		{"centos", "9", "x86_64", CodeOSUnsupported},
+		{"debian", "13", "armv7l", CodeArchUnsupported},
+	} {
+		r := fixture(t, "clean-debian13.txt", fp, nil, "")
+		r.OSID, r.OSVersion, r.Arch, r.OSPretty = tc.id, tc.ver, tc.arch, tc.id+" "+tc.ver
+		ev := Evaluate(r, fp, remote("hk-resi"))
+		if tc.want == "" {
+			if ev.Blocking || ev.Platform == "" {
+				t.Fatalf("%+v refused: %v", tc, codes(ev, Blocking))
+			}
+			continue
+		}
+		if !has(ev, Blocking, tc.want) || ev.Platform != "" {
+			t.Fatalf("%+v: want %s, got %v", tc, tc.want, codes(ev, ""))
+		}
+		if f := find(ev, tc.want)[0]; !strings.Contains(f.Message+f.Action, "Debian 12 x86_64") && tc.want == CodeOSUnsupported {
+			t.Fatalf("refusal does not name the supported platforms: %+v", f)
+		}
+	}
+}
+
+// The memory budget: a resolver plan below it is blocked (never run
+// without its resolver), above it passes; a node without a resolver only
+// gets a warning; an update does not count what already runs.
+func TestMemoryBudget(t *testing.T) {
+	exit := FootprintOf(nodeFiles(t, "hk-resi"))
+	need := int64(MemHeadroomKB + MemSmartDNSKB)
+	for _, tc := range []struct {
+		avail int64
+		sev   string
+	}{{need - 1, Blocking}, {need, Info}, {200 * 1024, Info}, {-1, Blocking}} {
+		r := fixture(t, "clean-debian13.txt", exit, nil, "")
+		r.MemAvailKB = tc.avail
+		ev := Evaluate(r, exit, remote("hk-resi"))
+		mb := find(ev, CodeMemoryBudget)
+		if len(mb) != 1 || mb[0].Severity != tc.sev {
+			t.Fatalf("avail %d: %+v", tc.avail, mb)
+		}
+		if tc.sev == Blocking && (!strings.Contains(mb[0].Message, "不会跳过") && tc.avail >= 0) {
+			t.Fatalf("explanation %+v", mb[0])
+		}
+	}
+	// The real hosts: ~200 MB available on 440 MB and on 940 MB total.
+	for _, total := range []int64{450560, 962560} {
+		r := fixture(t, "clean-debian13.txt", exit, nil, "")
+		r.MemTotalKB, r.MemAvailKB = total, 200*1024
+		if ev := Evaluate(r, exit, remote("hk-resi")); has(ev, Blocking, CodeMemoryBudget) {
+			t.Fatalf("total %d: %v", total, codes(ev, ""))
+		}
+	}
+	// A relay (no resolver) below its budget: warning only.
+	relay := FootprintOf(nodeFiles(t, "ali"))
+	r := fixture(t, "clean-debian13.txt", relay, nil, "")
+	r.MemAvailKB = 40 * 1024
+	if mb := find(Evaluate(r, relay, remote("ali")), CodeMemoryBudget); len(mb) != 1 || mb[0].Severity != Warning {
+		t.Fatalf("relay budget %+v", mb)
+	}
+}
+
+// A resolver config without a bind line or with a wildcard bind refuses
+// the install (SmartDNS binds [::]:53 when no bind is given).
+func TestResolverBindUnsafe(t *testing.T) {
+	files := nodeFiles(t, "hk-resi")
+	conf := files["/etc/smartdns/smartdns.conf"]
+	var kept []string
+	for _, l := range strings.Split(conf, "\n") {
+		if !strings.HasPrefix(l, "bind") {
+			kept = append(kept, l)
+		}
+	}
+	files["/etc/smartdns/smartdns.conf"] = strings.Join(kept, "\n")
+	fp := FootprintOf(files)
+	if ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, ""), fp, remote("hk-resi")); !has(ev, Blocking, CodeResolverBind) {
+		t.Fatalf("no bind: %v", codes(ev, ""))
+	}
+	files["/etc/smartdns/smartdns.conf"] = conf + "bind [::]:53\n"
+	fp = FootprintOf(files)
+	if ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, ""), fp, remote("hk-resi")); !has(ev, Blocking, CodeResolverBind) {
+		t.Fatalf("wildcard bind: %v", codes(ev, ""))
 	}
 }
 
@@ -395,17 +644,18 @@ func TestPort53(t *testing.T) {
 }
 
 // A relay that is empty with forwarding disabled: the install turns it on
-// (planned change, info), wstunnel must be provided first.
+// (planned change, info) and the panel delivers the pinned wstunnel for
+// the host's architecture (no manual install, nothing downloaded there).
 func TestEmptyRelay(t *testing.T) {
 	relay := FootprintOf(nodeFiles(t, "ali"))
 	ev := Evaluate(fixture(t, "clean-debian13.txt", relay, nil, ""), relay, remote("ali"))
 	checkShape(t, ev)
-	if strings.Join(codes(ev, Blocking), ",") != CodeWstunnelMissing || !has(ev, Info, CodeForwardEnable) {
+	if ev.Blocking || has(ev, "", CodeWstunnelMissing) || !has(ev, Info, CodeForwardEnable) || !has(ev, Info, CodeArtifact) {
 		t.Fatalf("empty relay %v", codes(ev, ""))
 	}
-	wm := find(ev, CodeWstunnelMissing)[0]
-	if !strings.Contains(wm.Action, "linux_amd64") {
-		t.Fatalf("arch hint %+v", wm)
+	pin, _ := artifacts.PinFor("wstunnel", "x86_64")
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Name != "wstunnel" || ev.Binaries[0].Action != "install" || !ev.Binaries[0].Transfer || ev.Binaries[0].SHA256 != pin.SHA256 {
+		t.Fatalf("wstunnel plan %+v", ev.Binaries)
 	}
 	sysctl := false
 	for _, c := range ev.Changes {
@@ -447,11 +697,10 @@ func TestPrivilegesAndPlatform(t *testing.T) {
 		{"systemd yes", "systemd no", CodeNoSystemd},
 		{"os-version \"13\"", "os-version \"11\"", CodeOSUnsupported},
 		{"cmd apt-get yes", "cmd apt-get no", CodeNoApt},
-		{"candidate smartdns 46.1+dfsg-1", "", CodeSmartDNSMissing},
 	} {
 		raw, _ := os.ReadFile("testdata/clean-debian13.txt")
 		var b strings.Builder
-		for _, p := range fp.Files {
+		for _, p := range fp.PreflightPaths() {
 			b.WriteString("path " + p + " absent\n")
 		}
 		text := strings.Replace(strings.Replace(string(raw), "@PATHS@\n", b.String(), 1), tc.from+"\n", tc.to+"\n", 1)
@@ -499,7 +748,7 @@ func TestOwnership(t *testing.T) {
 		t.Fatalf("modified %v", codes(ev, ""))
 	}
 	// Ours, but another node of this panel / another panel.
-	for _, ctx := range []Context{{NodeID: "hk-resi-2", Deployment: "dep-test"}, {NodeID: "hk-resi", Deployment: "dep-other"}} {
+	for _, ctx := range []Context{{Artifacts: testArts, NodeID: "hk-resi-2", Deployment: "dep-test"}, {Artifacts: testArts, NodeID: "hk-resi", Deployment: "dep-other"}} {
 		ev = Evaluate(fixture(t, "clean-debian13.txt", fp, present, man.String()+running), fp, ctx)
 		if ev.Ownership != OwnOther || !has(ev, Blocking, CodeManagedByOther) || !has(ev, Blocking, CodeInterfaceExists) || !has(ev, Blocking, CodeNFTTableExists) {
 			t.Fatalf("other %+v: %s %v", ctx, ev.Ownership, codes(ev, ""))
@@ -547,7 +796,7 @@ func TestOwnership(t *testing.T) {
 func TestGatewayMode(t *testing.T) {
 	files := nodeFiles(t, "gw")
 	fp := FootprintOf(files)
-	ev := Evaluate(fixture(t, "docker-forward-drop.txt", fp, nil, ""), fp, Context{NodeID: "gw", Gateway: true})
+	ev := Evaluate(fixture(t, "docker-forward-drop.txt", fp, nil, ""), fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true})
 	checkShape(t, ev)
 	if !has(ev, Blocking, CodeForwardDrop) || ev.Ownership != OwnNone {
 		t.Fatalf("gateway %s %v", ev.Ownership, codes(ev, ""))
@@ -559,13 +808,13 @@ func TestGatewayMode(t *testing.T) {
 	}
 	marked := map[string]string{"/etc/wireguard/m02.conf": "file 400 yes -"}
 	r := fixture(t, "clean-debian13.txt", fp, marked, "rule4 100:	from all fwmark 0x101 lookup 51820\n")
-	ev = Evaluate(r, fp, Context{NodeID: "gw", Gateway: true})
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true})
 	if !has(ev, Blocking, CodeFwmarkInUse) || has(ev, "", CodeLegacyInstall) {
 		t.Fatalf("gateway fwmark/legacy %v", codes(ev, ""))
 	}
 	owned := &Owned{Files: map[string]string{"/etc/wireguard/m02.conf": ""}, Interfaces: []string{"m02"}, NFTTables: []string{"inet meridian"}}
 	r = fixture(t, "clean-debian13.txt", fp, marked, "link m02\nnft table inet meridian {\n")
-	ev = Evaluate(r, fp, Context{NodeID: "gw", Gateway: true, Owned: owned})
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
 	if ev.Ownership != OwnSame || has(ev, "", CodeInterfaceExists) || has(ev, "", CodeNFTTableExists) {
 		t.Fatalf("gateway owned %s %v", ev.Ownership, codes(ev, ""))
 	}
@@ -574,12 +823,12 @@ func TestGatewayMode(t *testing.T) {
 	owned.Tables = []int{100, 102, 150}
 	ours := "rule4 17000:\tfrom all fwmark 0x4d72 lookup main\nrule4 17200:\tfrom all fwmark 0x101 lookup 102\nrule4 17600:\tfrom all fwmark 0x101 unreachable\n"
 	r = fixture(t, "clean-debian13.txt", fp, marked, "link m02\nnft table inet meridian {\n"+ours)
-	ev = Evaluate(r, fp, Context{NodeID: "gw", Gateway: true, Owned: owned})
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
 	if has(ev, "", CodeFwmarkInUse) || has(ev, "", CodeRulePriority) {
 		t.Fatalf("own rules flagged: %v", codes(ev, ""))
 	}
 	r = fixture(t, "clean-debian13.txt", fp, marked, "link m02\nnft table inet meridian {\n"+ours+"rule4 900:\tfrom all fwmark 0x101 lookup 77\n")
-	ev = Evaluate(r, fp, Context{NodeID: "gw", Gateway: true, Owned: owned})
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
 	if !has(ev, Blocking, CodeFwmarkInUse) {
 		t.Fatalf("foreign rule with our mark not flagged: %v", codes(ev, ""))
 	}
@@ -860,7 +1109,7 @@ func TestGatewayUpdateOfOwnInstallIsNotBlocked(t *testing.T) {
 	if !containsAddr(fp.LoAddrs, netip.MustParseAddr("fd66:0:0:ff::a")) {
 		t.Fatalf("lo addresses %v", fp.LoAddrs)
 	}
-	ctx := Context{NodeID: "gw", Gateway: true, Owned: gatewayOwned(fp)}
+	ctx := Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: gatewayOwned(fp)}
 	r := fixture(t, "gateway-installed.txt", fp, allPresent(fp), "")
 	ev := Evaluate(r, fp, ctx)
 	checkShape(t, ev)
@@ -905,7 +1154,7 @@ func TestGatewayUpdateOfOwnInstallIsNotBlocked(t *testing.T) {
 	}
 	// The same host state without a manifest (a first install) is blocked:
 	// nothing is ours without evidence.
-	ev = Evaluate(fixture(t, "gateway-installed.txt", fp, nil, ""), fp, Context{NodeID: "gw", Gateway: true})
+	ev = Evaluate(fixture(t, "gateway-installed.txt", fp, nil, ""), fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true})
 	for _, c := range []string{CodePortInUse, CodeInterfaceExists, CodeNFTTableExists, CodeRouteOverlap} {
 		if !has(ev, Blocking, c) {
 			t.Fatalf("first install: missing %s: %v", c, codes(ev, ""))
@@ -931,7 +1180,7 @@ func mustRead(t *testing.T, p string) []byte {
 func parseWithPaths(t *testing.T, raw string, fp Footprint, paths map[string]string) Report {
 	t.Helper()
 	var b strings.Builder
-	for _, p := range fp.Files {
+	for _, p := range fp.PreflightPaths() {
 		if v, ok := paths[p]; ok {
 			b.WriteString("path " + p + " " + v + "\n")
 		} else {
@@ -1045,7 +1294,7 @@ func TestRemoteUpdateOfOwnInstallIsNotBlocked(t *testing.T) {
 			}
 		}
 		// Another node's or another panel's install: everything blocks.
-		ev = Evaluate(r, fp, Context{NodeID: node, Deployment: "dep-other"})
+		ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: node, Deployment: "dep-other"})
 		if !has(ev, Blocking, CodeManagedByOther) || !has(ev, Blocking, CodeInterfaceExists) {
 			t.Fatalf("%s: other deployment %v", node, codes(ev, ""))
 		}
@@ -1123,7 +1372,7 @@ func TestPortReconfigurationEndToEnd(t *testing.T) {
 	topo := defaults.Example()
 	const node = "ali"
 	fp := FootprintOf(filesOf(t, topo, node))
-	ev := Evaluate(fixture(t, "existing-wireguard.txt", fp, nil, ""), fp, Context{NodeID: node, Deployment: "dep-test", Ports: portSources(topo, node)})
+	ev := Evaluate(fixture(t, "existing-wireguard.txt", fp, nil, ""), fp, Context{Artifacts: testArts, NodeID: node, Deployment: "dep-test", Ports: portSources(topo, node)})
 	pu := find(ev, CodePortInUse)
 	if len(pu) != 2 {
 		t.Fatalf("port findings %+v", pu)
@@ -1179,7 +1428,7 @@ func TestPortReconfigurationEndToEnd(t *testing.T) {
 			t.Fatalf("dialer %s does not use the new port", d)
 		}
 	}
-	ev = Evaluate(fixture(t, "existing-wireguard.txt", fp2, nil, ""), fp2, Context{NodeID: node, Deployment: "dep-test", Ports: portSources(topo, node)})
+	ev = Evaluate(fixture(t, "existing-wireguard.txt", fp2, nil, ""), fp2, Context{Artifacts: testArts, NodeID: node, Deployment: "dep-test", Ports: portSources(topo, node)})
 	if has(ev, "", CodePortInUse) {
 		t.Fatalf("still in use: %+v", find(ev, CodePortInUse))
 	}
@@ -1304,5 +1553,44 @@ func TestPortValidation(t *testing.T) {
 	}
 	if c := codesOf(wss); !hasTCP || !strings.Contains(c, "port_reserved:wss_listen_port") {
 		t.Fatalf("wss on 22 (ali has a WSS server: %v): %s", hasTCP, c)
+	}
+}
+
+// An exit this version installed: the panel-delivered resolver
+// (meridian-smartdns.service, process "meridian-smartd") holds its tunnel
+// addresses, the binary is recorded in the manifest with the pinned digest.
+// The update is not blocked, the binary is kept without a transfer, and
+// the memory budget does not count the resolver that already runs.
+func TestRemoteUpdateWithDeliveredResolver(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	pin, _ := artifacts.PinFor("smartdns", "x86_64")
+	state := strings.Replace(installedByUs(fp, "hk-resi", "dep-test"), "manifest-end\n",
+		"manifest file /usr/local/sbin/meridian-smartdns "+pin.SHA256+"\nmanifest artifact smartdns "+pin.Version+" /usr/local/sbin/meridian-smartdns "+pin.SHA256+"\nmanifest-end\n", 1)
+	state = strings.ReplaceAll(state, "cgroup:/system.slice/smartdns.service", "cgroup:/system.slice/meridian-smartdns.service")
+	state += "ss udp UNCONN 0 0 10.66.11.2:53 0.0.0.0:* users:((\"meridian-smartd\",pid=91,fd=7))\n"
+	present := allPresent(fp)
+	present["/usr/local/sbin/meridian-smartdns"] = fmt.Sprintf("file %d no %s", pin.Size, pin.SHA256)
+	r := fixture(t, "clean-debian13.txt", fp, present, state)
+	if r.Manifest == nil || len(r.Manifest.Artifacts) != 1 || r.Manifest.Artifacts[0].SHA256 != pin.SHA256 {
+		t.Fatalf("manifest artifacts %+v", r.Manifest)
+	}
+	r.MemAvailKB = MemHeadroomKB + 1024 // tight, but the resolver already runs
+	ev := Evaluate(r, fp, remote("hk-resi"))
+	checkShape(t, ev)
+	if ev.Blocking || ev.Ownership != OwnSame {
+		t.Fatalf("own install with the delivered resolver blocked: %v %+v", codes(ev, Blocking), find(ev, CodePortInUse))
+	}
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Action != "keep" || ev.Binaries[0].Transfer {
+		t.Fatalf("binary plan %+v", ev.Binaries)
+	}
+	if mb := find(ev, CodeMemoryBudget); len(mb) != 1 || mb[0].Severity != Info {
+		t.Fatalf("budget %+v", mb)
+	}
+	// The same binary recorded with an older digest: replaced (ours).
+	state2 := strings.Replace(state, "manifest file /usr/local/sbin/meridian-smartdns "+pin.SHA256, "manifest file /usr/local/sbin/meridian-smartdns "+strings.Repeat("e", 64), 1)
+	present["/usr/local/sbin/meridian-smartdns"] = "file 100 no " + strings.Repeat("e", 64)
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, present, state2), fp, remote("hk-resi"))
+	if ev.Blocking || ev.Binaries[0].Action != "replace" || !ev.Binaries[0].Transfer {
+		t.Fatalf("older own binary: %v %+v", codes(ev, Blocking), ev.Binaries)
 	}
 }

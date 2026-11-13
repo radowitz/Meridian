@@ -205,6 +205,13 @@ w_load_manifest() {
       prio) w_prio "$a" || bad="$bad prio:$a" ;;
       route) if w_dst "$a"; then W_DSTS+=("$a"); else bad="$bad route:$a"; fi ;;
       pkg) if w_pkg "$a"; then W_PKGS+=("$a"); else bad="$bad pkg:$a"; fi ;;
+      # A panel-delivered binary: also listed as a "file" line (removed
+      # there, with the same hash check); here only validated.
+      artifact) case "$a $rest" in
+          "wstunnel /usr/local/sbin/meridian-wstunnel "*|"smartdns /usr/local/sbin/meridian-smartdns "*)
+            if ! w_hash "${rest##* }" || ! [[ $b =~ ^[0-9][0-9A-Za-z.+-]{0,40}$ ]]; then bad="$bad artifact:$a"; fi ;;
+          *) bad="$bad artifact:$a" ;;
+        esac ;;
       *) bad="$bad $kind" ;;
     esac
   done < "$M_MANIFEST"

@@ -34,6 +34,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/preflight"
@@ -72,6 +73,11 @@ type Error struct {
 	// RetryAfter (seconds) is set with CodeRateLimited: how long the panel
 	// will not connect to the endpoint again.
 	RetryAfter int
+	// Offered (auth_failed / auth_method_unavailable) are the login methods
+	// the server offered, as far as the handshake learned them ("password",
+	// "publickey", "keyboard-interactive"). The panel only suggests a key
+	// login when "publickey" is among them.
+	Offered []string
 }
 
 func (e *Error) Error() string { return e.Msg }
@@ -87,6 +93,15 @@ func RetryAfterOf(err error) int {
 		return e.RetryAfter
 	}
 	return 0
+}
+
+// OfferedOf returns the Offered methods of an *Error (or nil).
+func OfferedOf(err error) []string {
+	var e *Error
+	if errors.As(err, &e) {
+		return append([]string(nil), e.Offered...)
+	}
+	return nil
 }
 
 // CodeOf returns the code of an *Error (or "").
@@ -538,9 +553,17 @@ func (c *Connector) handshake(ctx context.Context, r resolved) (*session, error)
 			used, others := tried, append([]string(nil), offered...)
 			authMu.Unlock()
 			if !used {
-				return nil, errf(CodeAuthMethodUnavailable, "%s", methodUnavailableMsg(sv.Name, s.method, others))
+				e := errf(CodeAuthMethodUnavailable, "%s", methodUnavailableMsg(sv.Name, s.method, others))
+				e.Offered = others
+				return nil, e
 			}
-			return nil, errf(CodeAuthFailed, "%s 拒绝了 %s 的%s登录（服务器接受%s登录，但这份凭据没有通过）", sv.Name, sv.User, methodName(s.method), methodName(s.method))
+			own := "publickey"
+			if s.method == AuthPassword {
+				own = "password"
+			}
+			e := errf(CodeAuthFailed, "%s 拒绝了 %s 的%s登录（服务器接受%s登录，但这份凭据没有通过）", sv.Name, sv.User, methodName(s.method), methodName(s.method))
+			e.Offered = append([]string{own}, others...)
+			return nil, e
 		case isTimeout(err):
 			return nil, errf(CodeTimeout, "%s 的 SSH 握手超时", sv.Name)
 		default:
@@ -714,7 +737,7 @@ func (c *Connector) Test(ctx context.Context, serverID string) (model.Connection
 		case CodeNotFound, CodeUntrusted, CodeNoCredential:
 			return ct, err
 		}
-		ct.Code, ct.Error, ct.RetryAfter = CodeOf(err), err.Error(), RetryAfterOf(err)
+		ct.Code, ct.Error, ct.RetryAfter, ct.Offered = CodeOf(err), err.Error(), RetryAfterOf(err), OfferedOf(err)
 		if ct.Code == "" {
 			ct.Code = CodeCommandFailed
 		}
@@ -824,4 +847,58 @@ func (c *Connector) RunPreflight(ctx context.Context, t Target, args []string) (
 		command += " -- " + strings.Join(args, " ")
 	}
 	return cc.run(ctx, t, command, strings.NewReader(preflight.Script()))
+}
+
+// StageTimeout bounds one binary transfer (connect, login, send, verify).
+const StageTimeout = 5 * time.Minute
+
+// CodeStageFailed: a panel-delivered binary could not be staged on the
+// host (refused arguments, short write, digest mismatch on the host).
+const CodeStageFailed = "artifact_stage_failed"
+
+// StageCommand is the fixed receive command for a panel-delivered binary:
+// it reads exactly size bytes from stdin into artifacts.StagePath(name)+".part"
+// (mode 0600, directory 0700), checks the size and the SHA-256 on the host
+// and only then renames it to artifacts.StagePath(name); anything else
+// removes the partial file. Only name (wstunnel | smartdns), sum (64 hex)
+// and size (1 … artifacts.MaxSize) vary, all validated before the command
+// is built; nothing else of a request reaches it. It installs nothing:
+// the provision script verifies the staged file again and installs it
+// inside its transaction.
+func StageCommand(name, sum string, size int64) (string, error) {
+	if !artifacts.ValidName(name) || !artifacts.ValidSHA256(sum) || size <= 0 || size > artifacts.MaxSize {
+		return "", errf(CodeBadArgs, "二进制传输参数不合法")
+	}
+	f := artifacts.StagePath(name)
+	return fmt.Sprintf(`umask 077; d='%s'; f='%s'; mkdir -p "$d" && chmod 700 "$d" && head -c %d > "$f.part" && [ "$(wc -c < "$f.part" | tr -d ' ')" = %d ] && [ "$(sha256sum "$f.part" | cut -c1-64)" = %s ] && mv -f "$f.part" "$f" && echo 'MERIDIAN_STAGED %s' || { rm -f "$f.part"; echo MERIDIAN_STAGE_FAILED; exit 1; }`,
+		artifacts.StageDir, f, size, size, sum, sum), nil
+}
+
+// Stage sends a panel-delivered binary to the target over the pooled,
+// authenticated connection (the same login as the preflight re-run and the
+// provision script of the flow) with StageCommand. data is checked against
+// sum before anything is sent; the host checks it again.
+func (c *Connector) Stage(ctx context.Context, t Target, name, sum string, data []byte) (Result, error) {
+	cmd, err := StageCommand(name, sum, int64(len(data)))
+	if err != nil {
+		return Result{ServerID: t.ServerID}, err
+	}
+	if artifacts.SHA256Of(data) != sum {
+		return Result{ServerID: t.ServerID}, errf(CodeStageFailed, "%s 的内容与固定摘要不一致，没有发送", name)
+	}
+	ctx, cancel := context.WithTimeout(ctx, StageTimeout)
+	defer cancel()
+	cc := *c
+	cc.MaxOutput = 4 << 10
+	res, err := cc.run(ctx, t, cmd, bytes.NewReader(data))
+	if err != nil {
+		if CodeOf(err) == CodeCommandFailed {
+			return res, errf(CodeStageFailed, "主机上没能暂存 %s（大小或 SHA-256 校验没有通过，或磁盘已满）：%s", name, strings.TrimSpace(res.Output))
+		}
+		return res, err
+	}
+	if !strings.Contains(res.Output, "MERIDIAN_STAGED "+sum) {
+		return res, errf(CodeStageFailed, "主机没有确认暂存 %s", name)
+	}
+	return res, nil
 }

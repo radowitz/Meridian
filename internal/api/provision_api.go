@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -74,7 +75,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		}
 		// Preview: built from the redacted files, so it carries the
 		// placeholder and refuses to run if copied to a host.
-		opts := provision.Options{NodeID: node.ID, Deployment: dep, ServerID: srv, Bundle: preflight.BundleDigest(files), Run: "preview", Expect: "none"}
+		opts := provision.Options{NodeID: node.ID, Deployment: dep, ServerID: srv, Bundle: preflight.BundleDigest(files), Run: "preview", Expect: "none", Artifacts: s.previewArtifacts(node.ID, files)}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"dry_run":   true,
 			"node_id":   node.ID,
@@ -182,8 +183,29 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
+	// Panel-delivered binaries: transferred (when the host does not have
+	// the pinned digest yet) over the same pooled login, verified on the
+	// host by the script before anything is activated.
+	arts, err := s.stageArtifacts(r.Context(), cs, ident, fresh)
+	if err != nil {
+		var ce *credentials.Error
+		switch {
+		case errors.As(err, &ce):
+			writeJSON(w, http.StatusConflict, map[string]any{"error": ce.Msg, "code": ce.Code, "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
+		case sshexec.CodeOf(err) == sshexec.CodeRateLimited:
+			writeJSON(w, rateLimitHeaders(w, err), map[string]any{"error": err.Error(), "code": sshexec.CodeRateLimited,
+				"retry_after": sshexec.RetryAfterOf(err), "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
+		default:
+			code := sshexec.CodeOf(err)
+			if code == "" {
+				code = sshexec.CodeStageFailed
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "传输面板下发的二进制失败，没有执行装机：" + err.Error(), "code": code, "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
+		}
+		return
+	}
 	run := "run-" + randHex(6)
-	opts := provision.Options{NodeID: node.ID, Deployment: fresh.Deployment, ServerID: ident.ServerID, Bundle: bundle, Run: run, Expect: expect}
+	opts := provision.Options{NodeID: node.ID, Deployment: fresh.Deployment, ServerID: ident.ServerID, Bundle: bundle, Run: run, Expect: expect, Artifacts: arts}
 	if err := provision.CheckOptions(opts); err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err)
 		return
@@ -279,7 +301,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	base["code"] = code
 	base["leftovers"] = so.Leftovers
 	base["kept"] = so.Kept
-	if h := s.loginHelpFor(cs, node.ServerID, code); h != nil {
+	if h := s.loginHelpFor(cs, node.ServerID, code, sshexec.OfferedOf(err)); h != nil {
 		base["login_help"] = h
 	}
 	writeJSON(w, status, base)

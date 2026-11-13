@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/preflight"
 	"github.com/radowitz/meridian/internal/sshexec"
@@ -65,7 +66,16 @@ func cleanPreflight(cmd, stdin, extra string) (string, bool) {
 	b.WriteString(cleanReport)
 	if _, args, ok := strings.Cut(cmd, " -- "); ok {
 		for _, a := range strings.Fields(args) {
-			b.WriteString("path " + strings.Trim(a, "'") + " absent\n")
+			p := strings.Trim(a, "'")
+			// The panel-delivered binaries are already there with the
+			// pinned digest (no transfer); TestProvisionStagesBinaries
+			// covers the transfer.
+			if name, ok := strings.CutPrefix(p, "/usr/local/sbin/meridian-"); ok && preflight.IsArtifactPath(p) {
+				data := fakeArtifact(name, "x86_64")
+				b.WriteString(fmt.Sprintf("path %s file %d no %s\n", p, len(data), artifacts.SHA256Of(data)))
+				continue
+			}
+			b.WriteString("path " + p + " absent\n")
 		}
 	}
 	b.WriteString(extra)
@@ -392,14 +402,75 @@ func TestLoginHelp(t *testing.T) {
 	if strings.Contains(rr.Body.String(), "PRIVATE KEY") || strings.Contains(rr.Body.String(), f.pw) {
 		t.Fatal("secret in login help")
 	}
-	// Public key login not offered at all.
+	if !body.LoginHelp.KeyOffered || !containsString(body.LoginHelp.Offered, "publickey") {
+		t.Fatalf("key rejected: publickey must be reported as offered: %+v", body.LoginHelp)
+	}
+	// Public key login not offered at all (a password-only server such as
+	// the IX): no public key is shown, the way forward is its password.
 	f.srv.OfferOnly("password")
+	body.Code, body.LoginHelp = "", nil
 	rr = do(s, http.MethodPost, "/api/provision/preflight", mustJSON(map[string]any{"node_id": "tw"}))
 	_ = json.Unmarshal(rr.Body.Bytes(), &body)
-	if body.Code != sshexec.CodeAuthMethodUnavailable || body.LoginHelp == nil || body.LoginHelp.PublicKey != kc.Credential.PublicKey ||
-		!strings.Contains(strings.Join(body.LoginHelp.Steps, " "), "PubkeyAuthentication") {
+	steps := ""
+	if body.LoginHelp != nil {
+		steps = strings.Join(body.LoginHelp.Steps, " ")
+	}
+	if body.Code != sshexec.CodeAuthMethodUnavailable || body.LoginHelp == nil || body.LoginHelp.PublicKey != "" || len(body.LoginHelp.KeyCredentials) != 0 ||
+		body.LoginHelp.KeyOffered || !containsString(body.LoginHelp.Offered, "password") || !strings.Contains(steps, "密码凭据") || !strings.Contains(steps, "PubkeyAuthentication") {
 		t.Fatalf("key not offered: %d %s", rr.Code, rr.Body.String())
 	}
+	if strings.Contains(rr.Body.String(), kc.Credential.PublicKey) {
+		t.Fatal("a public key must not be suggested to a server that does not offer publickey")
+	}
+	rr = do(s, http.MethodPost, "/api/servers/"+f.id+"/test", nil)
+	var tb struct {
+		Test struct {
+			Code    string
+			Offered []string `json:"offered_methods"`
+		}
+		LoginHelp *loginHelp `json:"login_help"`
+	}
+	_ = json.Unmarshal(rr.Body.Bytes(), &tb)
+	if tb.Test.Code != sshexec.CodeAuthMethodUnavailable || !containsString(tb.Test.Offered, "password") || tb.LoginHelp == nil || tb.LoginHelp.PublicKey != "" || strings.Contains(rr.Body.String(), kc.Credential.PublicKey) {
+		t.Fatalf("connection test on a password-only server: %s", rr.Body.String())
+	}
+
+	// Back to the password credential on the password-only server: it
+	// works, nothing suggests a key.
+	if rr := do(s, http.MethodPatch, "/api/servers/"+f.id, mustJSON(map[string]any{"auth": "password", "credential_id": f.credID})); rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	rr = do(s, http.MethodPost, "/api/servers/"+f.id+"/test", nil)
+	if !strings.Contains(rr.Body.String(), `"ok":true`) || strings.Contains(rr.Body.String(), `"login_help"`) {
+		t.Fatalf("password-only server with its password: %s", rr.Body.String())
+	}
+	// A wrong password on the password-only server: update the password,
+	// no key advice.
+	f.srv.SetPassword("another-" + f.pw)
+	tb.LoginHelp = nil
+	rr = do(s, http.MethodPost, "/api/servers/"+f.id+"/test", nil)
+	_ = json.Unmarshal(rr.Body.Bytes(), &tb)
+	if tb.LoginHelp == nil || tb.LoginHelp.Code != sshexec.CodeAuthFailed || len(tb.LoginHelp.KeyCredentials) != 0 || tb.LoginHelp.KeyOffered || strings.Contains(rr.Body.String(), kc.Credential.PublicKey) {
+		t.Fatalf("wrong password, password-only: %s", rr.Body.String())
+	}
+	// A wrong password on a server that also offers publickey: the key
+	// is offered as an alternative.
+	f.srv.OfferOnly()
+	tb.LoginHelp = nil
+	rr = do(s, http.MethodPost, "/api/servers/"+f.id+"/test", nil)
+	_ = json.Unmarshal(rr.Body.Bytes(), &tb)
+	if tb.LoginHelp == nil || tb.LoginHelp.Code != sshexec.CodeAuthFailed || !tb.LoginHelp.KeyOffered || len(tb.LoginHelp.KeyCredentials) != 1 || tb.LoginHelp.KeyCredentials[0].PublicKey != kc.Credential.PublicKey {
+		t.Fatalf("wrong password, publickey offered: %s", rr.Body.String())
+	}
+}
+
+func containsString(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // ------------------------------------------------------------ gateway ---

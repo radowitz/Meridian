@@ -72,6 +72,13 @@ type Applier struct {
 	// Activate is a test shim: when Host is nil, a Runtime whose activate
 	// calls this function (health and removal succeed).
 	Activate func() error
+	// Artifacts are the panel-delivered binaries (artifacts.Bundle) and Arch
+	// the host's architecture (uname -m). With Artifacts set, an install
+	// whose units run a binary installs the verified copy as part of the
+	// transaction and refuses before writing anything when it is not
+	// available. Nil: binaries are not managed by this Applier.
+	Artifacts ArtifactSource
+	Arch      string
 	// Forwarding reports whether IPv4 and IPv6 forwarding are both on (used
 	// when adopting a legacy install). Nil: /proc on the real root, "off"
 	// for a test HostRoot.
@@ -257,6 +264,11 @@ func (a Applier) Apply(b *compile.Bundle, dryRun bool) (Result, error) {
 	to, err := DeriveManifest(a.localID(), local, version, canon)
 	if err != nil {
 		return Result{}, err
+	}
+	if a.Install {
+		if to.Artifacts, err = a.planArtifacts(local); err != nil {
+			return Result{}, err
+		}
 	}
 	if a.Install && len(to.Sidecars) > 0 {
 		return Result{}, errors.New("本机 host agent 不管理 Mesh sidecar；网关不应运行 sidecar")

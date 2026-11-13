@@ -44,6 +44,7 @@ import type {
   ProvisionResult,
   PreflightRecord,
   LoginHelp,
+  ArtifactView,
   Ref,
   RegionGroupInput,
   RegionGroupPatch,
@@ -241,6 +242,8 @@ export const apply = (dryRun: boolean, install: boolean, preflightId?: string) =
 
 /** Read-only install pre-check of the gateway through meridian-host. */
 export const hostPreflight = () => request<{ preflight: PreflightRecord }>("POST", "/api/host/preflight", {});
+/** The binaries the panel delivers (pinned version, digest, verified copy or not). */
+export const listArtifacts = () => request<{ artifacts: ArtifactView[] }>("GET", "/api/artifacts");
 
 /**
  * "runtime" restores the host and the data directory in one transaction;

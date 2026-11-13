@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/radowitz/meridian/internal/api"
+	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/store"
@@ -73,6 +74,19 @@ func main() {
 		// The gateway install pre-check is the agent's read-only
 		// /v1/preflight (paths validated, fixed programs).
 		HostPreflight: hostClient,
+		// Panel-delivered binaries (wstunnel, SmartDNS): verified against the
+		// pins compiled into this binary (internal/artifacts) at startup and
+		// again before every transfer. The image ships them read-only at
+		// artifacts.DefaultDir; MERIDIAN_ARTIFACTS_DIR names another
+		// directory (air-gapped hosts) whose files must match the same pins.
+		Artifacts: artifacts.Load(env("MERIDIAN_ARTIFACTS_DIR", artifacts.DefaultDir)),
+	}
+	for _, a := range srv.Artifacts.Statuses() {
+		if a.Available {
+			log.Printf("artifact %s %s %s ok (sha256 %s)", a.Name, a.Version, a.Arch, a.SHA256[:12])
+		} else {
+			log.Printf("artifact %s %s %s unavailable: %s (installs that need it are refused)", a.Name, a.Version, a.Arch, a.Error)
+		}
 	}
 	// A host transaction interrupted by a restart is compensated (or its
 	// commit finished) before the panel serves requests. A failure is logged

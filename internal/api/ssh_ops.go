@@ -242,7 +242,7 @@ func (s *Server) testServer(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"test": sv.LastTest, "server": s.serverView(cs, sv, t)}
 	// A login the server does not accept comes with what to do about it,
 	// including the credential's public key (never anything secret).
-	if h := s.loginHelpFor(cs, id, ct.Code); h != nil && !ct.OK {
+	if h := s.loginHelpFor(cs, id, ct.Code, ct.Offered); h != nil && !ct.OK {
 		out["login_help"] = h
 	}
 	writeJSON(w, http.StatusOK, out)

@@ -360,11 +360,14 @@ type ConnectionTest struct {
 	Error string `json:"error,omitempty"`
 	// RetryAfter (seconds, ssh_rate_limited only): the panel does not
 	// connect to this server again before At + RetryAfter.
-	RetryAfter int    `json:"retry_after,omitempty"`
-	OS         string `json:"os,omitempty"`
-	Kernel     string `json:"kernel,omitempty"`
-	Arch       string `json:"arch,omitempty"`
-	DurationMS int64  `json:"duration_ms"`
+	RetryAfter int `json:"retry_after,omitempty"`
+	// Offered are the login methods the server offered when the login
+	// failed (auth_failed / auth_method_unavailable), as far as known.
+	Offered    []string `json:"offered_methods,omitempty"`
+	OS         string   `json:"os,omitempty"`
+	Kernel     string   `json:"kernel,omitempty"`
+	Arch       string   `json:"arch,omitempty"`
+	DurationMS int64    `json:"duration_ms"`
 }
 
 func (t Topology) NodeByID(id string) (Node, bool) {

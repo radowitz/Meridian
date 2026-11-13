@@ -91,7 +91,8 @@ func Script() string { return script }
 
 // The script is read-only. It runs only commands that print state (id,
 // uname, ip … show, ss -l, nft list, iptables -S, systemctl is-*/show,
-// dpkg-query, apt-cache policy, sha256sum, head, grep) with stdin from
+// dpkg-query, apt-cache policy, nft/wg/wstunnel --version, sha256sum,
+// head, grep) with stdin from
 // /dev/null and a 15 s bound each, writes nothing, never prints file
 // contents (a WireGuard config holds a private key: only "does the head
 // mention Meridian" and a SHA-256 are reported), and cuts its whole output
@@ -177,6 +178,17 @@ meridian_preflight() {
     echo "proc $p $(yn q pgrep -x "$p")"
   done
   if have wstunnel; then echo "version wstunnel $(q wstunnel --version | first)"; fi
+  if have nft; then echo "version nft $(q nft --version | first)"; fi
+  if have wg; then echo "version wg $(q wg --version | first)"; fi
+  # Distribution packages a provision may need: present version and the
+  # apt candidate ("-" when none). Read-only (dpkg-query, apt-cache policy).
+  for p in wireguard-tools nftables iproute2 smartdns; do
+    i=-; c=-
+    if have dpkg-query; then i=$(q dpkg-query -W -f='${Status} ${Version}\n' "$p" | awk '$3=="installed" {print $4}' | first); fi
+    if have apt-cache; then c=$(q apt-cache policy "$p" | sed -n 's/^ *Candidate: *//p' | first); fi
+    [ "$c" = '(none)' ] && c=-
+    echo "pkg $p ${i:--} ${c:--}"
+  done
   if have dpkg-query; then
     v=$(q dpkg-query -W -f='${Version}' smartdns)
     [ -n "$v" ] && echo "version smartdns $v"
@@ -200,7 +212,11 @@ meridian_preflight() {
       marker=no
       if head -n 12 -- "$p" 2>/dev/null | grep -qi meridian; then marker=yes; fi
       sum=-
-      if [ -n "$size" ] && [ "$size" -le 4194304 ]; then sum=$(sha256sum -- "$p" 2>/dev/null | cut -c1-64); fi
+      # Panel-delivered binaries are hashed up to 64 MiB (the delivery
+      # bound), every other file up to 4 MiB.
+      lim=4194304
+      case "$p" in /usr/local/sbin/meridian-wstunnel|/usr/local/sbin/meridian-smartdns) lim=67108864 ;; esac
+      if [ -n "$size" ] && [ "$size" -le "$lim" ]; then sum=$(sha256sum -- "$p" 2>/dev/null | cut -c1-64); fi
       echo "path $p file ${size:-0} $marker ${sum:--}"
     elif [ -d "$p" ]; then
       echo "path $p dir 0 no -"
