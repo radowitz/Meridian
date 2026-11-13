@@ -9,7 +9,8 @@ import { Alert, Collapse, Space, Tag, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { ApiError } from "./api";
 import type { LoginHelp, PreflightChange, PreflightFinding, PreflightRecord } from "./types";
-import { CopyButton, Facts, Mono, TimeText } from "./ui";
+import { href } from "./state";
+import { CopyButton, Facts, Link, Mono, TimeText } from "./ui";
 
 const SEVERITY: Record<PreflightFinding["severity"], { title: string; type: "error" | "warning" | "info"; icon: ReactNode }> = {
   blocking: { title: "阻断：必须先处理", type: "error", icon: <CloseCircleFilled /> },
@@ -131,6 +132,12 @@ export function PreflightReport({ rec }: { rec: PreflightRecord }) {
                         <div>
                           <Typography.Text strong>处理办法：</Typography.Text>
                           {f.action}
+                        </div>
+                      ) : null}
+                      {f.fix ? (
+                        <div data-testid="preflight-fix">
+                          <Link to={href("topology", f.fix.id)}>去拓扑修改：{f.fix.label}</Link>
+                          <Typography.Text type="secondary">（保存后节点配置和对端的 Endpoint 一起更新，再重新预检）</Typography.Text>
                         </div>
                       ) : null}
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>

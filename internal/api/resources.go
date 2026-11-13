@@ -403,6 +403,8 @@ func (s *Server) patchServer(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	s.resMu.Unlock()
+	// Any edit ends the server's pooled SSH connections.
+	s.sshPool().InvalidateServer(r.PathValue("id"))
 	if err != nil {
 		writeResErr(w, err)
 		return
@@ -434,6 +436,7 @@ func (s *Server) deleteServer(w http.ResponseWriter, r *http.Request) {
 		}
 		return cs.DeleteServer(id)
 	})
+	s.sshPool().InvalidateServer(id)
 	if err != nil {
 		writeResErr(w, err)
 		return
@@ -454,6 +457,7 @@ func (s *Server) trustHostKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sv, err := cs.TrustHostKey(r.PathValue("id"), body.Fingerprint)
+	s.sshPool().InvalidateServer(r.PathValue("id"))
 	if err != nil {
 		writeResErr(w, err)
 		return
@@ -467,6 +471,7 @@ func (s *Server) forgetHostKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sv, err := cs.ForgetHostKey(r.PathValue("id"))
+	s.sshPool().InvalidateServer(r.PathValue("id"))
 	if err != nil {
 		writeResErr(w, err)
 		return
@@ -558,6 +563,7 @@ func (s *Server) rotateCred(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, err := cs.RotateSSHCredential(r.PathValue("id"), in)
+	s.sshPool().InvalidateCredential(r.PathValue("id"))
 	if err != nil {
 		writeResErr(w, err, in.Secrets()...)
 		return
@@ -584,6 +590,7 @@ func (s *Server) deleteCred(w http.ResponseWriter, r *http.Request) {
 		}
 		return cs.DeleteSSHCredential(id)
 	})
+	s.sshPool().InvalidateCredential(id)
 	if err != nil {
 		writeResErr(w, err)
 		return

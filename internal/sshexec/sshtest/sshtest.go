@@ -33,6 +33,16 @@ type Server struct {
 	commands     []string
 	stdins       []string
 	handler      func(cmd, stdin string) (string, uint32)
+	// refuse, when set, is written to every new connection before the SSH
+	// version line, and the connection is closed (OpenSSH's
+	// PerSourcePenalties answer: "Not allowed at this time").
+	refuse string
+	// accepted counts TCP connections; logins counts authenticated SSH
+	// connections.
+	accepted int
+	logins   int
+	conns    map[net.Conn]struct{}
+	stopped  bool
 
 	l     net.Listener
 	wg    sync.WaitGroup
@@ -67,13 +77,35 @@ func Start() (*Server, error) {
 	return s, nil
 }
 
-// Close stops the server (idempotent).
+// Close stops the server (idempotent). Open connections, including ones a
+// client keeps for reuse, are closed.
 func (s *Server) Close() {
 	s.close.Do(func() {
 		s.l.Close()
+		s.mu.Lock()
+		s.stopped = true
+		for c := range s.conns {
+			c.Close()
+		}
+		s.mu.Unlock()
 		s.wg.Wait()
 	})
 }
+
+// RefuseBeforeBanner makes the server answer every new connection with
+// line (plus CRLF) before any SSH version line and close it, like OpenSSH
+// with PerSourcePenalties answering "Not allowed at this time". An empty
+// line restores normal service.
+func (s *Server) RefuseBeforeBanner(line string) { s.mu.Lock(); s.refuse = line; s.mu.Unlock() }
+
+// Accepted is the number of TCP connections accepted so far.
+func (s *Server) Accepted() int { s.mu.Lock(); defer s.mu.Unlock(); return s.accepted }
+
+// Logins is the number of connections that completed authentication.
+func (s *Server) Logins() int { s.mu.Lock(); defer s.mu.Unlock(); return s.logins }
+
+// Open is the number of connections currently open.
+func (s *Server) Open() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.conns) }
 
 // SetHostKey replaces the host key (a "reinstalled" host).
 func (s *Server) SetHostKey(k ssh.Signer) { s.mu.Lock(); s.signer = k; s.mu.Unlock() }
@@ -191,11 +223,34 @@ func (s *Server) config() *ssh.ServerConfig {
 }
 
 func (s *Server) handle(c net.Conn) {
-	defer c.Close()
+	s.mu.Lock()
+	s.accepted++
+	if s.conns == nil {
+		s.conns = map[net.Conn]struct{}{}
+	}
+	s.conns[c] = struct{}{}
+	refuse, stopped := s.refuse, s.stopped
+	s.mu.Unlock()
+	if stopped {
+		c.Close()
+	}
+	defer func() {
+		s.mu.Lock()
+		delete(s.conns, c)
+		s.mu.Unlock()
+		c.Close()
+	}()
+	if refuse != "" {
+		_, _ = c.Write([]byte(refuse + "\r\n"))
+		return
+	}
 	conn, chans, reqs, err := ssh.NewServerConn(c, s.config())
 	if err != nil {
 		return
 	}
+	s.mu.Lock()
+	s.logins++
+	s.mu.Unlock()
 	defer conn.Close()
 	go ssh.DiscardRequests(reqs)
 	for nc := range chans {

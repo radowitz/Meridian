@@ -255,7 +255,9 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 - **执行**（`RunScript`、`Test`）：连接前要求服务器状态是 `trusted`（`mismatch` 返回 `host_key_mismatch`，其余返回 `host_key_untrusted`），要求选了凭据（`no_credential`）。握手时主机密钥回调再调一次 `ObserveHostKey`：指纹不同就记为 `mismatch`、保留原固定值并断开——这一步发生在认证之前，密码或私钥根本不会被读取。只请求固定指纹那种主机密钥算法，避免多密钥主机换出另一把。
 - **秘密只在认证回调里读取**：`ssh.PasswordCallback` / `KeyboardInteractive`（只回答不回显的提示）或 `ssh.PublicKeysCallback`（带口令的私钥在这里解密），都在主机密钥通过之后才调用 `ResolveSSHWith`，读的是凭据的当前一代，所以原地轮换后立即生效。
 - **脚本走标准输入**：`bash -s`，WireGuard 私钥、Mesh 节点令牌不出现在远端进程列表里。输出最多 1 MiB。输出和所有错误文本都用 `credentials.Scrub` 去掉这次用到的密码、私钥（含逐行）和口令，长度再短也替换。
-- 拨号 10 秒、握手 20 秒超时；执行超时由调用方的 context 决定（装机 15 分钟，Mesh 每个动作 10 分钟），超时会发 SIGKILL 并断开。错误码：`unreachable`、`timeout`、`auth_failed`（服务器尝试并拒绝了这份凭据）、`auth_method_unavailable`（服务器根本不提供这份凭据的登录方式，例如 `PasswordAuthentication no` 时的密码凭据；凭据没有被尝试，错误文字列出服务器提供的方式并说明改用密钥/密码或在服务器上开启对应方式。客户端在自己的方式之后附加只探测、不发送任何凭据的方式来得知服务器提供哪些）、`command_failed`、`not_ssh`、`host_key_untrusted`、`host_key_mismatch`、`host_key_not_pinned_by_deployment`、`target_changed`、`no_credential`、`not_found`。
+- 拨号 10 秒、握手 20 秒超时；执行超时由调用方的 context 决定（装机 15 分钟，Mesh 每个动作 10 分钟），超时会发 SIGKILL 并断开。错误码：`unreachable`、`timeout`、`auth_failed`（服务器尝试并拒绝了这份凭据）、`auth_method_unavailable`（服务器根本不提供这份凭据的登录方式，例如 `PasswordAuthentication no` 时的密码凭据；凭据没有被尝试，错误文字列出服务器提供的方式并说明改用密钥/密码或在服务器上开启对应方式。客户端在自己的方式之后附加只探测、不发送任何凭据的方式来得知服务器提供哪些）、`command_failed`、`not_ssh`、`host_key_untrusted`、`host_key_mismatch`、`host_key_not_pinned_by_deployment`、`target_changed`、`no_credential`、`not_found`、`ssh_rate_limited`（见下）。
+- **来源限速（`ssh_rate_limited`）**：OpenSSH 9.8 起默认开启的 `PerSourcePenalties` 会让一个来源地址在短时间内多次连接、或有连接没完成认证（只读取主机指纹、端口扫描）之后，被服务器在 SSH 版本行**之前**回一行 `Not allowed at this time` 并断开；经端口转发到达的服务器上，所有连接都来自转发器的同一个地址。`golang.org/x/crypto/ssh` 只会报 EOF，所以连接器把 TCP 连接包一层，只记录服务器在握手完成前发来的前 512 字节（版本行和明文的密钥交换初始化，不含任何凭据；握手成功后立即停止记录并丢弃），握手失败且没有看到 `SSH-` 版本行时，按其中的文字分类：是这一行就报 `ssh_rate_limited`（发现、测试、预检、装机、撤回、枢纽状态读取、Mesh 远端操作都一样），说明「服务器暂时拒绝这个来源，不是密码、密钥或指纹的问题，面板没有尝试登录」；别的文字就附在 `unreachable` / `not_ssh` 的说明后面（去掉控制字符，截到 200 字符）。这发生在密钥交换之前：没有看到主机密钥、固定指纹不受影响，也没有读取或发送凭据。之后面板对这个 `地址:端口` **冷却 60 秒**（`sshexec.Pool.Cooldown`）：期间所有会连接它的操作直接返回 `ssh_rate_limited` 和剩余秒数（`retry_after`，HTTP 503 + `Retry-After`；连接测试是 200、`test.retry_after`；枢纽读取是 `last_read.retry_after`；Mesh 是 `ssh_code` + `retry_after`），**不自动重试**。OpenSSH 的惩罚从 15 秒起累积到最长约 10 分钟，所以冷却只是下限；面板在冷却期间停用相关按钮并显示倒计时。
+- **连接复用（`sshexec.Pool`）**：面板持有一个连接池，同一个操作流程里的各步共用一次登录：一次装机请求里的预检重跑和装机脚本、撤回的「生成计划」和「执行」、Mesh 部署的预检 / 安装 / 健康检查 / 补偿、连接测试之后紧接着的预检。复用严格绑定到登录时的完整身份：服务器 ID、地址、端口、用户、已确认的指纹和密钥类型及其确认时间、凭据 ID 和凭据密文的「代」；每次复用前都从存储重新解析这组身份，任何不同（服务器被修改或删除、指纹被清除或重新确认、换了凭据或原地轮换了密码 / 私钥）都关闭空闲连接、重新登录。面板对服务器和凭据的每一次修改（`PATCH`/`DELETE` 服务器、确认 / 清除指纹、轮换 / 删除凭据）还会立即关闭相关的空闲连接。连接空闲超过 60 秒、存在超过 5 分钟、所在操作以任何错误结束、操作被取消、或复用前不回应 keepalive 时都会关闭，不会复用；同一时刻一个连接只借给一个操作。连接测试总是重新登录（它测的就是登录本身），然后把这条连接留给下一步。限速冷却也记在池里。密码登录照常支持：只接受密码登录的服务器用密码凭据照常登录和复用，面板不要求改用密钥。
 - **连接测试**：登录后只运行固定命令 `sshexec.TestCommand`（`uname -m`、`uname -r`、`/etc/os-release` 的 `PRETTY_NAME`），30 秒超时；结果（时间、成功与否、认证方式、系统、内核、架构、耗时、错误码与脱敏后的错误）记在服务器的 `last_test` 上。改地址、端口、用户、认证方式、凭据或原地轮换凭据都会清掉 `last_test`。
 
 服务器从「已添加」到「就绪」：建凭据 → 建服务器并选凭据 → `POST …/host-key/discover` → 用户核对指纹后 `POST …/host-key/trust`（提交同一个指纹）→ `POST …/test` 成功。视图里 `operable`（凭据 + 已确认指纹，装机和 Mesh 部署要求的条件）和 `ready`（再加上最近一次测试成功）。
@@ -337,7 +339,7 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 
 ## 装机前预检
 
-在面板第一次给远端节点装机、更新它，以及安装到网关之前，都要先看清**要做什么、会和什么冲突**；不能确认可以和主机上已有的服务安全共存时，面板拒绝执行并说明处理办法，而不是覆盖。预检本身**只读**。这一节描述的行为只在仓库里的自动化测试（进程内 SSH 服务器、假宿主代理、本机沙箱）里跑过，**还没有在任何真实主机上执行过**。
+在面板第一次给远端节点装机、更新它，以及安装到网关之前，都要先看清**要做什么、会和什么冲突**；不能确认可以和主机上已有的服务安全共存时，面板拒绝执行并说明处理办法，而不是覆盖。预检本身**只读**。预检（只读部分）在 2026-11-13 由主会话从面板对 11 台真实服务器和网关各执行过一次；装机、补偿和撤回**没有在任何真实主机上执行过**。之后对「什么算我们的」、端口来源和修改指引、`ssh_rate_limited` 与连接复用的改动只在仓库里的自动化测试（进程内 SSH 服务器、假宿主代理、本机沙箱）里跑过，没有在真实主机上执行过。
 
 ### 流程：脚本 → 报告 → 评估 → 关卡
 
@@ -363,8 +365,8 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 | `wstunnel_missing` | 阻断 | 节点有 wstunnel 单元但主机上没有 wstunnel（面板不下载二进制；提示按架构选 linux_amd64 / linux_arm64） |
 | `forward_policy_drop` | 阻断 | 节点要转发，而 iptables/ip6tables 的 FORWARD 策略是 DROP/REJECT，或别的 nft 表有 `hook forward` 且 `policy drop` 的链（通常是 Docker）。Meridian 自己的转发链 `policy accept` 救不回被别的表丢掉的包；面板**不会**替你改 Docker 或别的防火墙 |
 | `interface_exists` | 阻断 | 要建的接口名已存在且不在受管清单里 |
-| `port_in_use` | 阻断 | 要绑定的 协议/地址/端口 已有监听：通配地址和同端口任何监听冲突，具体地址只和同地址或通配监听冲突（回环上的 systemd-resolved、WARP 不算冲突）；只有「有证据属于这次安装」的不算（见下面「什么算我们的」） |
-| `address_overlap` | 阻断 | 要配置的隧道地址和别的接口上的地址**精确重叠**（不是「同一个 /8」） |
+| `port_in_use` | 阻断 | 要绑定的 协议/地址/端口 已有监听：通配地址和同端口任何监听冲突，具体地址只和同地址或通配监听冲突（回环上的 systemd-resolved、WARP 不算冲突）；只有「有证据属于这次安装」的不算（见下面「什么算我们的」）。占用者按进程名、容器名、systemd 单元或 WireGuard 接口名写出；端口来自拓扑字段时，结论带 `fix`（`{kind: node|link, id, field, label}`）并在处理办法里写明改哪个对象的哪个字段，面板链接到那个编辑器（见下面「端口从哪里来」）；SmartDNS 的 53/853 是固定的，处理办法是让占用者别绑通配地址 |
+| `address_overlap` | 阻断 | 要配置的隧道地址和别的接口上的地址**精确重叠**（不是「同一个 /8」）；这份包要放到 lo 上的中转地址落在别的接口已有的网段里也算 |
 | `route_overlap` | 阻断 | 要加的 main 表路由会替换、截走或被已有的非默认路由截走；兜底黑洞只在比已有路由更具体（或同前缀同 metric）时算冲突 |
 | `route_table_in_use` | 阻断 | 要独占的路由表里已有路由且不归 Meridian |
 | `fwmark_in_use` | 阻断 | 已有策略规则用了 Meridian 要用的防火墙标记 |
@@ -397,6 +399,20 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 - 策略规则：查清单里的路由表、`iif` 是清单里的接口，或与包里同优先级、同标记的规则。
 
 第一次安装、`managed_by_other`、没有清单的旧版安装都不认任何东西。网关安装本身不装软件包：缺 `wg`、`nft`、`ip` 时报 `gateway_tools_missing`（阻断）；SmartDNS 不要求 apt 包，报告它由容器、宿主服务运行还是还没启动（`gateway_dns_runtime`，信息）。
+
+### 端口从哪里来
+
+一个节点的包绑定的每个端口都由拓扑决定，而且只有一处代码决定它：`validate.TunnelPorts`，编译器（`compile.buildTunnels`）从它取端口，校验、网关的端口表（`validate.GatewayPorts`）和预检的修改指引（`validate.NodePorts` → `preflight.Context.Ports`）也用它，所以改一个字段之后，监听端的 WireGuard 配置、拨号端的 `Endpoint`（或经本地 wstunnel 到达的目标端口）、预检从编译结果读出的监听都一起变化（`TestPortReconfigurationEndToEnd`、`TestPortPlanMatchesBundle`）。
+
+| 端口 | 来源（按顺序） | 在哪改 |
+| --- | --- | --- |
+| 链路监听端的 WireGuard UDP 端口 | 链路的 `wg_port`；监听节点的 `listen_port`（只在它只监听这一条没设 `wg_port` 的链路时）；`51820 + 链路序号`（启用的隧道链路按 ID 排序） | 拓扑 → 链路「WireGuard 端口」，或节点「WireGuard 监听端口」 |
+| UDP+WSS 故障切换的 WSS 腿 | 上面的端口 + 1 | 同上 |
+| 拨号端 wstunnel 客户端（127.0.0.1，UDP） | 链路的 `wss_local_port`；`52000 + 链路序号` | 拓扑 → 链路「wstunnel 本地端口」 |
+| 监听端 WSS 服务（TCP，通配地址） | 节点的 `wss_listen_port`；443 | 拓扑 → 节点「WSS 入口（高级）」→「WSS 监听端口」（枢纽、中继、出口都有） |
+| SmartDNS | 固定 53（UDP/TCP）、853，只绑隧道地址 | 不可改 |
+
+校验（`port_*` 问题，错误级别，带 `node_id` / `link_id` 和 `field`）：同一节点上两个监听用了同一协议的同一端口（WireGuard 的通配 UDP 和 wstunnel 的回环 UDP 也算冲突）→ `port_conflict`；WireGuard / wstunnel 端口用了 53、67、68、123、546、547、853、5353，WSS 端口用了 22、53、853，网关的 WSS 端口等于面板端口 → `port_reserved` / `port_conflict`；节点设了 `listen_port` 却监听多条没设 `wg_port` 的链路 → `port_ambiguous`；超出范围 → `port_invalid`。没有设置这些字段的拓扑，端口和以前完全一样（示例拓扑的编译结果不变）。
 
 ### 执行前复核
 

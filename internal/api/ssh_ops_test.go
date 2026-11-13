@@ -23,6 +23,8 @@ import (
 
 	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/hostexec"
+	"github.com/radowitz/meridian/internal/hubstate"
+	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/sshexec"
 	"github.com/radowitz/meridian/internal/sshexec/sshtest"
@@ -424,5 +426,126 @@ func TestRemoteAccessRuntime(t *testing.T) {
 	decode(t, rr, &one)
 	if one.Device.RuntimeState != "not_installed" || one.Device.Runtime != nil || !one.Runtime.Available {
 		t.Fatalf("%+v", one)
+	}
+}
+
+// One authenticated connection serves a whole flow: preflight, the
+// preflight re-run and the provision script of one request, then the
+// withdraw plan and run. Editing the server ends the pooled connection.
+func TestSSHFlowReusesOneLogin(t *testing.T) {
+	f, h := withdrawFix(t)
+	if f.srv.Logins() != 1 {
+		t.Fatalf("preflight + provision used %d logins", f.srv.Logins())
+	}
+	code, out := wdPlan(t, f.s, "tw", "manifest")
+	if code != 200 {
+		t.Fatalf("plan %d %v", code, out)
+	}
+	if code, out := wdRun(f.s, "tw", planID(t, out), "tw"); code != 200 {
+		t.Fatalf("run %d %v", code, out)
+	}
+	if f.srv.Logins() != 1 || h.count() != 2 {
+		t.Fatalf("logins %d, withdraw scripts %d", f.srv.Logins(), h.count())
+	}
+	// Any edit of the server closes its pooled connection.
+	if rr := do(f.s, http.MethodPatch, "/api/servers/"+f.id, mustJSON(map[string]any{"notes": "edited"})); rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	for i := 0; i < 200 && f.srv.Open() != 0; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if f.srv.Open() != 0 || f.s.SSHPool.Idle() != 0 {
+		t.Fatalf("open %d idle %d after an edit", f.srv.Open(), f.s.SSHPool.Idle())
+	}
+	f.preflight(t)
+	if f.srv.Logins() != 2 {
+		t.Fatalf("logins %d after the edit", f.srv.Logins())
+	}
+	// Rotating the credential (password login stays supported) also ends it.
+	if rr := do(f.s, http.MethodPut, "/api/ssh-credentials/"+f.credID+"/secret", mustJSON(map[string]string{"password": f.pw})); rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	if f.s.SSHPool.Idle() != 0 {
+		t.Fatal("pooled connection kept after a credential rotation")
+	}
+}
+
+// A server that answers "Not allowed at this time" before its SSH banner
+// is reported as ssh_rate_limited (503, Retry-After) by every operation,
+// as not started, without trying the credential, and the panel does not
+// dial it again during the cooldown.
+func TestSSHRateLimitedAcrossOperations(t *testing.T) {
+	f := newGateFix(t)
+	id := f.preflight(t).ID
+	f.s.SSHPool.CloseAll()
+	f.srv.RefuseBeforeBanner("Not allowed at this time")
+	attempts := f.srv.AuthAttempts()
+	base := f.srv.Accepted()
+
+	check := func(what string, rr *httptest.ResponseRecorder, status int) map[string]any {
+		t.Helper()
+		var out map[string]any
+		_ = json.Unmarshal(rr.Body.Bytes(), &out)
+		if rr.Code != status {
+			t.Fatalf("%s: %d %s", what, rr.Code, rr.Body.String())
+		}
+		return out
+	}
+	out := check("provision", f.provision(id), http.StatusServiceUnavailable)
+	if out["code"] != sshexec.CodeRateLimited || out["outcome"] != "not_started" || out["retry_after"].(float64) <= 0 {
+		t.Fatalf("provision %v", out)
+	}
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "Not allowed at this time") || !strings.Contains(msg, "不是密码") || strings.Contains(msg, "EOF") {
+		t.Fatalf("provision message %q", msg)
+	}
+	if f.provisionScripts() != 0 || storedNode(t, f.s, "tw").PrivateKey != "" {
+		t.Fatal("ran or generated a key")
+	}
+	rr := do(f.s, http.MethodPost, "/api/servers/"+f.id+"/test", nil)
+	var tr struct{ Test model.ConnectionTest }
+	decode(t, rr, &tr)
+	if rr.Code != 200 || tr.Test.OK || tr.Test.Code != sshexec.CodeRateLimited || tr.Test.RetryAfter <= 0 {
+		t.Fatalf("test %d %s", rr.Code, rr.Body.String())
+	}
+	rr = do(f.s, http.MethodPost, "/api/servers/"+f.id+"/host-key/discover", nil)
+	out = check("discover", rr, http.StatusServiceUnavailable)
+	if out["code"] != sshexec.CodeRateLimited || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("discover %v %v", out, rr.Header())
+	}
+	out = check("preflight", do(f.s, http.MethodPost, "/api/provision/preflight", mustJSON(map[string]any{"node_id": "tw"})), http.StatusServiceUnavailable)
+	if out["code"] != sshexec.CodeRateLimited {
+		t.Fatalf("preflight %v", out)
+	}
+	if f.srv.Accepted() != base+1 || f.srv.AuthAttempts() != attempts {
+		t.Fatalf("connections %d (want %d), auth attempts %d → %d", f.srv.Accepted(), base+1, attempts, f.srv.AuthAttempts())
+	}
+	// The pin is not touched.
+	cs, _ := f.s.credStore()
+	sv, _ := cs.Server(f.id)
+	if sv.HostKey.State != model.HostKeyTrusted {
+		t.Fatalf("host key %+v", sv.HostKey)
+	}
+
+	// Mesh remote operations: the stage failure carries the code.
+	rem := &sshRemote{conn: f.s.connector(cs)}
+	_, _, err := rem.Exec(context.Background(), mesh.NodeTarget{ID: "tw", ServerID: f.id, SSHHost: sv.Address, SSHPort: sv.Port, SSHUser: sv.User, HostKey: sv.HostKey.Fingerprint}, mesh.ActPreflight, "true")
+	if sshexec.CodeOf(err) != sshexec.CodeRateLimited {
+		t.Fatalf("mesh exec %v", err)
+	}
+	mr := httptest.NewRecorder()
+	writeMeshResult(mr, nil, &mesh.StageError{Stage: "preflight", Err: err}, &mesh.Redactor{}, nil, rem)
+	var mo map[string]any
+	_ = json.Unmarshal(mr.Body.Bytes(), &mo)
+	if mo["ssh_code"] != sshexec.CodeRateLimited || mo["code"] != "stage_failed" || mr.Header().Get("Retry-After") == "" {
+		t.Fatalf("mesh result %v", mo)
+	}
+
+	// Hub-state read: classified the same way.
+	rd := f.s.readHub(context.Background(), hubReach{readable: true, server: sv, identity: hubstate.Identity{Fingerprint: sv.HostKey.Fingerprint}})
+	if rd.SSHCode != sshexec.CodeRateLimited || rd.RetryAfter <= 0 {
+		t.Fatalf("hub read %+v", rd)
+	}
+	if f.srv.Accepted() != base+1 {
+		t.Fatalf("dialed during the cooldown: %d", f.srv.Accepted())
 	}
 }

@@ -405,10 +405,12 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 - 自动化回归（`go test ./internal/credentials ./internal/sshexec ./internal/api`）：存储权限与原子写、轮换、引用；指纹状态（未见过 → 发现 → 确认 → 不符）；发现不认证、指纹不符在认证之前拒绝、部署固定的指纹与目标；密码 / 私钥 / 口令从输出和错误里去掉；`sshtest` 进程内 SSH 服务器上的连接测试与装机（密码和带口令的私钥两种凭据）；Cloudflare 权限检查用假 HTTP 服务。
 - [ ] 实机（主会话）：对一台真实远端服务器做一次「发现 → 核对（与远端 `ssh-keygen -lf` 一致）→ 确认 → 测试」，再「装机」；改远端主机密钥后连接在认证之前被拒绝。
 - [ ] 实机（主会话）：真实 Cloudflare 账户的权限检查结果与令牌实际权限一致；缺写权限时部署在「创建节点」阶段失败并被补偿。
+- 自动化回归（`go test ./internal/sshexec -run 'RateLimited|PreBanner|Pool'`、`go test ./internal/api -run 'TestSSHFlowReusesOneLogin|TestSSHRateLimitedAcrossOperations'`）：`sshtest` 的 `RefuseBeforeBanner` 模式在 SSH 版本行之前写一行 `Not allowed at this time` 并断开；发现、测试、预检、装机、枢纽读取、Mesh 远端操作都报 `ssh_rate_limited`（不是 EOF、不是登录或指纹问题），没有尝试凭据、固定指纹不变，冷却期间不再建立 TCP 连接（按接受的连接数计），冷却过后恢复；别的握手前文字附在说明里、不触发冷却。连接复用：连接测试 + 两次预检 + 装机脚本只有一次登录；一次装机请求、撤回计划 + 执行共用一次登录；轮换密码、换凭据、改用户、清除并重新确认指纹、部署固定的指纹不同时都不复用；修改服务器、轮换凭据立即关闭空闲连接；命令失败、空闲超时、超过最长存活、取消的操作都关闭连接。`npm --prefix web test`：限速时连接测试和「获取指纹」按钮显示倒计时并停用、预检对话框的「重新预检」和执行停用、端口冲突结论链接到拓扑里对应的链路字段、链路编辑器里的「wstunnel 本地端口」、出口节点的「WSS 监听端口」。
+- [ ] 实机（主会话）：**限速识别和连接复用都还没有在真实主机上运行过。** 在经端口转发、OpenSSH 9.8+ 的服务器上，「测试连接 → 预检 → 装机」只产生一次登录（服务器 `journalctl -u ssh` 里一条 `Accepted`），被限速时面板显示「服务器暂时拒绝面板的来源地址（限速）」而不是「SSH 握手失败：EOF」，倒计时结束前不再连接。
 
 ## 装机前预检
 
-预检只读；以下都是仓库里的自动化证据，**没有任何一项在真实主机上执行过**。
+预检只读；除了下面单独写明的 2026-11-13 只读运行，以下都是仓库里的自动化证据，没有在真实主机上执行过。
 
 - 自动化回归（`go test ./internal/preflight`）：脚本参数校验（所有示例节点的路径都接受；`..`、相对路径、shell 元字符、引号、空格、换行、通配、目录外路径、超长、超量、重复一律拒绝）；脚本 `bash -n`（装了 shellcheck 时也跑）；静态检查脚本里没有任何改动主机的命令或写文件的重定向；在本机用 `bash -s --` 真跑一遍脚本，报告完整、被拒参数由脚本自己拒绝、不含文件内容；解析器对垃圾、截断、超长、超行数、控制字符 / 双向控制符 / 非法 UTF-8、伪造路径、清单块外的清单行、结束行之后的内容的处理；评估器对夹具 `testdata/*.txt`：干净的 Debian 13、Ubuntu 20.04 aarch64（无 nft、legacy iptables、内存 440 MB）、Docker `FORWARD DROP`（iptables-nft 与纯 nft 两种来源，每个协议族只报一次）、已有 `wg0/wg1/wg2`（51820 被占、10.66.11.0/24 与 10.66.0.0/16 重叠、10.67.0.0/24 与 10.8.0.0/24 不误报）、443/80 被 nginx 占用和另一个 wstunnel、53 端口（resolved / WARP 不冲突，通配或同地址冲突）、主机级 WARP（规则排在 main 之前）、空中继（转发将被打开）、忙中继（端口转发器不误报）、root / 架构 / 内核 / systemd / 发行版 / apt / SmartDNS 候选、清单三种归属与旧版标记文件、journal 中断与带残留的补偿、网关模式（安装清单的归属、标记文件交给接管、防火墙标记冲突）。
 - 自动化回归（`go test ./internal/provision`）：装机脚本在本机沙箱里（主机路径挪到临时目录，`ip`、`nft`、`systemctl`、`wg-quick`、`apt-get` 等换成有状态的桩）真跑：成功写受管清单并能被预检读回；同一节点的更新通过复核、别的节点被 `manifest_changed` 拒绝、第一次装机遇到已有清单被 `manifest_appeared` 拒绝；`systemctl` 失败时补偿（新文件和目录删除、被替换的文件恢复、新接口和 nft 表删除、单元停用、sysctl 恢复、软件包保留并列出、journal 为 `compensated`）；接口删不掉时列为残留、journal 为 `incomplete`，再跑被脚本自己拒绝；没有绑定目标的脚本拒绝运行。
@@ -418,6 +420,9 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 - [ ] 实机（主会话）：在一台可以随意重装的服务器上制造一次失败的第一次装机（例如先让 `smartdns.service` 起不来），确认补偿后主机回到装机前（接口、nft 表、规则、文件、sysctl），journal 为 `compensated`；断开 SSH 中途的情形单独验证。
 - 自动化回归（`go test ./internal/preflight -run 'UpdateOfOwnInstall'`、`go test ./internal/api -run TestGatewayUpdateGateOnOwnInstall`）：脱敏的实机网关报告（已有安装、SmartDNS 是 compose 容器、wstunnel 客户端是安装的单元、lo 上的中转地址，进程名不可见、按 cgroup 归属）评估为非阻断，更新安装经重新预检后通过；旁边多一个别人的 :53、别的容器、清单外的单元、读不到 cgroup、没有清单（第一次）都仍然阻断；远端「本节点、本面板」更新（枢纽、中继、出口）非阻断，换成别的部署 ID 全部阻断。
 - [ ] 实机（主会话）：网关上「安装前预检」经 `meridian-host` 的 `/v1/preflight` 得到完整报告（需要先升级宿主上的 meridian-host）。
+- 已发生的实机运行（主会话，2026-11-13，只读）：预检从面板对 11 台真实服务器和网关各执行过一次，拦下了 Docker 把 FORWARD 设为 DROP 的主机、51820 被已有 WireGuard 占用的主机、Ubuntu 20.04、缺 wstunnel 的中继，并对低内存主机给出提示；暴露的「网关把自己的资源报为冲突」随后修复并在网关上复跑为非阻断（归属 `same`）。没有在任何真实主机上装机、补偿或撤回。
+- 自动化回归（`go test ./internal/preflight -run 'Port'`、`go test ./internal/validate`、`go test ./internal/api -run TestGatewayPortConflictNamesTheField`）：每个示例节点的端口计划与它编译出的包读回的监听完全一致；`existing-wireguard` 夹具上 51820/51821 被占时结论带指向链路 `wg_port` 的 `fix`，把端口改掉后监听端的配置、拨号端的 `Endpoint` 和预检读出的监听一起变化，冲突消失；节点 `listen_port` 只在唯一一条没设 `wg_port` 的链路上生效；同一节点自己的端口冲突、保留端口、`listen_port` 二义都被校验拒绝；网关的 wstunnel 本地端口被占时结论指向链路 `wss_local_port`，改掉后包摘要变化、不再阻断。
+- [ ] 实机（主会话）：在一台 51820 已被占用的真实服务器上，按预检结论的「去拓扑修改」换端口，重新预检不再报 `port_in_use`，对端（网关或枢纽）重新安装 / 下发后握手成功。
 
 ## 撤回与恢复
 

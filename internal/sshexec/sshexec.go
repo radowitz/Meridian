@@ -57,6 +57,11 @@ const (
 	CodeAuthMethodUnavailable = "auth_method_unavailable"
 	CodeCommandFailed         = "command_failed"
 	CodeNotSSH                = "not_ssh"
+	// CodeRateLimited: the server answered "Not allowed at this time"
+	// before its SSH version line and closed the connection (OpenSSH
+	// PerSourcePenalties). Nothing was authenticated or run; the panel does
+	// not connect to that endpoint again for Error.RetryAfter seconds.
+	CodeRateLimited = "ssh_rate_limited"
 )
 
 // Error is every error this package returns. Msg is scrubbed of the
@@ -64,12 +69,24 @@ const (
 type Error struct {
 	Code string
 	Msg  string
+	// RetryAfter (seconds) is set with CodeRateLimited: how long the panel
+	// will not connect to the endpoint again.
+	RetryAfter int
 }
 
 func (e *Error) Error() string { return e.Msg }
 
 func errf(code, format string, a ...any) *Error {
 	return &Error{Code: code, Msg: fmt.Sprintf(format, a...)}
+}
+
+// RetryAfterOf returns the RetryAfter of an *Error (or 0).
+func RetryAfterOf(err error) int {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.RetryAfter
+	}
+	return 0
 }
 
 // CodeOf returns the code of an *Error (or "").
@@ -98,6 +115,10 @@ type Connector struct {
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// MaxOutput caps the captured output (default 1 MiB).
 	MaxOutput int
+	// Pool, when set, lends authenticated connections across the steps of
+	// one operation flow and remembers rate-limited endpoints (see Pool).
+	// Nil: every operation opens and closes its own connection.
+	Pool *Pool
 }
 
 // Target is what an operation connects to: a server, optionally with the
@@ -121,6 +142,9 @@ type Result struct {
 	Fingerprint  string
 	ServerID     string
 	CredentialID string
+	// Reused: the operation ran on a pooled connection opened earlier in
+	// the same flow (no new login).
+	Reused bool
 }
 
 // Discovery is what Discover saw.
@@ -195,10 +219,15 @@ func (c *Connector) Discover(ctx context.Context, serverID string) (Discovery, e
 	if err != nil {
 		return Discovery{}, errf(CodeNotFound, "%s", err.Error())
 	}
-	conn, err := c.dial(ctx, sv)
+	ep := endpoint(sv.Address, sv.Port)
+	if left := c.Pool.cooling(ep); left > 0 {
+		return Discovery{}, rateLimitedErr(sv.Name, ep, left)
+	}
+	raw, err := c.dial(ctx, sv)
 	if err != nil {
 		return Discovery{}, err
 	}
+	conn := newBannerConn(raw)
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(c.handshakeTimeout()))
 	var seen ssh.PublicKey
@@ -218,10 +247,15 @@ func (c *Connector) Discover(ctx context.Context, serverID string) (Discovery, e
 		ssh.NewClient(sc, chans, reqs).Close()
 	}
 	if seen == nil {
+		pre, sawSSH := conn.preBanner()
+		if !sawSSH && rateLimitLine(pre) {
+			c.Pool.rateLimited(ep)
+			return Discovery{}, rateLimitedErr(sv.Name, ep, c.Pool.cooldown())
+		}
 		if herr != nil && isTimeout(herr) {
 			return Discovery{}, errf(CodeTimeout, "%s 的 SSH 握手超时", sv.Name)
 		}
-		return Discovery{}, errf(CodeNotSSH, "%s:%d 没有完成 SSH 密钥交换，读不到主机公钥", sv.Address, sv.Port)
+		return Discovery{}, errf(CodeNotSSH, "%s:%d 没有完成 SSH 密钥交换，读不到主机公钥%s", sv.Address, sv.Port, preBannerNote(pre, sawSSH))
 	}
 	fp := ssh.FingerprintSHA256(seen)
 	got, oerr := c.Store.ObserveHostKey(sv.ID, seen.Type(), fp)
@@ -250,15 +284,51 @@ type session struct {
 	fp      string
 	secrets []string
 	credID  string
+	created time.Time
+}
+
+// endpoint is the dial address of a server.
+func endpoint(address string, port int) string {
+	return net.JoinHostPort(address, strconv.Itoa(port))
+}
+
+// preBannerNote describes text a server sent instead of (or before) its
+// SSH version line, for an error message.
+func preBannerNote(pre string, sawSSH bool) string {
+	if sawSSH || pre == "" {
+		return ""
+	}
+	return "（服务器没有发 SSH 版本行，只回复了：«" + pre + "»）"
+}
+
+// resolved is a target checked against the store, ready to dial.
+type resolved struct {
+	t      Target
+	sv     model.Server
+	credID string
+	meta   credentials.SSHCredential
+	key    poolKey
 }
 
 // connect checks the target, dials, verifies the host key against the
 // trusted pin (recording what was seen) and authenticates with the stored
 // credential, whose secret is read only after the host key was accepted.
 func (c *Connector) connect(ctx context.Context, t Target) (*session, error) {
+	r, err := c.resolve(t)
+	if err != nil {
+		return nil, err
+	}
+	return c.handshake(ctx, r)
+}
+
+// resolve performs every check that needs no network: the server exists,
+// matches the pinned endpoint, its host key is trusted (and the deployment
+// pin, when given), and the credential exists. The result names the exact
+// identity a connection authenticated with it is bound to.
+func (c *Connector) resolve(t Target) (resolved, error) {
 	sv, err := c.Store.Server(t.ServerID)
 	if err != nil {
-		return nil, errf(CodeNotFound, "%s", err.Error())
+		return resolved{}, errf(CodeNotFound, "%s", err.Error())
 	}
 	if t.Address != "" {
 		port := t.Port
@@ -270,32 +340,46 @@ func (c *Connector) connect(ctx context.Context, t Target) (*session, error) {
 			user = "root"
 		}
 		if sv.Address != t.Address || sv.Port != port || sv.User != user {
-			return nil, errf(CodeTargetChanged, "服务器 %s 现在是 %s@%s:%d，不是部署时固定的 %s@%s:%d；拒绝连接", sv.Name, sv.User, sv.Address, sv.Port, user, t.Address, port)
+			return resolved{}, errf(CodeTargetChanged, "服务器 %s 现在是 %s@%s:%d，不是部署时固定的 %s@%s:%d；拒绝连接", sv.Name, sv.User, sv.Address, sv.Port, user, t.Address, port)
 		}
 	}
 	switch sv.HostKey.State {
 	case model.HostKeyTrusted:
 	case model.HostKeyMismatch:
-		return nil, errf(CodeMismatch, "服务器 %s 上次出示的主机指纹 %s 与固定的 %s 不一致；核实后重新确认指纹，或清除记录重新发现", sv.Name, sv.HostKey.Seen, sv.HostKey.Fingerprint)
+		return resolved{}, errf(CodeMismatch, "服务器 %s 上次出示的主机指纹 %s 与固定的 %s 不一致；核实后重新确认指纹，或清除记录重新发现", sv.Name, sv.HostKey.Seen, sv.HostKey.Fingerprint)
 	default:
-		return nil, errf(CodeUntrusted, "服务器 %s 的主机指纹还没有确认（状态 %s）；先「发现指纹」并核对确认", sv.Name, sv.HostKey.State)
+		return resolved{}, errf(CodeUntrusted, "服务器 %s 的主机指纹还没有确认（状态 %s）；先「发现指纹」并核对确认", sv.Name, sv.HostKey.State)
 	}
 	if t.Fingerprint != "" && sv.HostKey.Fingerprint != t.Fingerprint {
-		return nil, errf(CodePinMismatch, "服务器 %s 现在信任的主机指纹 %s 不是部署时固定的 %s；拒绝连接", sv.Name, sv.HostKey.Fingerprint, t.Fingerprint)
+		return resolved{}, errf(CodePinMismatch, "服务器 %s 现在信任的主机指纹 %s 不是部署时固定的 %s；拒绝连接", sv.Name, sv.HostKey.Fingerprint, t.Fingerprint)
 	}
 	credID := t.CredentialID
 	if credID == "" {
 		credID = sv.CredentialID
 	}
 	if credID == "" {
-		return nil, errf(CodeNoCredential, "服务器 %s 还没有选择 SSH 凭据", sv.Name)
+		return resolved{}, errf(CodeNoCredential, "服务器 %s 还没有选择 SSH 凭据", sv.Name)
 	}
 	meta, err := c.Store.SSHCredential(credID)
 	if err != nil {
-		return nil, errf(CodeNotFound, "服务器 %s 使用的 SSH 凭据 %s 不存在", sv.Name, credID)
+		return resolved{}, errf(CodeNotFound, "服务器 %s 使用的 SSH 凭据 %s 不存在", sv.Name, credID)
 	}
+	gen, err := c.Store.SSHCredentialGen(credID)
+	if err != nil {
+		return resolved{}, errf(CodeNotFound, "服务器 %s 使用的 SSH 凭据 %s 不存在", sv.Name, credID)
+	}
+	return resolved{t: t, sv: sv, credID: credID, meta: meta, key: poolKey{ServerID: sv.ID, Address: sv.Address, Port: sv.Port, User: sv.User,
+		Fingerprint: sv.HostKey.Fingerprint, KeyType: sv.HostKey.KeyType, PinnedAt: sv.HostKey.PinnedAt, CredentialID: credID, CredentialGn: gen}}, nil
+}
 
-	s := &session{credID: credID}
+// handshake dials the resolved target and authenticates.
+func (c *Connector) handshake(ctx context.Context, r resolved) (*session, error) {
+	t, sv, credID, meta := r.t, r.sv, r.credID, r.meta
+	ep := endpoint(sv.Address, sv.Port)
+	if left := c.Pool.cooling(ep); left > 0 {
+		return nil, rateLimitedErr(sv.Name, ep, left)
+	}
+	s := &session{credID: credID, created: time.Now()}
 	var hostErr error
 	var authMu sync.Mutex
 	var auth *credentials.SSHAuth
@@ -429,18 +513,24 @@ func (c *Connector) connect(ctx context.Context, t Target) (*session, error) {
 		HostKeyAlgorithms: hostKeyAlgos(pinnedType),
 		Timeout:           c.handshakeTimeout(),
 	}
-	conn, err := c.dial(ctx, sv)
+	raw, err := c.dial(ctx, sv)
 	if err != nil {
 		return nil, err
 	}
+	conn := newBannerConn(raw)
 	_ = conn.SetDeadline(time.Now().Add(c.handshakeTimeout()))
-	addr := net.JoinHostPort(sv.Address, strconv.Itoa(sv.Port))
-	sc, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	sc, chans, reqs, err := ssh.NewClientConn(conn, ep, cfg)
 	if err != nil {
 		conn.Close()
+		pre, sawSSH := conn.preBanner()
 		switch {
 		case hostErr != nil:
 			return nil, hostErr
+		case !sawSSH && rateLimitLine(pre):
+			// Refused before the version exchange: no key was seen, no
+			// credential was read or sent.
+			c.Pool.rateLimited(ep)
+			return nil, rateLimitedErr(sv.Name, ep, c.Pool.cooldown())
 		case authErr != nil:
 			return nil, errf(CodeAuthFailed, "%s", credentials.Scrub(authErr.Error(), s.secrets...))
 		case errors.Is(err, errProbeOnly) || strings.Contains(err.Error(), "unable to authenticate"):
@@ -454,9 +544,10 @@ func (c *Connector) connect(ctx context.Context, t Target) (*session, error) {
 		case isTimeout(err):
 			return nil, errf(CodeTimeout, "%s 的 SSH 握手超时", sv.Name)
 		default:
-			return nil, errf(CodeUnreachable, "%s 的 SSH 握手失败：%s", sv.Name, credentials.Scrub(err.Error(), s.secrets...))
+			return nil, errf(CodeUnreachable, "%s 的 SSH 握手失败：%s%s", sv.Name, credentials.Scrub(err.Error(), s.secrets...), preBannerNote(credentials.Scrub(pre, s.secrets...), sawSSH))
 		}
 	}
+	conn.stop()
 	_ = conn.SetDeadline(time.Time{})
 	s.client = ssh.NewClient(sc, chans, reqs)
 	return s, nil
@@ -519,14 +610,47 @@ func (w *capWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// run executes command (with stdin) on an authenticated session.
-func (c *Connector) run(ctx context.Context, t Target, command string, stdin io.Reader) (Result, error) {
-	s, err := c.connect(ctx, t)
+// run executes command (with stdin) on an authenticated session: a pooled
+// connection of exactly this identity when the Connector has a Pool and one
+// is idle (and fresh is false), else a new one. On success the connection
+// goes back to the pool; after any error it is closed.
+func (c *Connector) run(ctx context.Context, t Target, command string, stdin io.Reader) (res Result, err error) {
+	return c.runOn(ctx, t, command, stdin, false)
+}
+
+func (c *Connector) runOn(ctx context.Context, t Target, command string, stdin io.Reader, fresh bool) (res Result, err error) {
+	r, err := c.resolve(t)
 	if err != nil {
+		// The server is not operable under any identity now (deleted,
+		// pin cleared or in mismatch, credential gone): nothing of it is
+		// kept for later.
+		c.Pool.InvalidateServer(t.ServerID)
 		return Result{ServerID: t.ServerID}, err
 	}
-	defer s.client.Close()
-	res := Result{AuthMethod: s.method, Fingerprint: s.fp, ServerID: t.ServerID, CredentialID: s.credID}
+	var s *session
+	reused := false
+	if c.Pool != nil {
+		if fresh {
+			// A fresh login was asked for: the idle one of this identity
+			// would only be a second connection to the same host.
+			c.Pool.drop(func(k poolKey) bool { return k == r.key })
+		} else if s = c.Pool.take(r.key); s != nil {
+			reused = true
+		}
+	}
+	if s == nil {
+		if s, err = c.handshake(ctx, r); err != nil {
+			return Result{ServerID: t.ServerID}, err
+		}
+	}
+	defer func() {
+		if err == nil && c.Pool != nil && ctx.Err() == nil {
+			c.Pool.put(r.key, s)
+			return
+		}
+		s.client.Close()
+	}()
+	res = Result{AuthMethod: s.method, Fingerprint: s.fp, ServerID: t.ServerID, CredentialID: s.credID, Reused: reused}
 	sess, err := s.client.NewSession()
 	if err != nil {
 		return res, errf(CodeCommandFailed, "打开 SSH 会话失败：%s", credentials.Scrub(err.Error(), s.secrets...))
@@ -581,14 +705,16 @@ func (c *Connector) Test(ctx context.Context, serverID string) (model.Connection
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, TestTimeout)
 	defer cancel()
-	res, err := c.run(ctx, Target{ServerID: serverID}, TestCommand, nil)
+	// Always a fresh login (the test is about whether logging in works);
+	// the connection then stays in the pool for the next step.
+	res, err := c.runOn(ctx, Target{ServerID: serverID}, TestCommand, nil, true)
 	ct := model.ConnectionTest{AuthMethod: res.AuthMethod, DurationMS: time.Since(start).Milliseconds()}
 	if err != nil {
 		switch CodeOf(err) {
 		case CodeNotFound, CodeUntrusted, CodeNoCredential:
 			return ct, err
 		}
-		ct.Code, ct.Error = CodeOf(err), err.Error()
+		ct.Code, ct.Error, ct.RetryAfter = CodeOf(err), err.Error(), RetryAfterOf(err)
 		if ct.Code == "" {
 			ct.Code = CodeCommandFailed
 		}

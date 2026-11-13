@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,9 +40,29 @@ func (s *Server) registerSSHOps(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/cloudflare/accounts/{id}/check", s.checkAccount)
 }
 
-// connector is the SSH path to managed servers.
+// connector is the SSH path to managed servers. Every connector shares
+// the server's pool: one authenticated connection serves the steps of a
+// flow (sshexec.Pool for how reuse is bounded).
 func (s *Server) connector(cs *credentials.Store) *sshexec.Connector {
-	return &sshexec.Connector{Store: cs, Dial: s.SSHDial}
+	return &sshexec.Connector{Store: cs, Dial: s.SSHDial, Pool: s.sshPool()}
+}
+
+// sshPool returns the server's SSH connection pool.
+func (s *Server) sshPool() *sshexec.Pool {
+	s.sshPoolMu.Lock()
+	defer s.sshPoolMu.Unlock()
+	if s.SSHPool == nil {
+		s.SSHPool = &sshexec.Pool{}
+	}
+	return s.SSHPool
+}
+
+// Close releases the pooled SSH connections (idempotent).
+func (s *Server) Close() {
+	s.sshPoolMu.Lock()
+	p := s.SSHPool
+	s.sshPoolMu.Unlock()
+	p.CloseAll()
 }
 
 // decodeStrict reads a JSON object (at most 64 KiB) and refuses fields of
@@ -139,11 +160,27 @@ func writeSSHErr(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case sshexec.CodeUntrusted, sshexec.CodeMismatch, sshexec.CodeNoCredential, sshexec.CodeTargetChanged, sshexec.CodePinMismatch:
 		status = http.StatusConflict
+	case sshexec.CodeRateLimited:
+		status = rateLimitHeaders(w, err)
 	case "":
 		code = credentials.CodeStorage
 		status = http.StatusInternalServerError
 	}
-	writeJSON(w, status, map[string]any{"error": err.Error(), "code": code})
+	body := map[string]any{"error": err.Error(), "code": code}
+	if ra := sshexec.RetryAfterOf(err); ra > 0 {
+		body["retry_after"] = ra
+	}
+	writeJSON(w, status, body)
+}
+
+// rateLimitHeaders sets Retry-After for an ssh_rate_limited error and
+// returns its status (503: the server refuses this source for a while; the
+// panel will not connect before Retry-After).
+func rateLimitHeaders(w http.ResponseWriter, err error) int {
+	if ra := sshexec.RetryAfterOf(err); ra > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(ra))
+	}
+	return http.StatusServiceUnavailable
 }
 
 // ---------------------------------------------------- host-key discovery ---

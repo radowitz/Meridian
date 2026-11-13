@@ -1085,6 +1085,20 @@ func (s *Store) SSHCredential(id string) (SSHCredential, error) {
 	return s.idx.Credentials[n].SSHCredential, nil
 }
 
+// SSHCredentialGen returns the generation of a credential's secret: it
+// changes whenever the secret is replaced (RotateSSHCredential), so a
+// connection authenticated under an older generation can be recognised
+// (sshexec.Pool never reuses one).
+func (s *Store) SSHCredentialGen(id string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.idx.cred(id)
+	if n < 0 {
+		return 0, errf(CodeNotFound, "", "SSH 凭据 %s 不存在", id)
+	}
+	return s.idx.Credentials[n].Gen, nil
+}
+
 // CreateSSHCredential stores a new credential.
 func (s *Store) CreateSSHCredential(name, notes string, in SSHSecretInput) (SSHCredential, error) {
 	name, err := checkText("name", name, 64, true)

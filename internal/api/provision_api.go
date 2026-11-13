@@ -130,6 +130,12 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	// Re-run immediately before execution, pinned to the same identity.
 	fresh, err := s.runRemotePreflight(r.Context(), cs, node, files0, ident, first)
 	if err != nil {
+		if sshexec.CodeOf(err) == sshexec.CodeRateLimited {
+			// Refused before the SSH banner at the re-run: nothing ran.
+			writeJSON(w, rateLimitHeaders(w, err), map[string]any{"error": err.Error(), "code": sshexec.CodeRateLimited,
+				"retry_after": sshexec.RetryAfterOf(err), "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
+			return
+		}
 		s.writeSSHErrHelp(w, cs, node.ServerID, err)
 		return
 	}
@@ -251,6 +257,13 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 			base["outcome"] = "not_started"
 		case sshexec.CodeUnreachable, sshexec.CodeAuthFailed, sshexec.CodeAuthMethodUnavailable, sshexec.CodeNotSSH:
 			base["outcome"] = "not_started"
+		case sshexec.CodeRateLimited:
+			// Refused before the SSH banner: nothing was sent. With the
+			// pooled connection of the preflight re-run this happens only
+			// when that connection was lost in between.
+			status = rateLimitHeaders(w, err)
+			base["outcome"] = "not_started"
+			base["retry_after"] = sshexec.RetryAfterOf(err)
 		default:
 			base["outcome"] = "unknown"
 			msg += "。脚本可能在执行中被中断：结果不明，不当作成功；服务器上的补偿会在断线时运行，重新预检会显示它的 journal"

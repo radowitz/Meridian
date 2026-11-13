@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/netip"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -45,40 +44,23 @@ var (
 )
 
 // GatewayPorts lists every UDP/TCP port the compiler makes the gateway bind
-// or reserve, with the reason. It mirrors compile.buildTunnels (sorted
-// enabled tunnel links, index i: WireGuard 51820+i unless wg_port is set,
-// the WSS failover leg one above, the local wstunnel UDP port 52000+i) plus
+// or reserve, with the reason: the ports TunnelPorts gives the links the
+// gateway is an end of (compile.buildTunnels takes them from there) plus
 // the gateway's WSS listen port and the panel port. A compile test checks
 // that every port in the compiled gateway files is in this map.
 func GatewayPorts(t model.Topology) map[int]string {
 	out := map[int]string{}
 	gw := firstRole(t, model.RoleGateway)
-	var links []model.Link
-	for _, l := range t.Links {
-		if !l.Enabled {
+	for _, lp := range TunnelPorts(t) {
+		if gw.ID == "" || (lp.Listener != gw.ID && lp.Dialer != gw.ID) {
 			continue
 		}
-		switch l.Transport {
-		case model.TransportDirectWG, model.TransportWGOverWSS, model.TransportUDPWSSFailover, model.TransportIXReplacementWSS:
-			links = append(links, l)
+		out[lp.WG] = "隧道 " + lp.LinkID + " 的 WireGuard 端口"
+		if lp.WSSLeg != 0 {
+			out[lp.WSSLeg] = "隧道 " + lp.LinkID + " 的 WSS 腿端口"
 		}
-	}
-	sort.Slice(links, func(i, j int) bool { return links[i].ID < links[j].ID })
-	for i, l := range links {
-		if gw.ID == "" || (l.From != gw.ID && l.To != gw.ID) {
-			continue
-		}
-		base := orInt(l.WGPort, 51820+i)
-		switch l.Transport {
-		case model.TransportDirectWG:
-			out[base] = "隧道 " + l.ID + " 的 WireGuard 端口"
-		case model.TransportUDPWSSFailover:
-			out[base] = "隧道 " + l.ID + " 的 WireGuard 端口"
-			out[base+1] = "隧道 " + l.ID + " 的 WSS 腿端口"
-			out[52000+i] = "隧道 " + l.ID + " 的 wstunnel 本地端口"
-		default:
-			out[base] = "隧道 " + l.ID + " 的 WireGuard 端口"
-			out[52000+i] = "隧道 " + l.ID + " 的 wstunnel 本地端口"
+		if lp.Local != 0 {
+			out[lp.Local] = "隧道 " + lp.LinkID + " 的 wstunnel 本地端口"
 		}
 	}
 	if gw.WSSListenPort > 0 {

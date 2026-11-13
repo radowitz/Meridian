@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/validate"
 )
 
 // Tunnel is one WireGuard interface between the west node (closer to home)
@@ -74,11 +75,25 @@ func buildTunnels(t model.Topology) ([]Tunnel, error) {
 	}
 	sort.Slice(links, func(i, j int) bool { return links[i].ID < links[j].ID })
 
+	ports := map[string]validate.LinkPorts{}
+	for _, lp := range validate.TunnelPorts(t) {
+		ports[lp.LinkID] = lp
+	}
 	var out []Tunnel
 	for i, l := range links {
 		west, east, err := materialize(t, l)
 		if err != nil {
 			return nil, err
+		}
+		// Ports come from validate.TunnelPorts, the single source the
+		// validation and the preflight remedies use as well.
+		lp, ok := ports[l.ID]
+		lis := east.node
+		if east.node.NatDialOut {
+			lis = west.node
+		}
+		if !ok || lp.Index != i || lp.Listener != lis.ID {
+			return nil, fmt.Errorf("link %s: port plan does not match the tunnel ends", l.ID)
 		}
 		base := fmt.Sprintf("m%02d", i)
 		modes := []string{"udp"}
@@ -101,19 +116,19 @@ func buildTunnels(t model.Topology) ([]Tunnel, error) {
 				if l.Transport == model.TransportUDPWSSFailover {
 					tun.MTU = orInt(l.MTU, 1412)
 				}
-				tun.WGPort = orInt(l.WGPort, 51820+i)
+				tun.WGPort = lp.WG
 			} else {
 				// On udp+wss failover, Link.MTU is the UDP leg. Do not copy it
 				// onto the WSS leg: 1412 does not fit a WSS session on PPPoE 1492.
 				if l.Transport == model.TransportUDPWSSFailover {
 					tun.MTU = orInt(l.WSSMTU, 1360)
-					tun.WGPort = orInt(l.WGPort, 51820+i) + 1
+					tun.WGPort = lp.WSSLeg
 					tun.WestV4, tun.EastV4, tun.WestULA, tun.EastULA = companionAddrs(i)
 				} else {
 					tun.MTU = orInt(l.WSSMTU, orInt(l.MTU, 1360))
-					tun.WGPort = orInt(l.WGPort, 51820+i)
+					tun.WGPort = lp.WG
 				}
-				tun.ClientUDP = 52000 + i
+				tun.ClientUDP = lp.Local
 			}
 			// The Hong Kong hub has no IPv6. A pure-v6 Endpoint is dialed only
 			// by a node that itself has v6 and is not the hub (the dual-stack

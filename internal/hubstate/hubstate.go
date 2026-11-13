@@ -438,9 +438,12 @@ type Read struct {
 	ErrorCode string `json:"error_code,omitempty"`
 	// SSHCode is the connector's code when ErrorCode is ssh_failed or
 	// server_not_ready.
-	SSHCode  string    `json:"ssh_code,omitempty"`
-	Error    string    `json:"error,omitempty"`
-	Snapshot *Snapshot `json:"snapshot,omitempty"`
+	SSHCode string `json:"ssh_code,omitempty"`
+	// RetryAfter (seconds) comes with SSHCode ssh_rate_limited: the panel
+	// does not connect to the hub again before ReadAt + RetryAfter.
+	RetryAfter int       `json:"retry_after,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	Snapshot   *Snapshot `json:"snapshot,omitempty"`
 }
 
 // Skew is panel time minus hub time at the read (positive: hub behind).

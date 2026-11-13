@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"github.com/radowitz/meridian/internal/preflight"
 	"github.com/radowitz/meridian/internal/sshexec"
 	"github.com/radowitz/meridian/internal/sshexec/sshtest"
+	"github.com/radowitz/meridian/internal/validate"
 )
 
 // cleanReport is a fresh Debian 13 host with nothing in the way.
@@ -548,5 +550,54 @@ func TestGatewayInstallWithoutPreflightCapability(t *testing.T) {
 	}
 	if rr := do(s, http.MethodPost, "/api/host/preflight", nil); rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("host preflight: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A port the gateway's bundle binds, taken by another program: the
+// blocking finding names the topology field that sets it, and changing
+// that field changes the bundle (bundle digest) and clears the finding.
+func TestGatewayPortConflictNamesTheField(t *testing.T) {
+	s, _, _ := installTest(t)
+	hp := &fakeHostPreflight{}
+	s.HostPreflight = hp
+	topo, _, _ := s.Store.Load()
+	var lp validate.PortUse
+	for _, u := range validate.NodePorts(topo, localNodeID) {
+		if u.Field == "wss_local_port" {
+			lp = u
+			break
+		}
+	}
+	if lp.Port == 0 {
+		t.Fatal("gateway has no wstunnel client port in the example")
+	}
+	hp.extra = fmt.Sprintf("ss udp UNCONN 0 0 127.0.0.1:%d 0.0.0.0:* users:((\"other-tunnel\",pid=901,fd=3))\n", lp.Port)
+	rr := do(s, http.MethodPost, "/api/host/preflight", nil)
+	var out struct{ Preflight preflightRecord }
+	if rr.Code != 200 || json.Unmarshal(rr.Body.Bytes(), &out) != nil || !out.Preflight.Blocking {
+		t.Fatalf("host preflight: %d %s", rr.Code, rr.Body.String())
+	}
+	var f *preflight.Finding
+	for i := range out.Preflight.Findings {
+		if out.Preflight.Findings[i].Code == preflight.CodePortInUse {
+			f = &out.Preflight.Findings[i]
+		}
+	}
+	if f == nil || f.Fix == nil || f.Fix.Kind != "link" || f.Fix.ID != lp.ID || f.Fix.Field != "wss_local_port" || !strings.Contains(f.Message, "other-tunnel") {
+		t.Fatalf("finding %+v", f)
+	}
+	bundle := out.Preflight.Bundle
+	for i := range topo.Links {
+		if topo.Links[i].ID == lp.ID {
+			topo.Links[i].WSSLocalPort = 52900
+		}
+	}
+	if err := s.Store.Save(topo); err != nil {
+		t.Fatal(err)
+	}
+	rr = do(s, http.MethodPost, "/api/host/preflight", nil)
+	_ = json.Unmarshal(rr.Body.Bytes(), &out)
+	if out.Preflight.Bundle == bundle || out.Preflight.Blocking {
+		t.Fatalf("after moving the port: %d %s", rr.Code, rr.Body.String())
 	}
 }

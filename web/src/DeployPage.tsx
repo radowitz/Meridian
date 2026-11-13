@@ -55,6 +55,9 @@ import {
   errorTitle,
   useConfirmDanger,
   type StatusKind,
+  noteRateLimited,
+  retryAfterOf,
+  useCooldowns,
 } from "./ui";
 
 // -------------------------------------------------------------- the diff ---
@@ -886,13 +889,19 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
   // a fresh result without blocking findings.
   const [pf, setPf] = useState<{ node: Node; mode: RemoteMode; rec?: PreflightRecord; error?: ApiError; running: boolean } | null>(null);
   const server = (n: Node) => servers?.find((s) => s.id === n.server_id);
+  // Servers that refused the panel's source address: their buttons stay
+  // disabled for the retry_after the panel was given.
+  const cooldownOf = useCooldowns();
 
   const runPreflight = (n: Node, mode: RemoteMode) => {
     setPf({ node: n, mode, running: true });
     api
       .provisionPreflight(n.id)
       .then((r) => setPf((p) => (p && p.node.id === n.id ? { ...p, rec: r.preflight, error: undefined, running: false } : p)))
-      .catch((e: ApiError) => setPf((p) => (p && p.node.id === n.id ? { ...p, rec: undefined, error: e, running: false } : p)));
+      .catch((e: ApiError) => {
+        noteRateLimited(n.server_id, retryAfterOf(e));
+        setPf((p) => (p && p.node.id === n.id ? { ...p, rec: undefined, error: e, running: false } : p));
+      });
   };
 
   const execute = () => {
@@ -911,6 +920,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
       },
       `${mode}:${n.id}`,
       (e) => {
+        noteRateLimited(n.server_id, retryAfterOf(e));
         const fresh = preflightOf(e);
         if (fresh) {
           // Refused before anything ran: show the new result in the dialog.
@@ -1031,13 +1041,13 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
               ];
               return (
                 <Space size={4} className="table-actions">
-                  <Tooltip title={notReady}>
+                  <Tooltip title={cooldownOf(n.server_id) > 0 ? `服务器暂时拒绝面板的来源地址（限速）：${cooldownOf(n.server_id)} 秒后再试` : notReady}>
                     {first ? (
-                      <Button type="primary" size="small" icon={<KeyOutlined />} disabled={!ready} loading={pf?.node.id === n.id && pf.running} onClick={() => runPreflight(n, "rotate")}>
+                      <Button type="primary" size="small" icon={<KeyOutlined />} disabled={!ready || cooldownOf(n.server_id) > 0} loading={pf?.node.id === n.id && pf.running} onClick={() => runPreflight(n, "rotate")}>
                         生成密钥并下发
                       </Button>
                     ) : (
-                      <Button size="small" icon={<SendOutlined />} disabled={!ready} loading={pf?.node.id === n.id && pf.running && pf.mode === "push"} onClick={() => runPreflight(n, "push")}>
+                      <Button size="small" icon={<SendOutlined />} disabled={!ready || cooldownOf(n.server_id) > 0} loading={pf?.node.id === n.id && pf.running && pf.mode === "push"} onClick={() => runPreflight(n, "push")}>
                         下发
                       </Button>
                     )}
@@ -1072,13 +1082,18 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
                 </Typography.Text>
               ) : null}
               <Button onClick={() => setPf(null)}>取消</Button>
-              <Button onClick={() => runPreflight(pf.node, pf.mode)} loading={pf.running} disabled={!!act.busy}>
-                重新预检
+              <Button
+                onClick={() => runPreflight(pf.node, pf.mode)}
+                loading={pf.running}
+                disabled={!!act.busy || cooldownOf(pf.node.server_id) > 0}
+                data-testid="preflight-rerun"
+              >
+                {cooldownOf(pf.node.server_id) > 0 ? `${cooldownOf(pf.node.server_id)} 秒后可重新预检` : "重新预检"}
               </Button>
               <Button
                 type="primary"
                 danger={pf.mode === "rotate" && !first}
-                disabled={pf.running || !!pfReason}
+                disabled={pf.running || !!pfReason || cooldownOf(pf.node.server_id) > 0}
                 loading={act.busy === `${pf.mode}:${pf.node.id}`}
                 onClick={execute}
                 data-testid="preflight-execute"

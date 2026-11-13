@@ -48,6 +48,10 @@ import {
   useApi,
   useConfirmDanger,
   type StatusKind,
+  noteRateLimited,
+  RateLimitNote,
+  retryAfterOf,
+  useServerCooldown,
 } from "./ui";
 
 // ------------------------------------------------------------ vocabulary ---
@@ -337,6 +341,16 @@ function ServerFlow({
   const hasCred = !!server.credential;
   const credOptions = creds.filter((c) => c.kind === credKindFor(server.auth)).map((c) => ({ value: c.id, label: c.name }));
 
+  // A server that refuses the panel's source address ("Not allowed at this
+  // time") is left alone for its retry_after: both buttons that connect to
+  // it are disabled meanwhile.
+  const cooldown = useServerCooldown(server.id);
+  const ltLimited = server.last_test?.code === "ssh_rate_limited" ? server.last_test : null;
+  useEffect(() => {
+    if (ltLimited) noteRateLimited(server.id, ltLimited.retry_after ?? 60, Date.parse(ltLimited.at));
+  }, [server.id, ltLimited]);
+  const onLimited = (e: ApiError) => noteRateLimited(server.id, retryAfterOf(e));
+
   const discover = () =>
     act.run(async () => {
       setMatched(null);
@@ -346,7 +360,7 @@ function ServerFlow({
         setMatched(true);
         message.success("指纹与已固定的一致");
       }
-    }, "discover");
+    }, "discover", onLimited);
 
   const trust = (fp: string, title: string, consequence: string) =>
     confirm({
@@ -384,6 +398,7 @@ function ServerFlow({
         // public key to paste (never anything secret).
         setLoginHelp(r.login_help ?? null);
         if (r.test.ok) message.success("连接测试通过");
+        if (r.test.code === "ssh_rate_limited") noteRateLimited(server.id, r.test.retry_after ?? 60);
       } finally {
         // A failed test is recorded on the server too.
         try {
@@ -518,9 +533,11 @@ function ServerFlow({
                       type={hk.state === "unknown" ? "primary" : "default"}
                       size={hk.state === "unknown" ? "middle" : "small"}
                       loading={act.busy === "discover"}
+                      disabled={cooldown > 0}
                       onClick={() => void discover()}
+                      data-testid="discover-button"
                     >
-                      {hk.state === "unknown" ? "获取指纹" : "重新获取"}
+                      {cooldown > 0 ? `${cooldown} 秒后可重试` : hk.state === "unknown" ? "获取指纹" : "重新获取"}
                     </Button>
                   </div>
                 ) : null}
@@ -594,6 +611,7 @@ function ServerFlow({
                       description={
                         <>
                           <div>{lt.error}</div>
+                          {lt.code === "ssh_rate_limited" ? <RateLimitNote seconds={cooldown} /> : null}
                           <Typography.Text type="secondary">
                             <TimeText value={lt.at} />
                           </Typography.Text>
@@ -608,11 +626,12 @@ function ServerFlow({
                 <div style={{ marginTop: 8 }}>
                   <Button
                     type={stepTest === "process" ? "primary" : "default"}
-                    disabled={hk.state !== "trusted" || !hasCred}
+                    disabled={hk.state !== "trusted" || !hasCred || cooldown > 0}
                     loading={act.busy === "test"}
                     onClick={() => void test()}
+                    data-testid="test-button"
                   >
-                    {lt ? "重新测试" : "测试连接"}
+                    {cooldown > 0 ? `${cooldown} 秒后可重试` : lt ? "重新测试" : "测试连接"}
                   </Button>
                 </div>
               </div>

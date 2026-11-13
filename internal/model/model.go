@@ -103,7 +103,11 @@ type Node struct {
 	// hub has no IPv6 and must not be given this address as an Endpoint.
 	// Examples use 2001:db8::/32.
 	EndpointV6 string `json:"endpoint_v6,omitempty"`
-	ListenPort int    `json:"listen_port,omitempty"`
+	// ListenPort is the WireGuard UDP port of the one link this node
+	// listens on when that link has no wg_port of its own (a node that
+	// listens on several links needs wg_port on each; validation refuses
+	// the ambiguity). WSSListenPort (default 443) is its WSS server port.
+	ListenPort int `json:"listen_port,omitempty"`
 
 	// ServerID names the managed server (internal/credentials) this node
 	// runs on: address, SSH login and pinned host key live there. The
@@ -139,7 +143,14 @@ type Link struct {
 	// WSSMTU is the second leg of udp_wss_failover (default 1360).
 	MTU    int `json:"mtu,omitempty"`
 	WSSMTU int `json:"wss_mtu,omitempty"`
-	WGPort int `json:"wg_port,omitempty"`
+	// WGPort is the WireGuard UDP port on the listening end (zero: the
+	// listening node's listen_port when it listens on this link only,
+	// else 51820 + the link's index; a UDP+WSS failover link also uses
+	// WGPort+1). WSSLocalPort is the wstunnel client's UDP port on
+	// 127.0.0.1 of the dialing end (zero: 52000 + index). See
+	// validate.TunnelPorts.
+	WGPort       int `json:"wg_port,omitempty"`
+	WSSLocalPort int `json:"wss_local_port,omitempty"`
 
 	// Keepalive nil means "use the default (25)". Zero on a NAT dial-out
 	// link is an error: PersistentKeepalive must stay on.
@@ -344,9 +355,12 @@ type ConnectionTest struct {
 	AuthMethod string `json:"auth_method,omitempty"` // password | key
 	// Code classifies a failure: unreachable, timeout, auth_failed,
 	// auth_method_unavailable, host_key_mismatch, host_key_untrusted,
-	// command_failed.
-	Code       string `json:"code,omitempty"`
-	Error      string `json:"error,omitempty"`
+	// command_failed, ssh_rate_limited.
+	Code  string `json:"code,omitempty"`
+	Error string `json:"error,omitempty"`
+	// RetryAfter (seconds, ssh_rate_limited only): the panel does not
+	// connect to this server again before At + RetryAfter.
+	RetryAfter int    `json:"retry_after,omitempty"`
 	OS         string `json:"os,omitempty"`
 	Kernel     string `json:"kernel,omitempty"`
 	Arch       string `json:"arch,omitempty"`

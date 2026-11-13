@@ -73,6 +73,9 @@ import {
   useAction,
   useApi,
   useConfirmDanger,
+  noteRateLimited,
+  RateLimitNote,
+  useServerCooldown,
 } from "./ui";
 
 // ------------------------------------------------------------ vocabulary ---
@@ -749,8 +752,13 @@ function GroupCard({
  * refresh button. A hub that cannot be read says why and links to the fix.
  */
 function HubStateBar({ hub, onRefresh, refreshing }: { hub: GroupHubState | undefined; onRefresh: () => void; refreshing: boolean }) {
+  const lr = hub?.last_read;
+  const limited = !!lr && lr.ssh_code === "ssh_rate_limited";
+  useEffect(() => {
+    if (limited && lr) noteRateLimited(hub?.server_id, lr.retry_after ?? 60, Date.parse(lr.read_at));
+  }, [limited, lr, hub?.server_id]);
+  const cooldown = useServerCooldown(hub?.server_id);
   if (!hub) return null;
-  const lr = hub.last_read;
   const rules = `枢纽切换服务每 ${hub.loop_interval_sec} 秒记录一次；心跳超过 ${hub.stale_after_sec} 秒或读取超过 ${Math.round(hub.read_max_age_sec / 60)} 分钟即视为过期。`;
   return (
     <div className="hub-state-bar" data-testid="hub-state-bar">
@@ -782,8 +790,8 @@ function HubStateBar({ hub, onRefresh, refreshing }: { hub: GroupHubState | unde
           <StatusTag kind="unverified">未读取</StatusTag>
         )}
         <Tooltip title={`经服务器管理的 SSH 通道（已确认的主机指纹、保存的凭据）执行一条固定的只读命令。${rules}`}>
-          <Button size="small" icon={<ReloadOutlined />} loading={refreshing || hub.refreshing} disabled={!hub.readable} onClick={onRefresh}>
-            读取枢纽状态
+          <Button size="small" icon={<ReloadOutlined />} loading={refreshing || hub.refreshing} disabled={!hub.readable || cooldown > 0} onClick={onRefresh}>
+            {cooldown > 0 ? `${cooldown} 秒后可读取` : "读取枢纽状态"}
           </Button>
         </Tooltip>
       </Space>
@@ -800,6 +808,7 @@ function HubStateBar({ hub, onRefresh, refreshing }: { hub: GroupHubState | unde
       ) : lr && !lr.ok && lr.error ? (
         <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }}>
           {lr.error}
+          {limited ? <RateLimitNote seconds={cooldown} /> : null}
         </Typography.Paragraph>
       ) : null}
     </div>

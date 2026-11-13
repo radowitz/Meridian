@@ -93,6 +93,8 @@ type withdrawRecord struct {
 	Kept      []string  `json:"kept,omitempty"`
 	Leftovers []string  `json:"leftovers,omitempty"`
 	Restored  bool      `json:"restored_previous,omitempty"`
+	// RetryAfter (seconds) comes with code ssh_rate_limited.
+	RetryAfter int `json:"retry_after,omitempty"`
 }
 
 // onHost: something of this deployment may still be on its server, so the
@@ -525,6 +527,9 @@ func (s *Server) postWithdraw(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusBadGateway
 		if c := sshexec.CodeOf(err); c == sshexec.CodeTargetChanged || c == sshexec.CodePinMismatch || c == sshexec.CodeMismatch || c == sshexec.CodeUntrusted {
 			status = http.StatusConflict
+		} else if c == sshexec.CodeRateLimited {
+			status = rateLimitHeaders(w, err)
+			rec.RetryAfter = sshexec.RetryAfterOf(err)
 		}
 	default:
 		rec.State, rec.Code = withdrawStateUnknown, codeWithdrawUnknown
@@ -551,7 +556,7 @@ func (s *Server) postWithdraw(w http.ResponseWriter, r *http.Request) {
 		"node_id": body.NodeID, "mode": p.Mode, "outcome": rec.State, "code": rec.Code, "reason": rec.Reason,
 		"error": errOrEmpty(status, rec.Message), "message": rec.Message,
 		"removed": nonNil(rec.Removed), "kept": nonNil(rec.Kept), "leftovers": nonNil(rec.Leftovers),
-		"restored_previous": rec.Restored, "output": res.Output, "target": ident,
+		"restored_previous": rec.Restored, "output": res.Output, "target": ident, "retry_after": rec.RetryAfter,
 	})
 }
 
@@ -586,7 +591,8 @@ func nonNil(s []string) []string {
 func notStarted(code string) bool {
 	switch code {
 	case sshexec.CodeUntrusted, sshexec.CodeMismatch, sshexec.CodeNoCredential, sshexec.CodeTargetChanged, sshexec.CodePinMismatch,
-		sshexec.CodeNotFound, sshexec.CodeUnreachable, sshexec.CodeAuthFailed, sshexec.CodeAuthMethodUnavailable, sshexec.CodeNotSSH:
+		sshexec.CodeNotFound, sshexec.CodeUnreachable, sshexec.CodeAuthFailed, sshexec.CodeAuthMethodUnavailable, sshexec.CodeNotSSH,
+		sshexec.CodeRateLimited:
 		return true
 	}
 	return false

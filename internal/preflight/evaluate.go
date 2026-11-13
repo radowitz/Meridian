@@ -78,6 +78,30 @@ type Finding struct {
 	Message  string `json:"message"`
 	Action   string `json:"action,omitempty"`
 	Resource string `json:"resource,omitempty"`
+	// Fix names the topology field that resolves the finding, when one
+	// does (a port the node binds): the panel links to that editor.
+	Fix *Fix `json:"fix,omitempty"`
+}
+
+// Fix is the topology object and field to edit: kind "node" or "link".
+type Fix struct {
+	Kind  string `json:"kind"`
+	ID    string `json:"id"`
+	Field string `json:"field"`
+	Label string `json:"label"`
+}
+
+// PortSource says which topology field sets a port the bundle binds
+// (validate.NodePorts, passed in by the API so this package stays free of
+// topology types).
+type PortSource struct {
+	Proto    string
+	Port     int
+	Loopback bool
+	What     string
+	Kind     string // node | link
+	ID       string
+	Field    string
 }
 
 // Change is one intended change of the install.
@@ -107,6 +131,9 @@ type Context struct {
 	// adopted or refused by the install transaction itself.
 	Gateway bool
 	Owned   *Owned
+	// Ports are the topology sources of the ports the bundle binds; a
+	// port_in_use finding names the field to change.
+	Ports []PortSource
 }
 
 // Ownership states.
@@ -140,6 +167,10 @@ type eval struct {
 }
 
 func (e *eval) add(sev, code, res, msg, action string) {
+	e.addFix(sev, code, res, msg, action, nil)
+}
+
+func (e *eval) addFix(sev, code, res, msg, action string, fix *Fix) {
 	// One finding per code and resource: the first cause is named.
 	if res != "" {
 		for _, f := range e.out.Findings {
@@ -148,7 +179,26 @@ func (e *eval) add(sev, code, res, msg, action string) {
 			}
 		}
 	}
-	e.out.Findings = append(e.out.Findings, Finding{Severity: sev, Code: code, Resource: res, Message: msg, Action: action})
+	e.out.Findings = append(e.out.Findings, Finding{Severity: sev, Code: code, Resource: res, Message: msg, Action: action, Fix: fix})
+}
+
+// fieldLabels are the panel's names of the port fields.
+var fieldLabels = map[string]string{
+	"wg_port":         "「WireGuard 端口」",
+	"listen_port":     "「WireGuard 监听端口」",
+	"wss_listen_port": "「WSS 监听端口」",
+	"wss_local_port":  "「wstunnel 本地端口」",
+}
+
+// portFix finds the topology field behind a planned listener.
+func (e *eval) portFix(lp ListenPlan) (PortSource, bool) {
+	loop := lp.Addr.IsLoopback()
+	for _, p := range e.ctx.Ports {
+		if p.Proto == lp.Proto && p.Port == lp.Port && p.Loopback == loop && p.Field != "" {
+			return p, true
+		}
+	}
+	return PortSource{}, false
 }
 
 func (e *eval) change(kind, action, res, detail string) {
@@ -504,6 +554,20 @@ func (e *eval) interfaces() {
 			}
 		}
 	}
+	// Transit addresses the scripts put on lo: an address another
+	// interface already holds would be answered locally instead.
+	for _, a := range e.fp.LoAddrs {
+		for _, x := range e.r.Addrs {
+			if x.Iface == "lo" || e.ownedIface(x.Iface) || x.Prefix.Addr().IsLinkLocalUnicast() || x.Prefix.Addr().IsLoopback() {
+				continue
+			}
+			if x.Prefix.Contains(a.Addr()) {
+				e.add(Blocking, CodeAddressOverlap, "lo "+a.String(),
+					fmt.Sprintf("Meridian 要放到 lo 上的中转地址 %s 落在 %s 上已有的 %s 里：发往那段的流量会被本机截住。", a, x.Iface, x.Prefix),
+					"在拓扑里换用不重叠的中转网段（10.66.200.0/24、fd66:0:0:ff::/64），或确认那个接口不再使用后移除它，然后重新预检。")
+			}
+		}
+	}
 	var foreign []string
 	for _, w := range e.r.WGLinks {
 		if planned[w] && e.ownedIface(w) || e.ownedIface(w) {
@@ -655,9 +719,24 @@ func (e *eval) listens() {
 			} else if strings.HasPrefix(lp.Owner, "wstunnel-client") {
 				what = "wstunnel 客户端本地端口"
 			}
-			e.add(Blocking, CodePortInUse, res,
-				fmt.Sprintf("%s（%s）要绑定 %s，但 %s 已被%s占用。", what, lp.Owner, res, l.Raw0(), e.listenerWho(l)),
-				"在拓扑里给这个节点换一个未占用的端口（链路的监听端口 / WSS 端口），或确认占用者可以停用后再重新预检。面板不会停掉别的服务。")
+			msg := fmt.Sprintf("%s（%s）要绑定 %s，但 %s 已被%s占用。", what, lp.Owner, res, l.Raw0(), e.listenerWho(l))
+			action := "在拓扑里给这个节点换一个未占用的端口（链路的「WireGuard 端口」、节点的「WireGuard 监听端口」或「WSS 监听端口」），或确认占用者可以停用后再重新预检。面板不会停掉别的服务。"
+			var fix *Fix
+			switch {
+			case lp.Owner == "smartdns":
+				action = "出口解析器的端口固定为 53/853，只绑定隧道地址；占用者绑定了通配地址或同一个隧道地址。让占用者只绑定它自己需要的地址（例如 127.0.0.53），或换一台服务器，然后重新预检。面板不会停掉别的服务。"
+			default:
+				if src, ok := e.portFix(lp); ok {
+					label := fieldLabels[src.Field]
+					obj := "链路 " + src.ID
+					if src.Kind == "node" {
+						obj = "节点 " + src.ID
+					}
+					fix = &Fix{Kind: src.Kind, ID: src.ID, Field: src.Field, Label: obj + " 的" + label}
+					action = fmt.Sprintf("在拓扑里把%s的%s（%s）改成这台主机上未占用的端口：保存后节点配置、对端的 Endpoint 和预检看到的端口会一起变化，然后重新预检。也可以确认占用者可以停用后再重新预检。面板不会停掉别的服务。", obj, label, src.What)
+				}
+			}
+			e.addFix(Blocking, CodePortInUse, res, msg, action, fix)
 		}
 		if !conflict {
 			e.change("listen", "bind", res, lp.Owner)

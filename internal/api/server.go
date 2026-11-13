@@ -27,6 +27,7 @@ import (
 	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/provision"
+	"github.com/radowitz/meridian/internal/sshexec"
 	"github.com/radowitz/meridian/internal/store"
 	"github.com/radowitz/meridian/internal/validate"
 )
@@ -54,6 +55,11 @@ type Server struct {
 	// SSHDial replaces the TCP dialer of SSH connections to managed
 	// servers (tests only; nil means net.Dialer).
 	SSHDial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// SSHPool lends authenticated SSH connections across the steps of one
+	// operation flow and remembers rate-limited endpoints
+	// (sshexec.Pool; nil means a default pool, created on first use).
+	SSHPool   *sshexec.Pool
+	sshPoolMu sync.Mutex
 	// CloudflareAPIBase replaces the Cloudflare API base URL of the token
 	// permission check (tests only).
 	CloudflareAPIBase string

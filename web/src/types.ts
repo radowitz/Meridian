@@ -62,6 +62,8 @@ export interface Link {
   mtu?: number;
   wss_mtu?: number;
   wg_port?: number;
+  /** wstunnel client port on 127.0.0.1 of the dialing end (default 52000 + link index). */
+  wss_local_port?: number;
   keepalive?: number;
   from_v4?: string;
   to_v4?: string;
@@ -395,6 +397,16 @@ export interface PreflightFinding {
   action?: string;
   /** The affected resource (interface, port, path, table …). */
   resource?: string;
+  /** The topology field that resolves it (a port the node binds). */
+  fix?: PreflightFix;
+}
+
+export interface PreflightFix {
+  kind: "node" | "link";
+  id: string;
+  /** wg_port | listen_port | wss_listen_port | wss_local_port */
+  field: string;
+  label: string;
 }
 
 export interface PreflightChange {
@@ -489,9 +501,11 @@ export interface ConnectionTest {
   at: string;
   ok: boolean;
   auth_method?: "password" | "key";
-  /** unreachable | timeout | auth_failed (credential rejected) | auth_method_unavailable (server does not offer this login method) | host_key_mismatch | host_key_untrusted | command_failed */
+  /** unreachable | timeout | auth_failed (credential rejected) | auth_method_unavailable (server does not offer this login method) | host_key_mismatch | host_key_untrusted | command_failed | ssh_rate_limited (refused this source before the SSH banner) */
   code?: string;
   error?: string;
+  /** ssh_rate_limited: the panel does not connect again before at + retry_after seconds. */
+  retry_after?: number;
   os?: string;
   kernel?: string;
   arch?: string;
@@ -990,6 +1004,8 @@ export interface GroupHubState {
     ok: boolean;
     error_code?: string;
     ssh_code?: string;
+    /** ssh_rate_limited: the panel does not read the hub again before read_at + retry_after seconds. */
+    retry_after?: number;
     error?: string;
     clock_skew_sec?: number;
     /** false: the read was taken from another hub identity (hub node, server, address, SSH port, pinned host key) and says nothing about the current hub. */

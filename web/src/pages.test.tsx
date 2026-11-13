@@ -9,10 +9,11 @@
 
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { effectiveOrder, moveRule } from "./RulesPage";
 import { fakeApi, panelStatus, renderAt, reply, webStorageDump } from "./testing";
 import { deleteNode } from "./TopologyPage";
+import { clearCooldowns } from "./ui";
 import type {
   DeploymentView,
   GatewayDeploymentView,
@@ -2296,5 +2297,117 @@ describe("deploy: managed sysctl after an install", () => {
     const rep = await screen.findByTestId("sysctl-report");
     expect(rep).toHaveTextContent("没有读取运行中的内核");
     expect(rep).not.toHaveTextContent("已生效");
+  });
+});
+
+// ------------------------------------------------ SSH rate limit, ports (N1) ---
+
+describe("ssh rate limiting", () => {
+  afterEach(() => clearCooldowns());
+
+  const limitedMsg =
+    "台湾出口（192.0.2.20:22）暂时拒绝来自面板这个来源地址的连接：SSH 握手之前它只回了一行「Not allowed at this time」就断开了。这不是密码、密钥或主机指纹的问题，面板没有尝试登录。";
+
+  it("says the server refuses this source, not the password, and disables test and discovery for the cooldown", async () => {
+    const limited = { at: new Date().toISOString(), ok: false, auth_method: "password" as const, code: "ssh_rate_limited", error: limitedMsg, retry_after: 90, duration_ms: 30 };
+    let sv = server({ id: "srv-rl", name: "台湾出口", auth: "password", credential: { id: "cred-pw", name: "运维密码", kind: "password" }, missing: ["connection_test"], ready: false });
+    const api = fakeApi({
+      "GET /api/servers": () => ({ servers: [sv] }),
+      "GET /api/servers/:id": () => ({ server: sv }),
+      "POST /api/servers/:id/test": () => {
+        sv = { ...sv, last_test: limited };
+        return { test: limited, server: sv };
+      },
+    });
+    renderAt("#/servers/srv-rl");
+    const flow = await screen.findByTestId("server-flow");
+    await userEvent.click(within(flow).getByRole("button", { name: btn("测试连接") }));
+    expect(await within(flow).findByText("测试失败：服务器暂时拒绝面板的来源地址（限速），稍后再试")).toBeInTheDocument();
+    expect(within(flow).getByTestId("rate-limit-note")).toHaveTextContent("不是密码、密钥或主机指纹的问题");
+    await waitFor(() => expect(within(flow).getByTestId("test-button")).toBeDisabled());
+    expect(within(flow).getByTestId("test-button")).toHaveTextContent(/秒后可重试/);
+    expect(within(flow).getByTestId("discover-button")).toBeDisabled();
+    expect(within(flow).queryByTestId("login-help")).toBeNull();
+    expect(api.find("POST /api/servers/srv-rl/test")).toHaveLength(1);
+  });
+
+  it("shows a refused preflight as rate limited and keeps re-run and execute disabled", async () => {
+    const t = topology();
+    t.nodes = t.nodes.map((n) => (n.id === "us" ? { ...n, server_id: "srv-rl2" } : n));
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [server({ id: "srv-rl2", name: "美国机", address: "198.51.100.40" })] }),
+      "POST /api/provision/preflight": () => reply(503, { error: limitedMsg, code: "ssh_rate_limited", retry_after: 120 }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    expect(await screen.findByText("服务器暂时拒绝面板的来源地址（限速），稍后再试")).toBeInTheDocument();
+    expect(screen.getByTestId("rate-limit-note")).toHaveTextContent(/1[0-2]\d 秒内面板不会再连接/);
+    expect(screen.getByTestId("preflight-rerun")).toBeDisabled();
+    expect(screen.getByTestId("preflight-rerun")).toHaveTextContent(/秒后可重新预检/);
+    expect(screen.getByTestId("preflight-execute")).toBeDisabled();
+    expect(screen.queryByTestId("login-help")).toBeNull();
+    expect(api.find("POST /api/provision/preflight")).toHaveLength(1);
+  });
+});
+
+describe("ports", () => {
+  it("links a port conflict to the field that sets the port", async () => {
+    const t = topology();
+    t.nodes = t.nodes.map((n) => (n.id === "us" ? { ...n, server_id: "srv-2" } : n));
+    const rec = preflightRec({
+      findings: [
+        {
+          severity: "blocking",
+          code: "port_in_use",
+          resource: "udp [::]:51820",
+          message: "WireGuard 监听端口（m07）要绑定 udp [::]:51820，但 udp [::]:51820 已被WireGuard 接口 wg0占用。",
+          action: "在拓扑里把链路 hub-us的「WireGuard 端口」（链路 hub-us 的 WireGuard 监听端口）改成这台主机上未占用的端口。",
+          fix: { kind: "link", id: "hub-us", field: "wg_port", label: "链路 hub-us 的「WireGuard 端口」" },
+        },
+      ],
+      counts: { blocking: 1, warning: 0, info: 0 },
+    });
+    fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [server({ id: "srv-2", name: "美国机", address: "198.51.100.40" })] }),
+      "POST /api/provision/preflight": () => ({ preflight: rec }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    const fix = await screen.findByTestId("preflight-fix");
+    expect(within(fix).getByRole("link", { name: /去拓扑修改：链路 hub-us 的「WireGuard 端口」/ })).toHaveAttribute("href", "#/topology/hub-us");
+    expect(screen.getByTestId("preflight-execute")).toBeDisabled();
+  });
+
+  it("offers the WireGuard, wstunnel and WSS ports where the link and node are edited", async () => {
+    let saved: string | undefined;
+    const t = topology({ links: [{ id: "gw-hub", from: "gw", to: "hk-hub", transport: "wg_over_wss", enabled: true, standby: false, wg_port: 51841 }] });
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "PUT /api/topology": (req) => {
+        saved = req.raw;
+        return { topology: req.body, issues: [], paths: [], draft: false };
+      },
+    });
+    renderAt("#/topology/gw-hub");
+    const detail = await screen.findByTestId("link-detail");
+    expect(within(detail).getByLabelText("WireGuard 端口")).toHaveValue("51841");
+    const local = within(detail).getByLabelText("wstunnel 本地端口");
+    await userEvent.type(local, "52900");
+    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
+    const body = JSON.parse(saved!) as Topology;
+    expect(body.links[0].wss_local_port).toBe(52900);
+    expect(body.links[0].wg_port).toBe(51841);
+  });
+
+  it("shows the WSS listen port for an exit node", async () => {
+    fakeApi({ "GET /api/topology": () => topology() });
+    renderAt("#/topology/us");
+    const detail = await screen.findByTestId("node-detail");
+    expect(within(detail).getByLabelText("WireGuard 监听端口")).toBeInTheDocument();
+    await userEvent.click(within(detail).getByText("WSS 入口（高级）"));
+    expect(await within(detail).findByLabelText("WSS 监听端口")).toBeInTheDocument();
   });
 });

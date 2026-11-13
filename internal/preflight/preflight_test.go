@@ -1,6 +1,7 @@
 package preflight
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/validate"
 )
 
 // nodeFiles is provision.FilesFor for the example topology (that package
@@ -1057,5 +1060,249 @@ func TestRemoteUpdateOfOwnInstallIsNotBlocked(t *testing.T) {
 	ev := Evaluate(fixture(t, "clean-debian13.txt", fp, allPresent(fp), state), fp, remote("ali"))
 	if pu := find(ev, CodePortInUse); len(pu) != 1 || !strings.Contains(pu[0].Message, "nginx") {
 		t.Fatalf("foreign 443 next to ours %+v", pu)
+	}
+}
+
+// filesOf is nodeFiles for any topology.
+func filesOf(t *testing.T, topo model.Topology, id string) map[string]string {
+	t.Helper()
+	b, err := compile.Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for p, body := range b.Files {
+		if strings.HasPrefix(p, "nodes/"+id+"/") {
+			out["/"+strings.TrimPrefix(p, "nodes/"+id+"/")] = body
+		}
+	}
+	return out
+}
+
+func portSources(topo model.Topology, id string) []PortSource {
+	var out []PortSource
+	for _, u := range validate.NodePorts(topo, id) {
+		out = append(out, PortSource{Proto: u.Proto, Port: u.Port, Loopback: u.Loopback, What: u.What, Kind: u.Kind, ID: u.ID, Field: u.Field})
+	}
+	return out
+}
+
+// The port plan validate.NodePorts gives every node is exactly what its
+// rendered bundle binds (read back by FootprintOf): the remedy names the
+// field that really sets the port.
+func TestPortPlanMatchesBundle(t *testing.T) {
+	topo := defaults.Example()
+	for _, n := range topo.Nodes {
+		if n.Role == model.RoleIX {
+			continue
+		}
+		fp := FootprintOf(filesOf(t, topo, n.ID))
+		var got, want []string
+		for _, l := range fp.Listens {
+			if l.Owner == "smartdns" {
+				continue
+			}
+			got = append(got, fmt.Sprintf("%s/%d/%v", l.Proto, l.Port, l.Addr.IsLoopback()))
+		}
+		for _, u := range validate.NodePorts(topo, n.ID) {
+			want = append(want, fmt.Sprintf("%s/%d/%v", u.Proto, u.Port, u.Loopback))
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%s: bundle binds %v, plan says %v", n.ID, got, want)
+		}
+	}
+}
+
+// Real hosts: UDP 51820 taken by pre-existing WireGuard. The finding names
+// the link field; changing it in the topology changes the listener's
+// bundle, its footprint and the dialer's Endpoint together, and the
+// preflight then passes the ports.
+func TestPortReconfigurationEndToEnd(t *testing.T) {
+	topo := defaults.Example()
+	const node = "ali"
+	fp := FootprintOf(filesOf(t, topo, node))
+	ev := Evaluate(fixture(t, "existing-wireguard.txt", fp, nil, ""), fp, Context{NodeID: node, Deployment: "dep-test", Ports: portSources(topo, node)})
+	pu := find(ev, CodePortInUse)
+	if len(pu) != 2 {
+		t.Fatalf("port findings %+v", pu)
+	}
+	moved := map[string]int{}
+	for _, f := range pu {
+		if f.Fix == nil || f.Fix.Kind != "link" || f.Fix.Field != "wg_port" || !strings.Contains(f.Action, f.Fix.ID) || !strings.Contains(f.Action, "WireGuard 端口") {
+			t.Fatalf("finding without a usable fix: %+v", f)
+		}
+		if _, ok := moved[f.Fix.ID]; !ok {
+			moved[f.Fix.ID] = 52820 + 10*len(moved)
+		}
+	}
+	var dialers []string
+	for i := range topo.Links {
+		if p, ok := moved[topo.Links[i].ID]; ok {
+			topo.Links[i].WGPort = p
+		}
+	}
+	if res := validate.Run(topo); res.HasErrors() {
+		t.Fatalf("reconfigured topology invalid: %+v", res.Issues)
+	}
+	for _, lp := range validate.TunnelPorts(topo) {
+		if p, ok := moved[lp.LinkID]; ok {
+			if lp.Listener != node || lp.WG != p {
+				t.Fatalf("plan %+v", lp)
+			}
+			dialers = append(dialers, lp.Dialer)
+		}
+	}
+	fp2 := FootprintOf(filesOf(t, topo, node))
+	for _, p := range moved {
+		found := false
+		for _, l := range fp2.Listens {
+			found = found || (l.Proto == "udp" && l.Port == p)
+		}
+		if !found {
+			t.Fatalf("footprint lacks udp %d: %+v", p, fp2.Listens)
+		}
+	}
+	// The dialers' configs dial the new port (or reach it through their
+	// local wstunnel, whose server forwards to the new port).
+	for _, d := range dialers {
+		all := ""
+		for _, body := range filesOf(t, topo, d) {
+			all += body
+		}
+		ok := false
+		for _, p := range moved {
+			ok = ok || strings.Contains(all, fmt.Sprintf(":%d", p))
+		}
+		if !ok {
+			t.Fatalf("dialer %s does not use the new port", d)
+		}
+	}
+	ev = Evaluate(fixture(t, "existing-wireguard.txt", fp2, nil, ""), fp2, Context{NodeID: node, Deployment: "dep-test", Ports: portSources(topo, node)})
+	if has(ev, "", CodePortInUse) {
+		t.Fatalf("still in use: %+v", find(ev, CodePortInUse))
+	}
+
+	// The same through the node's listen_port: a node listening on one
+	// link without wg_port takes it.
+	topo = defaults.Example()
+	var lid string
+	for _, lp := range validate.TunnelPorts(topo) {
+		if lp.Listener == node && lid == "" {
+			lid = lp.LinkID
+		}
+	}
+	for i := range topo.Links {
+		if topo.Links[i].ID == lid {
+			topo.Links[i].WGPort = 0
+		}
+	}
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == node {
+			topo.Nodes[i].ListenPort = 53999
+		}
+	}
+	if res := validate.Run(topo); res.HasErrors() {
+		t.Fatalf("listen_port topology invalid: %+v", res.Issues)
+	}
+	if !strings.Contains(strings.Join(mapValues(filesOf(t, topo, node)), ""), "ListenPort = 53999") {
+		t.Fatal("listen_port not rendered")
+	}
+}
+
+func mapValues(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
+	}
+	return out
+}
+
+// Validation rejects collisions between a node's own listeners, reserved
+// ports and an ambiguous listen_port.
+func TestPortValidation(t *testing.T) {
+	codesOf := func(topo model.Topology) string {
+		var out []string
+		for _, i := range validate.Run(topo).Issues {
+			if strings.HasPrefix(i.Code, "port_") {
+				out = append(out, i.Code+":"+i.Field)
+			}
+		}
+		sort.Strings(out)
+		return strings.Join(out, ",")
+	}
+	base := defaults.Example()
+	if c := codesOf(base); c != "" {
+		t.Fatalf("example has port issues: %s", c)
+	}
+	// A node that listens on two links.
+	by := map[string][]string{}
+	for _, lp := range validate.TunnelPorts(base) {
+		by[lp.Listener] = append(by[lp.Listener], lp.LinkID)
+	}
+	var who string
+	var mine []string
+	for n, ls := range by {
+		if len(ls) >= 2 && (who == "" || n < who) {
+			who, mine = n, ls
+		}
+	}
+	if who == "" {
+		t.Fatalf("no node listens on two links: %v", by)
+	}
+	set := func(f func(*model.Topology)) model.Topology {
+		topo := defaults.Example()
+		f(&topo)
+		return topo
+	}
+	same := set(func(topo *model.Topology) {
+		for i := range topo.Links {
+			if topo.Links[i].ID == mine[0] || topo.Links[i].ID == mine[1] {
+				topo.Links[i].WGPort = 51900
+			}
+		}
+	})
+	if c := codesOf(same); !strings.Contains(c, "port_conflict:wg_port") {
+		t.Fatalf("own collision: %s", c)
+	}
+	dns := set(func(topo *model.Topology) {
+		for i := range topo.Links {
+			if topo.Links[i].ID == mine[0] {
+				topo.Links[i].WGPort = 53
+			}
+		}
+	})
+	if c := codesOf(dns); !strings.Contains(c, "port_reserved:wg_port") {
+		t.Fatalf("reserved: %s", c)
+	}
+	amb := set(func(topo *model.Topology) {
+		for i := range topo.Links {
+			if topo.Links[i].ID == mine[0] || topo.Links[i].ID == mine[1] {
+				topo.Links[i].WGPort = 0
+			}
+		}
+		for i := range topo.Nodes {
+			if topo.Nodes[i].ID == who {
+				topo.Nodes[i].ListenPort = 51999
+			}
+		}
+	})
+	if c := codesOf(amb); !strings.Contains(c, "port_ambiguous:listen_port") {
+		t.Fatalf("ambiguous: %s", c)
+	}
+	wss := set(func(topo *model.Topology) {
+		for i := range topo.Nodes {
+			if topo.Nodes[i].ID == "ali" {
+				topo.Nodes[i].WSSListenPort = 22
+			}
+		}
+	})
+	hasTCP := false
+	for _, u := range validate.NodePorts(wss, "ali") {
+		hasTCP = hasTCP || u.Proto == "tcp"
+	}
+	if c := codesOf(wss); !hasTCP || !strings.Contains(c, "port_reserved:wss_listen_port") {
+		t.Fatalf("wss on 22 (ali has a WSS server: %v): %s", hasTCP, c)
 	}
 }

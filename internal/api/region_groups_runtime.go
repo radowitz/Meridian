@@ -183,6 +183,7 @@ type lastReadView struct {
 	OK           bool      `json:"ok"`
 	ErrorCode    string    `json:"error_code,omitempty"`
 	SSHCode      string    `json:"ssh_code,omitempty"`
+	RetryAfter   int       `json:"retry_after,omitempty"`
 	Error        string    `json:"error,omitempty"`
 	ClockSkewSec *int64    `json:"clock_skew_sec,omitempty"`
 	// CurrentHub is false when the read was taken from another hub
@@ -212,7 +213,7 @@ func (h groupHub) view(t model.Topology, reach hubReach, plans groupPlans) hubSt
 		v.ServerID = reach.node.ServerID
 	}
 	if rd := h.read; rd != nil {
-		lr := &lastReadView{ReadAt: rd.ReadAt, ErrorCode: rd.ErrorCode, SSHCode: rd.SSHCode, Error: rd.Error, Ignored: []string{}}
+		lr := &lastReadView{ReadAt: rd.ReadAt, ErrorCode: rd.ErrorCode, SSHCode: rd.SSHCode, RetryAfter: rd.RetryAfter, Error: rd.Error, Ignored: []string{}}
 		lr.OK = rd.ErrorCode == "" && rd.Snapshot != nil
 		lr.CurrentHub = rd.Bound(h.current)
 		if !lr.CurrentHub {
@@ -336,7 +337,7 @@ func (s *Server) readHub(ctx context.Context, reach hubReach) hubstate.Read {
 			code = sshexec.CodeCommandFailed
 		}
 		// sshexec errors are already scrubbed of the credential.
-		rd.SSHCode, rd.Error = code, "读取枢纽状态失败："+err.Error()
+		rd.SSHCode, rd.Error, rd.RetryAfter = code, "读取枢纽状态失败："+err.Error(), sshexec.RetryAfterOf(err)
 		return rd
 	}
 	snap, err := hubstate.Parse(out)

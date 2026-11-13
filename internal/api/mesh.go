@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/radowitz/meridian/internal/credentials"
@@ -232,7 +234,18 @@ var meshRemoved = []string{"private_key_pem", "trust_new_host", "nodes", "ssh_ho
 // plan node's during a deploy, the journal's pin during a withdrawal). The
 // connector refuses an untrusted server, a host presenting another key and
 // a server whose endpoint no longer matches the pin, before authenticating.
-type sshRemote struct{ conn *sshexec.Connector }
+//
+// The connector's pool lets the stages of one run (preflight, install,
+// health check, compensation) share one login per host. sshRemote also
+// remembers the most restrictive SSH refusal it met, so a stage that failed
+// because a host rate-limited the panel is reported with that code.
+type sshRemote struct {
+	conn *sshexec.Connector
+
+	mu    sync.Mutex
+	code  string // ssh_rate_limited when any host refused this source
+	retry int
+}
 
 func (r *sshRemote) Exec(ctx context.Context, n mesh.NodeTarget, act mesh.Action, script string) (string, string, error) {
 	if n.ServerID == "" {
@@ -242,7 +255,26 @@ func (r *sshRemote) Exec(ctx context.Context, n mesh.NodeTarget, act mesh.Action
 	defer cancel()
 	res, err := r.conn.RunScript(ctx, sshexec.Target{ServerID: n.ServerID, CredentialID: n.CredentialID,
 		Address: n.SSHHost, Port: n.SSHPort, User: n.SSHUser, Fingerprint: n.HostKey}, script)
+	if sshexec.CodeOf(err) == sshexec.CodeRateLimited {
+		r.mu.Lock()
+		r.code = sshexec.CodeRateLimited
+		if ra := sshexec.RetryAfterOf(err); ra > r.retry {
+			r.retry = ra
+		}
+		r.mu.Unlock()
+	}
 	return res.Output, res.Fingerprint, err
+}
+
+// sshRefusal is what writeMeshResult adds to a failed run's response.
+func sshRefusal(rem mesh.Remote) (string, int) {
+	r, ok := rem.(*sshRemote)
+	if !ok {
+		return "", 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.code, r.retry
 }
 
 // meshRemote is the SSH executor (tests replace it with MeshRemote).
@@ -345,7 +377,7 @@ func (s *Server) postMeshDeploy(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 	j, err := d.Deploy(ctx, plan)
-	writeMeshResult(w, j, err, red, &acct)
+	writeMeshResult(w, j, err, red, &acct, rem)
 }
 
 func (s *Server) postMeshWithdraw(w http.ResponseWriter, r *http.Request) {
@@ -366,10 +398,10 @@ func (s *Server) postMeshWithdraw(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
 	j, err := s.deployer(rem, red).Withdraw(ctx)
-	writeMeshResult(w, j, err, red, nil)
+	writeMeshResult(w, j, err, red, nil, rem)
 }
 
-func writeMeshResult(w http.ResponseWriter, j *mesh.Journal, err error, red *mesh.Redactor, acct *meshAccountSummary) {
+func writeMeshResult(w http.ResponseWriter, j *mesh.Journal, err error, red *mesh.Redactor, acct *meshAccountSummary, rem mesh.Remote) {
 	resp := map[string]any{"journal": j, "dataplane": mesh.DataplaneUnverified, "dataplane_note": meshDataplaneNote}
 	if acct != nil {
 		resp["account"] = acct
@@ -379,6 +411,15 @@ func writeMeshResult(w http.ResponseWriter, j *mesh.Journal, err error, red *mes
 		return
 	}
 	resp["error"] = red.Redact(err.Error())
+	// A host that refused the panel's source address ("Not allowed at this
+	// time"): said explicitly, with how long the panel stays away from it.
+	if code, retry := sshRefusal(rem); code != "" {
+		resp["ssh_code"] = code
+		resp["retry_after"] = retry
+		if retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+		}
+	}
 	var se *mesh.StageError
 	conflict := map[error]string{
 		mesh.ErrBusy: "busy", mesh.ErrNothingToWithdraw: "nothing_to_withdraw", mesh.ErrAccountMismatch: "account_mismatch",

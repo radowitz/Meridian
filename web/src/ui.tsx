@@ -231,6 +231,7 @@ export const ERROR_TEXT: Record<string, string> = {
   not_ssh: "对端不是 SSH 服务",
   auth_failed: "SSH 登录被拒绝：服务器不接受这份凭据",
   auth_method_unavailable: "服务器不接受这种登录方式",
+  ssh_rate_limited: "服务器暂时拒绝面板的来源地址（限速），稍后再试",
   command_failed: "远端命令执行失败",
   account_locked: "账户被未撤回完的 Mesh 部署绑定",
   check_failed: "权限检查无法进行",
@@ -294,12 +295,133 @@ export const ERROR_TEXT: Record<string, string> = {
   still_on_host: "安装可能还在服务器上，不能删除记录",
 };
 
+// ======================================================= SSH rate limiting ===
+//
+// A server that answers "Not allowed at this time" before its SSH banner
+// (OpenSSH per-source penalties) refuses the panel's source address for a
+// while; the panel does not connect to it again for retry_after seconds.
+// The cooldown is remembered per server so every button that would connect
+// to it is disabled until then, instead of inviting more attempts (each of
+// which lengthens the penalty).
+
+const cooldowns = new Map<string, number>();
+const cooldownListeners = new Set<() => void>();
+
+/** Forgets every cooldown (tests). */
+export function clearCooldowns() {
+  cooldowns.clear();
+  cooldownListeners.forEach((cb) => cb());
+}
+
+/** Seconds the server asked the panel to stay away, from an error (or 0). */
+export function retryAfterOf(e: ApiError | null | undefined): number {
+  if (!e) return 0;
+  const limited = e.code === "ssh_rate_limited" || e.body?.ssh_code === "ssh_rate_limited";
+  if (!limited) return 0;
+  const n = Number(e.body?.retry_after);
+  return Number.isFinite(n) && n > 0 ? n : 60;
+}
+
+/** Records that a server is rate-limiting the panel until now + seconds. */
+export function noteRateLimited(serverId: string | undefined, seconds: number, from = Date.now()) {
+  if (!serverId || seconds <= 0) return;
+  const until = from + seconds * 1000;
+  if ((cooldowns.get(serverId) ?? 0) >= until) return;
+  cooldowns.set(serverId, until);
+  cooldownListeners.forEach((cb) => cb());
+}
+
+/** Seconds left of a server's cooldown (0 when none); re-renders every second while counting. */
+export function useServerCooldown(serverId: string | undefined): number {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const cb = () => setTick((t) => t + 1);
+    cooldownListeners.add(cb);
+    return () => {
+      cooldownListeners.delete(cb);
+    };
+  }, []);
+  const until = serverId ? (cooldowns.get(serverId) ?? 0) : 0;
+  const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+  useEffect(() => {
+    if (left <= 0) return;
+    const t = setTimeout(() => setTick((x) => x + 1), 1000);
+    return () => clearTimeout(t);
+  }, [left]);
+  return left;
+}
+
+/** Like useServerCooldown for many servers: returns a lookup of seconds left. */
+export function useCooldowns(): (serverId: string | undefined) => number {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const cb = () => setTick((t) => t + 1);
+    cooldownListeners.add(cb);
+    const iv = setInterval(() => {
+      const now = Date.now();
+      for (const until of cooldowns.values()) {
+        if (until > now - 1000) {
+          setTick((t) => t + 1);
+          return;
+        }
+      }
+    }, 1000);
+    return () => {
+      cooldownListeners.delete(cb);
+      clearInterval(iv);
+    };
+  }, []);
+  return (id) => (id ? Math.max(0, Math.ceil(((cooldowns.get(id) ?? 0) - Date.now()) / 1000)) : 0);
+}
+
+/** The "retry later" note shown with a rate-limit refusal. */
+export function RateLimitNote({ seconds }: { seconds: number }) {
+  return (
+    <span data-testid="rate-limit-note" style={{ display: "block", marginTop: 8 }}>
+      <Typography.Text strong>服务器暂时拒绝来自面板这个地址的连接（限速）。</Typography.Text>
+      这不是密码、密钥或主机指纹的问题，面板没有尝试登录。
+      {seconds > 0 ? `${seconds} 秒内面板不会再连接这台服务器，相关按钮暂时停用；` : "现在可以重试；"}
+      若仍被拒绝，再多等几分钟（连续尝试会让限速时间变长）。
+    </span>
+  );
+}
+
 export function errorTitle(e: ApiError): string {
   if (e.code && ERROR_TEXT[e.code]) return ERROR_TEXT[e.code];
   if (e.status === 401) return ERROR_TEXT.unauthorized;
   if (e.status === 0) return ERROR_TEXT.network;
   if (e.status >= 500) return "服务端出错";
   return "操作没有完成";
+}
+
+/** Retry, disabled while a rate-limited server's cooldown runs. */
+function RetryButton({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
+  const [until] = useState(() => Date.now() + retryAfterOf(error) * 1000);
+  const [, setTick] = useState(0);
+  const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+  useEffect(() => {
+    if (left <= 0) return;
+    const t = setTimeout(() => setTick((x) => x + 1), 1000);
+    return () => clearTimeout(t);
+  }, [left]);
+  return (
+    <Button size="small" icon={<ReloadOutlined />} onClick={onRetry} disabled={left > 0} data-testid="error-retry">
+      {left > 0 ? `${left} 秒后可重试` : "重试"}
+    </Button>
+  );
+}
+
+/** Counts down from the moment the refusal was shown. */
+function RateLimitCountdown({ error }: { error: ApiError }) {
+  const [until] = useState(() => Date.now() + retryAfterOf(error) * 1000);
+  const [, setTick] = useState(0);
+  const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+  useEffect(() => {
+    if (left <= 0) return;
+    const t = setTimeout(() => setTick((x) => x + 1), 1000);
+    return () => clearTimeout(t);
+  }, [left]);
+  return <RateLimitNote seconds={left} />;
 }
 
 /** Shows the API's message, its code in Chinese, referrers as links, and a retry. */
@@ -328,9 +450,10 @@ export function ApiErrorAlert({
       onClose={onClose}
       message={title}
       description={
-        showMessage || error.inUseBy.length > 0 || children ? (
+        showMessage || error.inUseBy.length > 0 || children || retryAfterOf(error) > 0 ? (
           <div className="error-body">
             {showMessage ? <div>{error.message}</div> : null}
+            {retryAfterOf(error) > 0 ? <RateLimitCountdown error={error} /> : null}
             {error.inUseBy.length > 0 ? (
               <div style={{ marginTop: 8 }}>
                 <Typography.Text type="secondary">引用者：</Typography.Text>
@@ -342,11 +465,7 @@ export function ApiErrorAlert({
         ) : undefined
       }
       action={
-        onRetry ? (
-          <Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>
-            重试
-          </Button>
-        ) : undefined
+        onRetry ? <RetryButton error={error} onRetry={onRetry} /> : undefined
       }
     />
   );

@@ -17,6 +17,7 @@ import (
 	"github.com/radowitz/meridian/internal/preflight"
 	"github.com/radowitz/meridian/internal/provision"
 	"github.com/radowitz/meridian/internal/sshexec"
+	"github.com/radowitz/meridian/internal/validate"
 )
 
 // The install pre-check ("preflight") before a remote node is provisioned
@@ -198,6 +199,35 @@ func (t targetIdentity) target() sshexec.Target {
 	return sshexec.Target{ServerID: t.ServerID, CredentialID: t.CredentialID, Address: t.Address, Port: t.Port, User: t.User, Fingerprint: t.Fingerprint}
 }
 
+// portSources tells the evaluation which topology field sets each port the
+// node's bundle binds (validate.NodePorts, the same plan compile uses), so
+// a port_in_use finding names the field to change.
+func (s *Server) portSources(nodeID string) []preflight.PortSource {
+	t, err := s.topology()
+	if err != nil {
+		return nil
+	}
+	if nodeID == localNodeID {
+		if gw, ok := firstNodeOfRole(t, model.RoleGateway); ok {
+			nodeID = gw.ID
+		}
+	}
+	var out []preflight.PortSource
+	for _, u := range validate.NodePorts(t, nodeID) {
+		out = append(out, preflight.PortSource{Proto: u.Proto, Port: u.Port, Loopback: u.Loopback, What: u.What, Kind: u.Kind, ID: u.ID, Field: u.Field})
+	}
+	return out
+}
+
+func firstNodeOfRole(t model.Topology, r model.Role) (model.Node, bool) {
+	for _, n := range t.Nodes {
+		if n.Role == r {
+			return n, true
+		}
+	}
+	return model.Node{}, false
+}
+
 func summaryOf(r preflight.Report) hostSummary {
 	return hostSummary{OS: r.OSPretty, Arch: r.Arch, Kernel: r.Kernel, MemTotalKB: r.MemTotalKB, MemAvailKB: r.MemAvailKB, Complete: r.Complete, Notes: r.Notes}
 }
@@ -222,7 +252,7 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 	}
 	rep := preflight.Parse(res.Output)
 	rep.Source = "ssh"
-	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep})
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep, Ports: s.portSources(n.ID)})
 	now := time.Now().UTC()
 	if res.AuthMethod != "" {
 		ident.AuthMethod = res.AuthMethod
@@ -559,7 +589,7 @@ func (s *Server) runHostPreflight(ctx context.Context, files map[string]string) 
 	}
 	rep := preflight.Parse(text)
 	rep.Source = "host-agent"
-	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: localNodeID, Deployment: dep, Gateway: true, Owned: ownedOf(inst)})
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: localNodeID, Deployment: dep, Gateway: true, Owned: ownedOf(inst), Ports: s.portSources(localNodeID)})
 	now := time.Now().UTC()
 	rec := &preflightRecord{ID: "pf-" + randHex(8), Kind: "gateway", NodeID: localNodeID, NodeName: "网关", Role: string(model.RoleGateway),
 		Deployment: dep, Bundle: preflight.BundleDigest(files), FirstInstall: inst.Empty() || inst.Withdrawn(), At: now, ExpiresAt: now.Add(preflightTTL),

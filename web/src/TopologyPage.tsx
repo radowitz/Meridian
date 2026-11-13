@@ -385,8 +385,15 @@ function NodeDetail({
         <Input className="mono" value={node.endpoint_v6 ?? ""} onChange={(e) => patch({ endpoint_v6: e.target.value.trim() || undefined })} />
       </Row>
       <Space.Compact block>
-        <Row label="WireGuard 监听端口">
-          <InputNumber min={1} max={65535} value={node.listen_port} onChange={(v) => patch({ listen_port: v ?? undefined })} style={{ width: "100%" }} />
+        <Row label="WireGuard 监听端口" help="这个节点只监听一条没有单独设端口的链路时用它；监听多条时在每条链路上填「WireGuard 端口」。端口被占用时改这里或链路上的端口。">
+          <InputNumber
+            min={1}
+            max={65534}
+            value={node.listen_port}
+            onChange={(v) => patch({ listen_port: v ?? undefined })}
+            style={{ width: "100%" }}
+            aria-label="WireGuard 监听端口"
+          />
         </Row>
         <Row label="外网网卡">
           <Input className="mono" value={node.wan_interface ?? ""} onChange={(e) => patch({ wan_interface: e.target.value.trim() || undefined })} placeholder="eth0" />
@@ -432,7 +439,7 @@ function NodeDetail({
       ) : null}
       <Flag label="NAT 拨出" help="节点在 NAT 后面，由它主动拨枢纽；对端不配置它的地址。" checked={node.nat_dial_out} onChange={(v) => patch({ nat_dial_out: v })} />
 
-      {node.role === "hub" || node.role === "relay" ? (
+      {node.role === "hub" || node.role === "relay" || node.role === "exit" ? (
         <Collapse
           ghost
           style={{ marginTop: 8 }}
@@ -442,8 +449,16 @@ function NodeDetail({
               label: "WSS 入口（高级）",
               children: (
                 <>
-                  <Row label="WSS 监听端口">
-                    <InputNumber min={1} max={65535} value={node.wss_listen_port} onChange={(v) => patch({ wss_listen_port: v ?? undefined })} style={{ width: "100%" }} />
+                  <Row label="WSS 监听端口" help="默认 443。443 已被 nginx 或别的 wstunnel 占用时换一个端口（TCP）。">
+                    <InputNumber
+                      min={1}
+                      max={65535}
+                      value={node.wss_listen_port}
+                      onChange={(v) => patch({ wss_listen_port: v ?? undefined })}
+                      style={{ width: "100%" }}
+                      placeholder="443"
+                      aria-label="WSS 监听端口"
+                    />
                   </Row>
                   <Row label="WSS 路径前缀">
                     <Input className="mono" value={node.wss_path_prefix ?? ""} onChange={(e) => patch({ wss_path_prefix: e.target.value || undefined })} />
@@ -535,10 +550,22 @@ function LinkDetail({ link, topo, onChange, onDelete }: { link: TLink; topo: Top
         <Row label="Keepalive（秒）" help="NAT 拨出的一端需要 > 0。">
           <InputNumber min={0} max={600} value={link.keepalive} onChange={(v) => patch({ keepalive: v ?? undefined })} style={{ width: "100%" }} />
         </Row>
-        <Row label="WireGuard 端口">
-          <InputNumber min={1} max={65535} value={link.wg_port} onChange={(v) => patch({ wg_port: v ?? undefined })} style={{ width: "100%" }} />
+        <Row label="WireGuard 端口" help="监听端的 UDP 端口；不填时用监听节点的监听端口或 51820+序号。UDP+WSS 故障切换还占用下一个端口。">
+          <InputNumber min={1} max={65534} value={link.wg_port} onChange={(v) => patch({ wg_port: v ?? undefined })} style={{ width: "100%" }} aria-label="WireGuard 端口" />
         </Row>
       </Space.Compact>
+      {link.transport === "wg_over_wss" || link.transport === "udp_wss_failover" || link.transport === "ix_replacement_wss" ? (
+        <Row label="wstunnel 本地端口" help="拨号端 wstunnel 客户端在 127.0.0.1 上的 UDP 端口；不填时 52000+序号。被占用时改这里。">
+          <InputNumber
+            min={1}
+            max={65535}
+            value={link.wss_local_port}
+            onChange={(v) => patch({ wss_local_port: v ?? undefined })}
+            style={{ width: "100%" }}
+            aria-label="wstunnel 本地端口"
+          />
+        </Row>
+      ) : null}
       {link.transport === "cf_mesh" ? (
         <Row label="Mesh 发布的路由" help="出口端 Mesh 节点通告的网段；在 Cloudflare 页部署时发布、失败时撤回。">
           <Select

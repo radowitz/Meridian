@@ -203,16 +203,19 @@ wstunnel 需要单独安装到 `/usr/local/bin/wstunnel`，版本请钉死你核
 | `not_root` | 登录用户不是 root | 服务器改用 root（这一版不支持 sudo） |
 | `os_unsupported`、`arch_unsupported`、`no_systemd` | 不是 Debian 12 / 13、不是 x86_64 / aarch64，或没有 systemd | 换系统；面板不会在别的环境上装 |
 | `forward_policy_drop` | iptables FORWARD 策略是 DROP（通常是 Docker） | 确认没有别的程序依赖后 `iptables -P FORWARD ACCEPT`，或在没有 Docker 时重启；有 Docker 的主机**目前没有共存方案**，预检会一直拒绝 |
-| `port_in_use` | WireGuard 端口、443、wstunnel 本地端口或解析器的 :53 已被别的进程占用 | 停掉或改那个服务，或在拓扑里换端口 |
+| `port_in_use` | WireGuard 端口（例如 51820 被已有的 `wg0` 占用）、WSS 的 443（nginx、另一个 wstunnel）、wstunnel 本地端口或解析器的 :53 已被别的进程占用 | 点结论里的「去拓扑修改」，按它说的改链路的「WireGuard 端口」/「wstunnel 本地端口」或节点的「WireGuard 监听端口」/「WSS 监听端口」（WSS 在节点的「WSS 入口（高级）」里），保存后重新预检；对端的 `Endpoint` 随之更新，已装好的对端节点要重新下发、网关要重新安装。解析器的 53/853 不能改：让占用者只绑它自己的地址。端口规则见 [架构](architecture.md)「端口从哪里来」 |
 | `interface_exists`、`address_overlap`、`route_overlap`、`route_table_in_use`、`fwmark_in_use`、`nft_table_exists` | 主机上已有同名接口，或重叠的地址 / 路由 / 路由表 / 标记 / `inet meridian` | 改拓扑里的名字或前缀，或移走主机上的旧配置 |
 | `path_occupied`：要写的路径上有不属于 Meridian 的文件 | 例如另一份 `/etc/smartdns/smartdns.conf` | 先自己备份并移走；面板不覆盖 |
 | `modified_since_install`（警告） | Meridian 装过的文件之后被改过 | 看清改了什么；继续安装会整份覆盖它 |
 | `managed_by_other`：主机属于另一个节点或另一个面板 | 部署清单里的节点或部署 ID 不同 | 先在原来那边撤回，或换服务器 |
 | `legacy_install` | 旧版本装过、没有清单 | 第 9 节「旧版清理」 |
 | `previous_run_incomplete` | 上一次装机没有正常结束 | 第 9 节「恢复中断的装机」 |
-| 登录方式不被接受（连接错误 `auth_method_unavailable`） | 服务器不提供这种登录方式 | 按面板给出的公钥加进 `authorized_keys`，改用密钥凭据 |
+| 登录方式不被接受（连接错误 `auth_method_unavailable`） | 服务器不提供这种登录方式 | 按面板给出的公钥加进 `authorized_keys`，改用密钥凭据；只接受密码的服务器用密码凭据即可，面板不强制密钥 |
+| 「服务器暂时拒绝面板的来源地址（限速）」（`ssh_rate_limited`） | 服务器（OpenSSH 9.8+ 的 PerSourcePenalties）在 SSH 握手前回了 `Not allowed at this time`：短时间内来自同一地址的连接太多或有没登录完的连接；经端口转发的服务器上所有连接都来自转发器的地址 | 不是密码或指纹问题，什么都不用改。面板 60 秒内不再连接这台服务器，按钮显示倒计时；之后仍被拒就再多等几分钟（连续尝试会延长限速）。少点「重新获取指纹」（只读指纹的连接没有登录，最容易触发限速） |
 
-警告不阻止执行，但执行前复核时出现的**新**警告会让这次执行被拒（`preflight_changed`），要重新审阅。完整的检查列表和它不检查的东西见 [架构](architecture.md)「装机前预检」。
+警告不阻止执行，但执行前复核时出现的**新**警告会让这次执行被拒（`preflight_changed`），要重新审阅。
+
+同一流程里面板只登录一次：连接测试之后紧接着的预检、一次装机里的预检重跑和脚本、撤回的计划和执行共用一条已认证的连接（空闲 60 秒或存在 5 分钟就关闭；改服务器、指纹或凭据会立即关闭）。这一点和限速识别一样，只在自动化测试里验证过，没有在真实服务器上运行过。完整的检查列表和它不检查的东西见 [架构](architecture.md)「装机前预检」。
 
 ## 6. 名单
 
