@@ -78,3 +78,22 @@ func DualHubExample() model.Topology {
 		},
 	}
 }
+
+// SharedRelaysExample is DualHubExample with a second domestic relay
+// ("ali2", plain WireGuard from the gateway, its own tunnel to the IX):
+// both relays carry the main path at once, weighted by measured quality
+// (docs/architecture.md「多中继同时分担」); the backup hub takes over only
+// when every relay is persistently below the usable floor. Documentation
+// addresses only.
+func SharedRelaysExample() model.Topology {
+	t := DualHubExample()
+	t.Nodes = append(t.Nodes, model.Node{
+		ID: "ali2", Name: "国内中继 2", Role: model.RoleRelay, Region: "cn", Managed: true, X: 220, Y: 320,
+		WANInterface: "eth0", EndpointV4: "203.0.113.11", PathV4: true,
+	})
+	t.Links = append(t.Links,
+		model.Link{ID: "gw-ali2", Name: "家宽 → 国内中继 2", From: "gw", To: "ali2", Transport: model.TransportDirectWG, Enabled: true},
+		model.Link{ID: "ali2-ix", Name: "国内中继 2 → IX（专线）", From: "ali2", To: "ix", Transport: model.TransportDirectWG, Enabled: true},
+	)
+	return t
+}

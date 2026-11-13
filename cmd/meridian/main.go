@@ -15,6 +15,7 @@ import (
 	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/lists"
+	"github.com/radowitz/meridian/internal/pathquality"
 	"github.com/radowitz/meridian/internal/store"
 )
 
@@ -28,6 +29,14 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "lists-update" {
 		os.Exit(listsUpdate(os.Args[2:]))
+	}
+	// One pass of the gateway's relay-sharing controller, run by the
+	// compiled meridian-failover.sh (root, on the host, independent of the
+	// panel container). The script calls it with MERIDIAN_BIND=- so that an
+	// older binary without this subcommand stops at the bind check below
+	// with no side effect and the script uses its own fallback.
+	if len(os.Args) > 1 && os.Args[1] == "path-step" {
+		os.Exit(pathquality.RunStep(os.Args[2:], os.Stdout, os.Stderr))
 	}
 	bind := env("MERIDIAN_BIND", "192.168.100.88:8787")
 	if err := api.CheckBind(bind); err != nil {

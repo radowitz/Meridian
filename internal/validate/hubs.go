@@ -20,8 +20,8 @@ import (
 // reaches the same exits through tunnels of its own. What this version
 // cannot compile soundly with a backup hub is refused here, by name, rather
 // than compiled half-way: Mesh edges and relay links to the backup hub,
-// several relays, pure-IPv6 exits behind a workaround and the manual
-// IX-replacement switch.
+// pure-IPv6 exits behind a workaround and the manual IX-replacement switch.
+// Several relays are supported with and without a backup hub (sharing.go).
 
 // primaryHub is model.Topology.PrimaryHub without the ok flag.
 func primaryHub(t model.Topology) model.Node {
@@ -152,15 +152,6 @@ func checkDualHub(t model.Topology, nodes map[string]model.Node) []Issue {
 	if t.Settings.IXReplacementMode {
 		out = append(out, Issue{Code: "ix_replacement_mode_dual_hub", Severity: SeverityError, Field: "ix_replacement_mode",
 			Message: "有备用枢纽时不使用「IX 替换模式」：网关在主链路（网关 → 中继 → IX）整体失败时自动改走备用枢纽，恢复后自动切回。关掉 ix_replacement_mode。"})
-	}
-	var relays []model.Node
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleRelay {
-			relays = append(relays, n)
-		}
-	}
-	if len(relays) > 1 {
-		add("dual_hub_multiple_relays", relays[1].ID, "", "role", "有备用枢纽时这一版只支持一台国内中继（拓扑里有 %d 台）。多中继分担与按质量切换在后续版本提供；在那之前请只保留一台中继。", len(relays))
 	}
 	backupLinks := 0
 	for _, l := range t.Links {

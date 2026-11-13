@@ -72,3 +72,34 @@ const (
 	tableHubReturnBackup         = 173
 	prioHubReturn                = 17060 // primary; backup is 17061
 )
+
+// Relay sharing on the gateway (share.go). Each new exit-marked connection
+// from the LAN (or mra) gets a connection mark naming one relay (or the
+// backup hub) from a weighted flow-hash map; every packet of it then
+// carries that relay's bits in the fwmark (markShareMask) and is routed by
+// the relay's own table, which only points at that relay's leg (and a
+// blackhole). The bits are stripped again in the forward hook before the
+// guard, the MSS clamp and the transit SNAT look at the mark, so those see
+// exactly the exit marks they always did. Packets without relay bits (this
+// host's own group DNS, connections from before the install) take table
+// 102, which follows the designated (heaviest) relay.
+const (
+	markShareMask    uint32 = 0x00ff0000
+	tableShareBackup        = 109
+	tableShareBase          = 110   // relay i (1-based) uses 110 + i
+	prioShare               = 17150 // the backup rule; relay i at prioShare + i
+)
+
+// Reply symmetry on relays and the primary hub with relay sharing
+// (share.go): every original-direction packet that arrives on a west
+// tunnel (a gateway leg on a relay, a relay tunnel on the hub) sets the
+// connection's ct mark to that tunnel's mark; every reply packet of the
+// connection, forwarded or answered locally, carries it as fwmark and is
+// routed by that tunnel's table, which holds only the home prefixes on
+// that tunnel and a blackhole. Replies therefore leave the way the
+// connection last came in, which keeps rp_filter and NAT on symmetric paths.
+const (
+	markIngressBase  uint32 = 0x4e00
+	tableIngressBase        = 174
+	prioIngress             = 17070
+)

@@ -286,6 +286,10 @@ type Settings struct {
 	// DefaultGroup carries foreign traffic no rule matched (formerly the
 	// fixed "hk" pool). MigrateRegionGroups sets it to the hk auto group.
 	DefaultGroup string `json:"default_group,omitempty"`
+
+	// PathQuality is the relay-sharing policy (pathquality.go). Nil means
+	// the defaults; only used with two or more relays.
+	PathQuality *PathQuality `json:"path_quality,omitempty"`
 }
 
 // NAT64 is the placeholder for a future translator in front of a pure-v6

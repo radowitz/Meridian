@@ -25,7 +25,7 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 	case model.RoleGateway:
 		renderGatewayRoutes(&sb, t, tunnels, exits, groups)
 	case model.RoleRelay:
-		renderRelayRoutes(&sb, t, tunnels)
+		renderRelayRoutes(&sb, t, n, tunnels)
 	case model.RoleHub:
 		renderHubRoutes(&sb, t, n, tunnels, exits, groups)
 	case model.RoleExit:
@@ -89,7 +89,12 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	// The blackhole default is what remains if the WireGuard device route
 	// disappears, so the lookup cannot fall through to ROS.
 	fmt.Fprintf(sb, "ip route replace %s dev %s table 102\n", lanNetQ, lanQ)
-	if t.DualHub() {
+	if sp := planShare(t, tunnels); sp != nil {
+		// Two or more relays carry the main path at once (share.go): one
+		// table per relay, table 102 on the designated relay, the same
+		// shell the failover loop applies its decisions with.
+		renderShareRoutes(sb, sp)
+	} else if t.DualHub() {
 		// Main path or backup hub: decided in one place (planUpstream),
 		// applied by the same shell the failover loop uses.
 		renderUpstreamRoutes(sb, planUpstream(t, tunnels))
@@ -177,8 +182,8 @@ harden_sysctl() {
 	sb.WriteString("harden_sysctl " + strings.Join(ifaces, " ") + "\n")
 }
 
-func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) {
-	westUDP, westWSS, eastIX, eastWSS := relayIfaces(tunnels)
+func renderRelayRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel) {
+	westUDP, westWSS, eastIX, eastWSS := relayIfaces(tunnelsFor(tunnels, n.ID))
 	preferred := eastIX
 	kind := "ix"
 	if t.Settings.IXReplacementMode && eastWSS.Iface() != "" {
@@ -190,6 +195,11 @@ func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) 
 	west := westUDP
 	if west.Iface() == "" {
 		west = westWSS
+	}
+	if legs := relayWestLegs(tunnels, n.ID); t.RelaySharing() && west.Iface() == "" && len(legs) > 0 {
+		// A plain WireGuard (or WSS-only) leg from the gateway: replies
+		// follow the ingress mark (ingressReturns); this is the default.
+		west = legs[0]
 	}
 	fmt.Fprintf(sb, "ip route replace %s dev %s\n", lanNet(t), west.Iface())
 	fmt.Fprintf(sb, "ip route replace %s dev %s\n", transitV4Net(), west.Iface())
@@ -223,6 +233,9 @@ func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) 
 	fmt.Fprintf(sb, "ip -6 rule add from %s lookup 150 priority %d\n", transitV6Net(), prioRelayFrom+1)
 	fmt.Fprintf(sb, "# companions west_udp=%s west_wss=%s east_ix=%s east_wss=%s\n",
 		ifaceOrDash(westUDP), ifaceOrDash(westWSS), ifaceOrDash(eastIX), ifaceOrDash(eastWSS))
+	if rets := ingressReturns(t, n, tunnels); rets != nil {
+		renderIngressReturnRoutes(sb, t, rets)
+	}
 }
 
 func renderHubRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) {
@@ -309,6 +322,9 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnel
 		fmt.Fprintf(sb, "ip -6 rule add from %s/128 lookup %d priority %d\n", e.TransitV6, e.Table, prioHubExitFrom+e.Index)
 	}
 	renderHubGroupRoutes(sb, t, west, groups)
+	if rets := ingressReturns(t, n, tunnels); rets != nil {
+		renderIngressReturnRoutes(sb, t, rets)
+	}
 }
 
 func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel) {
@@ -384,11 +400,14 @@ func renderFailover(t model.Topology, n model.Node, tunnels []Tunnel, exits []Ex
 	case model.RoleHub:
 		return renderHubFailover(t, n, tunnels, exits, groups)
 	default:
-		return renderRelayFailover(t, tunnels)
+		return renderRelayFailover(t, n, tunnels)
 	}
 }
 
 func renderGatewayFailover(t model.Topology, tunnels []Tunnel) string {
+	if sp := planShare(t, tunnels); sp != nil {
+		return renderGatewayFailoverShare(sp)
+	}
 	if t.DualHub() {
 		return renderGatewayFailoverDual(planUpstream(t, tunnels))
 	}
@@ -407,8 +426,11 @@ func renderGatewayFailover(t model.Topology, tunnels []Tunnel) string {
 	return sb.String()
 }
 
-func renderRelayFailover(t model.Topology, tunnels []Tunnel) string {
-	westUDP, westWSS, eastIX, eastWSS := relayIfaces(tunnels)
+func renderRelayFailover(t model.Topology, n model.Node, tunnels []Tunnel) string {
+	westUDP, westWSS, eastIX, eastWSS := relayIfaces(tunnelsFor(tunnels, n.ID))
+	if legs := relayWestLegs(tunnels, n.ID); t.RelaySharing() && westUDP.Iface() == "" && westWSS.Iface() == "" && len(legs) > 0 {
+		westUDP = legs[0]
+	}
 	mode := "0"
 	if t.Settings.IXReplacementMode {
 		mode = "1"
@@ -585,6 +607,23 @@ func gatewayIfaces(tunnels []Tunnel) (udp, wss, direct Tunnel) {
 		}
 	}
 	return udp, wss, direct
+}
+
+// relayWestLegs are the relay's non-standby tunnels from the gateway, UDP
+// legs first.
+func relayWestLegs(tunnels []Tunnel, relay string) []Tunnel {
+	var udp, wss []Tunnel
+	for _, tun := range tunnels {
+		if tun.East.ID != relay || tun.West.Role != model.RoleGateway || tun.Standby {
+			continue
+		}
+		if tun.Mode == "udp" {
+			udp = append(udp, tun)
+		} else {
+			wss = append(wss, tun)
+		}
+	}
+	return append(udp, wss...)
 }
 
 func relayIfaces(tunnels []Tunnel) (westUDP, westWSS, eastIX, eastWSS Tunnel) {

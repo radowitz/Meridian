@@ -19,6 +19,13 @@ package hostexec
 //	since <epoch>         when the path was installed
 //	state <static|ok|switching|down>
 //	end
+//
+// With relay sharing (two or more relays) the gateway's controller
+// (internal/pathquality, "meridian path-step") writes the second form:
+// the same seven lines, then controller/alert/switched/designated, one
+// "relay" line per relay and an optional "backup" line, each with a fixed
+// number of fields (pathquality.FormatStatus documents them); "-" is
+// "not measured". State may also be "degraded".
 
 import (
 	"context"
@@ -38,8 +45,9 @@ import (
 // UpstreamStateFile is compile.UpstreamStateFile (a test keeps them equal).
 const UpstreamStateFile = "/run/meridian/upstream"
 
-// MaxUpstreamFile bounds the read.
-const MaxUpstreamFile = 1024
+// MaxUpstreamFile bounds the read (the relay-sharing form with
+// pathquality.MaxRelays relays stays well below it).
+const MaxUpstreamFile = 8192
 
 // Upstream states the gateway records.
 const (
@@ -56,17 +64,75 @@ const (
 	// the path shown (traffic is dropped in the tunnel, never routed out of
 	// the LAN NIC).
 	UpstreamDown = "down"
+	// UpstreamDegraded (relay sharing): every relay is below the usable
+	// floor and the backup hub is not better (or not usable): the
+	// comparatively best relay carries and an alert is raised.
+	UpstreamDegraded = "degraded"
 )
 
 // UpstreamState is one parsed record.
 type UpstreamState struct {
-	Beat  int64  `json:"beat"`
-	Path  string `json:"path"`
-	Iface string `json:"iface"`
-	Hub   string `json:"hub"`
-	Tier  string `json:"tier"`
-	Since int64  `json:"since"`
-	State string `json:"state"`
+	// Version is 1 (single relay) or 2 (relay sharing).
+	Version int    `json:"version"`
+	Beat    int64  `json:"beat"`
+	Path    string `json:"path"`
+	Iface   string `json:"iface"`
+	Hub     string `json:"hub"`
+	Tier    string `json:"tier"`
+	Since   int64  `json:"since"`
+	State   string `json:"state"`
+
+	// Relay sharing (version 2) only.
+	Controller string          `json:"controller,omitempty"` // go | shell (fallback)
+	Alert      string          `json:"alert,omitempty"`
+	Switched   int64           `json:"switched,omitempty"`
+	Designated string          `json:"designated,omitempty"`
+	Relays     []UpstreamRelay `json:"relays,omitempty"`
+	Backup     *UpstreamBackup `json:"backup,omitempty"`
+}
+
+// UpstreamRelay is one relay line of a version 2 record. Pointer fields
+// are nil when the gateway recorded "-" (not measured).
+type UpstreamRelay struct {
+	ID              string `json:"id"`
+	Iface           string `json:"iface"`
+	Status          string `json:"status"`
+	Weight          int    `json:"weight"`
+	Drain           bool   `json:"drain"`
+	Reason          string `json:"reason,omitempty"`
+	StatusSince     int64  `json:"status_since"`
+	Grade           string `json:"grade"`
+	RTTus           *int64 `json:"rtt_us,omitempty"`
+	LossPermille    *int64 `json:"loss_permille,omitempty"`
+	LastRTTus       *int64 `json:"last_rtt_us,omitempty"`
+	LastLoss        *int64 `json:"last_loss_permille,omitempty"`
+	MeasuredAt      int64  `json:"measured_at"`
+	RxBytes         int64  `json:"rx_bytes"`
+	TxBytes         int64  `json:"tx_bytes"`
+	RxBps           int64  `json:"rx_bps"`
+	TxBps           int64  `json:"tx_bps"`
+	NewConns        int64  `json:"new_conns"`
+	Suspicious      string `json:"suspicious,omitempty"`
+	ProbeAt         int64  `json:"probe_at"`
+	ProbeKbps       *int64 `json:"probe_kbps,omitempty"`
+	ProbeLoss       *int64 `json:"probe_loss_permille,omitempty"`
+	ProbeOK         *bool  `json:"probe_ok,omitempty"`
+	ProbeBytesToday int64  `json:"probe_bytes_today"`
+}
+
+// UpstreamBackup is the backup line of a version 2 record.
+type UpstreamBackup struct {
+	Hub          string `json:"hub"`
+	Iface        string `json:"iface"`
+	Grade        string `json:"grade"`
+	RTTus        *int64 `json:"rtt_us,omitempty"`
+	LossPermille *int64 `json:"loss_permille,omitempty"`
+	LastRTTus    *int64 `json:"last_rtt_us,omitempty"`
+	LastLoss     *int64 `json:"last_loss_permille,omitempty"`
+	MeasuredAt   int64  `json:"measured_at"`
+	RxBytes      int64  `json:"rx_bytes"`
+	TxBytes      int64  `json:"tx_bytes"`
+	Drain        bool   `json:"drain"`
 }
 
 // UpstreamStatus is the agent's answer. Present is false when the file
@@ -90,9 +156,13 @@ func ParseUpstream(out string) (UpstreamState, error) {
 		return st, errors.New("上游记录过长，拒绝解析")
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) > 0 && lines[0] == "meridian-upstream 2" {
+		return parseUpstream2(lines)
+	}
 	if len(lines) != 9 || lines[0] != "meridian-upstream 1" || lines[8] != "end" {
 		return st, errors.New("上游记录格式不对")
 	}
+	st.Version = 1
 	seen := map[string]bool{}
 	for i, l := range lines[1:8] {
 		f := strings.Fields(l)

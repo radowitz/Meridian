@@ -114,6 +114,7 @@ func Run(t model.Topology) Result {
 
 	out.Issues = append(out.Issues, checkIXReplacement(t, nodes)...)
 	out.Issues = append(out.Issues, checkHubs(t, nodes)...)
+	out.Issues = append(out.Issues, checkSharing(t, nodes)...)
 	out.Issues = append(out.Issues, checkSubnets(t)...)
 	out.Issues = append(out.Issues, checkPorts(t)...)
 	out.Issues = append(out.Issues, checkRules(t, nodes)...)

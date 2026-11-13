@@ -49,6 +49,10 @@ type carryingView struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	ReadAt  string `json:"read_at,omitempty"`
+	// Sharing is the relay-sharing state (two or more relays): measured
+	// by the gateway (its record), plus the probe cost estimated from the
+	// topology's settings. Nil without relay sharing.
+	Sharing *sharingView `json:"sharing,omitempty"`
 }
 
 func (s *Server) carryingHub(ctx context.Context, t model.Topology) carryingView {
@@ -56,6 +60,10 @@ func (s *Server) carryingHub(ctx context.Context, t model.Topology) carryingView
 		v := carryingView{Mode: "single", Source: "topology"}
 		if p, ok := t.PrimaryHub(); ok {
 			v.Known, v.Tier, v.HubNode, v.HubName = true, model.HubPrimary, p.ID, p.Name
+		}
+		if t.RelaySharing() {
+			// One hub carries everything; the relays' state is the gateway's.
+			v.Sharing = s.sharingOnly(ctx, t)
 		}
 		return v
 	}
@@ -83,6 +91,13 @@ func (s *Server) carryingHub(ctx context.Context, t model.Topology) carryingView
 		return v
 	}
 	rec := st.Record
+	if t.RelaySharing() != (rec.Version == 2) {
+		v.Code, v.Message = "record_mismatch", "网关记录的格式与当前拓扑不一致（中继数量变了）：网关还没有按当前拓扑安装"
+		return v
+	}
+	if rec.Version == 2 {
+		v.Sharing = sharingFromRecord(t, rec, beatFresh(rec))
+	}
 	since, beat := time.Unix(rec.Since, 0).UTC(), time.Unix(rec.Beat, 0).UTC()
 	v.Path, v.Iface, v.State, v.Since, v.Beat = rec.Path, rec.Iface, rec.State, &since, &beat
 	hub, ok := hubByTier(t, model.HubTier(rec.Tier))
@@ -102,6 +117,8 @@ func (s *Server) carryingHub(ctx context.Context, t model.Topology) carryingView
 		v.Message = "上一轮没有任何路径应答：流量停在这条隧道里被丢弃，不会从局域网口直出"
 	case hostexec.UpstreamSwitching:
 		v.Message = "正在等待切换的滞回条件"
+	case hostexec.UpstreamDegraded:
+		v.Message = "所有中继都低于可用下限，备用枢纽也不更好（或不可用）：留在相对较好的中继上并告警"
 	}
 	return v
 }

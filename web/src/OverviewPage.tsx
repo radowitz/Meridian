@@ -8,6 +8,7 @@ import * as api from "./api";
 import { ACTUAL_CODE, CarryingLine, actualTag } from "./ExitsPage";
 import { JOURNAL_STATE, checkSummary } from "./MeshDeploy";
 import { serverReadiness } from "./ServersPage";
+import { RelaySharingView } from "./RelaySharing";
 import { href, useStatus, useTopologyDoc } from "./state";
 import {
   ApiErrorAlert,
@@ -114,6 +115,7 @@ export default function OverviewPage() {
   const lists = useApi(() => api.getLists(), []);
   const remote = useApi(() => api.getRemoteAccess(), []);
   const unlock = useApi(() => api.getUnlockJobs(), []);
+  const upstream = useApi(() => api.getUpstream(), []);
 
   const nodeName = (id: string) => doc.topo?.nodes.find((n) => n.id === id)?.name ?? id;
 
@@ -392,6 +394,12 @@ export default function OverviewPage() {
             }
           </TileData>
         </Tile>
+
+        {upstream.data?.sharing ? (
+          <Tile title="国内中继分担" to={href("topology")}>
+            <RelaySharingView s={upstream.data.sharing} compact />
+          </Tile>
+        ) : null}
 
         <Tile title="名单" to={href("lists")}>
           <TileData state={lists}>

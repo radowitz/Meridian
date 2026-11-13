@@ -25,6 +25,7 @@
 | `sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsReloadNoLeak`（Linux root） | 隔离命名空间里，生成的 nft 和路由在首次加载、200 次重载、两种加载失败注入、地区组来回切换（含路由脚本重跑）、只剩兜底表时，局域网和远程设备的境外流量不到 ROS | 真实隧道、真实客户端、真实 ROS |
 | `sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsGroupDNSFailover`（Linux root，需要 python3；2026-11-13 在一台 Debian 13 上跑通，日志在 `docs/evidence/2026-11-13-debian13/netns-group-dns.log`；含 Mesh 阶段的版本同日晚些时候跑通，日志在 `docs/evidence/2026-11-13-debian13-mesh-dns/netns-group-dns.log`） | 命名空间里用编译出的网关、阿里云、枢纽、两个成员出口的 nft 和路由，以及枢纽编译出的 `group_step`：切换前组查询（UDP、TCP）由首选成员应答、数据经首选；首选整机断开（解析器、隧道、WAN）后枢纽把组切到备成员，同样的查询由备成员应答、新连接经备成员；两个成员都断时查询失败；整个过程没有组查询到 ROS 或国内解析地址、没有从局域网口出去、没有不带 mark 离开网关（见「地区组的解析」）。之后加入的第 7–9 阶段（2026-11-13 晚执行过一次并通过，见 mesh-dns 记录）：枢纽和出口 `us` 运行编译出的 `meridian-mesh-up.sh`（对着替身 sidecar 命名空间密封），两个 sidecar 之间用一对 tun 设备模拟 Mesh；组在 Mesh 上时 UDP、TCP 查询由 `us` 经 `mmesh` 应答、回包从 `mmesh` 回去（不进枢纽隧道、不出 WAN），新连接经 Mesh 承载；模拟的 Mesh 断开、或 sidecar 失去密封时查询超时、枢纽组表回到黑洞，同样没有泄漏 | 真实 WireGuard（AllowedIPs 只有单元测试）、真实 SmartDNS 的 `-set-mark`（只在真实网关上用计数器核实过一次，见架构文档）、真实出口、真实 Cloudflare Mesh（连接器是否做源地址转换、IPv6 是否经 Mesh 转发，测试里是假设）和真实 sidecar 镜像 |
 | `sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run '^TestNetnsDualHub$'`（Linux root，需要 python3；2026-11-13 在一台 Debian 13 上通过，日志在 `docs/evidence/2026-11-13-debian13-dual-hub/`） | 命名空间里用 `defaults.DualHubExample` 编译出的网关、中继、IX 主枢纽、备用枢纽和两个出口的 nft 与路由，网关的选路用编译出的 `meridian-failover.sh`（`upstream_step`，真实 ping）：主链路时组连接、钉死 dc2 的连接、组解析（带 mark）和 dc2 与枢纽无关的解析地址都经 ix，备用枢纽没有流量；中继 → IX 被切断后第 3 轮切到备用枢纽，同样四项经 hk5，出口只从 hk5 的隧道回包、不往 ix 的隧道回（回程对称）；两边都断时留在原路径，四项都超时，局域网口和 ROS 上计数为 0；主链路恢复后第 5 轮切回 | 真实 WireGuard 和 wstunnel（备用 WSS 链路用 veth 代替）、真实 SmartDNS、Mesh（只在主枢纽上，由上一行的测试覆盖）、切回冷却（单元测试覆盖）、真实 IX 的双地址路由 |
+| `sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run '^TestNetnsRelaySharing$' -v`（Linux root，需要 python3 和 `timeout`；`tc`/netem 只有第 5 阶段需要，没有时这一阶段跳过并在日志里写 `SKIP phase loss`） | 命名空间里用 `defaults.SharedRelaysExample`（两台中继 + IX 主枢纽 + 备用枢纽，远程接入打开，控制程序的计时缩短）编译出的全部节点的 nft 与路由，网关的控制是编译出的 `meridian-failover.sh` 的 `share_step` 调用本测试二进制充当的 `meridian path-step`（真实测量，合成时钟每轮 5 秒）：200 个新连接在两台中继间各占 35–65%（n = 200、p = 0.5，±15 个百分点超过 4 个标准差）且网关上没有回包从非分配的中继进来、主枢纽没有把回包送进别的中继的隧道；一个长连接在所有新连接被改到另一台中继时两个方向都留在原中继、不断；ali2 只放行 ICMP（「小包通、没有速率」）时在有业务的情况下被剔除（原因 `no_delivery`，ping 照常应答），清理规则出现、新连接避开它；恢复不立即加回，之后以 1/4 权重加回再爬到等分；（有 netem 时）50% 丢包剔除（`poor_loss`）；两台中继到主枢纽都断时切到备用枢纽（表 102、新连接、出口从 hk5 隧道回包）；全部断开时记录 `down`、所有测试流超时、局域网口和 ROS 计数为 0；主链路恢复后过了切回时间才回，远程设备的连接和本机带 mark 的组解析查询经中继（组解析经指定中继） | 真实 WireGuard / wstunnel（隧道用 veth）、真实限速（用丢弃非 ICMP 和 netem 模拟）、ICMP 吞吐探测与真实 TCP 吞吐的关系、默认阈值是否适合真实线路、真实 SmartDNS |
 | `sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsULALANHomeAccess`（Linux root；2026-11-13 在一台 Debian 13 上跑通，日志在 `docs/evidence/2026-11-13-debian13/netns-ula-lan.log`） | 同样的命名空间、局域网 IPv6 前缀换成 ULA，加载一次后：设备 ↔ 家里主机 IPv6 双向有回包；前缀之外的 ULA（含隧道、中转）从设备和局域网客户端发出时到了网关、没有被转发、ROS 一个也没收到 | 同上；GUA 局域网前缀（由上一行覆盖） |
 | 网关上 `meridian-verify.sh` | 这台网关此刻加载的状态（见下面「meridian-verify.sh」） | 真实客户端不泄漏；路由器；手机 |
 
@@ -187,6 +188,22 @@ MERIDIAN_WSTUNNEL_BIN=/usr/share/meridian/artifacts/wstunnel-x86_64 go test ./in
 - [ ] 把网关上一条链路的信任文件换成别的证书后重启客户端：服务端日志出现 `UnknownCA`，WSS 腿不通；恢复后通。
 - [ ] 手动重新生成证书并按下一步完成轮换；途中只下发一端时面板显示「两端暂不一致」而 WSS 腿仍通；每次下发时 WSS 腿中断的时长（预计几秒）记下来。
 - [ ] 证书到期前 30 天的自动轮换：把面板的时钟（或用一张短有效期的证书，需要临时改代码）推到到期前，确认面板告警且没有自动改动主机。
+
+## 多中继同时分担
+
+设计见[架构文档「多中继同时分担」](architecture.md#多中继同时分担)。
+
+**自动化回归（任何平台）：**
+
+- `go test ./internal/pathquality`：状态机和权重（质量相近时等分、按质量加权、轻度劣化先降权再暂停分配且从不清空集合、低于下限剔除并清理、噪声输入下不会恢复也不会抖动、滞回后 25% → 50% → 100% 逐步加回、所有中继不通切备用枢纽并在满足良好时间和最短间隔后切回、所有中继低于下限而备用更好时切换、备用不比中继好时留下并告警、什么都不通时不动且记录 `down`、负载下 RTT 膨胀触发吞吐探测、探测不达标剔除并在加回前要求一次通过的探测、有业务时 TCP 无回包剔除而上传不误判、探测关闭和预算用完时不探测、腿的 UDP/WSS 滞回、手动停用和固定权重、配置变化重置状态）、严格的配置和决定解析、ping 和 nft JSON 解析、探测开销估算。
+- `go test ./internal/compile -run 'Share|Sharing'`：编译出的规则（按连接的 `jhash … map` 只在 `ct state new` 时查、每个包从 ct mark 恢复、中继位在 -300 清掉、兜底表包含每条腿和备用接口且仍以 drop 结束、每台中继的 fwmark 规则和表、中继和主枢纽按入接口的回程标记与表、本机应答的 route 链、单中继拓扑一个字都不变）；带桩执行的 shell：`share_map` 与编译器逐字一致、`share_apply` 一次 nft 批次和九种拒绝（拒绝时 nft 和 ip 都没被调用、nft 拒绝批次时路由不变）、同一决定只下发一次、引用非编译接口的决定被拒绝并改用应急规则、没有控制程序时的应急规则（等权重、3 轮剔除、5 轮加回、没有中继时走备用、冷却后切回）；安装与应急规则写的状态记录能被 meridian-host 严格解析；校验（缺到主枢纽的隧道、重复链路、IX 替换模式、各项设置越界、覆盖指向非中继、全部停用、预算放不下一次探测）。
+- `go test ./internal/hostexec -run Upstream`：第二种状态记录的严格解析（未知状态、字段多一个少一个、权重和丢包越界、重复中继、未知行、接口名里的 shell 字符、超长等都拒绝）。
+- `go test ./internal/api -run 'Sharing|PathQuality'`：`GET /api/upstream` 的 `sharing`（测量值、备用路径、按设置估算的探测开销、断连影响；记录过期或格式与拓扑不符时未知）、单枢纽分担、保存拓扑时设置被校验。
+- `npm --prefix web test`：出口页的分担表（份额、状态、原因和时间、清理中、网关测量的值和时间、探测结果和当天字节、备用路径、断连影响、标明「面板估算」的探测开销）、应急规则和告警的提示、记录未知、概览卡片、网关设置里改阈值和探测预算（估算随之变化、保存的只是改过的字段）。
+
+**隔离 Linux 集成证据：** `TestNetnsRelaySharing`（命令和覆盖范围见上表）。开发时它在一台 Mac 上的 Docker 容器里（Debian 13 用户态经 amd64 模拟、linuxkit 6.10 内核、有 netem）通过过，同一容器里 `TestNetnsDualHub`、`TestNetnsReloadNoLeak`、`TestNetnsGroupDNSFailover`、`TestNetnsULALANHomeAccess` 也通过；这**不是**存档的证据（没有日志存档、不是目标发行版的内核），在 Debian 13 主机上跑通并存档之前，按「未执行」对待。
+
+**实机人工签收（未做）：** 两台真实国内中继同时承载、晚高峰真实限速下的降权 / 剔除 / 恢复、吞吐探测的真实流量开销（对照中继的计费）、剔除时应用重连的体验、真实 WireGuard / wstunnel 腿的切换、备用枢纽接管和切回。
 
 ## WebRTC
 

@@ -25,7 +25,7 @@ func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPla
 	case model.RoleExit:
 		return renderExitNFT(t, n, tunnels, exits, groups)
 	default:
-		return renderTransitNFT(n, tunnels)
+		return renderTransitNFT(t, n, tunnels)
 	}
 }
 
@@ -159,7 +159,18 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	fmt.Fprintf(&sb, "    meta nfproto ipv6 meta mark set %#x return\n", def.Mark)
 	sb.WriteString("  }\n\n")
 
-	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname %s jump classify\n  }\n\n", in)
+	sp := planShare(t, tunnels)
+	if sp != nil {
+		writeShareNFT(&sb, sp)
+	}
+	fmt.Fprintf(&sb, "  chain prerouting {\n    type filter hook prerouting priority mangle; policy accept;\n    iifname %s jump classify\n", in)
+	if sp != nil {
+		// After classification: an exit-marked packet gets its connection's
+		// relay (assigned once, when the connection is new).
+		fmt.Fprintf(&sb, "    iifname %s meta mark %#x-%#x jump relay_share comment \"relay sharing: per-connection assignment\"\n", in, markExitBase, guardLastExitMark(exits, groups...))
+		sb.WriteString("    ct direction reply meta l4proto tcp jump relay_count_in\n")
+	}
+	sb.WriteString("  }\n\n")
 
 	// Only lower an advertised MSS. Raising a small MSS black-holes TCP.
 	sb.WriteString("  chain mss {\n    type filter hook forward priority mangle; policy accept;\n")
@@ -423,7 +434,7 @@ func ixIngress(n model.Node) string {
 	return ""
 }
 
-func renderTransitNFT(n model.Node, tunnels []Tunnel) string {
+func renderTransitNFT(t model.Topology, n model.Node, tunnels []Tunnel) string {
 	wan := n.WANInterface
 	if wan == "" {
 		wan = "eth0"
@@ -439,6 +450,9 @@ func renderTransitNFT(n model.Node, tunnels []Tunnel) string {
 	sb.WriteString("# Transit node. Does not NAT client traffic and does not own the default route.\n")
 	writeAtomicReplace(&sb, tableMain)
 	sb.WriteString("table inet meridian {\n")
+	if rets := ingressReturns(t, n, tunnels); rets != nil {
+		writeIngressReturnNFT(&sb, rets)
+	}
 	if len(ports) > 0 {
 		parts := make([]string, len(ports))
 		for i, p := range ports {

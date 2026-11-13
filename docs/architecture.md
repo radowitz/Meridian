@@ -28,9 +28,9 @@ IX 有两种画法：不可登录的专线仍是 `ix` 角色（中继 → IX 的
 - 网关到它画一条 `ix_replacement_wss`、待命（`standby`）的链路：WG over WSS，WSS 端口是备用枢纽的 `wss_listen_port`（N1 的端口模型），wstunnel 客户端端口是链路的 `wss_local_port`。只能有一条（`backup_hub_not_wired`、`backup_hub_ambiguous`）；有备用枢纽时 WSS 备路不能再指向主枢纽（`replacement_to_primary`），网关到备用枢纽也不能用别的传输。
 - 每个出口都要和**两个**枢纽各有一条启用的、非待命的 WireGuard（`exit_missing_hub_tunnel`）。NAT 后面的出口两条都由它主动拨出。
 - 两个枢纽各自编译同一份地区组计划：同样的组、顺序、约束、mark、表号、中转地址和组解析地址（`compile.planGroupsHub`），只有通往成员的接口不同，所以两边的计划标识（`GROUP_PLAN`）不同，各自上报自己的。出口的表号、mark、中转地址同理（`planExitsHub`）。
-- 这一版有备用枢纽时**拒绝**（校验错误，不会半编译）：Mesh 边连备用枢纽（`mesh_backup_hub_unsupported`，Mesh 只用于主枢纽到出口）、中继与备用枢纽之间的链路（`backup_hub_relay_link_unsupported`）、多于一台中继（`dual_hub_multiple_relays`，多中继分担在后续版本）、经双栈中继 / Mesh / v4 前置到达的纯 IPv6 出口或自己是双栈中继的出口（`dual_hub_unsupported_exit`）、「IX 替换模式」开关（`ix_replacement_mode_dual_hub`：切换是自动的）、枢纽之间的链路（`hub_to_hub_link`）、多于两个枢纽（`too_many_hubs`）。
+- 这一版有备用枢纽时**拒绝**（校验错误，不会半编译）：Mesh 边连备用枢纽（`mesh_backup_hub_unsupported`，Mesh 只用于主枢纽到出口）、中继与备用枢纽之间的链路（`backup_hub_relay_link_unsupported`）、经双栈中继 / Mesh / v4 前置到达的纯 IPv6 出口或自己是双栈中继的出口（`dual_hub_unsupported_exit`）、「IX 替换模式」开关（`ix_replacement_mode_dual_hub`：切换是自动的）、枢纽之间的链路（`hub_to_hub_link`）、多于两个枢纽（`too_many_hubs`）。
 
-**网关上选哪条路（一处决定）。** `compile.planUpstream` 列出网关出表 102 的所有路径：主链路的中继腿（UDP，再 WSS），然后备用枢纽。路由脚本和切换脚本带同一段 shell（`UP_*` 数组、`upstream_apply`、`upstream_record`，逐字节相同）：安装时用 `upstream_apply` 把表 102 指向第一条，切换循环用同一个函数移动它，别处不再改表 102（结构测试检查）。以后的多中继分担扩展的是 `planUpstream`，入口不变。
+**网关上选哪条路（一处决定）。** `compile.planUpstream` 列出网关出表 102 的所有路径：主链路的中继腿（UDP，再 WSS），然后备用枢纽。路由脚本和切换脚本带同一段 shell（`UP_*` 数组、`upstream_apply`、`upstream_record`，逐字节相同）：安装时用 `upstream_apply` 把表 102 指向第一条，切换循环用同一个函数移动它，别处不再改表 102（结构测试检查）。两台及以上中继时不用这段，改用「多中继同时分担」的 `compile.planShare`（同样一处决定、同一段 shell 供安装和切换共用）；只有一台中继时编译结果和以前完全一样。
 
 - **主链路按端到端检查**：网关经每条中继腿（`ping -I <腿>`）去 ping 主枢纽在中继 ↔ 主枢纽隧道上的地址，源地址是专用的中转地址 `10.66.200.2`（在 `lo` 上，每条腿一条 `… dev <腿> src 10.66.200.2 metric 10+i` 的主机路由；主枢纽把中转 /24 送回家）。中继活着而它后面的 IX 不通，也算主链路不通。备用路径检查备用枢纽的隧道地址。
 - **接管**：没有任何主链路腿应答，连续 `FAILS_NEED`（3）轮后切到备用枢纽。**切回**：主链路腿重新应答连续 `RECOVERS_NEED`（5）轮、并且距上次切换满 `COOLDOWN`（120 秒）。离开一条不通的路不等冷却。
@@ -43,6 +43,90 @@ IX 有两种画法：不可登录的专线仍是 `ix` 角色（中继 → IX 的
 **地区组、组解析与 Mesh。** 网关的组 mark、组解析地址、规则都只编译一份；组的查询经当前承载的枢纽（表 102 指向哪条路就到哪个枢纽），那个枢纽按中转源地址查自己的组表，指向它选中的成员，成员在两个枢纽的隧道入口上都把组解析地址 DNAT 到自己的解析器（`group_dns` 链列出两个枢纽的接口），回包按上面的回程对称回到那个枢纽。所以组的解析始终跟着「实际承载流量的枢纽上实际承载这个组的成员」，不会回落到国内解析器。Mesh 备路只在主枢纽上（`GroupPlan.Mesh` 在备用枢纽的计划里恒为假），R1 的 Mesh 解析路径和封装条件的回归测试不变。
 
 **实际状态。** 面板分别读两个枢纽（`POST /api/region-groups/runtime/refresh` 依次读每个枢纽，每次读取各自绑定那个枢纽的身份，分别存放：主枢纽用原来的存储键，备用枢纽用 `group_hub_state_backup`），各自按自己的计划标识判断（`hub_states`、每个组的 `actual_by_hub`）。组的 `actual` 只取网关记录的承载枢纽的判断，并写明读自哪个枢纽和服务器（`actual.hub_tier`、`hub_node`、`server_name`）；承载枢纽未知时 `actual` 是 `unavailable`、`code: carrying_unknown`，不把任何一个枢纽的报告显示成实际使用。身份（节点、服务器、地址、端口、固定指纹）任何一项变化都只让那个枢纽的读取立即失效；两个节点互换服务器时两边都失效。
+
+## 多中继同时分担
+
+网关连着**两台及以上**国内中继时（`model.Topology.SharingRelays`：角色 relay、有一条启用且非待命的网关链路），这些中继**同时**承载主链路（网关 → 中继 → 主枢纽），新连接按测得的路径质量自动加权分到各中继；所有中继都持续低于可用下限时才改走备用枢纽。只有一台中继时什么都不变（`planShare` 为 nil，编译结果逐字节和以前一样，仍是上面「主枢纽与备用枢纽」的单中继切换）。有没有备用枢纽都可以；中继可以随时再加（加一台、重新安装即可）。
+
+**模型与校验**（`validate/sharing.go`）：
+
+- 每台中继只能有一条启用的网关链路（`direct_wg`、`wg_over_wss`，或 `udp_wss_failover` 的 UDP + WSS 两条腿；`sharing_relay_multiple_links`），并且要有自己到主枢纽的一条 `direct_wg` 隧道（`sharing_relay_no_hub_link`、`sharing_relay_multiple_hub_links`、`sharing_relay_hub_transport`：中继自己的东向切换只认 `direct_wg`；旧模型里经 `ix` 节点的专线也算）。网关要经每台中继各自对主枢纽做端到端测量，所以缺这一段就拒绝，不猜。
+- 最多 12 台（`too_many_relays`）。「IX 替换模式」开关在分担时拒绝（`ix_replacement_mode_sharing`）。
+- 设置 `settings.path_quality`（`model.PathQuality`，全部可省，0 = 默认）无论是否分担都校验（`invalid_path_quality`）：每项的范围、轻度阈值必须小于下限阈值、降权不晚于停止分配、吞吐下限不高于探测速率、一次探测要放得进每天的预算、手动覆盖只能指向分担中的中继、不能全部停用。
+
+**按连接分担，从不按包。** 网关 `inet meridian` 表里（`compile/share.go`）：
+
+```
+chain prerouting { … iifname <LAN/mra> jump classify
+                       iifname <LAN/mra> meta mark 0x101-<末个出口 mark> jump relay_share
+                       ct direction reply meta l4proto tcp jump relay_count_in }
+chain relay_share {
+  jump relay_redirect                              # 动态：被剔除中继的非 TCP 流改哈希
+  ct state new jump relay_assign                   # 动态：只对新连接查一次映射
+  ct state new ct mark 0x00010000 counter name "share_r1_new"   …
+  meta l4proto tcp ct mark 0x00010000 counter name "share_r1_tcp_out" …
+  ct mark 0x00010000 meta mark set meta mark | 0x00010000 return   # 每个包从连接恢复中继位
+  …   ct mark 0x00fe0000 …                          # 备用枢纽
+}
+chain relay_assign {
+  meta nfproto ipv4 ct mark set jhash ip saddr . ip daddr . th sport . th dport mod 1000 seed 0x4d52 map { 0-499 : 0x00010000, 500-999 : 0x00020000 }
+  meta nfproto ipv6 ct mark set jhash ip6 saddr . ip6 daddr . th sport . th dport mod 1000 seed 0x4d52 map { … }
+}
+chain relay_strip   { type filter hook forward priority -300; meta mark & 0x00ff0000 != 0 meta mark set meta mark & 0xff00ffff }
+chain share_forward { type filter hook forward priority filter; jump relay_drain }   # 动态：剔除时重置 TCP
+```
+
+- 连接在**建立时**由五元组哈希落到某台中继，结果存进连接标记（ct mark，网关上别处不用它），之后这个连接的每个包（两个方向都由 conntrack 关联）都从 ct mark 恢复中继位。改权重只影响新连接。
+- 中继位在 fwmark 的 `0x00ff0000`（中继 i 是 `i << 16`，备用枢纽 `0xfe << 16`），出口 mark 仍在低位。路由脚本给每台中继一条 `ip rule fwmark <位>/0xff0000 lookup 110+i priority 17150+i`（备用枢纽 `lookup 109 priority 17150`），排在出口规则（17200+）之前；每张表只有「默认 dev <这台中继当前用的腿>」加 metric 32767 的黑洞。
+- 中继位只用来选路由：forward 钩子 -300 处（兜底表 -200 之前）把它清掉，所以兜底表、MSS 钳制、中转 SNAT 看到的还是原来那些出口 mark，规则一个字没改。兜底表允许的接口集合本来就是网关全部隧道接口（每台中继的每条腿和备用枢纽），最后一条仍是 `counter drop`。
+- 没有中继位的出口 mark 包查表 102：网关**自己**的组解析查询（SmartDNS 带 `-set-mark` 的上游）和安装前就存在的连接。表 102 跟着**指定中继**（权重最大的那台，并列取第一台；在备用枢纽上时是备用枢纽），本机到 `10.66.0.0/16`、`fd66::/48` 的路由同理。远程接入设备从 `mra` 进来，和局域网走同一套分类和按连接分担。网关自己的探测用 `ping -I <腿>` 和每条腿的主机路由，确定地走那条腿。
+
+**回程沿来路。** 中继和主枢纽按入接口记连接标记（`ingressReturns`）：中继上每条来自网关的腿、主枢纽上每条来自中继的隧道（含中继待命的 WSS 替代隧道）各有一个 mark（`0x4e00 + j`）和一张表（`174 + j`，优先级 `17070 + j`）。每个从该接口进来的**原方向**包把 ct mark 设成它（跟最近一次进来的接口，网关把连接换腿时回程随之换）；连接的每个回包——转发的，以及本机应答的（`type route hook output`，例如主枢纽回网关的探测）——带上同一个 fwmark，查那张表：表里只有家里的前缀（局域网、`10.66.0.0/16`、`fd66::/48`、局域网 IPv6）指向那条隧道，再加黑洞。所以回包一定从连接进来的那条隧道回去，`rp_filter` 和 NAT 看到的是对称路径。出口一侧不变（有备用枢纽时仍按枢纽分回程，见上）。备用枢纽只由网关直连，没有这部分。
+
+**权重怎么改：一次事务。** 安装时 nft 文件里就带着等权重的映射，所以从加载那一刻起映射就不是空的。之后只有网关的 `meridian-failover.sh` 改它，用路由脚本和切换脚本逐字节共用的 `share_apply`：先按编译出的数组逐项核对（中继名、腿必须是这台中继的编译接口、权重 0–1000 且主链路时和为 1000、标志 0/1、备用枢纽时权重全 0），任何一项不对就拒绝（返回 1，什么都不动）；然后**一次** `nft -f -`：`flush chain relay_assign` + 新映射、`flush chain relay_redirect` + 规则、`flush chain relay_drain` + 规则，内核整批接受或整批拒绝（拒绝返回 2，旧映射留着）；接受后才改各中继表和表 102。同样的决定不重复下发（`/run/meridian/pathq/applied`），但大约每分钟（每 12 轮）无条件重下发一次，被别处改动的映射或路由会自己恢复；切换服务每次启动时也清掉这个标记，所以重新加载 nft 后下一轮就重新下发。
+
+**测量**（每轮 5 秒，`internal/pathquality` 的 `Measurer`，全部在网关上做）：
+
+- 每台中继的每条腿、以及备用路径，并行发一串 5 个小 ICMP（间隔 0.2 秒）：中继腿的目标是主枢纽在**这台中继**的中继 ↔ 主枢纽隧道上的地址，源地址 `10.66.200.2`（端到端：中继活着而它到 IX 的那段不通也算不通）；备用路径的目标是备用枢纽的隧道地址。得到这一轮的丢包和平均 RTT，再做指数平滑（α = 0.3）。测量和业务流量同时发生，所以有业务时 RTT 反映的就是负载下的情况；另外记一个空闲基线 RTT，用来判断「负载下 RTT 膨胀」。
+- 每条腿的接口字节计数（`/sys/class/net/<腿>/statistics`），算出每台中继的上下行速率和累计流量；nft 计数器 `share_r<i>_new`（分到它的新连接）、`share_r<i>_tcp_out` / `_tcp_in`（它的连接的 TCP 原方向 / 回包数）；WireGuard 最近握手（只作参考）。
+
+**「小包通、没有速率」怎么发现。** 被限速的中继照样握手、小包照样通，所以只看 ping 不够。被动信号：
+
+1. **有业务但 TCP 收不到回包**：一轮里发进这台中继的 TCP 包至少 20 个、回包不到 5%，连续 3 轮 → 低于下限（`no_delivery`）。只看 TCP（单向的 UDP 本来就可能没有回包）；上传时 ACK 也算回包。
+2. **负载下 RTT 膨胀**：这台中继在承载（≥ 64 KB/s）时 RTT 到基线的 3 倍以上且至少高 50 ms → 轻度劣化并标为可疑。
+3. **单位权重的下行量远低于其他中继**：另一台每单位权重的下行速率是它的 4 倍以上（且至少 128 KB/s）→ 可疑。
+4. 平滑后的丢包或 RTT 过了轻度阈值 → 可疑。
+
+可疑且这台中继有业务（≥ 16 KB/s）时，下一轮对它做一次**吞吐探测**作为仲裁：在**隧道里**按设定速率（默认 4000 kbit/s）发一串 1200 字节的 ICMP，共约 `probe_bytes`（默认 512 KiB）。在运营商看来这是普通的 WireGuard UDP，和业务数据受同样的 QoS。送达率低于 `probe_floor_kbps`（默认 1000 kbit/s）或丢包超过 `probe_loss_permille`（默认 30%）→ 这条路径「没有速率」（`no_throughput`），在下一次允许探测之前都算低于下限。限制：同一台中继两次探测至少隔 `probe_min_interval_sec`（默认 900 秒），每台每天不超过 `probe_daily_budget_mb`（默认 64 MB），可以整体关掉（`probe_off`）。**流量开销**（计费）：一次约 1.1 MB（上下行合计，含 IP/ICMP/WireGuard 包头，`pathquality.ProbeCostEstimate`），默认每台中继每天最多 59 次、约 63 MB；面板按设置估算并标明是估算，网关记录每台当天实际用掉的探测字节。因吞吐不足被剔除的中继，在重新加入前要先通过一次探测（探测关掉或预算用完时只按 ping 质量加回，再由业务信号把关）。
+
+**状态机**（`pathquality.Step`，纯函数：编译出的配置 + 上一轮状态 + 本轮测量 + 时钟 → 新状态 + 决定；单元测试用合成测量和注入的时钟）。每轮先给每条路径评级：`down`（这一轮一个回包都没有）、`poor`（低于下限）、`mild`（轻度劣化）、`good`。离开一个等级要低于它阈值的 70%（滞回），所以在阈值附近抖动的路径不会每轮翻等级。
+
+| 状态 | 进入条件（默认值） | 新连接 | 已有连接 |
+|---|---|---|---|
+| `active` 分担中 | 初始；`reduced` 良好满 `recover_after_sec`（120 秒）；`recovering` 爬坡完成 | 质量权重 | 不动 |
+| `reduced` 已降权 | 轻度劣化（丢包 ≥ 3% 或 RTT ≥ 200 ms 或负载下膨胀）满 `reduce_after_sec`（20 秒） | 权重最多 25（/100） | 不动 |
+| `standby` 暂停分配 | 轻度劣化满 `standby_after_sec`（60 秒），且有良好的中继在集合里 | 0 | 不动 |
+| `evicted` 已剔除 | 低于下限（丢包 ≥ 15% 或 RTT ≥ 400 ms 或吞吐探测不达标或 TCP 无回包）满 `evict_after_sec`（30 秒）；或完全不通满 `down_after_sec`（15 秒）；或爬坡中又变差 | 0 | 默认清理（见下） |
+| `recovering` 逐步加回 | `evicted` / `standby` 后良好满 `recover_after_sec`（120 秒）；吞吐原因被剔除的还要先通过一次探测 | 25% → 50% → 100%，每步 `ramp_step_sec`（30 秒） | 不动 |
+| `disabled` 手动停用 | 手动覆盖 | 0 | 不动 |
+
+一直在探测：被剔除的中继每轮照样 ping，满足条件再加回；爬坡中只要一轮不是良好就退回（轻度 → `reduced`，更差 → `evicted`）。
+
+**权重。** 分数 = 平滑 RTT（毫秒）+ 平滑丢包（‰），即 1% 丢包相当于 10 ms（权重用更慢的平滑 α = 0.1，免得追着噪声跑）。分数在最好的那台的 1.3 倍以内、或者只差不到 10 的都给 100（质量相近时等分）；更差的按比例下降、取 5 的倍数、最低 10。再按状态封顶（`reduced` ≤ 25，`recovering` 乘爬坡比例），最后按最大余数法归一到 1000 个桶。只因质量变化的权重至少 30 秒才变一次、且要变动 ≥ 10 才发布；状态变化立即发布。手动覆盖（`overrides`，默认没有）：停用某台，或给某台固定权重 1–100（不通时仍会被剔除）。
+
+**已有连接。** 改权重、降权、暂停分配、恢复、爬坡**从不**迁移已有连接。剔除（`evicted` 且不再分到新连接）时，默认规则（`keep_connections_on_evict` 为假）清理这台中继的已有连接，让应用到健康的中继上重连：`relay_drain` 在 forward 钩子里对从局域网 / `mra` 进来、属于这台中继的 TCP 原方向包 `reject with tcp reset`（RST 发给局域网里的客户端，不会发往公网）；非 TCP 的流（UDP/QUIC）由 `relay_redirect` 在下一个包重新按映射哈希到分担集合里的中继——中继不做地址转换，网关的中转 SNAT 按出口不按中继，主枢纽按最近的入接口回包，所以这些流的地址端到端不变。卡在一条没有速率的路径上比重连更糟，所以默认是清理；打开 `keep_connections_on_evict` 后只停止分配新连接。备用枢纽上的连接在回到主链路后保留，直到备用路径完全不通满 `down_after_sec` 才同样清理。
+
+**主链路与备用枢纽。** 分担集合空了（所有中继都被剔除）并且持续 `backup_after_sec`（30 秒）——或者所有中继这一轮都完全不通——才考虑备用枢纽，按固定的分数比较：备用路径能应答，并且分数比最好的中继好 `switch_advantage_pct`（25%）以上（低于下限的路径分数加 10000，不通加 1000000），或者主链路完全不通，才切过去；除了离开完全不通的主链路，两次切换至少隔 `min_dwell_sec`（120 秒）。备用枢纽不比中继好时留在主链路上，由相对最好的那台能应答的中继承载，并告警（`all_relays_poor_backup_not_better`；备用也不通时 `all_relays_poor_backup_unusable`；没有备用枢纽时 `all_relays_poor`）。在备用枢纽上时，有中继良好满 `return_after_sec`（120 秒）且满足最短间隔就切回；备用路径完全不通满 `down_after_sec` 而中继还有能应答的，立即切回；备用路径低于下限而中继好过它 25% 以上，满足最短间隔也切回。在备用枢纽上，所有新连接的映射是 `0-999 : 0x00fe0000`（表 109 指向备用枢纽的接口），已有的中继连接按剔除规则处理。**什么都不通**时不动：各表仍指向隧道（加黑洞兜底），兜底表只允许出口 mark 从隧道出去，记录 `state down`、告警 `nothing_reachable`——失败关闭，不会出现绕过隧道的路径。
+
+**控制程序在哪里运行。** 测量和决定都在网关上，不在面板里：网关的 `meridian-failover.sh`（root，安装事务装的 systemd 服务，开机自启）每轮调用一次宿主机上的 `meridian path-step`（就是 `install.sh` 装的 `/usr/local/bin/meridian`，和 meridian-host 同一个二进制）。它读编译出的 `/etc/meridian/path-quality.json`（严格解码，安装事务下发）、读写 `/run/meridian/pathq/state.json`、测量、决定、写状态记录，然后在标准输出打印决定；shell 核对后用 `share_apply` 执行。面板容器停掉不影响它。
+
+- **兜底**：`path-step` 不存在、出错、超时（25 秒）或给出的决定被 shell 拒绝时，这一轮改用 shell 自己的应急规则：可达的中继（任一腿能 ping 通）**等权重**分担，只按通断剔除（连续 3 轮不通剔除、连续 5 轮通加回），没有中继能通且备用枢纽能通时走备用，回主链路至少隔 120 秒；记录里 `controller shell`、告警 `controller_unavailable`，面板显示「应急规则在运行」。脚本调用时带 `MERIDIAN_BIND=-`：比 path-step 旧的二进制会在自己的监听地址检查处直接退出，不会打开数据库或做任何别的事。
+- **重启**：状态在 `/run`，重启后从安装时的等权重开始（nft 文件和路由脚本就是这个状态），每台中继重新测量；配置变了（重新安装、改设置、加减中继）也从头开始（配置摘要不同）。
+- 变更只经两条路：安装事务（nft 文件、路由脚本、配置文件），以及切换服务的 `share_apply`（只改三个动态链、各中继表和表 102）。面板不能改它们，meridian-host 也没有新增任何可写动作。
+
+**状态记录与面板。** 分担时状态记录换成第二种格式（`meridian-upstream 2`，`pathquality.FormatStatus`）：前 7 行同第一种，加 `controller`、`alert`、`switched`（上次切换枢纽）、`designated`，每台中继一行 `relay …`（腿、状态、权重、是否在清理、原因、状态起始时间、等级、平滑 RTT 和丢包、本轮 RTT 和丢包、测量时间、累计和当前流量、新连接数、可疑信号、最近一次吞吐探测的时间 / 速率 / 丢包 / 是否达标、当天探测字节），以及备用路径一行。meridian-host 仍用那个固定、无参数的读取（限 8 KiB，每行字段数和取值都严格核对，`-` 表示没测量），`GET /api/upstream` 的 `sharing` 和地区组视图的 `carrying.sharing` 把它连同设置、按设置估算的探测开销（`probe_cost.source: estimated`）、剔除对已有连接的影响一起给面板。概览有「国内中继分担」卡片，出口页有完整的表（承载的枢纽、每台中继的份额、是否在集合里、网关测量的 RTT / 丢包和时间、流量、吞吐探测、降权 / 剔除原因和时间、上次切换时间、断连影响、探测开销）；记录超过 60 秒没更新、格式和拓扑对不上（例如加了中继还没安装）时一律显示**未知**。设置在拓扑页「网关设置」的「多中继分担与路径质量」里，留空即默认，保存后要安装到网关才生效。
+
+**没有验证的。** 以上没有在真实主机上运行过：没有真实的中继、真实的晚高峰限速、真实的 WireGuard / wstunnel 腿。命名空间测试（`TestNetnsRelaySharing`）用 veth 代替隧道、用「只放行 ICMP」模拟「小包通、没有速率」、用 `tc netem` 模拟丢包；ICMP 吞吐探测与真实 TCP 吞吐的相关性、默认阈值对真实线路是否合适、真实限速下被动信号的灵敏度，都还没有观察过。
 
 ## 为什么网关要做一次中转地址改写
 

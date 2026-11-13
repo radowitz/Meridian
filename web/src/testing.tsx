@@ -89,6 +89,7 @@ export const DEFAULTS: Record<string, Handler> = {
     links: [],
     rules: [],
   }),
+  "GET /api/upstream": () => ({ mode: "single", known: false, source: "topology" }),
   "GET /api/ssh-credentials": () => ({ credentials: [] }),
   "GET /api/servers": () => ({ servers: [] }),
   "GET /api/cloudflare/accounts": () => ({ accounts: [], mesh_account: null }),

@@ -157,6 +157,12 @@ func renderRTTables(t model.Topology, n model.Node, exits []ExitPlan, groups []G
 		fmt.Fprintf(&sb, "%d\tmeridian_return_primary\n", tableHubReturnPrimary)
 		fmt.Fprintf(&sb, "%d\tmeridian_return_backup\n", tableHubReturnBackup)
 	}
+	if n.Role == model.RoleGateway && t.RelaySharing() {
+		writeShareRTTables(&sb, t)
+	}
+	for _, r := range ingressReturnsFor(t, n) {
+		fmt.Fprintf(&sb, "%d\tmeridian_in_%s\n", r.Table, r.Iface)
+	}
 	if n.Role == model.RoleHub {
 		for _, e := range exits {
 			fmt.Fprintf(&sb, "%d\tmeridian_%s\n", e.Table, strings.ReplaceAll(e.Node.ID, "-", "_"))

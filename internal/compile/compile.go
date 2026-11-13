@@ -231,6 +231,9 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			}
 			add(prefix+"usr/local/sbin/meridian-verify.sh", renderVerifyScript(t, tunnels, exits, groups))
 			add(prefix+"etc/nftables.d/meridian-guard.nft", renderGuardNFT(t, tunnels, exits, groups))
+			if sp := planShare(t, tunnels); sp != nil {
+				add(prefix+strings.TrimPrefix(SharePathConfig, "/"), renderShareConfig(t, sp))
+			}
 		}
 		if n.Role == model.RoleExit {
 			add(prefix+"usr/local/sbin/meridian-unlock-probe.sh", renderUnlockProbe(t, n))

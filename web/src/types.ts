@@ -126,6 +126,73 @@ export interface Settings {
   default_group?: string;
   /** List download source (GET/PUT /api/lists); empty means automatic. */
   list_source?: "domestic" | "overseas" | "automatic";
+  /** Relay-sharing policy (two or more relays); absent = defaults. */
+  path_quality?: PathQuality;
+}
+
+/** One manual override of the automatic relay weights (off unless listed). */
+export interface RelayOverride {
+  relay: string;
+  disabled?: boolean;
+  /** 1–100 fixed weight; 0/absent = automatic. */
+  weight?: number;
+}
+
+/** model.PathQuality: zero or absent fields mean the default (PATH_QUALITY_DEFAULTS). */
+export interface PathQuality {
+  mild_loss_permille?: number;
+  mild_rtt_ms?: number;
+  poor_loss_permille?: number;
+  poor_rtt_ms?: number;
+  reduce_after_sec?: number;
+  standby_after_sec?: number;
+  evict_after_sec?: number;
+  down_after_sec?: number;
+  recover_after_sec?: number;
+  ramp_step_sec?: number;
+  keep_connections_on_evict?: boolean;
+  backup_after_sec?: number;
+  return_after_sec?: number;
+  min_dwell_sec?: number;
+  switch_advantage_pct?: number;
+  probe_off?: boolean;
+  probe_bytes?: number;
+  probe_rate_kbps?: number;
+  probe_min_interval_sec?: number;
+  probe_daily_budget_mb?: number;
+  probe_floor_kbps?: number;
+  probe_loss_permille?: number;
+  overrides?: RelayOverride[];
+}
+
+/** model.PathQualityDefaults (a test keeps them equal to the Go side). */
+export const PATH_QUALITY_DEFAULTS: Required<Omit<PathQuality, "overrides" | "keep_connections_on_evict" | "probe_off">> = {
+  mild_loss_permille: 30,
+  mild_rtt_ms: 200,
+  poor_loss_permille: 150,
+  poor_rtt_ms: 400,
+  reduce_after_sec: 20,
+  standby_after_sec: 60,
+  evict_after_sec: 30,
+  down_after_sec: 15,
+  recover_after_sec: 120,
+  ramp_step_sec: 30,
+  backup_after_sec: 30,
+  return_after_sec: 120,
+  min_dwell_sec: 120,
+  switch_advantage_pct: 25,
+  probe_bytes: 524288,
+  probe_rate_kbps: 4000,
+  probe_min_interval_sec: 900,
+  probe_daily_budget_mb: 64,
+  probe_floor_kbps: 1000,
+  probe_loss_permille: 300,
+};
+
+/** pathquality.ProbeCostEstimate: billed bytes of one probe (both directions, headers). */
+export function probeCostBytes(probeBytes: number): number {
+  const n = Math.max(10, Math.floor(probeBytes / 1200));
+  return 2 * n * (1200 + 28 + 60);
 }
 
 /** Region group (GET /api/region-groups has the live view). */
@@ -1131,13 +1198,81 @@ export interface Carrying {
   hub_name?: string;
   path?: string;
   iface?: string;
-  state?: "static" | "ok" | "switching" | "down";
+  state?: "static" | "ok" | "switching" | "down" | "degraded";
   since?: string;
   beat?: string;
   source: "topology" | "gateway";
   code?: CarryingCode | string;
   message?: string;
   read_at?: string;
+  /** Relay sharing (two or more relays). */
+  sharing?: Sharing;
+}
+
+export type RelayStatus = "active" | "reduced" | "standby" | "evicted" | "recovering" | "disabled" | "unknown";
+export type PathGrade = "good" | "mild" | "poor" | "down" | "none";
+
+/** Measured by the gateway (absent: not measured). */
+export interface PathMeasured {
+  rtt_ms?: number;
+  loss_pct?: number;
+  last_rtt_ms?: number;
+  last_loss_pct?: number;
+  at?: string;
+}
+
+export interface PathTraffic {
+  rx_bytes: number;
+  tx_bytes: number;
+  rx_bps: number;
+  tx_bps: number;
+  new_conns: number;
+}
+
+export interface SharingRelay {
+  id: string;
+  name: string;
+  iface?: string;
+  status: RelayStatus;
+  in_set: boolean;
+  /** Of 1000 new connections. */
+  weight: number;
+  drain: boolean;
+  reason?: string;
+  status_since?: string;
+  grade: PathGrade;
+  suspicious?: string;
+  measured?: PathMeasured;
+  traffic: PathTraffic;
+  probe?: { at?: string; kbps?: number; loss_pct?: number; ok?: boolean; bytes_today: number };
+}
+
+export interface Sharing {
+  known: boolean;
+  code?: string;
+  message?: string;
+  controller?: "go" | "shell";
+  alert?: string;
+  alert_text?: string;
+  path?: "main" | "backup";
+  designated?: string;
+  switched?: string;
+  beat?: string;
+  relays: SharingRelay[];
+  backup?: { hub: string; name: string; iface: string; grade: PathGrade; drain: boolean; measured?: PathMeasured; traffic: PathTraffic };
+  settings: PathQuality;
+  /** Estimated from the settings, not measured. */
+  probe_cost: {
+    enabled: boolean;
+    bytes_per_probe: number;
+    min_interval_sec: number;
+    max_probes_per_day: number;
+    max_bytes_per_day: number;
+    daily_budget_bytes: number;
+    source: "estimated";
+    trigger: string;
+  };
+  eviction_impact: string;
 }
 
 export type RegionGroupInput = Omit<RegionGroup, "migrated_from">;

@@ -40,6 +40,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
 import { href, useRouter, useStatus, useTopologyDoc } from "./state";
+import { RelaySharingView } from "./RelaySharing";
 import type {
   Carrying,
   GroupActualView,
@@ -143,7 +144,7 @@ export const ACTUAL_CODE: Record<string, string> = {
 export const HUB_TIER: Record<HubTier, string> = { primary: "主枢纽", backup: "备用枢纽" };
 
 /** The gateway's path to the carrying hub (compile.planUpstream names). */
-const UPSTREAM_PATH: Record<string, string> = { udp: "主路径 UDP", wss: "主路径 WSS", backup: "经 WSS" };
+const UPSTREAM_PATH: Record<string, string> = { udp: "主路径 UDP", wss: "主路径 WSS", backup: "经 WSS", main: "主链路，多中继分担" };
 
 /** The gateway's failover state in words (carrying.state). */
 export const CARRYING_STATE: Record<string, { kind: StatusKind; label: string }> = {
@@ -151,6 +152,7 @@ export const CARRYING_STATE: Record<string, { kind: StatusKind; label: string }>
   ok: { kind: "ok", label: "已测量" },
   switching: { kind: "running", label: "切换中" },
   down: { kind: "failed", label: "全部路径不通" },
+  degraded: { kind: "attention", label: "全部中继低于下限" },
 };
 
 /** Why the carrying hub is unknown (carrying.code). */
@@ -1350,6 +1352,11 @@ export default function ExitsPage() {
       ) : (
         <HubStateBar hub={groups.data?.hub_state} onRefresh={refreshHub} refreshing={refreshing} />
       )}
+      {groups.data?.carrying?.sharing ? (
+        <Section title="国内中继分担（网关测量与决定）">
+          <RelaySharingView s={groups.data.carrying.sharing} />
+        </Section>
+      ) : null}
       <DataView
         state={groups}
         rows={8}

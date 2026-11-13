@@ -453,8 +453,11 @@ func TestDualHubValidation(t *testing.T) {
 			tp.Nodes = append(tp.Nodes, model.Node{ID: "old-ix", Name: "old", Role: model.RoleIX})
 		}},
 		{"ix_replacement_mode_dual_hub", func(tp *model.Topology) { tp.Settings.IXReplacementMode = true }},
-		{"dual_hub_multiple_relays", func(tp *model.Topology) {
+		// Several relays are supported with a backup hub (relay sharing);
+		// each needs its own tunnel to the primary hub.
+		{"sharing_relay_no_hub_link", func(tp *model.Topology) {
 			tp.Nodes = append(tp.Nodes, model.Node{ID: "ali2", Name: "ali2", Role: model.RoleRelay, Managed: true, PathV4: true, EndpointV4: "203.0.113.11"})
+			tp.Links = append(tp.Links, model.Link{ID: "gw-ali2", From: "gw", To: "ali2", Transport: model.TransportDirectWG, Enabled: true})
 		}},
 		{"backup_hub_relay_link_unsupported", func(tp *model.Topology) {
 			tp.Links = append(tp.Links, model.Link{ID: "ali-hk5", From: "ali", To: "hk5", Transport: model.TransportDirectWG, Enabled: true})

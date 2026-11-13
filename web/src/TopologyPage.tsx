@@ -47,6 +47,7 @@ import {
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { WSSLinkStatus } from "./WSS";
+import { PathQualitySettings } from "./RelaySharing";
 import { serverReadiness } from "./ServersPage";
 import { href, useRouter, useTopologyDoc } from "./state";
 import type { DeploymentView, Issue, Link as TLink, Node, Role, ServerView, Settings, Topology, Transport } from "./types";
@@ -722,6 +723,10 @@ function SettingsDrawer({ open, topo, onClose, onChange }: { open: boolean; topo
           checked={!!s.ix_replacement_mode}
           onChange={(v) => set({ ix_replacement_mode: v })}
         />
+        <Divider orientation="left" plain>
+          多中继分担与路径质量
+        </Divider>
+        <PathQualitySettings topo={topo} onChange={(pq) => set({ path_quality: pq })} />
         <Divider orientation="left" plain>
           其他
         </Divider>

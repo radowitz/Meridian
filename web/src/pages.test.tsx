@@ -14,6 +14,7 @@ import { effectiveOrder, moveRule } from "./RulesPage";
 import { fakeApi, panelStatus, renderAt, reply, webStorageDump } from "./testing";
 import { deleteNode } from "./TopologyPage";
 import { clearCooldowns } from "./ui";
+import { PATH_QUALITY_DEFAULTS } from "./types";
 import type {
   DeploymentView,
   GatewayDeploymentView,
@@ -32,6 +33,7 @@ import type {
   ServerView,
   Topology,
   WSSListenerView,
+  Sharing,
 } from "./types";
 
 const NOW = "2026-11-12T10:00:00Z";
@@ -2872,5 +2874,163 @@ describe("WSS carriers: random path and pinned self-signed certificate", () => {
     expect(within(detail).queryByText("WSS 路径前缀")).toBeNull();
     expect(within(detail).queryByText("TLS 证书路径")).toBeNull();
     expect(within(detail).queryByText("TLS 私钥路径")).toBeNull();
+  });
+});
+
+// ------------------------------------------------ relay sharing (S4) ---
+
+describe("domestic relays sharing the main path", () => {
+  afterEach(() => clearCooldowns());
+
+  function sharedTopology(): Topology {
+    const t = topology();
+    t.nodes.push(exitNode("ali", "阿里云 1", { role: "relay", region: "cn" }), exitNode("ali2", "阿里云 2", { role: "relay", region: "cn" }));
+    t.links.push(
+      { id: "gw-ali", from: "gw", to: "ali", transport: "udp_wss_failover", enabled: true, standby: false },
+      { id: "gw-ali2", from: "gw", to: "ali2", transport: "direct_wg", enabled: true, standby: false },
+    );
+    return t;
+  }
+
+  const recent = () => new Date().toISOString();
+  function sharing(over: Partial<Sharing> = {}): Sharing {
+    return {
+      known: true,
+      controller: "go",
+      path: "main",
+      designated: "ali",
+      switched: NOW,
+      beat: recent(),
+      relays: [
+        {
+          id: "ali",
+          name: "阿里云 1",
+          iface: "m02",
+          status: "active",
+          in_set: true,
+          weight: 1000,
+          drain: false,
+          grade: "good",
+          measured: { rtt_ms: 31.5, loss_pct: 0.4, last_rtt_ms: 30.2, last_loss_pct: 0, at: recent() },
+          traffic: { rx_bytes: 52428800, tx_bytes: 1048576, rx_bps: 204800, tx_bps: 10240, new_conns: 42 },
+        },
+        {
+          id: "ali2",
+          name: "阿里云 2",
+          iface: "m03",
+          status: "evicted",
+          in_set: false,
+          weight: 0,
+          drain: true,
+          reason: "no_throughput",
+          status_since: NOW,
+          grade: "poor",
+          suspicious: "rtt_inflation",
+          measured: { rtt_ms: 120, loss_pct: 0, last_rtt_ms: 118, last_loss_pct: 0, at: recent() },
+          traffic: { rx_bytes: 1024, tx_bytes: 2048, rx_bps: 0, tx_bps: 0, new_conns: 7 },
+          probe: { at: NOW, kbps: 420, loss_pct: 86, ok: false, bytes_today: 640136 },
+        },
+      ],
+      backup: { hub: "hk5", name: "hk5", iface: "m04", grade: "good", drain: false, measured: { rtt_ms: 60, loss_pct: 0, at: recent() }, traffic: { rx_bytes: 0, tx_bytes: 0, rx_bps: 0, tx_bps: 0, new_conns: 0 } },
+      settings: { ...PATH_QUALITY_DEFAULTS },
+      probe_cost: {
+        enabled: true,
+        bytes_per_probe: 1123072,
+        min_interval_sec: 900,
+        max_probes_per_day: 59,
+        max_bytes_per_day: 66261248,
+        daily_budget_bytes: 67108864,
+        source: "estimated",
+        trigger: "只在该中继有业务流量、且被动信号可疑时触发。",
+      },
+      eviction_impact: "剔除时，该中继上已有的 TCP 连接会被网关重置。",
+      ...over,
+    };
+  }
+
+  function groupsBody(s: Sharing) {
+    return {
+      groups: [group()],
+      default_group: "hk",
+      thresholds: THRESHOLDS,
+      hub_state: hubState(),
+      carrying: { mode: "single", known: true, tier: "primary", hub_node: "hk-hub", hub_name: "香港枢纽", source: "topology", sharing: s },
+    };
+  }
+
+  it("shows each relay's share, measured quality with its time, the eviction reason, the disconnect impact and the estimated probe cost", async () => {
+    fakeApi({ "GET /api/topology": () => sharedTopology(), "GET /api/region-groups": () => groupsBody(sharing()) });
+    renderAt("#/exits");
+    const view = await screen.findByTestId("relay-sharing");
+    expect(within(view).getByTestId("sharing-path")).toHaveTextContent("主链路（多中继分担）");
+    expect(within(view).getByTestId("relay-weight-ali")).toHaveTextContent("100%");
+    expect(within(view).getByTestId("relay-weight-ali2")).toHaveTextContent("0%");
+    expect(within(view).getByTestId("relay-status-ali")).toHaveTextContent("分担中");
+    expect(within(view).getByTestId("relay-status-ali2")).toHaveTextContent("已剔除");
+    expect(view).toHaveTextContent("吞吐探测不达标（小包通、没有速率）");
+    expect(within(view).getByTestId("relay-drain-ali2")).toHaveTextContent("已有连接正被清理");
+    // Measured by the gateway, with a time; the probe result with its cost.
+    expect(within(view).getAllByTestId("measured")[0]).toHaveTextContent("网关测量");
+    expect(within(view).getByTestId("probe-ali2")).toHaveTextContent("不达标");
+    expect(within(view).getByTestId("probe-ali2")).toHaveTextContent("今日");
+    expect(within(view).getByTestId("sharing-backup")).toHaveTextContent("备用枢纽 hk5");
+    expect(within(view).getByTestId("sharing-impact")).toHaveTextContent("断连影响");
+    // The cost is the panel's estimate, labelled as such.
+    expect(within(view).getByTestId("sharing-probe-cost")).toHaveTextContent("面板估算");
+    expect(within(view).queryByTestId("sharing-fallback")).toBeNull();
+  });
+
+  it("says when the shell fallback runs, when all relays are poor, and when the state is unknown", async () => {
+    fakeApi({
+      "GET /api/topology": () => sharedTopology(),
+      "GET /api/region-groups": () => groupsBody(sharing({ controller: "shell", alert: "all_relays_poor_backup_not_better", alert_text: "所有中继都低于可用下限，备用枢纽也不比它们好" })),
+    });
+    renderAt("#/exits");
+    const view = await screen.findByTestId("relay-sharing");
+    expect(within(view).getByTestId("sharing-fallback")).toHaveTextContent("应急规则在运行");
+    expect(within(view).getByTestId("sharing-alert")).toHaveTextContent("备用枢纽也不比它们好");
+  });
+
+  it("says when the gateway's relay record is unknown", async () => {
+    fakeApi({ "GET /api/topology": () => sharedTopology(), "GET /api/region-groups": () => groupsBody(sharing({ known: false, code: "stale", message: "网关的中继记录已超过 60 秒没有更新" })) });
+    renderAt("#/exits");
+    const view = await screen.findByTestId("relay-sharing");
+    expect(within(view).getByTestId("sharing-unknown")).toHaveTextContent("超过 60 秒没有更新");
+  });
+
+  it("shows a compact tile on the overview when the gateway shares relays", async () => {
+    fakeApi({
+      "GET /api/topology": () => sharedTopology(),
+      "GET /api/upstream": () => ({ mode: "dual", known: true, tier: "backup", hub_node: "hk5", hub_name: "hk5", path: "backup", source: "gateway", sharing: sharing({ path: "backup", designated: "backup" }) }),
+    });
+    renderAt("#/");
+    const view = await screen.findByTestId("relay-sharing");
+    expect(within(view).getByTestId("sharing-path")).toHaveTextContent("备用枢纽 hk5");
+    expect(within(view).getByTestId("relay-weight-ali")).toHaveTextContent("备用枢纽承载");
+  });
+
+  it("edits the thresholds and the probe budget in the gateway settings, with the cost estimate", async () => {
+    let saved: Topology | undefined;
+    const api = fakeApi({
+      "GET /api/topology": () => sharedTopology(),
+      "PUT /api/topology": (req) => {
+        saved = req.body as Topology;
+        return { topology: req.body, issues: [], paths: [], draft: false };
+      },
+    });
+    renderAt("#/topology");
+    await userEvent.click(await screen.findByRole("button", { name: /网关设置/ }));
+    const box = await screen.findByTestId("path-quality-settings");
+    expect(box).toHaveTextContent("网关连着 2 台中继");
+    expect(within(box).getByTestId("probe-cost-estimate")).toHaveTextContent("估算：每次约");
+    const evict = within(box).getByLabelText("低于下限多久剔除");
+    await userEvent.type(evict, "45");
+    const budget = within(box).getByLabelText("每台中继每天预算");
+    await userEvent.type(budget, "16");
+    await userEvent.click(within(box).getByLabelText("启用吞吐探测"));
+    expect(within(box).getByTestId("probe-cost-estimate")).toHaveTextContent("已关闭");
+    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
+    expect(saved!.settings.path_quality).toEqual({ evict_after_sec: 45, probe_daily_budget_mb: 16, probe_off: true });
   });
 });
