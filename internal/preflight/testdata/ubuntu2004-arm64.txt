@@ -1,0 +1,62 @@
+meridian-preflight 1
+uid 0
+arch aarch64
+kernel 5.15.0-1045-oracle
+os-id ubuntu
+os-version "20.04"
+os-codename focal
+os-pretty "Ubuntu 20.04.6 LTS"
+systemd yes
+mem-total-kb 450560
+mem-avail-kb 180224
+disk-avail-kb 4000000
+cmd wg yes
+cmd wg-quick yes
+cmd nft no
+cmd ip yes
+cmd ss yes
+cmd iptables yes
+cmd ip6tables yes
+cmd apt-get yes
+cmd dpkg-query yes
+cmd systemctl yes
+cmd smartdns no
+cmd wstunnel no
+cmd docker yes
+cmd curl yes
+cmd python3 yes
+cmd sha256sum yes
+cmd timeout yes
+iptables-version iptables v1.8.4 (legacy)
+ipt ipv4 -P INPUT ACCEPT
+ipt ipv6 -P INPUT ACCEPT
+ipt ipv4 -P FORWARD DROP
+ipt ipv6 -P FORWARD ACCEPT
+sysctl net.ipv4.ip_forward 1
+sysctl net.ipv6.conf.all.forwarding 0
+link lo
+link enp0s6
+link docker0
+addr lo 127.0.0.1/8
+addr enp0s6 198.51.100.40/24
+addr docker0 172.17.0.1/16
+route4 default via 198.51.100.1 dev enp0s6 proto dhcp src 198.51.100.40 metric 100
+route4 172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown
+route4 198.51.100.0/24 dev enp0s6 proto kernel scope link src 198.51.100.40
+rule4 0:	from all lookup local
+rule4 32766:	from all lookup main
+rule4 32767:	from all lookup default
+ss tcp   LISTEN 0      4096   127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=600,fd=13))
+ss udp   UNCONN 0      0      127.0.0.53%lo:53         0.0.0.0:*    users:(("systemd-resolve",pid=600,fd=12))
+ss tcp   LISTEN 0      128          0.0.0.0:2222       0.0.0.0:*    users:(("sshd",pid=700,fd=3))
+ss tcp   LISTEN 0      4096         0.0.0.0:8443       0.0.0.0:*    users:(("xray",pid=900,fd=5))
+unit docker.service active enabled 811
+unit nftables.service inactive not-found 0
+unit netfilter-persistent.service inactive not-found 0
+unit smartdns.service inactive not-found 0
+unit systemd-resolved.service active enabled 600
+nftables-conf absent
+proc warp-svc no
+proc dockerd yes
+@PATHS@
+meridian-preflight-end

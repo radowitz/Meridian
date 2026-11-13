@@ -472,3 +472,135 @@ func setRoutes(t *model.Topology, idx int, routes ...string) {
 }
 
 func mustAddr(s string) netip.Addr { return netip.MustParseAddr(s) }
+
+// ------------------------------------------- region-group resolver routes
+
+// The compiled files name, for each switchable group with a Mesh hop, one
+// exit that answers the group's resolver address over the Mesh; the plan
+// publishes exactly that /128 for that exit's node (docs/architecture.md
+// 「地区组的解析」), next to the operator's routes.
+func TestPlanPublishesGroupResolvers(t *testing.T) {
+	topo := meshTopo(t)
+	b, err := compile.Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := compile.PlanGroups(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{}
+	for _, g := range groups {
+		if g.MeshResolver != "" {
+			want[g.Resolver+"/128"] = g.MeshResolver + " " + g.Group.ID
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("the example has no group resolved over the Mesh")
+	}
+	p := mesh.BuildPlan(topo, b.Files)
+	if !p.OK() {
+		t.Fatalf("plan issues: %+v", p.Issues)
+	}
+	got := map[string]string{}
+	operator := 0
+	for _, r := range p.Routes {
+		if r.Purpose == "" {
+			operator++
+			continue
+		}
+		if r.Purpose != mesh.PurposeGroupResolver || !mesh.GroupResolverNet.Contains(netip.MustParsePrefix(r.Network).Addr()) {
+			t.Fatalf("unexpected route %+v", r)
+		}
+		got[r.Network] = r.ExitID + " " + r.Group
+		hub, _ := p.Hub()
+		if r.ExitID == hub.ID {
+			t.Fatalf("the hub publishes a group resolver: %+v", r)
+		}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("group resolver routes %v, want %v", got, want)
+	}
+	if operator == 0 {
+		t.Fatal("operator routes disappeared")
+	}
+}
+
+// A publish line the compiler would not write is refused: only single
+// /128s of the group resolver range, each published once.
+func TestPlanRejectsForeignPublishLines(t *testing.T) {
+	topo := meshTopo(t)
+	b, err := compile.Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "nodes/hk-2/usr/local/sbin/meridian-mesh-up.sh"
+	if _, ok := b.Files[path]; !ok {
+		t.Fatal("hk-2 has no mesh-up")
+	}
+	groups, err := compile.PlanGroups(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken := ""
+	for _, g := range groups {
+		if g.MeshResolver != "" && g.MeshResolver != "hk-2" {
+			taken = g.Resolver + "/128"
+		}
+	}
+	for line, code := range map[string]string{
+		mesh.PublishMarker + " fd66:0:0:ff::10/128 group=hk": "mesh_publish_invalid",
+		mesh.PublishMarker + " fd66::53:0/112 group=hk":      "mesh_publish_invalid",
+		mesh.PublishMarker + " 198.51.200.0/24 group=hk":     "mesh_publish_invalid",
+		mesh.PublishMarker + " fd66::53:7/128":               "mesh_publish_invalid",
+		mesh.PublishMarker + " " + taken + " group=hk":       "mesh_route_overlap",
+	} {
+		files := map[string]string{}
+		for k, v := range b.Files {
+			files[k] = v
+		}
+		files[path] = line + "\n" + files[path]
+		p := mesh.BuildPlan(topo, files)
+		found := false
+		for _, is := range p.Issues {
+			found = found || is.Code == code
+		}
+		if !found {
+			t.Errorf("%q: no %s, issues %+v", line, code, p.Issues)
+		}
+	}
+}
+
+// Activation re-seals every exit that publishes a group resolver (its
+// sidecar's table 170 must learn the Mesh routes installed after the first
+// seal), before the hub, and no other exit.
+func TestActivateRefreshesGroupResolverExits(t *testing.T) {
+	f, srv := newFakeCF(t)
+	rem := &fakeRemote{}
+	d := newDeployer(t, f, srv, rem)
+	p := meshPlan(t)
+	if _, err := d.Deploy(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for _, r := range p.Routes {
+		if r.Purpose == mesh.PurposeGroupResolver {
+			want["refresh/"+r.ExitID] = true
+		}
+	}
+	hub, _ := p.Hub()
+	var refreshes []string
+	for _, c := range rem.calls {
+		if strings.HasPrefix(c, "refresh/") {
+			refreshes = append(refreshes, c)
+		}
+	}
+	if len(want) == 0 || len(refreshes) != len(want)+1 || refreshes[len(refreshes)-1] != "refresh/"+hub.ID {
+		t.Fatalf("refreshes %v, want %v then the hub", refreshes, want)
+	}
+	for _, c := range refreshes[:len(refreshes)-1] {
+		if !want[c] {
+			t.Fatalf("unexpected refresh %s (%v)", c, refreshes)
+		}
+	}
+}

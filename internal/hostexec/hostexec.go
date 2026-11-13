@@ -9,7 +9,9 @@
 //     probe (probe.go: one managed exit, one forced address family, services
 //     from a fixed catalog) and the list update (lists.go: a source policy,
 //     list kinds and managed category names; URLs come from package lists)
-//     and the parameterless remote-access status read (wgstatus.go). There is no generic "run", no shell, and no
+//     and the parameterless remote-access status read (wgstatus.go) and the
+//     read-only install pre-check (preflight.go: paths validated by
+//     preflight.ValidatePaths, fixed programs). There is no generic "run", no shell, and no
 //     caller-supplied path, URL, host or argument string.
 //   - Parameters only name managed resources, and every name must match the
 //     pattern compile can produce (ValidUnit, ValidInterface, ...). Paths and
@@ -59,9 +61,12 @@ const (
 	ActionActivate = "activate"
 	ActionHealth   = "health"
 	ActionRollback = "rollback"
+	// ActionWithdraw takes the gateway data plane down to the LAN guard
+	// (see withdraw below and restore.go GuardTable).
+	ActionWithdraw = "withdraw"
 )
 
-var actions = map[string]bool{ActionActivate: true, ActionHealth: true, ActionRollback: true}
+var actions = map[string]bool{ActionActivate: true, ActionHealth: true, ActionRollback: true, ActionWithdraw: true}
 
 // Defaults for the deployment (see deploy/debian/meridian-host.service and
 // deploy/docker-compose.yml).
@@ -72,6 +77,7 @@ const (
 	// SmartDNSContainer is the fixed container name of the Compose dns profile.
 	SmartDNSContainer = "meridian-smartdns"
 	coreUnit          = "meridian.service"
+	guardUnit         = "meridian-guard.service"
 )
 
 // Resources names the managed runtime resources an action applies to.
@@ -176,8 +182,11 @@ func Validate(req Request) error {
 		}
 		seen[n] = true
 	}
-	if req.Action == ActionRollback && r.DNS {
-		return errors.New("rollback 不管理解析器的生命周期")
+	if (req.Action == ActionRollback || req.Action == ActionWithdraw) && r.DNS {
+		return errors.New("rollback / withdraw 不管理解析器的生命周期")
+	}
+	if req.Action == ActionWithdraw && contains(r.NFTTables, GuardTable) {
+		return errors.New("withdraw 保留局域网兜底表 " + GuardTable + "；移除兜底表只能经 rollback（先关转发）")
 	}
 	return nil
 }
@@ -234,6 +243,11 @@ var programs = map[string][]string{
 	// wg is used only by the remote-access status read, with two fixed
 	// subcommands that print public keys and counters (never "dump").
 	"wg": {"/usr/bin/wg", "/usr/sbin/wg", "/bin/wg"},
+	// The install pre-check (preflight.go) reads listeners and firewall
+	// policies with fixed, read-only argument lists.
+	"ss":        {"/usr/bin/ss", "/usr/sbin/ss", "/bin/ss", "/sbin/ss"},
+	"iptables":  {"/usr/sbin/iptables", "/sbin/iptables"},
+	"ip6tables": {"/usr/sbin/ip6tables", "/sbin/ip6tables"},
 }
 
 // ExecRunner runs real binaries with a fixed minimal environment.
@@ -328,6 +342,10 @@ type Agent struct {
 	ListsTimeout time.Duration
 	listsBusy    chan struct{}
 
+	// PreflightRoot replaces "/" for the files the install pre-check reads
+	// (tests only).
+	PreflightRoot string
+
 	once   sync.Once
 	sem    chan struct{}
 	cache  map[string]cached
@@ -381,7 +399,8 @@ func (a *Agent) init() {
 	})
 }
 
-// Handler serves POST /v1/action, /v1/probe, /v1/lists and /v1/lists/status.
+// Handler serves POST /v1/action, /v1/probe, /v1/lists, /v1/lists/status,
+// /v1/remote-access/status and /v1/preflight.
 func (a *Agent) Handler() http.Handler {
 	a.init()
 	mux := http.NewServeMux()
@@ -390,6 +409,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/lists", a.serveLists)
 	mux.HandleFunc("POST /v1/lists/status", a.serveListsStatus)
 	mux.HandleFunc("POST /v1/remote-access/status", a.serveRemoteAccessStatus)
+	mux.HandleFunc("POST /v1/preflight", a.servePreflight)
 	return mux
 }
 
@@ -492,13 +512,17 @@ func (a *Agent) Execute(ctx context.Context, req Request) (Result, int) {
 		res = a.activate(actx, req.Resources)
 	case ActionHealth:
 		res = a.health(actx, req.Resources)
-	case ActionRollback:
+	case ActionRollback, ActionWithdraw:
 		r, skipped, err := a.owned(actx, req.Resources)
 		if err != nil {
 			base.Error = err.Error()
 			return base, http.StatusForbidden
 		}
-		res = a.rollback(actx, r)
+		if req.Action == ActionWithdraw {
+			res = a.withdraw(actx, r)
+		} else {
+			res = a.rollback(actx, r)
+		}
 		res.Steps = append(skipped, res.Steps...)
 	}
 	res.RequestID, res.Action = req.RequestID, req.Action
@@ -785,6 +809,62 @@ func (a *Agent) rollback(ctx context.Context, r Resources) Result {
 		}
 		x.do("delete nft "+t, a.StepTimeout, "nft", "delete", "table", fam, name)
 	}
+	return x.finish()
+}
+
+// withdraw takes the gateway data plane down to the LAN guard (the panel's
+// "撤回" of the gateway). Fixed steps, in this order:
+//
+//  1. forwarding off, IPv4 and IPv6, before anything is removed: with the
+//     classification gone nothing may forward LAN traffic;
+//  2. meridian.service is stopped (it has no ExecStop: this cancels a
+//     pending boot retry so meridian-up.sh cannot run concurrently and
+//     clears its "active" state; the unit stays enabled and is skipped at
+//     boot once meridian-up.sh is gone);
+//  3. the named resources are removed exactly like rollback (ledger-checked
+//     by the caller, absent ones skipped);
+//  4. inet meridian_guard must still be loaded. When it is not, the fixed
+//     meridian-guard.service is restarted (it loads only that table from
+//     /etc/nftables.d/meridian-guard.nft) and checked again. A guard that
+//     cannot be loaded fails the action, so the panel never reports a
+//     withdrawn gateway without its fail-closed guard.
+//
+// It never names the guard for removal (Validate refuses that) and never
+// turns forwarding on.
+func (a *Agent) withdraw(ctx context.Context, r Resources) Result {
+	x := &run{a: a, ctx: ctx}
+	x.do("forwarding off (ipv4)", a.StepTimeout, "sysctl", "-w", "net.ipv4.ip_forward=0")
+	x.do("forwarding off (ipv6)", a.StepTimeout, "sysctl", "-w", "net.ipv6.conf.all.forwarding=0")
+	if !x.fails {
+		if out, err := x.cmd(a.StepTimeout, "systemctl", "stop", coreUnit); err != nil {
+			x.step("stop "+coreUnit, false, err.Error()+"\n"+out)
+		} else {
+			x.step("stop "+coreUnit, true, "")
+		}
+	}
+	if !x.fails && !r.Empty() {
+		rb := a.rollback(ctx, r)
+		x.res.Steps = append(x.res.Steps, rb.Steps...)
+		x.res.Warnings = append(x.res.Warnings, rb.Warnings...)
+		if !rb.OK {
+			x.fails = true
+			x.res.Error = rb.Error
+		}
+	}
+	if x.fails {
+		return x.finish()
+	}
+	fam, name, _ := strings.Cut(GuardTable, " ")
+	if _, err := x.cmd(a.StepTimeout, "nft", "list", "table", fam, name); err == nil {
+		x.step("guard "+GuardTable+" loaded", true, "")
+		return x.finish()
+	}
+	if out, err := x.cmd(a.StepTimeout, "systemctl", "restart", guardUnit); err != nil {
+		x.step("restart "+guardUnit, false, err.Error()+"\n"+out+"\n"+x.journal(guardUnit))
+		return x.finish()
+	}
+	_, err := x.cmd(a.StepTimeout, "nft", "list", "table", fam, name)
+	x.step("guard "+GuardTable+" loaded", err == nil, errText(err))
 	return x.finish()
 }
 

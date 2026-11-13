@@ -70,6 +70,9 @@ func main() {
 		// Remote-access peer status (handshake, transfer) is read through
 		// the agent's parameterless /v1/remote-access/status.
 		RemoteStatus: hostClient,
+		// The gateway install pre-check is the agent's read-only
+		// /v1/preflight (paths validated, fixed programs).
+		HostPreflight: hostClient,
 	}
 	// A host transaction interrupted by a restart is compensated (or its
 	// commit finished) before the panel serves requests. A failure is logged
@@ -92,8 +95,25 @@ func main() {
 		log.Printf("region-group migration: created groups %v, %d rules, %d nodes", rep.CreatedGroups, rep.Rules, rep.Nodes)
 	}
 	srv.StartUnlockScheduler()
+	// At boot the LAN address may not exist yet (ifupdown allow-hotplug +
+	// DHCP; Docker starts the container before the lease). Wait for it,
+	// bounded and with one log line every 10 s, instead of crash-looping
+	// on "bind: cannot assign requested address". Never falls back to
+	// 0.0.0.0. On timeout the process exits with meridian-bind-not-ready.
+	wait := api.DefaultBindWait
+	if v := os.Getenv("MERIDIAN_BIND_WAIT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			log.Fatalf("MERIDIAN_BIND_WAIT=%q: want a duration such as 180s", v)
+		}
+		wait = d
+	}
+	ln, err := api.ListenLAN(context.Background(), bind, wait, log.Printf)
+	if err != nil {
+		log.Fatal(err)
+	}
 	log.Printf("meridian panel listening on %s (LAN only). token file: %s", bind, filepath.Join(data, "panel.token"))
-	if err := http.ListenAndServe(bind, srv.Handler()); err != nil {
+	if err := http.Serve(ln, srv.Handler()); err != nil {
 		log.Fatal(err)
 	}
 }

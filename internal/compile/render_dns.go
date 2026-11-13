@@ -209,8 +209,12 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 // source, the hub routes it by that source into the member its group
 // table currently points at, and that member DNATs it to its own tunnel
 // resolver (renderExitNFT). The group's DNS therefore follows every hub
-// switch with no state on this host, and fails, with no fallback, while
-// the group is on the Mesh hop or blackholed.
+// switch with no state on this host. On the Mesh hop the query crosses the
+// Mesh to the group's Mesh resolver member (GroupPlan.MeshResolver), which
+// answers it on its Mesh ingress and replies back over the Mesh; while the
+// Mesh carries nothing, the sidecar is not sealed or the group has no Mesh
+// resolver, and while the table is blackholed, it fails, with no fallback
+// to a domestic resolver, another member or the LAN.
 //
 // The mark is written in decimal. SmartDNS 1.2026.11.09 accepts
 // "-set-mark 0x4d70" without complaint and applies no mark at all (seen

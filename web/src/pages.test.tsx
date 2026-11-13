@@ -14,10 +14,14 @@ import { effectiveOrder, moveRule } from "./RulesPage";
 import { fakeApi, panelStatus, renderAt, reply, webStorageDump } from "./testing";
 import { deleteNode } from "./TopologyPage";
 import type {
+  DeploymentView,
+  GatewayDeploymentView,
+  WithdrawPlan,
   GroupActualView,
   GroupHubState,
   GroupMemberView,
   Node,
+  PreflightRecord,
   ProbeCatalogEntry,
   ProbeResultRow,
   RegionGroupView,
@@ -1225,6 +1229,77 @@ describe("region groups: the hub's actual state", () => {
     expect(reads).toBe(2);
   });
 
+  it("shows a read of another hub identity as unknown with the reason, and reads the current hub", async () => {
+    const changed = "上次读取的不是当前的枢纽（服务器、地址已变更）；旧报告不再采信，需要对当前枢纽重新读取";
+    const g = group({
+      actual: { ...NEVER_READ, state: "unavailable", code: "hub_identity_changed", message: changed, read_at: NOW },
+      model: observedModel,
+      member_status: group().member_status.map((m) => ({ ...m, model_active: m.id === "hk-2" })),
+    });
+    // The stored read is recent, but of another identity: it is read again.
+    let hub = hubState({
+      last_read: { read_at: new Date().toISOString(), ok: true, ignored: [], current_hub: false, identity_code: "hub_identity_changed", identity_message: changed },
+    });
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [g], default_group: "hk", thresholds: THRESHOLDS, hub_state: hub }),
+      // The hub changes again while this read runs: the result is discarded.
+      "POST /api/region-groups/runtime/refresh": () => {
+        hub = hubState({ server_name: "新枢纽服务器", last_read: hub.last_read });
+        return reply(409, { error: "读取期间枢纽的服务器已变更，这次读取的结果已丢弃，没有作为当前状态保存；请对当前枢纽重新读取", code: "hub_identity_changed" });
+      },
+    });
+    renderAt("#/exits");
+    const card = await screen.findByTestId("group-hk");
+    const actual = within(card).getByTestId("group-actual");
+    expect(actual).toHaveAttribute("data-state", "unavailable");
+    expect(actual).toHaveTextContent("实际使用未知");
+    expect(actual.querySelector('[data-status="unverified"]')).toHaveTextContent("未验证 · 枢纽已变更");
+    expect(actual).not.toHaveTextContent("香港二号");
+    expect(within(card).getByTestId("group-actual-why")).toHaveTextContent("上次读取的不是当前枢纽");
+    expect(within(card).getByTestId("group-actual-why")).toHaveTextContent("服务器、地址已变更");
+    expect(within(card).getByRole("button", { name: /重新读取/ })).toBeEnabled();
+    expect(within(card).queryByText("使用中")).toBeNull();
+    // The model stays separate and labelled.
+    expect(within(card).getByTestId("group-model")).toHaveTextContent("面板推算香港二号");
+    const bar = screen.getByTestId("hub-state-bar");
+    expect(within(bar).getByText("不是当前枢纽")).toBeInTheDocument();
+    expect(within(bar).queryByText("读取成功")).toBeNull();
+    expect(within(bar).getByTestId("hub-identity-changed")).toHaveTextContent("旧报告不再采信");
+    // Read automatically despite the recent time; the discarded result is
+    // reported and the groups are loaded again.
+    await waitFor(() => expect(api.find("POST /api/region-groups/runtime/refresh")).toHaveLength(1));
+    expect(await screen.findByText("读取期间枢纽已变更，这次结果已丢弃")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("hub-state-bar")).toHaveTextContent("新枢纽服务器"));
+    expect(within(screen.getByTestId("group-hk")).getByTestId("group-actual")).toHaveTextContent("实际使用未知");
+  });
+
+  it("links to the server page when the changed hub cannot be read yet", async () => {
+    const changed = "上次读取的不是当前的枢纽（地址已变更）；旧报告不再采信，需要对当前枢纽重新读取";
+    const g = group({ actual: { ...NEVER_READ, state: "unavailable", code: "hub_identity_changed", message: changed, read_at: NOW } });
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({
+        groups: [g],
+        default_group: "hk",
+        thresholds: THRESHOLDS,
+        hub_state: hubState({
+          readable: false,
+          not_readable_code: "server_not_ready",
+          not_readable_message: "服务器 枢纽服务器 的主机指纹还没有确认",
+          last_read: { read_at: NOW, ok: true, ignored: [], current_hub: false, identity_code: "hub_identity_changed", identity_message: changed },
+        }),
+      }),
+    });
+    renderAt("#/exits");
+    const card = await screen.findByTestId("group-hk");
+    expect(within(card).getByTestId("group-actual")).toHaveTextContent("未验证 · 枢纽已变更");
+    expect(within(card).getByRole("link", { name: /服务器页/ })).toHaveAttribute("href", "#/servers/srv-hub");
+    expect(within(screen.getByTestId("hub-state-bar")).getByText("不是当前枢纽")).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(api.find("POST /api/region-groups/runtime/refresh")).toHaveLength(0);
+  });
+
   it("does not read automatically when a recent read is stored", async () => {
     const api = fakeApi({
       "GET /api/topology": () => topology(),
@@ -1472,5 +1547,754 @@ describe("tables at narrow widths", () => {
     expect(row.closest(".ant-table-content, .ant-table-body")).not.toBeNull();
     expect(row.querySelector("td.cell-name")).toHaveTextContent("一台名字很长很长的香港机房服务器");
     expect(row.querySelector("td.cell-actions.ant-table-cell-fix-right")).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------- install pre-check ---
+
+const PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTPUBLICKEYONLY panel";
+
+function preflightRec(over: Partial<PreflightRecord> = {}): PreflightRecord {
+  const at = new Date(Date.now() - 60_000).toISOString();
+  const expires = new Date(Date.now() + 9 * 60_000).toISOString();
+  return {
+    id: "pf-1",
+    kind: "remote",
+    node_id: "us",
+    node_name: "美国",
+    role: "exit",
+    target: {
+      server_id: "srv-2",
+      server_name: "美国机",
+      address: "198.51.100.40",
+      port: 2222,
+      user: "root",
+      fingerprint: "SHA256:pinnedFINGERPRINTexample",
+      credential_id: "cred-1",
+      credential_name: "运维密钥",
+    },
+    deployment: "dep-1",
+    bundle: "a".repeat(64),
+    first_install: true,
+    at,
+    expires_at: expires,
+    host: { os: "Debian GNU/Linux 12 (bookworm)", arch: "x86_64", kernel: "6.1.0-28-amd64", mem_total_kb: 1012000, mem_avail_kb: 420000, complete: true },
+    footprint: {
+      files: ["/etc/wireguard/m07.conf"],
+      interfaces: [{ name: "m07", addresses: ["10.66.7.2/30"] }],
+      listens: [{ proto: "udp", addr: "10.66.7.2", wildcard: false, port: 53, owner: "smartdns" }],
+      route_tables: [100, 102, 150],
+      nft_tables: ["inet meridian"],
+      units: ["meridian-unlock.timer"],
+      packages: [{ package: "wireguard-tools", command: "wg" }],
+      binaries: [],
+    },
+    not_checked: ["不检查云厂商安全组"],
+    ownership: "none",
+    blocking: true,
+    findings: [
+      {
+        severity: "blocking",
+        code: "forward_policy_drop",
+        resource: "ipv4 FORWARD",
+        message: "ipv4 转发会被丢弃：iptables filter 表 FORWARD 策略 DROP（Docker 在运行，这通常是 Docker 设置的）。",
+        action: "这一版面板不会替你改 Docker 或别的防火墙的规则。",
+      },
+      { severity: "warning", code: "low_memory", resource: "memory", message: "内存很紧。", action: "确认已有服务的内存余量。" },
+      { severity: "info", code: "docker_present", resource: "docker", message: "Docker 在运行。" },
+    ],
+    changes: [
+      { kind: "interface", action: "create", resource: "m07", detail: "10.66.7.2/30" },
+      { kind: "package", action: "install", resource: "wireguard-tools" },
+    ],
+    counts: { blocking: 1, warning: 1, info: 1 },
+    ...over,
+  };
+}
+
+const CLEAN = (over: Partial<PreflightRecord> = {}) =>
+  preflightRec({
+    id: "pf-2",
+    blocking: false,
+    findings: [{ severity: "info", code: "host_summary", message: "主机：Debian 12。" }],
+    counts: { blocking: 0, warning: 0, info: 1 },
+    ...over,
+  });
+
+describe("deploy: install pre-check for remote nodes", () => {
+  const setup = (handlers: Parameters<typeof fakeApi>[0] = {}) => {
+    const t = topology();
+    t.nodes = t.nodes.map((n) => (n.id === "us" ? { ...n, server_id: "srv-2" } : n));
+    return fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [server({ id: "srv-2", name: "美国机", address: "198.51.100.40" })] }),
+      ...handlers,
+    });
+  };
+
+  it("shows target, planned changes and findings by severity, and refuses to execute with a blocking finding", async () => {
+    let next: PreflightRecord = preflightRec();
+    const api = setup({ "POST /api/provision/preflight": () => ({ preflight: next }) });
+    renderAt("#/deploy");
+    const row = await screen.findByTestId("remote-node-us");
+    await userEvent.click(within(row).getByRole("button", { name: /生成密钥并下发/ }));
+    const report = await screen.findByTestId("preflight-report");
+    expect(api.find("POST /api/provision/preflight")[0].body).toEqual({ node_id: "us" });
+    // Target identity it is bound to.
+    expect(report).toHaveTextContent("root@198.51.100.40:2222");
+    expect(report).toHaveTextContent("SHA256:pinnedFINGERPRINTexample");
+    expect(report).toHaveTextContent("运维密钥");
+    // Findings grouped by severity, with what to do.
+    const blocking = screen.getByTestId("preflight-blocking");
+    expect(blocking).toHaveTextContent("阻断：必须先处理（1）");
+    expect(blocking).toHaveTextContent("Docker");
+    expect(blocking).toHaveTextContent("处理办法：这一版面板不会替你改 Docker");
+    expect(screen.getByTestId("preflight-warning")).toHaveTextContent("内存很紧");
+    expect(screen.getByTestId("preflight-info")).toHaveTextContent("Docker 在运行");
+    // Planned changes.
+    await userEvent.click(screen.getByText(/拟执行的变更（2 项）/));
+    expect(await screen.findByTestId("preflight-changes")).toHaveTextContent("m07");
+    // Disabled, with the reason; nothing can override it.
+    const exec = screen.getByTestId("preflight-execute");
+    expect(exec).toBeDisabled();
+    expect(screen.getByTestId("preflight-disabled-reason")).toHaveTextContent("1 个阻断项");
+    expect(api.find("POST /api/provision")).toHaveLength(0);
+
+    // Fixed on the server; re-run: clean → execute with the reviewed id.
+    next = CLEAN();
+    api.on("POST /api/provision", () => ({ dry_run: false, node_id: "us", outcome: "installed", public_key: "NEWPUB=", output: "MERIDIAN_PROVISION_OK\n" }));
+    await userEvent.click(screen.getByRole("button", { name: btn("重新预检") }));
+    await waitFor(() => expect(screen.getByTestId("preflight-execute")).toBeEnabled());
+    expect(screen.getByTestId("preflight-ok")).toHaveTextContent("没有发现冲突");
+    await userEvent.click(screen.getByTestId("preflight-execute"));
+    await waitFor(() => expect(api.find("POST /api/provision")).toHaveLength(1));
+    expect(api.find("POST /api/provision")[0].body).toEqual({ node_id: "us", dry_run: false, generate_keys: true, preflight_id: "pf-2" });
+    expect(await screen.findByText("脚本已在服务器上执行完毕")).toBeInTheDocument();
+  });
+
+  it("keeps the dialog open with the new result when the re-run before execution finds something", async () => {
+    const api = setup({
+      "POST /api/provision/preflight": () => ({ preflight: CLEAN() }),
+      "POST /api/provision": () =>
+        reply(409, {
+          error: "执行前重新预检出现了审阅时没有的问题（port_in_use）",
+          code: "preflight_changed",
+          preflight: preflightRec({ id: "pf-3", findings: [{ severity: "blocking", code: "port_in_use", resource: "udp 10.66.7.2:53", message: "出口解析器要绑定 udp 10.66.7.2:53，但已被进程 dnsmasq 占用。", action: "换端口或停用占用者。" }], counts: { blocking: 1, warning: 0, info: 0 } }),
+        }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    await waitFor(() => expect(screen.getByTestId("preflight-execute")).toBeEnabled());
+    await userEvent.click(screen.getByTestId("preflight-execute"));
+    await waitFor(() => expect(api.find("POST /api/provision")).toHaveLength(1));
+    expect(await screen.findByText("执行前重新预检出现了新问题，没有执行")).toBeInTheDocument();
+    expect(screen.getByTestId("preflight-blocking")).toHaveTextContent("dnsmasq");
+    expect(screen.getByTestId("preflight-execute")).toBeDisabled();
+  });
+
+  it("states what a failed first install left behind and never shows success", async () => {
+    setup({
+      "POST /api/provision/preflight": () => ({ preflight: CLEAN() }),
+      "POST /api/provision": () =>
+        reply(502, {
+          error: "装机失败，补偿没有全部完成",
+          code: "provision_failed_leftovers",
+          outcome: "left_behind",
+          leftovers: ["interface m07"],
+          kept: ["package wireguard-tools"],
+          output: "MERIDIAN_COMPENSATING exit=1\nMERIDIAN_LEFTOVER interface m07\n",
+        }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    await waitFor(() => expect(screen.getByTestId("preflight-execute")).toBeEnabled());
+    await userEvent.click(screen.getByTestId("preflight-execute"));
+    expect(await screen.findByTestId("provision-leftovers")).toHaveTextContent("interface m07");
+    expect(screen.getByTestId("provision-kept")).toHaveTextContent("package wireguard-tools");
+    expect(screen.getByText("装机失败，有残留没有撤掉")).toBeInTheDocument();
+    expect(screen.queryByText("脚本已在服务器上执行完毕")).toBeNull();
+  });
+
+  it("offers the public key to copy when the server does not accept the login method", async () => {
+    setup({
+      "POST /api/provision/preflight": () =>
+        reply(502, {
+          error: "美国机 不接受密钥登录，这份凭据没有被尝试（服务器提供的登录方式：password）",
+          code: "auth_method_unavailable",
+          login_help: {
+            code: "auth_method_unavailable",
+            method: "key",
+            user: "root",
+            address: "198.51.100.40",
+            credential_id: "cred-1",
+            credential_name: "运维密钥",
+            public_key: PUBKEY,
+            steps: ["服务器没有提供公钥登录：在 sshd_config 里设 PubkeyAuthentication yes 并重载 sshd", "把下面这把公钥追加到 root@198.51.100.40 的 ~/.ssh/authorized_keys"],
+          },
+        }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    const help = await screen.findByTestId("login-help");
+    expect(help).toHaveTextContent(PUBKEY);
+    expect(help).toHaveTextContent("PubkeyAuthentication yes");
+    expect(within(help).getByRole("button", { name: /复制公钥/ })).toBeInTheDocument();
+    expect(screen.getByText("服务器不接受这种登录方式")).toBeInTheDocument();
+    expect(screen.getByTestId("preflight-execute")).toBeDisabled();
+  });
+});
+
+describe("deploy: gateway install pre-check", () => {
+  it("requires a reviewed pre-check for the first install and sends its id", async () => {
+    let next = preflightRec({ kind: "gateway", node_id: "gw", node_name: "网关", target: undefined });
+    const api = fakeApi({
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, installOver: { state: "not_installed" } }),
+      "GET /api/host": () => ({ installed: null, pending: null, agent: { ok: true } }),
+      "POST /api/host/preflight": () => ({ preflight: next }),
+      "POST /api/apply": () => ({ dry_run: false, install: true, wrote: [], order: [], diff: "" }),
+    });
+    renderAt("#/deploy");
+    const install = await screen.findByRole("button", { name: /安装到网关/ });
+    await waitFor(() => expect(install).toBeDisabled());
+    expect(screen.getByTestId("install-preflight-reason")).toHaveTextContent("先点「安装前预检」");
+
+    await userEvent.click(screen.getByTestId("host-preflight-run"));
+    const report = await screen.findByTestId("host-preflight");
+    expect(report).toHaveTextContent("本机（经 meridian-host）");
+    expect(report).toHaveTextContent("Docker");
+    expect(screen.getByRole("button", { name: /安装到网关/ })).toBeDisabled();
+    expect(screen.getByTestId("install-preflight-reason")).toHaveTextContent("1 个阻断项");
+
+    next = CLEAN({ id: "pf-gw", kind: "gateway", node_id: "gw", node_name: "网关", target: undefined });
+    await userEvent.click(screen.getByTestId("host-preflight-run"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /安装到网关/ })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: /安装到网关/ }));
+    await confirmModal("安装");
+    await waitFor(() => expect(api.find("POST /api/apply")).toHaveLength(1));
+    expect(api.find("POST /api/apply")[0].body).toEqual({ dry_run: false, install: true, preflight_id: "pf-gw" });
+  });
+});
+
+describe("servers: login help", () => {
+  it("shows the panel's public keys to paste when the server only accepts keys", async () => {
+    const failed = {
+      at: NOW,
+      ok: false,
+      auth_method: "password" as const,
+      code: "auth_method_unavailable",
+      error: "台湾出口 不接受密码登录，这份凭据没有被尝试（服务器提供的登录方式：publickey）",
+      duration_ms: 120,
+    };
+    let sv = server({ auth: "password", credential: { id: "cred-pw", name: "运维密码", kind: "password" }, missing: ["connection_test"], ready: false });
+    fakeApi({
+      "GET /api/servers": () => ({ servers: [sv] }),
+      "GET /api/servers/:id": () => ({ server: sv }),
+      "POST /api/servers/:id/test": () => {
+        sv = { ...sv, last_test: failed };
+        return {
+          test: failed,
+          server: sv,
+          login_help: {
+            code: "auth_method_unavailable",
+            method: "password",
+            user: "root",
+            address: "192.0.2.10",
+            key_credentials: [{ id: "cred-key", name: "面板密钥", public_key: PUBKEY }],
+            steps: ["服务器只接受密钥登录：把面板里一把密钥的公钥追加到 root@192.0.2.10 的 ~/.ssh/authorized_keys"],
+          },
+        };
+      },
+    });
+    renderAt("#/servers/srv-1");
+    const flow = await screen.findByTestId("server-flow");
+    await userEvent.click(within(flow).getByRole("button", { name: btn("测试连接") }));
+    const help = await within(flow).findByTestId("login-help");
+    expect(help).toHaveTextContent("面板密钥 的公钥");
+    expect(help).toHaveTextContent(PUBKEY);
+    expect(help).toHaveTextContent("authorized_keys");
+    expect(webStorageDump()).not.toContain(PUBKEY);
+  });
+});
+
+// ------------------------------------------------------- withdraw (R4) ---
+
+function deployment(over: Partial<DeploymentView> = {}): DeploymentView {
+  return {
+    node_id: "us",
+    node_name: "美国",
+    in_topology: true,
+    server_id: "srv-2",
+    server_name: "美国机",
+    current_server_id: "srv-2",
+    address: "198.51.100.40",
+    port: 2222,
+    fingerprint: "SHA256:pinnedFINGERPRINTexample",
+    user: "root",
+    credential_id: "cred-1",
+    run: "run-1",
+    bundle: "b".repeat(64),
+    at: NOW,
+    ok: true,
+    installed: true,
+    outcome: "installed",
+    on_host: true,
+    status: "installed",
+    ...over,
+  };
+}
+
+const EMPTY_SET = { files: [], interfaces: [], units: [], nft_tables: [], route_tables: [] };
+
+function deploymentsView(nodes: DeploymentView[], gateway: Partial<GatewayDeploymentView> = {}) {
+  return {
+    nodes,
+    gateway: { installed: false, withdrawn: false, plan: EMPTY_SET, kept: [], pending: null, last: null, ...gateway },
+  };
+}
+
+function withdrawPlanOf(over: Partial<WithdrawPlan> = {}): WithdrawPlan {
+  return {
+    id: "wp-1",
+    node_id: "us",
+    mode: "manifest",
+    target: { server_id: "srv-2", server_name: "美国机", address: "198.51.100.40", port: 2222, user: "root", fingerprint: "SHA256:pinnedFINGERPRINTexample", credential_id: "cred-1" },
+    deployment: "dep-1",
+    digest: "d".repeat(64),
+    owner: "us dep-1 srv-2",
+    items: ["iface m07 present", "nft inet meridian present", "file /etc/sysctl.d/99-meridian.conf changed"],
+    at: NOW,
+    expires_at: "2099-01-01T00:00:00Z",
+    already: false,
+    ...over,
+  };
+}
+
+describe("deploy: deployment records and withdraw", () => {
+  it("plans first, requires the typed node id, and lists removed and kept on success", async () => {
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/deployments": () => deploymentsView([deployment(), deployment({ node_id: "old", node_name: "旧出口", in_topology: false, server_id: "srv-9", server_name: "旧机" })]),
+      "POST /api/provision/withdraw/plan": () => ({ plan: withdrawPlanOf() }),
+      "POST /api/provision/withdraw": () => ({
+        node_id: "us",
+        mode: "manifest",
+        outcome: "withdrawn",
+        message: "撤回完成：清单列出的内容已移除并复核",
+        removed: ["iface m07", "nft inet meridian"],
+        kept: ["package wireguard-tools (installed by Meridian, kept on purpose)"],
+        leftovers: [],
+      }),
+    });
+    renderAt("#/deploy");
+    const row = await screen.findByTestId("deployment-us");
+    expect(row).toHaveTextContent("已安装");
+    expect(row).toHaveTextContent("root@198.51.100.40:2222");
+    expect(row).toHaveTextContent("SHA256:pinnedFINGERPRINTexample");
+    expect(await screen.findByTestId("deployment-orphan-old")).toHaveTextContent("节点已从拓扑删除");
+    await userEvent.click(within(row).getByTestId("withdraw-us"));
+    const dlg = await screen.findByTestId("withdraw-dialog");
+    expect(api.find("POST /api/provision/withdraw/plan")).toHaveLength(0);
+    await userEvent.click(screen.getByTestId("withdraw-plan"));
+    const plan = await screen.findByTestId("withdraw-plan-view");
+    expect(api.find("POST /api/provision/withdraw/plan")[0].body).toEqual({ node_id: "us", mode: "manifest" });
+    expect(plan).toHaveTextContent("root@198.51.100.40:2222");
+    expect(plan).toHaveTextContent("iface m07 present");
+    expect(plan).toHaveTextContent("改动过：会保留");
+    expect(dlg).toHaveTextContent("wireguard-tools");
+    const run = screen.getByTestId("withdraw-run");
+    expect(run).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("输入节点 ID 确认"), "u");
+    expect(run).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("输入节点 ID 确认"), "s");
+    await waitFor(() => expect(run).toBeEnabled());
+    await userEvent.click(run);
+    const res = await screen.findByTestId("withdraw-result");
+    expect(api.find("POST /api/provision/withdraw")[0].body).toEqual({ node_id: "us", plan_id: "wp-1", confirm: "us" });
+    expect(res).toHaveTextContent("撤回完成");
+    expect(within(res).getByTestId("withdraw-removed")).toHaveTextContent("iface m07");
+    expect(within(res).getByTestId("withdraw-kept")).toHaveTextContent("wireguard-tools");
+    expect(within(res).queryByTestId("withdraw-leftovers")).toBeNull();
+  });
+
+  it("shows what could not be removed after a partial withdraw and never shows success", async () => {
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/deployments": () => deploymentsView([deployment()]),
+      "POST /api/provision/withdraw/plan": () => ({ plan: withdrawPlanOf() }),
+      "POST /api/provision/withdraw": () =>
+        reply(502, {
+          node_id: "us",
+          mode: "manifest",
+          outcome: "partial",
+          code: "withdraw_partial",
+          error: "撤回没有全部完成",
+          message: "撤回没有全部完成：下面列出了没能移除的内容",
+          removed: ["nft inet meridian"],
+          kept: [],
+          leftovers: ["file /etc/sysctl.d/99-meridian.conf (changed since the install: kept, check it by hand)"],
+        }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("deployment-us")).getByTestId("withdraw-us"));
+    await userEvent.click(await screen.findByTestId("withdraw-plan"));
+    await screen.findByTestId("withdraw-plan-view");
+    await userEvent.type(screen.getByLabelText("输入节点 ID 确认"), "us");
+    await userEvent.click(screen.getByTestId("withdraw-run"));
+    const res = await screen.findByTestId("withdraw-result");
+    expect(res).toHaveTextContent("没有完成");
+    expect(res).not.toHaveTextContent("撤回完成");
+    expect(within(res).getByTestId("withdraw-leftovers")).toHaveTextContent("99-meridian.conf");
+  });
+
+  it("shows the server's refusal reason when the plan is refused", async () => {
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/deployments": () => deploymentsView([deployment()]),
+      "POST /api/provision/withdraw/plan": () =>
+        reply(409, { code: "withdraw_refused", reason: "manifest_other", owner: "jp dep-7 srv-2", error: "服务器上的清单属于另一个节点或另一个面板部署：不撤回别人的安装" }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("deployment-us")).getByTestId("withdraw-us"));
+    await userEvent.click(await screen.findByTestId("withdraw-plan"));
+    const refused = await screen.findByTestId("withdraw-refused");
+    expect(refused).toHaveTextContent("没有改动任何东西");
+    expect(refused).toHaveTextContent("manifest_other");
+    expect(refused).toHaveTextContent("jp dep-7 srv-2");
+    expect(screen.queryByTestId("withdraw-run")).toBeNull();
+  });
+
+  it("offers recovery from the preflight finding of an interrupted run", async () => {
+    const t = topology();
+    t.nodes = t.nodes.map((n) => (n.id === "us" ? { ...n, server_id: "srv-2" } : n));
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [server({ id: "srv-2", name: "美国机", address: "198.51.100.40" })] }),
+      "POST /api/provision/preflight": () => ({
+        preflight: preflightRec({
+          findings: [{ severity: "blocking", code: "previous_run_incomplete", resource: "/var/lib/meridian/node/journal", message: "上一次装机没有正常结束", action: "在部署页恢复" }],
+          counts: { blocking: 1, warning: 0, info: 0 },
+        }),
+      }),
+      "POST /api/provision/withdraw/plan": () => ({ plan: withdrawPlanOf({ mode: "journal", items: ["remove file /etc/wireguard/m07.conf"] }) }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
+    const fix = await screen.findByTestId("preflight-recovery");
+    await userEvent.click(within(fix).getByRole("button", { name: /恢复中断的装机/ }));
+    await userEvent.click(await screen.findByTestId("withdraw-plan"));
+    await screen.findByTestId("withdraw-plan-view");
+    expect(api.find("POST /api/provision/withdraw/plan")[0].body).toEqual({ node_id: "us", mode: "journal" });
+  });
+
+  it("withdraws the gateway down to the guard, stating that LAN forwarding stays blocked, only with gw typed", async () => {
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, installOver: { state: "in_sync", installed_version: 3 } }),
+      "GET /api/deployments": () =>
+        deploymentsView([], {
+          installed: true,
+          version: 3,
+          plan: { files: ["/etc/wireguard/m02.conf"], interfaces: ["m02"], units: ["meridian-failover.service"], nft_tables: ["inet meridian"], route_tables: [100] },
+          kept: ["局域网兜底表 inet meridian_guard、它的开机文件 /etc/nftables.d/meridian-guard.nft 和 meridian-guard.service"],
+        }),
+      "POST /api/host/withdraw": () => ({ status: "withdrawn", removed: { ...EMPTY_SET, interfaces: ["m02"] }, kept: ["转发保持关闭"], host: null }),
+    });
+    renderAt("#/deploy");
+    expect(await screen.findByTestId("gateway-guard-note")).toHaveTextContent("inet meridian_guard");
+    expect(screen.getByTestId("gateway-guard-note")).toHaveTextContent("局域网经这台网关的转发继续被拒绝");
+    expect(screen.getByTestId("gateway-kept")).toHaveTextContent("meridian-guard.nft");
+    await userEvent.click(screen.getByTestId("gateway-withdraw"));
+    const box = await screen.findByTestId("typed-confirm");
+    const dialog = box.closest(".ant-modal") as HTMLElement;
+    const ok = within(dialog).getByRole("button", { name: btn("撤回网关") });
+    expect(ok).toBeDisabled();
+    await userEvent.type(within(box).getByLabelText("输入确认内容"), "gw");
+    await waitFor(() => expect(ok).toBeEnabled());
+    await userEvent.click(ok);
+    expect(await screen.findByTestId("gateway-withdraw-result")).toHaveTextContent("已撤回（兜底表保留）");
+    expect(api.find("POST /api/host/withdraw")[0].body).toEqual({ confirm: "gw" });
+  });
+});
+
+describe("topology: deleting a deployed node", () => {
+  it("offers 仅从拓扑删除 and 先撤回再删除; keeping the install leaves the record alone", async () => {
+    const t = topology();
+    t.nodes = t.nodes.map((n) => (n.id === "us" ? { ...n, server_id: "srv-2" } : n));
+    let saved: Topology | undefined;
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [server({ id: "srv-2", name: "美国机", address: "198.51.100.40" })] }),
+      "GET /api/deployments": () => deploymentsView([deployment()]),
+      "PUT /api/topology": (req) => {
+        saved = req.body as Topology;
+        return { topology: req.body, issues: [], paths: [], draft: false };
+      },
+    });
+    renderAt("#/topology/us");
+    await userEvent.click(await screen.findByRole("button", { name: /删除节点/ }));
+    const part = await screen.findByTestId("node-delete-deployment");
+    expect(part).toHaveTextContent("仅从拓扑删除（保留服务器上的安装，之后仍可在部署页撤回）");
+    expect(part).toHaveTextContent("先撤回再删除");
+    expect(part).toHaveTextContent("wireguard-tools");
+    const ok = screen.getByRole("button", { name: /删除并清理引用/ });
+    expect(ok).toBeDisabled();
+    await userEvent.click(within(part).getByText("先撤回再删除"));
+    expect(await screen.findByRole("button", { name: /先撤回/ })).toBeEnabled();
+    await userEvent.click(within(part).getByText(/仅从拓扑删除/));
+    const del = await screen.findByRole("button", { name: /删除并清理引用/ });
+    await waitFor(() => expect(del).toBeEnabled());
+    await userEvent.click(del);
+    await waitFor(() => expect(screen.queryByTestId("node-delete")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await waitFor(() => expect(saved).toBeDefined());
+    expect(saved!.nodes.some((n) => n.id === "us")).toBe(false);
+    // Nothing was withdrawn or forgotten.
+    expect(api.calls.some((c) => c.path.startsWith("/api/provision/withdraw") || c.path.startsWith("/api/provision/state"))).toBe(false);
+  });
+});
+
+describe("unlock: results of removed exits", () => {
+  it("does not show them as current, says how many there are, and prunes them", async () => {
+    let pruned = false;
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, probe_available: true }),
+      "GET /api/unlock/catalog": () => ({ catalog: CATALOG, available: true, validation: "synthetic_only", validation_text: "x", grades: [], ingest_rule: "" }),
+      "GET /api/unlock/jobs": () => ({ jobs: [], running: "", catalog: CATALOG, available: true }),
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+      "GET /api/unlock": () => ({
+        services: [],
+        states: {},
+        history: [{ at: NOW, kind: "manual", service: "auto-netflix", exit_id: "gone", ok: true }],
+        next_run: NOW,
+        interval_sec: 21600,
+        pending_apply: false,
+        decisions: {},
+        removed_exits: ["gone"],
+      }),
+      "GET /api/unlock/results": (req) =>
+        req.query.get("include_removed") === "1"
+          ? { results: [result({ exit_id: "gone", exit_name: "", exit_removed: true, is_active: false })], validation: "x", validation_text: "x", removed_exits: [{ exit_id: "gone", results: 1 }] }
+          : { results: [], validation: "x", validation_text: "x", removed_exits: pruned ? [] : [{ exit_id: "gone", results: 1 }] },
+      "POST /api/unlock/results/prune": () => {
+        pruned = true;
+        return { removed: 1, exits: ["gone"] };
+      },
+    });
+    renderAt("#/unlock");
+    const notice = await screen.findByTestId("removed-exits-notice");
+    expect(notice).toHaveTextContent("1 条结果属于已删除的出口，不作为当前结果显示");
+    expect(screen.queryByTestId("unlock-matrix")).toBeNull();
+    expect((await screen.findAllByTestId("history-removed-gone")).length).toBeGreaterThan(0);
+    await userEvent.click(within(notice).getByRole("button", { name: /显示它们/ }));
+    expect(await screen.findByTestId("removed-exit-gone")).toHaveTextContent("已删除的出口");
+    await userEvent.click(within(screen.getByTestId("removed-exits-notice")).getByRole("button", { name: btn("清理") }));
+    await waitFor(() => expect(api.find("POST /api/unlock/results/prune")).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByTestId("removed-exits-notice")).toBeNull());
+  });
+});
+
+describe("overview: unlock probe channel", () => {
+  const jobs = () => ({ jobs: [], running: "", catalog: [], available: true });
+
+  it("says 不可用 with the reason when the agent does not answer, although a probe channel is configured", async () => {
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/unlock/jobs": jobs,
+      "GET /api/status": () =>
+        panelStatus({
+          agent: { configured: true, ok: false, error: "dial unix /run/meridian-host/agent.sock: connection refused" },
+          probe_available: false,
+          probe_reason: "agent_unreachable",
+          probe_error: "dial unix /run/meridian-host/agent.sock: connection refused",
+        }),
+    });
+    renderAt("#/");
+    const ch = await screen.findByTestId("probe-channel");
+    await waitFor(() => expect(ch).toHaveTextContent("不可用"));
+    expect(ch).toHaveTextContent("meridian-host 连不上");
+    expect(ch).not.toHaveTextContent(/^可用$/);
+  });
+
+  it("says why when no probe channel is configured, and 可用 only when the status says so", async () => {
+    let status = panelStatus({ probe_available: false, probe_reason: "not_configured" });
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/unlock/jobs": jobs,
+      "GET /api/status": () => status,
+    });
+    const view = renderAt("#/");
+    expect(await screen.findByTestId("probe-channel")).toHaveTextContent("没有配置宿主探测通道");
+    view.unmount();
+    status = panelStatus({ ...OK_AGENT, probe_available: true });
+    renderAt("#/");
+    await waitFor(() => expect(screen.getByTestId("probe-channel")).toHaveTextContent(/^可用$/));
+  });
+});
+
+describe("region groups with the same name", () => {
+  const twins = () => [
+    group({ id: "hk-dc", name: "香港", region: "hk", is_default: true }),
+    group({ id: "hk-home", name: "香港", region: "hk", is_default: false, in_use_by: [] }),
+    group({ id: "us", name: "美国", region: "us", is_default: false, in_use_by: [], members: ["us"], member_status: [member("us", "美国", { region: "us" })] }),
+  ];
+  const topo = () =>
+    topology({
+      region_groups: [
+        { id: "hk-dc", name: "香港", region: "hk", members: ["hk-2", "hk-ix"], mode: "auto" },
+        { id: "hk-home", name: "香港", region: "hk", members: ["hk-resi"], mode: "auto" },
+        { id: "us", name: "美国", region: "us", members: ["us"], mode: "auto" },
+      ],
+      settings: { ...topology().settings, default_group: "hk-dc" },
+    });
+
+  it("marks both cards and shows region and ID wherever a group is labelled on the exits page", async () => {
+    fakeApi({
+      "GET /api/topology": topo,
+      "GET /api/region-groups": () => ({ groups: twins(), default_group: "hk-dc", thresholds: THRESHOLDS }),
+    });
+    renderAt("#/exits");
+    expect(await screen.findByTestId("dup-name-hk-dc")).toHaveTextContent("同名 · 香港 · HK");
+    expect(screen.getByTestId("dup-name-hk-home")).toBeInTheDocument();
+    expect(screen.queryByTestId("dup-name-us")).toBeNull();
+    // Labels inside the cards carry the stable ID.
+    expect(screen.getByLabelText("香港（香港 · HK · hk-home） 的成员")).toBeInTheDocument();
+    expect(screen.getByLabelText("美国 的成员")).toBeInTheDocument();
+  });
+
+  it("lists both, with region and ID, in the unlock group picker", async () => {
+    fakeApi({
+      "GET /api/topology": topo,
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, probe_available: true }),
+      "GET /api/region-groups": () => ({ groups: twins(), default_group: "hk-dc", thresholds: THRESHOLDS }),
+      "GET /api/unlock/catalog": () => ({ catalog: CATALOG, available: true, validation: "synthetic_only", validation_text: "x", grades: [], ingest_rule: "" }),
+      "GET /api/unlock/jobs": () => ({ jobs: [], running: "", catalog: CATALOG, available: true }),
+      "GET /api/unlock": () => ({ services: [], states: {}, history: [], next_run: NOW, interval_sec: 21600, pending_apply: false, decisions: {} }),
+      "GET /api/unlock/results": () => ({ results: [], validation: "synthetic_only", validation_text: "x" }),
+    });
+    renderAt("#/unlock");
+    const launcher = await screen.findByTestId("probe-launcher");
+    fireEvent.click(within(launcher).getByRole("radio", { name: "按地区组" }));
+    fireEvent.mouseDown(within(launcher).getByRole("combobox", { name: "按地区组" }));
+    const options = await waitFor(() => {
+      const els = [...document.querySelectorAll<HTMLElement>(".ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option")].map((e) => e.textContent ?? "");
+      if (els.length < 3) throw new Error("options not open");
+      return els;
+    });
+    expect(options.some((o) => o.includes("香港（香港 · HK · hk-dc）"))).toBe(true);
+    expect(options.some((o) => o.includes("香港（香港 · HK · hk-home）"))).toBe(true);
+    // A unique name stays plain.
+    expect(options.some((o) => o.startsWith("美国（") && !o.includes("· us）"))).toBe(true);
+  });
+});
+
+describe("rules: same-named region groups", () => {
+  it("shows region and ID in the target picker and in the rules list", async () => {
+    const t = topology({
+      region_groups: [
+        { id: "hk-dc", name: "香港", region: "hk", members: ["hk-2", "hk-ix"], mode: "auto" },
+        { id: "hk-home", name: "香港", region: "hk", members: ["hk-resi"], mode: "auto" },
+      ],
+      settings: { ...topology().settings, default_group: "hk-dc" },
+    });
+    t.rules = t.rules.map((r) => ({ ...r, target_group: "hk-home" }));
+    fakeApi({ "GET /api/topology": () => t, "POST /api/validate": () => ({ issues: [], paths: [] }) });
+    renderAt("#/rules");
+    expect(await screen.findByText("香港（香港 · HK · hk-home）")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: /添加规则/ }));
+    const drawer = await screen.findByRole("dialog");
+    fireEvent.mouseDown(within(drawer).getByRole("combobox", { name: "地区组" }));
+    const options = await waitFor(() => {
+      const els = [...document.querySelectorAll<HTMLElement>(".ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option")].map((e) => e.textContent ?? "");
+      if (els.length < 2) throw new Error("options not open");
+      return els;
+    });
+    expect(options.some((o) => o.includes("hk-dc"))).toBe(true);
+    expect(options.some((o) => o.includes("hk-home"))).toBe(true);
+  });
+});
+
+describe("deploy: managed sysctl after an install", () => {
+  it("shows what was written, what is in effect, what is not and what the old file left in the kernel", async () => {
+    fakeApi({
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, installOver: { state: "changed", installed_version: 3, applied: true, applied_matches: false } }),
+      "GET /api/host": () => ({
+        installed: { version: 3, files: 10, interfaces: ["m1"], units: ["meridian.service"], nft_tables: ["inet meridian"], route_tables: [100], dns: true },
+        pending: null,
+        agent: { ok: true },
+      }),
+      "POST /api/diff": () => ({ diff: "===== nodes/gw/etc/sysctl.d/99-meridian.conf (changed) =====\n-old\n+new\n", order: [], issues: [] }),
+      "POST /api/apply": () => ({
+        dry_run: false,
+        install: true,
+        wrote: [],
+        order: [],
+        diff: "",
+        host: {
+          transaction: "txn-9",
+          kind: "apply",
+          from_version: 3,
+          to_version: 4,
+          diff: { files_changed: ["etc/sysctl.d/99-meridian.conf"] },
+          steps: [{ name: "restart meridian.service（meridian-up.sh）", ok: true }],
+          warnings: ["内核参数 net.ipv4.conf.all.rp_filter 现在是 1，/etc/sysctl.d/99-meridian.conf 写的是 2"],
+          committed: true,
+          sysctl: {
+            checked: true,
+            problems: 1,
+            written: [
+              { file: "/etc/sysctl.d/99-meridian.conf", key: "net.ipv4.ip_forward", want: "0", got: "1", state: "boot_only" },
+              { file: "/etc/sysctl.d/99-meridian.conf", key: "net.ipv4.conf.all.rp_filter", want: "2", got: "1", state: "differs" },
+              { file: "/etc/sysctl.d/99-meridian.conf", key: "net.ipv4.conf.all.send_redirects", want: "0", got: "0", state: "in_effect" },
+              { file: "/etc/meridian/forwarding.conf", key: "net.ipv4.ip_forward", want: "1", got: "1", state: "in_effect" },
+            ],
+            removed: [{ file: "/etc/sysctl.d/99-meridian.conf", key: "net.ipv6.conf.eth7.accept_ra", want: "2", state: "stale" }],
+          },
+        },
+      }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(await screen.findByRole("button", { name: /安装到网关/ }));
+    await confirmModal("安装");
+    const rep = await screen.findByTestId("sysctl-report");
+    expect(rep).toHaveTextContent("写入 4 项");
+    expect(rep).toHaveTextContent("已生效 2");
+    expect(rep).toHaveTextContent("未生效 1");
+    expect(rep).toHaveTextContent("开机值 1");
+    expect(rep).toHaveTextContent("旧文件遗留 1");
+    const problems = within(rep).getByTestId("sysctl-problems");
+    expect(problems).toHaveTextContent("net.ipv4.conf.all.rp_filter");
+    expect(problems).toHaveTextContent("文件 2，内核 1");
+    expect(problems).toHaveTextContent("net.ipv6.conf.eth7.accept_ra");
+    expect(problems).toHaveTextContent("内核保留到重启");
+    expect(problems).not.toHaveTextContent("send_redirects");
+  });
+
+  it("does not claim an effect when the kernel was not read", async () => {
+    fakeApi({
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, installOver: { state: "changed", installed_version: 3, applied: true, applied_matches: false } }),
+      "GET /api/host": () => ({ installed: { version: 3, files: 1, interfaces: [], units: [], nft_tables: [], route_tables: [], dns: false }, pending: null, agent: { ok: true } }),
+      "POST /api/apply": () => ({
+        dry_run: false,
+        install: true,
+        order: [],
+        diff: "",
+        host: {
+          transaction: "txn-10",
+          kind: "apply",
+          from_version: 3,
+          to_version: 4,
+          diff: {},
+          committed: true,
+          sysctl: { checked: false, reason: "安装写到测试目录，没有读取运行中的内核", problems: 0, written: [{ file: "/etc/sysctl.d/99-meridian.conf", key: "net.ipv4.conf.all.rp_filter", want: "2", state: "not_checked" }] },
+        },
+      }),
+    });
+    renderAt("#/deploy");
+    await userEvent.click(await screen.findByRole("button", { name: /安装到网关/ }));
+    await confirmModal("安装");
+    const rep = await screen.findByTestId("sysctl-report");
+    expect(rep).toHaveTextContent("没有读取运行中的内核");
+    expect(rep).not.toHaveTextContent("已生效");
   });
 });

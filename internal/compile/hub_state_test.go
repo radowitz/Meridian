@@ -45,8 +45,10 @@ func (h *hubHarness) judge(topo model.Topology, gid string) (hubstate.Snapshot, 
 	pol := g.Policy()
 	spec := hubstate.GroupSpec{ID: gid, Dynamic: g.Dynamic, Members: pol.Try, Mesh: pol.Mesh}
 	at := time.Unix(snap.Now, 0)
-	rd := &hubstate.Read{ReadAt: at, Snapshot: &snap}
-	return snap, hubstate.Evaluate(spec, rd, GroupPlanID(groups), HubStaleAfter(groups), at)
+	// The read is bound to the hub identity it was taken from.
+	id := hubstate.NewIdentity("hk-hub", "srv-test", "192.0.2.1", 22, "SHA256:test")
+	rd := &hubstate.Read{ReadAt: at, Identity: id, Snapshot: &snap}
+	return snap, hubstate.Evaluate(spec, rd, id, GroupPlanID(groups), HubStaleAfter(groups), at)
 }
 
 func (h *hubHarness) report(gid string) map[string]string {

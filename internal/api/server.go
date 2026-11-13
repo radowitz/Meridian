@@ -27,7 +27,6 @@ import (
 	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/provision"
-	"github.com/radowitz/meridian/internal/sshexec"
 	"github.com/radowitz/meridian/internal/store"
 	"github.com/radowitz/meridian/internal/validate"
 )
@@ -96,6 +95,14 @@ type Server struct {
 	// raMu serialises remote-access changes with the WireGuard secret
 	// garbage collection (a new PSK is stored before the topology names it).
 	raMu sync.Mutex
+	// HostPreflight is meridian-host's read-only install pre-check
+	// (hostexec.Client in main). Nil: taken from Host when it implements
+	// it; an install to a real host without it is refused.
+	HostPreflight HostPreflightRuntime
+	// provMu guards provBusy (one preflight or provision per node), the
+	// deployment id and the provision outcomes.
+	provMu   sync.Mutex
+	provBusy map[string]bool
 }
 
 // localNodeID is the node whose files an install writes on this host.
@@ -125,6 +132,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/unlock/jobs/{id}", s.getUnlockJob)
 	mux.HandleFunc("GET /api/unlock/catalog", s.getUnlockCatalog)
 	mux.HandleFunc("GET /api/unlock/results", s.getUnlockResults)
+	mux.HandleFunc("POST /api/unlock/results/prune", s.postUnlockResultsPrune)
 	mux.HandleFunc("POST /api/unlock/jobs/{id}/cancel", s.postUnlockJobCancel)
 	mux.HandleFunc("GET /api/leakcheck", s.getLeakcheck)
 	mux.HandleFunc("GET /api/mesh", s.getMesh)
@@ -137,6 +145,8 @@ func (s *Server) Handler() http.Handler {
 	s.registerLists(mux)
 	s.registerRemoteAccess(mux)
 	s.registerSSHOps(mux)
+	s.registerPreflight(mux)
+	s.registerWithdraw(mux)
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
 	}
@@ -396,6 +406,9 @@ func (s *Server) postDiff(w http.ResponseWriter, r *http.Request) {
 type applyBody struct {
 	DryRun  bool `json:"dry_run"`
 	Install bool `json:"install"`
+	// PreflightID is the reviewed install pre-check (POST /api/host/preflight).
+	// Required for the first install; the check is re-run before any install.
+	PreflightID string `json:"preflight_id,omitempty"`
 }
 
 // Error codes of POST /api/apply, POST /api/rollback and POST /api/host/recover.
@@ -464,6 +477,13 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err != nil && refuseInvalid(w, err) {
+				return
+			}
+			// The install pre-check (meridian-host's read-only preflight)
+			// runs before the gateway key is generated or anything is
+			// written: blocking findings, a stale or changed review, or a
+			// first install without one are refused here.
+			if err == nil && !s.gateGatewayInstall(w, r, provision.FilesFor(pb.Files, localNodeID), body.PreflightID) {
 				return
 			}
 		}
@@ -600,6 +620,8 @@ func writeTxnErr(w http.ResponseWriter, err error, key string, fallback int, sec
 		writeCoded(w, http.StatusConflict, codeLegacyRefused, msg, nil)
 	case errors.Is(err, apply.ErrNoPrevious):
 		writeCoded(w, http.StatusConflict, codeNothingToRollback, msg, nil)
+	case errors.Is(err, apply.ErrWithdrawnState):
+		writeCoded(w, http.StatusConflict, codeGatewayWithdrawn, msg, nil)
 	case errors.As(err, &te):
 		code := codeActivationUncompensate
 		switch {
@@ -654,7 +676,7 @@ func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
 		installed = map[string]any{
 			"version": inst.Version, "created_at": inst.CreatedAt, "files": len(inst.Files),
 			"interfaces": inst.Interfaces, "units": inst.Units, "nft_tables": inst.NFTTables,
-			"route_tables": inst.RouteTables, "dns": inst.DNS, "origin": inst.Origin,
+			"route_tables": inst.RouteTables, "dns": inst.DNS, "origin": inst.Origin, "withdrawn": inst.Withdrawn(),
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"installed": installed, "pending": pending, "agent": agent})
@@ -715,129 +737,6 @@ func (s *Server) resolveKey(nodeID string, policy provision.KeyPolicy) (model.To
 		}
 	}
 	return t, key, nil
-}
-
-type provisionBody struct {
-	NodeID       string `json:"node_id"`
-	DryRun       bool   `json:"dry_run"`
-	GenerateKeys bool   `json:"generate_keys"`
-}
-
-// provisionRemoved are request fields of the pre-server API. They are
-// refused (400 field_removed), never silently ignored: the target and the
-// SSH credential now come from the node's managed server.
-var provisionRemoved = []string{"ssh_host", "ssh_port", "ssh_user", "private_key_pem", "trust_new_host"}
-
-func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
-	var body provisionBody
-	if err := decodeStrict(w, r, &body, []string{"node_id", "dry_run", "generate_keys"}, provisionRemoved, false); err != nil {
-		writeResErr(w, err)
-		return
-	}
-	t, err := s.topology()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	node, ok := t.NodeByID(body.NodeID)
-	if !ok {
-		writeResErr(w, &credentials.Error{Code: credentials.CodeNotFound, Field: "node_id", Msg: "节点不存在"})
-		return
-	}
-	if !node.Managed {
-		writeResErr(w, &credentials.Error{Code: codeBadRequest, Field: "node_id", Msg: "该节点不需要装机（例如 IX 专线）"})
-		return
-	}
-	run := !body.DryRun
-	var cs *credentials.Store
-	if run {
-		// Everything about the target is checked before a key is generated
-		// or rotated and before anything is compiled for the host.
-		if cs, err = s.credStore(); err != nil {
-			writeResErr(w, err)
-			return
-		}
-		if err := checkServerOperable(cs, node); err != nil {
-			writeResErr(w, err)
-			return
-		}
-	}
-	var key, pub string
-	switch {
-	case body.GenerateKeys && run:
-		// Rotate: store the new pair before compiling so peer configs carry
-		// the matching public key.
-		t, key, err = s.resolveKey(node.ID, provision.KeyRotate)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		node, _ = t.NodeByID(node.ID)
-		pub = node.PublicKey
-	case run:
-		// generate_keys=false reuses the stored key. A node without one fails
-		// here, before SSH connects or any remote config is overwritten.
-		t, key, err = s.resolveKey(node.ID, provision.KeyReuse)
-		if err != nil {
-			writeErr(w, http.StatusConflict, err)
-			return
-		}
-	}
-	b, err := s.compileTopo(t)
-	if err != nil {
-		writeErr(w, http.StatusUnprocessableEntity, err)
-		return
-	}
-	files := provision.FilesFor(b.Files, node.ID)
-	if !run {
-		// Preview: built from the redacted files, so it carries the
-		// placeholder and refuses to run if copied to a host.
-		writeJSON(w, http.StatusOK, map[string]any{
-			"dry_run":    true,
-			"node_id":    node.ID,
-			"server_id":  node.ServerID,
-			"public_key": pub,
-			"script":     provision.Redact(provision.Script(node.Name, files), key),
-		})
-		return
-	}
-	injected, err := provision.InjectPrivate(files, key)
-	if err != nil {
-		writeErr(w, http.StatusConflict, err)
-		return
-	}
-	script := provision.Script(node.Name, injected)
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
-	defer cancel()
-	res, err := s.connector(cs).RunScript(ctx, sshexec.Target{ServerID: node.ServerID}, script)
-	if err != nil {
-		code := sshexec.CodeOf(err)
-		status := http.StatusBadGateway
-		switch code {
-		case sshexec.CodeUntrusted, sshexec.CodeMismatch, sshexec.CodeNoCredential, sshexec.CodeTargetChanged, sshexec.CodePinMismatch:
-			status = http.StatusConflict
-		case sshexec.CodeNotFound:
-			status = http.StatusNotFound
-		}
-		writeJSON(w, status, map[string]any{
-			"error":       provision.Redact(err.Error(), key),
-			"code":        code,
-			"node_id":     node.ID,
-			"server_id":   node.ServerID,
-			"auth_method": res.AuthMethod,
-			"output":      provision.Redact(res.Output, key),
-		})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"dry_run":     false,
-		"node_id":     node.ID,
-		"server_id":   node.ServerID,
-		"auth_method": res.AuthMethod,
-		"host_key":    res.Fingerprint,
-		"public_key":  pub,
-		"output":      provision.Redact(res.Output, key),
-	})
 }
 
 func (s *Server) applier(install bool) apply.Applier {

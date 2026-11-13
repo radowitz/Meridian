@@ -16,7 +16,18 @@ type Doer interface {
 // GatewayDataPlane is what the upgrade check names: meridian.service (always
 // checked by health and activate) plus both gateway nft tables. Units and
 // interfaces of the installed manifest are started by meridian-up.sh itself.
-var GatewayDataPlane = Resources{NFTTables: []string{"inet meridian", "inet meridian_guard"}}
+var GatewayDataPlane = Resources{NFTTables: []string{"inet meridian", GuardTable}}
+
+// GuardTable is the gateway's fail-closed LAN guard. A gateway withdraw
+// (ActionWithdraw) keeps it loaded, with its boot file and
+// meridian-guard.service, so LAN traffic is dropped rather than forwarded
+// unguarded via ROS once the Meridian data plane is gone. Only an explicit,
+// separate removal (rollback of this table, forwarding off first) drops it.
+const GuardTable = "inet meridian_guard"
+
+// GuardBootFile is the gateway file meridian-guard.service loads at boot
+// (relative to the host root, as in the install manifest).
+const GuardBootFile = "etc/nftables.d/meridian-guard.nft"
 
 // RestoreReport is the outcome of RestoreDataPlane.
 type RestoreReport struct {

@@ -42,6 +42,9 @@ func startSSH(t *testing.T) *sshtest.Server {
 		if cmd == "bash -s" && strings.Contains(stdin, "echo MERIDIAN_PROVISION_OK") {
 			return "MERIDIAN_PROVISION_OK\n", 0
 		}
+		if out, ok := cleanPreflight(cmd, stdin, ""); ok {
+			return out, 0
+		}
 		return "unexpected", 1
 	})
 	return srv
@@ -114,7 +117,8 @@ func TestServerReadinessAndProvisionOverPassword(t *testing.T) {
 		t.Fatalf("test: %d %s", rr.Code, rr.Body.String())
 	}
 
-	rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","generate_keys":true}`))
+	// First install: preflight reviewed first (required), then executed.
+	rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","generate_keys":true,"preflight_id":"`+reviewPreflight(t, s, "tw")+`"}`))
 	tw := storedNode(t, s, "tw")
 	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "MERIDIAN_PROVISION_OK") || !strings.Contains(rr.Body.String(), `"auth_method":"password"`) ||
 		!strings.Contains(rr.Body.String(), tw.PublicKey) {

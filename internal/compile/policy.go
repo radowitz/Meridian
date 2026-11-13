@@ -33,6 +33,24 @@ const (
 	prioStaleRemoteDrop = 17851
 )
 
+// Mesh ingress of region-group resolver queries on an exit (render_nft.go
+// writeGroupResolverDNAT, render_routes.go meshDNSReturnShell). A query to
+// the resolver range that arrives on mmesh gets ct mark markMeshDNS; its
+// source is rewritten on input to meshDNSAnchor, an address of the
+// reserved fd66::/64 that no node owns, so the resolver's reply has a
+// route at the socket (rule "to meshDNSAnchor lookup tableMeshDNS");
+// every reply packet of such a connection carries markMeshDNS (rule
+// "fwmark markMeshDNS lookup tableMeshDNS"), so after conntrack restores
+// the original destination it still leaves on mmesh. tableMeshDNS holds
+// only "default via <sidecar> dev mmesh" while the sidecar is sealed and a
+// blackhole: never the hub tunnel, never the WAN.
+const (
+	markMeshDNS   uint32 = 0x4d6d
+	tableMeshDNS         = 171
+	prioMeshDNS          = 17050
+	meshDNSAnchor        = "fd66::4d:1"
+)
+
 func exitMark(index int) uint32 { return markExitBase + uint32(index) }
 
 func shQuote(s string) string {

@@ -3,7 +3,7 @@
 
 import { Space, Steps, Typography } from "antd";
 import type { ReactNode } from "react";
-import type { RegionGroupView } from "./types";
+import type { PanelStatus, RegionGroupView } from "./types";
 import * as api from "./api";
 import { ACTUAL_CODE, actualTag } from "./ExitsPage";
 import { JOURNAL_STATE, checkSummary } from "./MeshDeploy";
@@ -19,6 +19,7 @@ import {
   Tile,
   TimeText,
   errorTitle,
+  groupLabel,
   useApi,
   type ApiState,
 } from "./ui";
@@ -77,6 +78,30 @@ function GroupActualCell({ g, nodeName }: { g: RegionGroupView; nodeName: (id: s
 
 /** Region groups listed by name on the overview tile; the rest behind a link. */
 const GROUP_TILE_ROWS = 6;
+
+/**
+ * Whether an unlock probe can run now. The jobs endpoint only says that a
+ * probe channel is configured; the probe itself runs inside meridian-host,
+ * so the live answer is GET /api/status probe_available (with the reason).
+ */
+function ProbeChannel({ status, configured }: { status: PanelStatus | null; configured: boolean }) {
+  if (!status) {
+    return <Typography.Text type="secondary">{configured ? "状态读不到" : "未配置"}</Typography.Text>;
+  }
+  if (status.probe_available) return <span data-testid="probe-channel">可用</span>;
+  const reason =
+    status.probe_reason === "agent_unreachable"
+      ? "宿主代理 meridian-host 连不上，现在不能探测"
+      : "面板没有配置宿主探测通道（meridian-host 未运行或未挂载）";
+  return (
+    <Space size={4} data-testid="probe-channel" wrap>
+      <StatusTag kind="attention">不可用</StatusTag>
+      <Typography.Text type="secondary" title={status.probe_error}>
+        {reason}
+      </Typography.Text>
+    </Space>
+  );
+}
 
 export default function OverviewPage() {
   const { status, statusError, install } = useStatus();
@@ -332,7 +357,7 @@ export default function OverviewPage() {
                     key={g.id}
                     label={
                       <Space size={4}>
-                        <Link to={href("exits", g.id)}>{g.name}</Link>
+                        <Link to={href("exits", g.id)}>{groupLabel(g, d.groups)}</Link>
                         <Typography.Text type="secondary" style={{ whiteSpace: "nowrap" }}>
                           {g.mode === "manual" ? "手动" : "自动"}
                         </Typography.Text>
@@ -415,7 +440,9 @@ export default function OverviewPage() {
               const last = d.jobs[0];
               return (
                 <>
-                  <Row label="探测通道">{d.available ? <span>可用</span> : <StatusTag kind="attention">不可用</StatusTag>}</Row>
+                  <Row label="探测通道">
+                    <ProbeChannel status={status} configured={d.available} />
+                  </Row>
                   <Row label="最近一轮">
                     {d.running ? (
                       <StatusTag kind="running">进行中</StatusTag>

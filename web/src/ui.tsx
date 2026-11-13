@@ -210,6 +210,7 @@ export const ERROR_TEXT: Record<string, string> = {
   unknown_field: "请求里有面板不认识的字段",
   field_removed: "请求里有已移除的字段",
   not_found: "对象不存在",
+  hub_identity_changed: "读取期间枢纽已变更，这次结果已丢弃",
   conflict: "对象已被修改，请刷新后重试",
   in_use: "仍被其他对象引用",
   storage_error: "面板存储出错",
@@ -224,7 +225,7 @@ export const ERROR_TEXT: Record<string, string> = {
   host_key_untrusted: "主机指纹还没有确认",
   host_key_mismatch: "主机指纹与固定值不符，已拒绝连接",
   host_key_not_pinned_by_deployment: "主机指纹与部署记录固定的不一致",
-  target_changed: "服务器地址与部署记录固定的不一致",
+  target_changed: "服务器的地址、指纹或凭据与固定的不一致",
   unreachable: "连不上这台服务器",
   timeout: "连接超时",
   not_ssh: "对端不是 SSH 服务",
@@ -264,6 +265,33 @@ export const ERROR_TEXT: Record<string, string> = {
   gateway_key_unavailable: "网关私钥无法取得",
   host_state_malformed: "宿主事务状态文件损坏",
   apply_failed: "安装或回滚没有完成",
+  // install pre-check (POST /api/provision/preflight, /api/host/preflight)
+  preflight_required: "第一次安装前必须先预检",
+  preflight_stale: "预检结果已过期或已被替换，需要重新预检",
+  preflight_blocked: "预检有阻断项，没有执行",
+  preflight_changed: "执行前重新预检出现了新问题，没有执行",
+  preflight_failed: "预检没有完成",
+  preflight_bad_args: "预检参数不合法",
+  bundle_changed: "预检之后要下发的配置变了，需要重新预检",
+  node_busy: "这个节点正在预检或装机",
+  provision_refused: "服务器上的执行前复核拒绝了装机，没有改动",
+  provision_failed_compensated: "装机失败，已补偿",
+  provision_failed_leftovers: "装机失败，有残留没有撤掉",
+  // withdraw (POST /api/provision/withdraw*, /api/host/withdraw)
+  withdraw_refused: "服务器上的撤回脚本拒绝执行，没有改动",
+  withdraw_partial: "撤回没有全部完成",
+  withdraw_unknown: "撤回结果不明，不当作完成",
+  recovery_incomplete: "补偿没有全部完成",
+  withdraw_plan_stale: "撤回计划已过期或已被替换，需要重新生成",
+  confirm_required: "需要输入确认内容",
+  mesh_deployed: "Mesh 还部署在这台主机上，先撤回 Mesh",
+  deployed_elsewhere: "节点还装在之前的服务器上，先撤回那里的安装",
+  nothing_installed: "网关上没有受管的安装",
+  legacy_install: "旧版 Meridian（没有清单），不能按清单撤回",
+  guard_missing: "已安装清单里没有局域网兜底表，拒绝撤回",
+  not_withdrawn: "网关还没有撤回",
+  gateway_withdrawn: "网关已撤回，重新安装请走安装",
+  still_on_host: "安装可能还在服务器上，不能删除记录",
 };
 
 export function errorTitle(e: ApiError): string {
@@ -449,6 +477,7 @@ const REF_KIND: Record<string, { label: string; to: (id: string) => string | nul
   settings: { label: "设置", to: () => href("exits") },
   remote_device: { label: "远程设备", to: (id) => href("remote", id) },
   apply: { label: "安装", to: () => href("deploy") },
+  node_deployment: { label: "节点安装", to: () => href("deploy") + "?section=deployments" },
   snapshot: { label: "快照", to: () => href("deploy") },
 };
 
@@ -827,9 +856,17 @@ export function PendingInstallIndicator({ compact }: { compact?: boolean }) {
     );
   }
   const text =
-    install.kind === "not_installed" ? "尚未安装到网关" : install.appliedOnly ? "已应用，尚未安装" : "有改动尚未安装";
-  const tip =
     install.kind === "not_installed"
+      ? install.withdrawn
+        ? "网关已撤回"
+        : "尚未安装到网关"
+      : install.appliedOnly
+        ? "已应用，尚未安装"
+        : "有改动尚未安装";
+  const tip =
+    install.kind === "not_installed" && install.withdrawn
+      ? "网关上的 Meridian 已撤回，只保留局域网兜底表（局域网转发保持兜底拒绝）。重新安装要先做安装前预检。"
+      : install.kind === "not_installed"
       ? status?.agent.ok
         ? "网关上还没有安装过 Meridian。"
         : "网关上还没有安装过 Meridian；宿主执行通道当前不可用。"
@@ -966,3 +1003,31 @@ export function regionLabel(code: string | undefined | null): string {
 }
 
 export const REGION_CODES = Object.keys(REGION_NAMES).filter((c) => c !== "uk");
+
+/** The fields a group label needs (RegionGroup, RegionGroupView, unlock rows …). */
+export interface GroupNameLike {
+  id: string;
+  name: string;
+  region?: string;
+}
+
+const groupNameKey = (name: string) => name.trim().toLocaleLowerCase();
+
+/**
+ * Display name of a region group that stays unambiguous: the plain name
+ * when no other group in `all` has the same name (trimmed, case-insensitive),
+ * otherwise the name with its region and its stable ID, e.g.
+ * "香港（香港 · HK · hk-home）". Pickers, lists and messages all use it so
+ * two groups called the same can always be told apart.
+ */
+export function groupLabel(g: GroupNameLike, all: readonly GroupNameLike[] | null | undefined): string {
+  const name = g.name?.trim() || g.id;
+  if (!all || !isDuplicateGroupName(g, all)) return name;
+  return `${name}（${regionLabel(g.region)} · ${g.id}）`;
+}
+
+/** Another group in `all` has the same display name. */
+export function isDuplicateGroupName(g: GroupNameLike, all: readonly GroupNameLike[]): boolean {
+  const k = groupNameKey(g.name?.trim() || g.id);
+  return all.some((o) => o.id !== g.id && groupNameKey(o.name?.trim() || o.id) === k);
+}

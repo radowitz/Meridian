@@ -110,6 +110,9 @@ func renderRTTables(t model.Topology, n model.Node, exits []ExitPlan, groups []G
 	sb.WriteString("100\tmeridian_domestic\n")
 	sb.WriteString("102\tmeridian_foreign\n")
 	sb.WriteString("150\tmeridian_east\n")
+	if n.Role == model.RoleExit && len(meshDNSGroups(groups, n.ID)) > 0 {
+		fmt.Fprintf(&sb, "%d\tmeridian_mesh_dns\n", tableMeshDNS)
+	}
 	if n.Role == model.RoleHub {
 		for _, e := range exits {
 			fmt.Fprintf(&sb, "%d\tmeridian_%s\n", e.Table, strings.ReplaceAll(e.Node.ID, "-", "_"))
@@ -223,7 +226,7 @@ func allowedIPs(t model.Topology, tun Tunnel, west bool) string {
 	return strings.Join(parts, ", ")
 }
 
-func renderUp(t model.Topology, n model.Node, tunnels []Tunnel) string {
+func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("# Bring up Meridian on this host without flushing the rest of nftables.\n")
@@ -239,11 +242,19 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel) string {
 	// No "sysctl --system": it would re-apply the boot-time forwarding=0 of
 	// 99-meridian.conf and flap forwarding on every reload. Only Meridian's
 	// own keys are applied, forwarding last and only after the firewall.
+	// Every install rewrites the whole file, so what is applied here is
+	// exactly the compiled set; the panel reads each key back afterwards
+	// (apply.SysctlReport) and shows what is not in effect. The summary
+	// line makes the same visible in journalctl -u meridian.service.
 	sb.WriteString("if [ -f /etc/sysctl.d/99-meridian.conf ]; then\n")
+	sb.WriteString("  sysctl_ok=0; sysctl_skip=0\n")
 	sb.WriteString("  while IFS= read -r line; do\n")
 	sb.WriteString("    case \"$line\" in ''|'#'*|*ip_forward=*|*.forwarding=*) continue ;; esac\n")
-	sb.WriteString("    sysctl -w \"$line\" >/dev/null 2>&1 || echo \"skip sysctl: $line\" >&2\n")
+	sb.WriteString("    if sysctl -w \"$line\" >/dev/null 2>&1; then sysctl_ok=$((sysctl_ok + 1)); else sysctl_skip=$((sysctl_skip + 1)); echo \"skip sysctl: $line\" >&2; fi\n")
 	sb.WriteString("  done < /etc/sysctl.d/99-meridian.conf\n")
+	sb.WriteString("  echo \"meridian-sysctl: applied $sysctl_ok, skipped $sysctl_skip from /etc/sysctl.d/99-meridian.conf\"\n")
+	sb.WriteString("else\n")
+	sb.WriteString("  echo \"meridian-sysctl: /etc/sysctl.d/99-meridian.conf missing; host sysctls not applied\" >&2\n")
 	sb.WriteString("fi\n")
 	sb.WriteString(forwardingCommands())
 	if n.Role == model.RoleGateway {
@@ -329,6 +340,13 @@ fi
 		// and resets the group tables to the compiled targets when it
 		// starts, so it must restart with the routes it belongs to.
 		sb.WriteString("systemctl restart meridian-failover.service\n")
+	}
+	if n.Role == model.RoleExit && meshDNS {
+		// This exit answers region-group queries over the Mesh: its
+		// sidecar's table 170 must learn the Mesh routes Cloudflare installs
+		// after boot, and table 171 must follow the seal (no failover loop
+		// re-seals an exit).
+		sb.WriteString("enable_unit meridian-mesh-seal.timer\n")
 	}
 	if n.Role == model.RoleExit {
 		sb.WriteString("enable_unit meridian-unlock.timer\n")

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/radowitz/meridian/internal/compile"
@@ -23,12 +24,23 @@ import (
 // with the time of the read and judged per group on every GET against the
 // topology the panel would deploy now (hubstate.Evaluate). See
 // docs/architecture.md「地区组」.
+//
+// Every read is bound to the hub identity it was taken from
+// (hubstate.Identity: hub node, server ID, normalised address, SSH port,
+// pinned host-key fingerprint). The identity is captured before the read,
+// the SSH connection is pinned to it (sshexec.Target), a result whose
+// identity is no longer the current one when the read ends is discarded
+// (hub_identity_changed, nothing stored), and every display compares the
+// stored read's identity with the current one, so a change of any field
+// makes the old report unknown at once — not after ReadMaxAge.
 
 const groupHubKey = "group_hub_state"
 
-// groupHub is the stored read and what is needed to judge it.
+// groupHub is the stored read and what is needed to judge it: current is
+// the hub identity the panel would read now.
 type groupHub struct {
 	read       *hubstate.Read
+	current    hubstate.Identity
 	refreshing bool
 	now        time.Time
 }
@@ -44,7 +56,7 @@ func (h groupHub) actual(plans groupPlans, spec hubstate.GroupSpec) hubstate.Act
 		}
 		return a
 	}
-	return hubstate.Evaluate(spec, h.read, plans.planID, plans.staleAfter, h.now)
+	return hubstate.Evaluate(spec, h.read, h.current, plans.planID, plans.staleAfter, h.now)
 }
 
 func (s *Server) loadGroupHub() *hubstate.Read {
@@ -67,11 +79,12 @@ func (s *Server) saveGroupHub(rd hubstate.Read) error {
 	return s.Store.Put(groupHubKey, string(buf))
 }
 
-func (s *Server) groupHub() groupHub {
+// groupHub loads the stored read with the identity of t's hub as it is now.
+func (s *Server) groupHub(t model.Topology) groupHub {
 	s.groupHubMu.Lock()
 	refreshing := s.groupHubBusy
 	s.groupHubMu.Unlock()
-	return groupHub{read: s.loadGroupHub(), refreshing: refreshing, now: time.Now().UTC()}
+	return groupHub{read: s.loadGroupHub(), current: s.hubReachability(t).identity, refreshing: refreshing, now: time.Now().UTC()}
 }
 
 func hubNode(t model.Topology) (model.Node, bool) {
@@ -86,8 +99,11 @@ func hubNode(t model.Topology) (model.Node, bool) {
 // hubReach says whether the hub can be read now, and if not why (a
 // hubstate code and a message).
 type hubReach struct {
-	node     model.Node
-	server   model.Server
+	node   model.Node
+	server model.Server
+	// identity is the hub the panel would read now; its fingerprint is set
+	// only while the server's host key is trusted.
+	identity hubstate.Identity
 	code     string
 	sshCode  string
 	msg      string
@@ -99,7 +115,7 @@ func (s *Server) hubReachability(t model.Topology) hubReach {
 	if !ok {
 		return hubReach{code: hubstate.CodeNoHub, msg: "拓扑里没有枢纽节点"}
 	}
-	r := hubReach{node: n}
+	r := hubReach{node: n, identity: hubstate.Identity{HubNode: n.ID, ServerID: n.ServerID}}
 	if n.ServerID == "" {
 		r.code, r.msg = hubstate.CodeHubNoServer, fmt.Sprintf("枢纽节点 %s 还没有关联服务器；在拓扑里为它选择服务器", nodeName(t, n.ID))
 		return r
@@ -115,12 +131,29 @@ func (s *Server) hubReachability(t model.Topology) hubReach {
 		return r
 	}
 	r.server = sv
+	r.identity = serverIdentity(n.ID, sv)
 	if err := serverOperable(cs, sv); err != nil {
 		r.code, r.sshCode, r.msg = hubstate.CodeServerNotReady, resCode(err), err.Error()
 		return r
 	}
 	r.readable = true
 	return r
+}
+
+// serverIdentity is the identity of hub node nodeID on server sv. The pin
+// is the trusted fingerprint, or the pinned one the host contradicted
+// (mismatch: same pin, not trusted). Any other key state has no pin: an
+// address or port edit, forgetting the key or discovering a new one all
+// clear it.
+func serverIdentity(nodeID string, sv model.Server) hubstate.Identity {
+	fp := ""
+	switch sv.HostKey.State {
+	case model.HostKeyTrusted, model.HostKeyMismatch:
+		fp = sv.HostKey.Fingerprint
+	}
+	id := hubstate.NewIdentity(nodeID, sv.ID, sv.Address, sv.Port, fp)
+	id.Trusted = fp != "" && sv.HostKey.State == model.HostKeyTrusted
+	return id
 }
 
 type hubStateView struct {
@@ -152,6 +185,13 @@ type lastReadView struct {
 	SSHCode      string    `json:"ssh_code,omitempty"`
 	Error        string    `json:"error,omitempty"`
 	ClockSkewSec *int64    `json:"clock_skew_sec,omitempty"`
+	// CurrentHub is false when the read was taken from another hub
+	// identity than the current one (code hub_identity_changed); its
+	// result then says nothing about the current hub.
+	CurrentHub bool `json:"current_hub"`
+	// IdentityCode / IdentityMessage say why, when CurrentHub is false.
+	IdentityCode    string `json:"identity_code,omitempty"`
+	IdentityMessage string `json:"identity_message,omitempty"`
 	// Ignored are group IDs the hub reported that the topology does not
 	// have (left over from an earlier plan); they are not shown.
 	Ignored []string `json:"ignored"`
@@ -174,7 +214,11 @@ func (h groupHub) view(t model.Topology, reach hubReach, plans groupPlans) hubSt
 	if rd := h.read; rd != nil {
 		lr := &lastReadView{ReadAt: rd.ReadAt, ErrorCode: rd.ErrorCode, SSHCode: rd.SSHCode, Error: rd.Error, Ignored: []string{}}
 		lr.OK = rd.ErrorCode == "" && rd.Snapshot != nil
-		if rd.Snapshot != nil {
+		lr.CurrentHub = rd.Bound(h.current)
+		if !lr.CurrentHub {
+			lr.IdentityCode, lr.IdentityMessage = hubstate.CodeIdentityChanged, hubstate.IdentityMessage(rd.Identity, h.current)
+		}
+		if rd.Snapshot != nil && lr.CurrentHub {
 			sk := int64(rd.Skew() / time.Second)
 			lr.ClockSkewSec = &sk
 			for id := range rd.Snapshot.Reports {
@@ -191,7 +235,7 @@ func (h groupHub) view(t model.Topology, reach hubReach, plans groupPlans) hubSt
 
 func (s *Server) groupsBody(t model.Topology) map[string]any {
 	plans, rt := plansOf(t), s.groupRuntime()
-	hub := s.groupHub()
+	hub := s.groupHub(t)
 	out := []groupView{}
 	for _, g := range sortedGroups(t) {
 		out = append(out, viewGroup(t, g, plans, rt, hub))
@@ -207,12 +251,14 @@ func (s *Server) groupsBody(t model.Topology) map[string]any {
 
 func (s *Server) oneGroupView(t model.Topology, g model.RegionGroup) groupView {
 	plans := plansOf(t)
-	return viewGroup(t, g, plans, s.groupRuntime(), s.groupHub())
+	return viewGroup(t, g, plans, s.groupRuntime(), s.groupHub(t))
 }
 
 // refreshGroupRuntime reads the hub's group state once. 200 with the
 // groups whatever the outcome (the outcome is stored and shown per group);
-// 409 refresh_in_progress while another read runs. The body is ignored:
+// 409 refresh_in_progress while another read runs; 409
+// hub_identity_changed when the hub identity changed while the read ran
+// (the late result is discarded, nothing is stored). The body is ignored:
 // the target is the topology's hub node and the command is a constant.
 func (s *Server) refreshGroupRuntime(w http.ResponseWriter, r *http.Request) {
 	s.groupHubMu.Lock()
@@ -233,18 +279,34 @@ func (s *Server) refreshGroupRuntime(w http.ResponseWriter, r *http.Request) {
 		writeResErr(w, err)
 		return
 	}
-	rd := s.readHub(r.Context(), t)
+	reach := s.hubReachability(t)
+	rd := s.readHub(r.Context(), reach)
+	// Late-result guard: the read describes reach.identity only. If the
+	// hub node, its server, the address, port or pinned key changed while
+	// it ran, the result is not stored as the current state. (A change
+	// after this check is still caught: the stored read carries its
+	// identity and every display compares it with the current one.)
+	t2, err := s.topology()
+	if err != nil {
+		writeResErr(w, err)
+		return
+	}
+	if now := s.hubReachability(t2).identity; !now.Equal(rd.Identity) {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": hubstate.CodeIdentityChanged,
+			"error": "读取期间枢纽的" + strings.Join(rd.Identity.Differs(now), "、") + "已变更，这次读取的结果已丢弃，没有作为当前状态保存；请对当前枢纽重新读取"})
+		return
+	}
 	if err := s.saveGroupHub(rd); err != nil {
 		writeResErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.groupsBody(t))
+	writeJSON(w, http.StatusOK, s.groupsBody(t2))
 }
 
-// readHub performs the read; every failure becomes a stored result.
-func (s *Server) readHub(ctx context.Context, t model.Topology) hubstate.Read {
-	reach := s.hubReachability(t)
-	rd := hubstate.Read{HubNode: reach.node.ID, ServerID: reach.node.ServerID}
+// readHub performs the read against the identity in reach; every failure
+// becomes a result bound to that identity.
+func (s *Server) readHub(ctx context.Context, reach hubReach) hubstate.Read {
+	rd := hubstate.Read{Identity: reach.identity}
 	if !reach.readable {
 		rd.ReadAt = time.Now().UTC()
 		rd.ErrorCode, rd.SSHCode, rd.Error = reach.code, reach.sshCode, reach.msg
@@ -256,7 +318,11 @@ func (s *Server) readHub(ctx context.Context, t model.Topology) hubstate.Read {
 		rd.ErrorCode, rd.Error = hubstate.CodeServerNotReady, "读不到服务器与凭据存储"
 		return rd
 	}
-	out, err := s.connector(cs).ReadGroupState(ctx, reach.node.ServerID)
+	// Pinned to the captured identity: the connector refuses a server whose
+	// endpoint or trusted key changed since, and a host presenting another
+	// key than reach.identity.Fingerprint.
+	sv := reach.server
+	out, err := s.connector(cs).ReadGroupState(ctx, sshexec.Target{ServerID: sv.ID, Address: sv.Address, Port: sv.Port, User: sv.User, Fingerprint: reach.identity.Fingerprint})
 	rd.ReadAt = time.Now().UTC()
 	if err != nil {
 		code := sshexec.CodeOf(err)

@@ -20,7 +20,22 @@ import * as api from "./api";
 import type { ApiError } from "./api";
 import { serverReadiness } from "./ServersPage";
 import { href, useRouter, useStatus, useTopologyDoc } from "./state";
-import type { ApplyResult, HostReport, HostStatus, InstalledDiff, Issue, Node, ProvisionResult, ServerView } from "./types";
+import { LoginHelpView, PreflightReport, loginHelpOf, preflightBlockedReason, preflightOf } from "./Preflight";
+import type {
+  ApplyResult,
+  HostReport,
+  HostStatus,
+  InstalledDiff,
+  Issue,
+  Node,
+  PreflightRecord,
+  ProvisionResult,
+  ServerView,
+  SysctlReport,
+  SysctlState,
+  WithdrawMode,
+} from "./types";
+import { DeploymentRecords, GatewayWithdraw, WithdrawDialog } from "./Withdraw";
 import { roleLabel } from "./types";
 import {
   TABLE_SCROLL,
@@ -37,7 +52,9 @@ import {
   TimeText,
   useAction,
   useApi,
+  errorTitle,
   useConfirmDanger,
+  type StatusKind,
 } from "./ui";
 
 // -------------------------------------------------------------- the diff ---
@@ -298,6 +315,55 @@ const DIFF_LABEL: [string, string][] = [
   ["route_tables_removed", "删除路由表"],
 ];
 
+const SYSCTL_STATE: Record<SysctlState, { label: string; kind: StatusKind }> = {
+  in_effect: { label: "已生效", kind: "ok" },
+  differs: { label: "未生效：值不同", kind: "failed" },
+  missing: { label: "内核没有这个参数", kind: "failed" },
+  boot_only: { label: "开机值（运行时由 forwarding.conf 打开）", kind: "neutral" },
+  stale: { label: "已从文件删除，内核保留到重启", kind: "attention" },
+  not_checked: { label: "没有读取内核", kind: "neutral" },
+};
+
+/**
+ * The managed sysctl files after an install: what was written (the whole
+ * file, every install), what the kernel has now, and lines of the previous
+ * file that are gone from the file but still in the running kernel.
+ */
+function SysctlView({ rep }: { rep: SysctlReport }) {
+  const count = (st: SysctlState) => rep.written.filter((e) => e.state === st).length;
+  const shown = [...rep.written.filter((e) => e.state === "differs" || e.state === "missing"), ...(rep.removed ?? [])];
+  return (
+    <div style={{ marginTop: 12 }} data-testid="sysctl-report">
+      <Typography.Text type="secondary">内核参数（/etc/sysctl.d/99-meridian.conf 与 /etc/meridian/forwarding.conf，每次安装整份重写）</Typography.Text>
+      <div>
+        {rep.checked ? (
+          <Space size={6} wrap>
+            <span>写入 {rep.written.length} 项</span>
+            <StatusTag kind="ok">已生效 {count("in_effect")}</StatusTag>
+            {rep.problems > 0 ? <StatusTag kind="failed">未生效 {rep.problems}</StatusTag> : null}
+            {count("boot_only") > 0 ? <StatusTag kind="neutral">开机值 {count("boot_only")}</StatusTag> : null}
+            {(rep.removed ?? []).length > 0 ? <StatusTag kind="attention">旧文件遗留 {rep.removed!.length}</StatusTag> : null}
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">文件已写入 {rep.written.length} 项；没有读取运行中的内核{rep.reason ? `（${rep.reason}）` : ""}，不判断是否生效。</Typography.Text>
+        )}
+      </div>
+      {shown.length > 0 ? (
+        <ul className="ref-list" data-testid="sysctl-problems">
+          {shown.map((e) => (
+            <li key={`${e.state}|${e.file}|${e.key}`}>
+              <span className="mono-small">{e.key}</span> <StatusTag kind={SYSCTL_STATE[e.state].kind}>{SYSCTL_STATE[e.state].label}</StatusTag>{" "}
+              <Typography.Text type="secondary">
+                {e.state === "stale" ? `旧文件写的是 ${e.want ?? "?"}，内核现在 ${e.got ?? "读不到"}` : `文件 ${e.want ?? "?"}，内核 ${e.got ?? "读不到"}`}
+              </Typography.Text>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function HostReportView({ report, failed }: { report: HostReport; failed?: boolean }) {
   const diffs = DIFF_LABEL.map(([k, label]) => [label, (report.diff?.[k] ?? []) as (string | number)[]] as const).filter(([, v]) => v.length > 0);
   const firstFail = report.steps?.findIndex((s) => !s.ok) ?? -1;
@@ -334,6 +400,7 @@ export function HostReportView({ report, failed }: { report: HostReport; failed?
       {(report.warnings ?? []).map((w) => (
         <Alert key={w} type="warning" showIcon style={{ marginTop: 8 }} message={w} />
       ))}
+      {report.sysctl ? <SysctlView rep={report.sysctl} /> : null}
       {diffs.length > 0 ? (
         <div style={{ marginTop: 12 }}>
           <Typography.Text type="secondary">{report.committed ? "这次改变的资源" : "这次本来要改变的资源"}</Typography.Text>
@@ -378,7 +445,33 @@ function TxnFailure({
 }) {
   const body = error.body as { host?: HostReport | null; compensated?: boolean; peer_key_problems?: PeerKeyProblem[]; issues?: Issue[] };
   const node = (id: string) => nodes.find((n) => n.id === id);
+  const pf = preflightOf(error);
   switch (error.code) {
+    case "preflight_required":
+    case "preflight_blocked":
+    case "preflight_changed":
+    case "preflight_stale":
+    case "bundle_changed":
+    case "node_busy":
+      return (
+        <div data-testid="txn-refused">
+          <Alert
+            type="warning"
+            showIcon
+            message={`没有安装：${errorTitle(error)}`}
+            description={
+              <span>
+                网关、快照和数据目录都没有改动。{error.message ? <span className="muted">{error.message}</span> : null}
+              </span>
+            }
+          />
+          {pf ? (
+            <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+              最新的预检结果显示在上面「安装前预检」处。
+            </Typography.Paragraph>
+          ) : null}
+        </div>
+      );
     case "host_unavailable":
       return (
         <Alert
@@ -519,10 +612,27 @@ function InstallSection({ host, reloadHost, nodes }: { host: HostStatus | undefi
   const { message } = AntApp.useApp();
   const [result, setResult] = useState<{ kind: "install" | "apply" | "rollback" | "recover"; res: ApplyResult | { host?: HostReport | null; mode?: string } } | null>(null);
   const [rbMode, setRbMode] = useState<"runtime" | "snapshot">("runtime");
-  const installed = host?.installed ?? null;
+  // A withdrawn gateway keeps only the LAN guard: a reinstall is a first
+  // install again (pre-check required) and there is nothing to roll back.
+  const withdrawn = !!host?.installed?.withdrawn || status?.install.state === "withdrawn";
+  const installed = withdrawn ? null : host?.installed ?? null;
   const pending = status?.pending ?? host?.pending ?? null;
   const agentOK = status?.agent.ok ?? host?.agent.ok ?? false;
   const blocked = install.kind === "error";
+  // The install pre-check (read-only, through meridian-host). A first
+  // install needs a reviewed, fresh result without blocking findings; every
+  // install re-runs it on the server right before executing.
+  const [hostPf, setHostPf] = useState<{ rec?: PreflightRecord; error?: ApiError; running?: boolean } | null>(null);
+  const runHostPf = () => {
+    setHostPf({ running: true });
+    api
+      .hostPreflight()
+      .then((r) => setHostPf({ rec: r.preflight }))
+      .catch((e: ApiError) => setHostPf({ error: e }));
+  };
+  const pfReason = preflightBlockedReason(hostPf?.rec);
+  const pfBlocks = !!hostPf?.rec?.blocking || (!installed && !!pfReason);
+  const usablePf = hostPf?.rec && !pfReason ? hostPf.rec.id : undefined;
 
   const after = () => {
     refresh();
@@ -543,12 +653,19 @@ function InstallSection({ host, reloadHost, nodes }: { host: HostStatus | undefi
       okText: "安装",
       danger: false,
       onOk: () =>
-        act.run(async () => {
-          setResult(null);
-          const r = await api.apply(false, true);
-          setResult({ kind: "install", res: r });
-          message.success("已安装并通过健康检查");
-        }, "install").finally(after),
+        act.run(
+          async () => {
+            setResult(null);
+            const r = await api.apply(false, true, usablePf);
+            setResult({ kind: "install", res: r });
+            message.success("已安装并通过健康检查");
+          },
+          "install",
+          (e) => {
+            const rec = preflightOf(e);
+            if (rec) setHostPf({ rec });
+          },
+        ).finally(after),
     });
 
   const doApplyOnly = () =>
@@ -630,15 +747,20 @@ function InstallSection({ host, reloadHost, nodes }: { host: HostStatus | undefi
             </Typography.Text>
           </div>
           <Space wrap>
-            <Button
-              type="primary"
-              icon={<CloudUploadOutlined />}
-              disabled={blocked || !!pending || !agentOK || install.kind === "in_sync"}
-              loading={act.busy === "install"}
-              onClick={doInstall}
-            >
-              安装到网关
+            <Button disabled={!agentOK || !!pending} loading={!!hostPf?.running} onClick={runHostPf} data-testid="host-preflight-run">
+              安装前预检
             </Button>
+            <Tooltip title={agentOK && pfBlocks ? pfReason ?? "预检有阻断项" : undefined}>
+              <Button
+                type="primary"
+                icon={<CloudUploadOutlined />}
+                disabled={blocked || !!pending || !agentOK || install.kind === "in_sync" || pfBlocks}
+                loading={act.busy === "install"}
+                onClick={doInstall}
+              >
+                安装到网关
+              </Button>
+            </Tooltip>
             {!agentOK ? (
               <Tooltip title="没有宿主执行通道时可用：只把编译结果存成快照，不碰网关">
                 <Button disabled={blocked || !!pending} loading={act.busy === "apply"} onClick={doApplyOnly} data-testid="apply-only">
@@ -652,6 +774,21 @@ function InstallSection({ host, reloadHost, nodes }: { host: HostStatus | undefi
           <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
             「只写入数据目录」：没有宿主执行通道时（开发，或面板不在网关上）把编译结果存成快照，不安装、不改网关。有宿主执行通道时不提供，直接安装即可。
           </Typography.Paragraph>
+        ) : null}
+        {agentOK && pfBlocks ? (
+          <Typography.Paragraph type="warning" style={{ marginTop: 8, marginBottom: 0 }} data-testid="install-preflight-reason">
+            {!installed && !hostPf?.rec ? "第一次安装到网关前，先点「安装前预检」看清要做什么、和网关上已有的服务有没有冲突。" : pfReason ?? "预检有阻断项"}
+          </Typography.Paragraph>
+        ) : null}
+        {hostPf?.error ? (
+          <div style={{ marginTop: 12 }}>
+            <ApiErrorAlert error={hostPf.error} />
+          </div>
+        ) : null}
+        {hostPf?.rec ? (
+          <div style={{ marginTop: 12 }} data-testid="host-preflight">
+            <PreflightReport rec={hostPf.rec} />
+          </div>
         ) : null}
         {install.kind === "in_sync" ? (
           <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
@@ -688,6 +825,11 @@ function InstallSection({ host, reloadHost, nodes }: { host: HostStatus | undefi
       </Section>
 
       <Section title="回滚">
+        {withdrawn ? (
+          <Typography.Paragraph type="secondary" data-testid="rollback-withdrawn">
+            网关已撤回（只保留局域网兜底表），不提供回滚：要恢复，请重新「安装到网关」（先做安装前预检）。
+          </Typography.Paragraph>
+        ) : null}
         {!canRollBack ? (
           <Typography.Paragraph type="secondary" data-testid="no-previous">
             还没有上一份配置可以回滚：第一次安装（或应用）之后，下一次安装前的版本才会留作回滚目标。
@@ -711,7 +853,7 @@ function InstallSection({ host, reloadHost, nodes }: { host: HostStatus | undefi
           style={{ marginTop: 12 }}
           icon={<RollbackOutlined />}
           danger
-          disabled={!canRollBack || !!pending || (installed ? !agentOK : false)}
+          disabled={withdrawn || !canRollBack || !!pending || (installed ? !agentOK : false)}
           loading={act.busy === "rollback"}
           onClick={doRollback}
         >
@@ -724,63 +866,72 @@ function InstallSection({ host, reloadHost, nodes }: { host: HostStatus | undefi
 
 // ---------------------------------------------------------- remote nodes ---
 
-function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] | undefined }) {
+type RemoteMode = "push" | "rotate";
+
+/** Preflight findings that have a panel-driven recovery (withdraw script modes). */
+const RECOVERY: Record<string, { mode: WithdrawMode; label: string }> = {
+  previous_run_incomplete: { mode: "journal", label: "恢复中断的装机" },
+  legacy_install: { mode: "legacy", label: "旧版清理（先列清单再确认）" },
+  withdraw_incomplete: { mode: "manifest", label: "继续撤回" },
+};
+
+function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: ServerView[] | undefined; onWithdrawn: () => void }) {
   const doc = useTopologyDoc();
+  const [wd, setWd] = useState<{ node: Node; mode: WithdrawMode } | null>(null);
   const { markApplyRequired } = useStatus();
-  const confirm = useConfirmDanger();
   const act = useAction();
   const [out, setOut] = useState<{ node: Node; title: string; res?: ProvisionResult; error?: ApiError } | null>(null);
+  // The preflight dialog: every real run starts here. It shows the target,
+  // the planned changes and the findings; execution is possible only with
+  // a fresh result without blocking findings.
+  const [pf, setPf] = useState<{ node: Node; mode: RemoteMode; rec?: PreflightRecord; error?: ApiError; running: boolean } | null>(null);
   const server = (n: Node) => servers?.find((s) => s.id === n.server_id);
 
-  const run = (n: Node, mode: "preview" | "push" | "rotate") => {
-    const go = () =>
-      act.run(
-        async () => {
-          const res = await api.provision(n.id, { dryRun: mode === "preview", generateKeys: mode === "rotate" });
-          setOut({ node: n, title: mode === "preview" ? "预览脚本（没有连接服务器）" : mode === "rotate" ? "已生成新密钥并下发" : "已下发", res });
-          if (mode === "rotate" && typeof res.public_key === "string" && res.public_key) {
-            const pub = res.public_key;
-            doc.applyServerChange((t) => ({ ...t, nodes: t.nodes.map((x) => (x.id === n.id ? { ...x, public_key: pub } : x)) }));
-            markApplyRequired();
-          }
-        },
-        `${mode}:${n.id}`,
-        (e) => setOut({ node: n, title: mode === "preview" ? "预览失败" : "下发失败", error: e }),
-      );
-    const sv = server(n);
-    if (mode === "preview") return void go();
-    if (mode === "push")
-      return confirm({
-        title: `下发到「${n.name}」？`,
-        consequence: `经 SSH 登录 ${sv ? `${sv.name}（${sv.address}）` : "它的服务器"}，用节点已有的密钥生成配置并执行脚本：覆盖 Meridian 在那台机器上的文件并重启它的服务。这会真的在服务器上执行。`,
-        okText: "下发",
-        danger: false,
-        onOk: go,
-      });
-    if (!n.public_key)
-      return confirm({
-        title: `为「${n.name}」生成密钥并第一次下发？`,
-        consequence: `生成这个节点的 WireGuard 密钥（私钥只保存在面板里），然后经 SSH 在 ${sv ? `${sv.name}（${sv.address}）` : "它的服务器"} 上真的执行脚本：写入 Meridian 的文件并启动它的服务。之后网关安装时才认得这个节点。`,
-        okText: "生成并下发",
-        danger: false,
-        onOk: go,
-      });
-    confirm({
-      title: `为「${n.name}」生成新密钥并下发？`,
-      consequence: (
-        <div>
-          <p>
-            这会<b>轮换这个节点的 WireGuard 私钥</b>，并经 SSH 在 {sv ? `${sv.name}（${sv.address}）` : "它的服务器"} 上真的执行脚本。
-          </p>
-          <p>
-            旧密钥立即作废：在网关重新安装、相邻节点重新下发之前，经过这个节点的隧道会断开。只在第一次装机，或怀疑私钥泄露时使用。
-          </p>
-        </div>
-      ),
-      okText: "生成并下发",
-      onOk: go,
-    });
+  const runPreflight = (n: Node, mode: RemoteMode) => {
+    setPf({ node: n, mode, running: true });
+    api
+      .provisionPreflight(n.id)
+      .then((r) => setPf((p) => (p && p.node.id === n.id ? { ...p, rec: r.preflight, error: undefined, running: false } : p)))
+      .catch((e: ApiError) => setPf((p) => (p && p.node.id === n.id ? { ...p, rec: undefined, error: e, running: false } : p)));
   };
+
+  const execute = () => {
+    if (!pf?.rec) return;
+    const { node: n, mode, rec } = pf;
+    void act.run(
+      async () => {
+        const res = await api.provision(n.id, { dryRun: false, generateKeys: mode === "rotate", preflightId: rec.id });
+        setPf(null);
+        setOut({ node: n, title: mode === "rotate" ? "已生成密钥并下发" : "已下发", res });
+        if (mode === "rotate" && typeof res.public_key === "string" && res.public_key) {
+          const pub = res.public_key;
+          doc.applyServerChange((t) => ({ ...t, nodes: t.nodes.map((x) => (x.id === n.id ? { ...x, public_key: pub } : x)) }));
+          markApplyRequired();
+        }
+      },
+      `${mode}:${n.id}`,
+      (e) => {
+        const fresh = preflightOf(e);
+        if (fresh) {
+          // Refused before anything ran: show the new result in the dialog.
+          setPf((p) => (p ? { ...p, rec: fresh, error: e } : p));
+          return;
+        }
+        setPf(null);
+        setOut({ node: n, title: "下发失败", error: e });
+      },
+    );
+  };
+
+  const preview = (n: Node) =>
+    act.run(
+      async () => {
+        const res = await api.provision(n.id, { dryRun: true });
+        setOut({ node: n, title: "预览脚本（没有连接服务器）", res });
+      },
+      `preview:${n.id}`,
+      (e) => setOut({ node: n, title: "预览失败", error: e }),
+    );
 
   const keyless = nodes.filter((n) => !n.public_key);
 
@@ -790,6 +941,12 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
         <Typography.Text type="secondary">拓扑里没有需要装机的远端节点。</Typography.Text>
       </Section>
     );
+
+  const pfReason = pf && !pf.running ? preflightBlockedReason(pf.rec) : null;
+  const sv = pf ? server(pf.node) : undefined;
+  const first = pf ? !pf.node.public_key : false;
+  const execLabel = !pf ? "" : pf.mode === "push" ? "下发" : first ? "生成密钥并下发" : "生成新密钥并下发";
+  const outBody = (out?.error?.body ?? {}) as { output?: string; leftovers?: string[]; kept?: string[]; outcome?: string };
 
   return (
     <Section title="远端节点" id="remote">
@@ -810,7 +967,7 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
         />
       ) : null}
       <Typography.Paragraph type="secondary">
-        「预览脚本」不连接服务器，密钥显示为占位符；「下发」和「生成密钥并下发」会真的在服务器上执行。
+        「预览脚本」不连接服务器，密钥显示为占位符。「下发」和「生成密钥并下发」先做只读预检：列出要做的变更和与服务器上已有服务的冲突，有阻断项就不能执行；确认后才会真的在服务器上执行，执行前面板还会再预检一次。
       </Typography.Paragraph>
       <Table<Node>
         rowKey="id"
@@ -876,20 +1033,23 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
                 <Space size={4} className="table-actions">
                   <Tooltip title={notReady}>
                     {first ? (
-                      <Button type="primary" size="small" icon={<KeyOutlined />} disabled={!ready} loading={act.busy === `rotate:${n.id}`} onClick={() => run(n, "rotate")}>
+                      <Button type="primary" size="small" icon={<KeyOutlined />} disabled={!ready} loading={pf?.node.id === n.id && pf.running} onClick={() => runPreflight(n, "rotate")}>
                         生成密钥并下发
                       </Button>
                     ) : (
-                      <Button size="small" icon={<SendOutlined />} disabled={!ready} loading={act.busy === `push:${n.id}`} onClick={() => run(n, "push")}>
+                      <Button size="small" icon={<SendOutlined />} disabled={!ready} loading={pf?.node.id === n.id && pf.running && pf.mode === "push"} onClick={() => runPreflight(n, "push")}>
                         下发
                       </Button>
                     )}
                   </Tooltip>
                   <Dropdown
                     trigger={["click"]}
-                    menu={{ items: more, onClick: ({ key }) => run(n, key as "preview" | "rotate") }}
+                    menu={{
+                      items: more,
+                      onClick: ({ key }) => (key === "preview" ? void preview(n) : runPreflight(n, "rotate")),
+                    }}
                   >
-                    <Button size="small" icon={<EllipsisOutlined />} aria-label={`${n.name || n.id} 的更多操作`} loading={act.busy === `preview:${n.id}` || (!first && act.busy === `rotate:${n.id}`)} />
+                    <Button size="small" icon={<EllipsisOutlined />} aria-label={`${n.name || n.id} 的更多操作`} loading={act.busy === `preview:${n.id}`} />
                   </Dropdown>
                 </Space>
               );
@@ -897,6 +1057,100 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
           },
         ]}
       />
+      <Modal
+        open={!!pf}
+        title={pf ? `${pf.node.name || pf.node.id} · 装机前预检` : ""}
+        width={900}
+        onCancel={() => setPf(null)}
+        destroyOnHidden
+        footer={
+          pf ? (
+            <Space wrap style={{ justifyContent: "flex-end", width: "100%" }}>
+              {pfReason ? (
+                <Typography.Text type="danger" data-testid="preflight-disabled-reason">
+                  {pfReason}
+                </Typography.Text>
+              ) : null}
+              <Button onClick={() => setPf(null)}>取消</Button>
+              <Button onClick={() => runPreflight(pf.node, pf.mode)} loading={pf.running} disabled={!!act.busy}>
+                重新预检
+              </Button>
+              <Button
+                type="primary"
+                danger={pf.mode === "rotate" && !first}
+                disabled={pf.running || !!pfReason}
+                loading={act.busy === `${pf.mode}:${pf.node.id}`}
+                onClick={execute}
+                data-testid="preflight-execute"
+              >
+                {execLabel}
+              </Button>
+            </Space>
+          ) : null
+        }
+      >
+        {pf ? (
+          <>
+            <Typography.Paragraph type="secondary">
+              {pf.mode === "push"
+                ? `用节点已有的密钥生成配置，经 SSH 登录 ${sv ? `${sv.name}（${sv.address}）` : "它的服务器"} 执行：写入 Meridian 的文件并重启它的服务。`
+                : first
+                  ? `生成这个节点的 WireGuard 密钥（私钥只保存在面板里），然后经 SSH 在 ${sv ? `${sv.name}（${sv.address}）` : "它的服务器"} 上执行：写入 Meridian 的文件并启动它的服务。`
+                  : "这会轮换这个节点的 WireGuard 私钥：旧密钥立即作废，在网关重新安装、相邻节点重新下发之前，经过这个节点的隧道会断开。只在怀疑私钥泄露时使用。"}
+              失败时脚本会补偿（撤掉这次新建的、恢复被替换的），撤不掉的会逐项列出。
+            </Typography.Paragraph>
+            {pf.running && !pf.rec ? (
+              <Typography.Paragraph data-testid="preflight-running">正在预检（只读，不改动服务器）…</Typography.Paragraph>
+            ) : null}
+            {pf.error ? (
+              <ApiErrorAlert error={pf.error}>
+                {loginHelpOf(pf.error) ? <LoginHelpView help={loginHelpOf(pf.error)!} /> : null}
+                {pf.error.code === "deployed_elsewhere" ? (
+                  <div data-testid="deployed-elsewhere">
+                    这个节点之前装在另一台服务器上，还没有撤回。先在下面「部署记录与撤回」里撤回那台服务器上的安装（服务器确实已不存在时选「放弃」），再装到新服务器。
+                  </div>
+                ) : null}
+              </ApiErrorAlert>
+            ) : null}
+            {pf.rec
+              ? (() => {
+                  const fixes = [...new Set(pf.rec.findings.map((f) => f.code))].filter((c) => RECOVERY[c]);
+                  return fixes.length > 0 ? (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                      data-testid="preflight-recovery"
+                      message="面板可以处理这个阻断项"
+                      description={
+                        <Space wrap>
+                          {fixes.map((c) => (
+                            <Button key={c} size="small" onClick={() => setWd({ node: pf.node, mode: RECOVERY[c].mode })}>
+                              {RECOVERY[c].label}
+                            </Button>
+                          ))}
+                        </Space>
+                      }
+                    />
+                  ) : null;
+                })()
+              : null}
+            {pf.rec ? <PreflightReport rec={pf.rec} /> : null}
+          </>
+        ) : null}
+      </Modal>
+      {wd ? (
+        <WithdrawDialog
+          nodeId={wd.node.id}
+          nodeName={wd.node.name}
+          mode={wd.mode}
+          onClose={() => {
+            setWd(null);
+            onWithdrawn();
+          }}
+          onDone={() => onWithdrawn()}
+        />
+      ) : null}
       <Modal
         open={!!out}
         title={out ? `${out.node.name} · ${out.title}` : ""}
@@ -907,10 +1161,47 @@ function RemoteNodes({ nodes, servers }: { nodes: Node[]; servers: ServerView[] 
       >
         {out?.error ? (
           <>
-            <ApiErrorAlert error={out.error} />
-            {typeof (out.error.body as { output?: string }).output === "string" && (out.error.body as { output?: string }).output ? (
-              <pre className="diff">{(out.error.body as { output: string }).output}</pre>
+            <ApiErrorAlert error={out.error}>{loginHelpOf(out.error) ? <LoginHelpView help={loginHelpOf(out.error)!} /> : null}</ApiErrorAlert>
+            {outBody.outcome === "unknown" ? (
+              <Alert type="warning" showIcon style={{ marginBottom: 12 }} data-testid="provision-unknown" message="结果不明，不当作成功" description="重新预检会显示服务器上这次装机的 journal 状态。" />
             ) : null}
+            {outBody.leftovers && outBody.leftovers.length > 0 ? (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginBottom: 12 }}
+                data-testid="provision-leftovers"
+                message="留在服务器上、没有撤掉的东西"
+                description={
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {outBody.leftovers.map((l) => (
+                      <li key={l} className="mono-small">
+                        {l}
+                      </li>
+                    ))}
+                  </ul>
+                }
+              />
+            ) : null}
+            {outBody.kept && outBody.kept.length > 0 ? (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                data-testid="provision-kept"
+                message="按设计保留的（不会自动卸载）"
+                description={
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {outBody.kept.map((l) => (
+                      <li key={l} className="mono-small">
+                        {l}
+                      </li>
+                    ))}
+                  </ul>
+                }
+              />
+            ) : null}
+            {typeof outBody.output === "string" && outBody.output ? <pre className="diff">{outBody.output}</pre> : null}
           </>
         ) : out?.res ? (
           <>
@@ -961,6 +1252,7 @@ function CurrentInstall({ host }: { host: HostStatus }) {
               <span className="mono">v{m.version}</span>
               <TimeText value={m.created_at} />
               {m.origin === "legacy" ? <Tag color="orange">从旧版本接管</Tag> : null}
+              {m.withdrawn ? <Tag color="orange">已撤回：只保留局域网兜底表</Tag> : null}
             </Space>
           ) : (
             <StatusTag kind="neutral">未安装</StatusTag>
@@ -988,6 +1280,8 @@ function CurrentInstall({ host }: { host: HostStatus }) {
             <StatusTag kind="attention">拓扑无法编译</StatusTag>
           ) : status.install.state === "unknown" ? (
             <StatusTag kind="unverified">无法判断</StatusTag>
+          ) : status.install.state === "withdrawn" ? (
+            <StatusTag kind="neutral">网关已撤回</StatusTag>
           ) : (
             <StatusTag kind="neutral">网关上未安装</StatusTag>
           ),
@@ -1013,12 +1307,14 @@ export default function DeployPage() {
   const doc = useTopologyDoc();
   const { route } = useRouter();
   useEffect(() => {
-    if (route.query.get("section") === "remote") {
-      const t = window.setTimeout(() => document.getElementById("remote")?.scrollIntoView?.({ behavior: "smooth" }), 200);
+    const sec = route.query.get("section");
+    if (sec === "remote" || sec === "deployments") {
+      const t = window.setTimeout(() => document.getElementById(sec)?.scrollIntoView?.({ behavior: "smooth" }), 200);
       return () => window.clearTimeout(t);
     }
   }, [route.query]);
   const host = useApi(() => api.hostStatus(), []);
+  const deployments = useApi(() => api.getDeployments(), []);
   const servers = useApi(() => api.listServers(), []);
   const nodeName = (id: string) => doc.topo?.nodes.find((n) => n.id === id)?.name ?? id;
   const remote = (doc.topo?.nodes ?? []).filter((n) => n.managed && n.role !== "gateway");
@@ -1048,12 +1344,21 @@ export default function DeployPage() {
       ) : null}
       <PendingChanges nodeName={nodeName} />
       <InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} />
-      <RemoteNodes nodes={remote} servers={servers.data?.servers} />
+      <RemoteNodes nodes={remote} servers={servers.data?.servers} onWithdrawn={() => void deployments.reload()} />
+      <DeploymentRecords state={deployments} onChanged={() => void deployments.reload()} />
       <Section title="当前安装">
         <DataView state={host} rows={4}>
           {(h) => <CurrentInstall host={h} />}
         </DataView>
       </Section>
+      <GatewayWithdraw
+        gw={deployments.data?.gateway}
+        onChanged={() => {
+          void deployments.reload();
+          void host.reload();
+        }}
+        hostReport={(r, failed) => <HostReportView report={r} failed={failed} />}
+      />
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
         Mesh 备路的部署和撤回在 <Link to={href("cloudflare") + "?section=mesh"}>Cloudflare</Link> 页。
       </Typography.Paragraph>

@@ -45,6 +45,10 @@ func output(blocks ...string) string {
 	return fmt.Sprintf("%s\nnow %d\nplan %s %d\n%s%s\n", Header, hubNow, plan, hubNow-3600, strings.Join(blocks, ""), Footer)
 }
 
+// hubID is the identity the test reads were taken from (documentation
+// address, fake fingerprint).
+var hubID = NewIdentity("hk-hub", "srv-1", "203.0.113.10", 22, "SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
 var spec = GroupSpec{ID: "hk", Dynamic: true, Members: []string{"hk-ix", "hk-2"}, Mesh: true}
 
 func judge(t *testing.T, out string) Actual {
@@ -54,7 +58,7 @@ func judge(t *testing.T, out string) Actual {
 		t.Fatalf("parse: %v\n%s", err, out)
 	}
 	at := time.Unix(hubNow, 0)
-	return Evaluate(spec, &Read{ReadAt: at, Snapshot: &snap}, plan, 60*time.Second, at)
+	return Evaluate(spec, &Read{ReadAt: at, Identity: hubID, Snapshot: &snap}, hubID, plan, 60*time.Second, at)
 }
 
 func TestEvaluateStates(t *testing.T) {
@@ -97,7 +101,7 @@ func TestEvaluateStates(t *testing.T) {
 	noMesh.Mesh = false
 	snap, _ := Parse(output(report("hop mmesh", "active mmesh", "reason mesh")))
 	at := time.Unix(hubNow, 0)
-	if a = Evaluate(noMesh, &Read{ReadAt: at, Snapshot: &snap}, plan, time.Minute, at); a.Code != CodeInvalidReport {
+	if a = Evaluate(noMesh, &Read{ReadAt: at, Identity: hubID, Snapshot: &snap}, hubID, plan, time.Minute, at); a.Code != CodeInvalidReport {
 		t.Fatalf("mesh without a mesh edge %+v", a)
 	}
 	// Missing group / missing plan.
@@ -114,16 +118,16 @@ func TestEvaluateStates(t *testing.T) {
 		t.Fatalf("other group %+v", a)
 	}
 	// Not switchable, never read, read failed.
-	if a = Evaluate(GroupSpec{ID: "v6"}, nil, plan, time.Minute, at); a.State != StateNotSwitchable {
+	if a = Evaluate(GroupSpec{ID: "v6"}, nil, hubID, plan, time.Minute, at); a.State != StateNotSwitchable {
 		t.Fatalf("static %+v", a)
 	}
-	if a = Evaluate(spec, nil, plan, time.Minute, at); a.State != StateNeverRead || a.ReadAt != nil {
+	if a = Evaluate(spec, nil, hubID, plan, time.Minute, at); a.State != StateNeverRead || a.ReadAt != nil {
 		t.Fatalf("never %+v", a)
 	}
-	if a = Evaluate(spec, &Read{ReadAt: at, ErrorCode: CodeSSHFailed, SSHCode: "timeout", Error: "x"}, plan, time.Minute, at); a.State != StateUnavailable || a.Code != CodeSSHFailed || a.SSHCode != "timeout" {
+	if a = Evaluate(spec, &Read{ReadAt: at, Identity: hubID, ErrorCode: CodeSSHFailed, SSHCode: "timeout", Error: "x"}, hubID, plan, time.Minute, at); a.State != StateUnavailable || a.Code != CodeSSHFailed || a.SSHCode != "timeout" {
 		t.Fatalf("ssh %+v", a)
 	}
-	if a = Evaluate(spec, &Read{ReadAt: at, Snapshot: &snap}, "", time.Minute, at); a.Code != CodePlanUnavailable {
+	if a = Evaluate(spec, &Read{ReadAt: at, Identity: hubID, Snapshot: &snap}, hubID, "", time.Minute, at); a.Code != CodePlanUnavailable {
 		t.Fatalf("no current plan %+v", a)
 	}
 }
@@ -136,13 +140,97 @@ func TestEvaluateClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	panel := time.Unix(hubNow, 0).Add(2 * time.Hour) // hub clock two hours behind
-	a := Evaluate(spec, &Read{ReadAt: panel, Snapshot: &snap}, plan, time.Minute, panel)
+	a := Evaluate(spec, &Read{ReadAt: panel, Identity: hubID, Snapshot: &snap}, hubID, plan, time.Minute, panel)
 	if a.State != StateOK || *a.ClockSkewSec != 7200 || !a.LastSwitch.Equal(panel.Add(-60*time.Second)) {
 		t.Fatalf("skewed %+v", a)
 	}
-	a = Evaluate(spec, &Read{ReadAt: panel, Snapshot: &snap}, plan, time.Minute, panel.Add(ReadMaxAge+time.Second))
+	a = Evaluate(spec, &Read{ReadAt: panel, Identity: hubID, Snapshot: &snap}, hubID, plan, time.Minute, panel.Add(ReadMaxAge+time.Second))
 	if a.State != StateStale || a.Code != CodeReadOld || a.Active != "" {
 		t.Fatalf("old read %+v", a)
+	}
+}
+
+// A read only describes the hub identity it was taken from: any change of
+// hub node, server, address, port or pinned key makes it unknown at once,
+// whatever it says and however fresh it is.
+func TestEvaluateIdentity(t *testing.T) {
+	snap, err := Parse(output(report()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(hubNow, 0)
+	ok := &Read{ReadAt: at, Identity: hubID, Snapshot: &snap}
+	if a := Evaluate(spec, ok, hubID, plan, time.Minute, at); a.State != StateOK {
+		t.Fatalf("same identity %+v", a)
+	}
+	// Equal after normalisation.
+	same := NewIdentity("hk-hub", "srv-1", " 203.0.113.10 ", 0, "SHA256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if a := Evaluate(spec, ok, same, plan, time.Minute, at); a.State != StateOK {
+		t.Fatalf("normalised identity %+v", a)
+	}
+	changes := map[string]Identity{
+		"hub node":    NewIdentity("hk-hub2", "srv-1", "203.0.113.10", 22, hubID.Fingerprint),
+		"server":      NewIdentity("hk-hub", "srv-2", "203.0.113.10", 22, hubID.Fingerprint),
+		"address":     NewIdentity("hk-hub", "srv-1", "203.0.113.11", 22, hubID.Fingerprint),
+		"port":        NewIdentity("hk-hub", "srv-1", "203.0.113.10", 2222, hubID.Fingerprint),
+		"fingerprint": NewIdentity("hk-hub", "srv-1", "203.0.113.10", 22, "SHA256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+		"unpinned":    NewIdentity("hk-hub", "srv-1", "203.0.113.10", 22, ""),
+		"no hub":      {},
+	}
+	for name, cur := range changes {
+		a := Evaluate(spec, ok, cur, plan, time.Minute, at)
+		if a.State != StateUnavailable || a.Code != CodeIdentityChanged || a.Active != "" || a.Hop != "" || a.LastSwitch != nil || a.ReadAt == nil || a.Message == "" {
+			t.Fatalf("%s: %+v", name, a)
+		}
+		// A failed read of the old hub is just as irrelevant.
+		failed := &Read{ReadAt: at, Identity: hubID, ErrorCode: CodeSSHFailed}
+		if a = Evaluate(spec, failed, cur, plan, time.Minute, at); a.Code != CodeIdentityChanged {
+			t.Fatalf("%s failed read: %+v", name, a)
+		}
+	}
+	// The pin is contradicted (mismatch): same identity, but no report
+	// counts while it lasts.
+	contradicted := hubID
+	contradicted.Trusted = false
+	if a := Evaluate(spec, ok, contradicted, plan, time.Minute, at); a.State != StateUnavailable || a.Code != CodeIdentityChanged || a.Active != "" {
+		t.Fatalf("contradicted pin %+v", a)
+	}
+	if !contradicted.Equal(hubID) {
+		t.Fatal("trust is not part of the identity")
+	}
+	// A read stored before reads carried an identity is never believed.
+	legacy := &Read{ReadAt: at, Identity: Identity{HubNode: "hk-hub", ServerID: "srv-1"}, Snapshot: &snap}
+	if a := Evaluate(spec, legacy, hubID, plan, time.Minute, at); a.Code != CodeIdentityChanged {
+		t.Fatalf("legacy read %+v", a)
+	}
+	// A report without a pinned key is never ok, even if nothing changed.
+	unpinned := NewIdentity("hk-hub", "srv-1", "203.0.113.10", 22, "")
+	if a := Evaluate(spec, &Read{ReadAt: at, Identity: unpinned, Snapshot: &snap}, unpinned, plan, time.Minute, at); a.State == StateOK {
+		t.Fatalf("report without a pinned key %+v", a)
+	}
+	// A failed read stays meaningful while its (incomplete) identity is
+	// still the current one: the hub that cannot be read says why.
+	noKey := &Read{ReadAt: at, Identity: unpinned, ErrorCode: CodeServerNotReady}
+	if a := Evaluate(spec, noKey, unpinned, plan, time.Minute, at); a.Code != CodeServerNotReady {
+		t.Fatalf("failed read of the current hub %+v", a)
+	}
+}
+
+func TestNormalizeAddress(t *testing.T) {
+	for in, want := range map[string]string{
+		"203.0.113.10":        "203.0.113.10",
+		" 203.0.113.10\t":     "203.0.113.10",
+		"::ffff:203.0.113.10": "203.0.113.10",
+		"[2001:DB8:0:0::1]":   "2001:db8::1",
+		"Hub.Example.NET.":    "hub.example.net",
+		"hub.example.net":     "hub.example.net",
+	} {
+		if got := NormalizeAddress(in); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+	if NewIdentity("n", "s", "a.example.net", 0, "f").Port != 22 {
+		t.Fatal("port 0 is 22")
 	}
 }
 

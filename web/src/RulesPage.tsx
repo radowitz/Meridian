@@ -36,7 +36,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import { href, useRouter, useTopologyDoc } from "./state";
 import type { Issue, Rule, Topology } from "./types";
-import { ApiErrorAlert, EmptyState, IssueList, Link, Page, StatusTag, TABLE_SCROLL, TopologyDocBar, regionLabel, useConfirmDanger } from "./ui";
+import { ApiErrorAlert, EmptyState, IssueList, Link, Page, StatusTag, TABLE_SCROLL, TopologyDocBar, groupLabel, isDuplicateGroupName, regionLabel, useConfirmDanger } from "./ui";
 
 export const MATCH_TYPES: { value: string; label: string; help: string; placeholder: string }[] = [
   { value: "domain", label: "完整域名", help: "只匹配这个域名本身。", placeholder: "api.example.com" },
@@ -80,7 +80,7 @@ function targetOf(t: Topology, r: Rule) {
     return { kind: "exit" as const, id: r.target_exit, name: n?.name ?? r.target_exit, missing: !n };
   }
   const g = (t.region_groups ?? []).find((x) => x.id === r.target_group);
-  return { kind: "group" as const, id: r.target_group ?? "", name: g?.name ?? r.target_group ?? "—", missing: !g, mode: g?.mode };
+  return { kind: "group" as const, id: r.target_group ?? "", name: g ? groupLabel(g, t.region_groups) : r.target_group ?? "—", missing: !g, mode: g?.mode };
 }
 
 // ------------------------------------------------------------- ordering ---
@@ -383,7 +383,7 @@ function RuleDrawer({
               aria-label="地区组"
               options={groups.map((g) => ({
                 value: g.id,
-                label: `${g.name}（${regionLabel(g.region)} · ${g.mode === "manual" ? "手动" : "自动"}${g.require_residential ? " · 住宅" : ""}${g.require_v6 ? " · IPv6" : ""}）`,
+                label: `${g.name}（${regionLabel(g.region)}${isDuplicateGroupName(g, groups) ? ` · ${g.id}` : ""} · ${g.mode === "manual" ? "手动" : "自动"}${g.require_residential ? " · 住宅" : ""}${g.require_v6 ? " · IPv6" : ""}）`,
               }))}
             />
           </Form.Item>
@@ -528,7 +528,10 @@ export default function RulesPage() {
           默认组：
           {topo.settings.default_group ? (
             <Link to={href("exits", topo.settings.default_group)}>
-              {(topo.region_groups ?? []).find((g) => g.id === topo.settings.default_group)?.name ?? topo.settings.default_group}
+              {(() => {
+                const g = (topo.region_groups ?? []).find((x) => x.id === topo.settings.default_group);
+                return g ? groupLabel(g, topo.region_groups) : topo.settings.default_group;
+              })()}
             </Link>
           ) : (
             "未设置"

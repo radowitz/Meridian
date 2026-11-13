@@ -243,12 +243,33 @@ func overlaps(a, b netip.Prefix) bool {
 }
 
 // RoutePlan is one Cloudflare CIDR route this deployment publishes for the
-// exit end of a Mesh link.
+// exit end of a Mesh link. Purpose is "" for a route the operator listed on
+// the link (mesh_routes) and PurposeGroupResolver for a region group's
+// resolver address the compiled files ask this exit to answer (Group names
+// the group).
 type RoutePlan struct {
 	LinkID  string `json:"link_id"`
 	ExitID  string `json:"exit_id"`
 	Network string `json:"network"`
+	Purpose string `json:"purpose,omitempty"`
+	Group   string `json:"group,omitempty"`
 }
+
+// PurposeGroupResolver marks the route of a region group's resolver
+// address (docs/architecture.md「地区组的解析」): while the hub has the group
+// on the Mesh hop, its queries to fd66::53:<k> cross the Mesh to the exit
+// that publishes fd66::53:<k>/128, which answers them on its Mesh ingress.
+const PurposeGroupResolver = "group_resolver"
+
+// PublishMarker starts a line of an exit's compiled meridian-mesh-up.sh
+// naming a route its Mesh node publishes: "<marker> <cidr> group=<id>".
+// The compiler writes it only for the group's Mesh resolver member; the
+// operator does not list these routes.
+const PublishMarker = "# meridian-mesh-publish"
+
+// GroupResolverNet mirrors validate.GroupResolverNet: the only range a
+// PublishMarker line may name (one /128 per line).
+var GroupResolverNet = netip.MustParsePrefix("fd66::53:0/112")
 
 // NodeTarget is one host that gets a sidecar.
 type NodeTarget struct {
@@ -368,11 +389,8 @@ func BuildPlan(t model.Topology, bundle map[string]string) Plan {
 	}
 	addNode(hub)
 	res := reserved(t, a)
-	type owned struct {
-		prefix netip.Prefix
-		link   string
-	}
 	var all []owned
+	published := map[string]bool{}
 	for _, l := range links {
 		var exitID string
 		switch {
@@ -422,8 +440,75 @@ func BuildPlan(t model.Topology, bundle map[string]string) Plan {
 			all = append(all, owned{pr, l.ID})
 			p.Routes = append(p.Routes, RoutePlan{LinkID: l.ID, ExitID: exitID, Network: pr.String()})
 		}
+		if !published[exitID] {
+			published[exitID] = true
+			p.Routes = append(p.Routes, groupResolverRoutes(&p, l.ID, exitID, all)...)
+		}
 	}
 	return p
+}
+
+// groupResolverRoutes reads the PublishMarker lines of exitID's compiled
+// meridian-mesh-up.sh. Each must name one address of GroupResolverNet as a
+// /128 that no other route of the plan covers; anything else is a plan
+// issue (the files were not produced by this compiler).
+func groupResolverRoutes(p *Plan, linkID, exitID string, taken []owned) []RoutePlan {
+	n, ok := p.Node(exitID)
+	if !ok {
+		return nil
+	}
+	var out []RoutePlan
+	for _, line := range strings.Split(n.Files[PathUp], "\n") {
+		rest, ok := strings.CutPrefix(line, PublishMarker+" ")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(rest)
+		group := ""
+		if len(f) == 2 {
+			group, _ = strings.CutPrefix(f[1], "group=")
+		}
+		pr, err := netip.ParsePrefix(firstField(f))
+		if err != nil || len(f) != 2 || group == "" || pr.Bits() != 128 || !GroupResolverNet.Contains(pr.Addr()) {
+			p.Issues = append(p.Issues, Issue{Code: "mesh_publish_invalid", NodeID: exitID, LinkID: linkID, Message: fmt.Sprintf("meridian-mesh-up.sh 的发布行 %q 无效：只允许 %s 里的单个 /128 地区组解析地址", strings.TrimSpace(line), GroupResolverNet)})
+			continue
+		}
+		dup := false
+		for _, o := range taken {
+			if overlaps(pr, o.prefix) {
+				dup = true
+			}
+		}
+		for _, r := range p.Routes {
+			if r.Network == pr.String() {
+				dup = true
+			}
+		}
+		for _, r := range out {
+			if r.Network == pr.String() {
+				dup = true
+			}
+		}
+		if dup {
+			p.Issues = append(p.Issues, Issue{Code: "mesh_route_overlap", NodeID: exitID, LinkID: linkID, Message: fmt.Sprintf("地区组 %s 的解析地址 %s 已由别的路由覆盖；同一虚拟网络里一个 CIDR 只能交给一个节点", group, pr)})
+			continue
+		}
+		out = append(out, RoutePlan{LinkID: linkID, ExitID: exitID, Network: pr.String(), Purpose: PurposeGroupResolver, Group: group})
+	}
+	return out
+}
+
+func firstField(f []string) string {
+	if len(f) == 0 {
+		return ""
+	}
+	return f[0]
+}
+
+// owned is a route prefix the plan already gives to a Mesh link.
+type owned struct {
+	prefix netip.Prefix
+	link   string
 }
 
 // linkConflicts finds topology addresses inside the veth link.

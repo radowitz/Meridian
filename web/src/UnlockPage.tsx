@@ -38,8 +38,10 @@ import {
   Section,
   StatusTag,
   TimeText,
+  groupLabel,
   useAction,
   useApi,
+  type GroupNameLike,
 } from "./ui";
 
 // ------------------------------------------------------------ vocabulary ---
@@ -282,7 +284,8 @@ function Launcher({
   catalog: ProbeCatalogEntry[];
   available: boolean;
   running: string;
-  groups: { id: string; name: string; members: string[] }[];
+  /** label: unambiguous display name (groupLabel: region + ID for same-named groups). */
+  groups: { id: string; name: string; label: string; members: string[] }[];
   exits: { id: string; name: string }[];
   onStarted: (job: ProbeJob) => void;
 }) {
@@ -376,7 +379,7 @@ function Launcher({
           placeholder="选择地区组（组里的全部成员都会被探测）"
           value={selGroups}
           onChange={setSelGroups}
-          options={groups.map((g) => ({ value: g.id, label: `${g.name}（${g.members.length} 个出口）` }))}
+          options={groups.map((g) => ({ value: g.id, label: `${g.label}（${g.members.length} 个出口）` }))}
           aria-label="按地区组"
         />
       ) : target === "exits" ? (
@@ -436,6 +439,8 @@ interface ExitCol {
   /** Only the panel's model says so (面板推算). */
   modelActive: boolean;
   families: string[];
+  /** The exit is no longer in the topology: history, not a current result. */
+  removed?: boolean;
 }
 
 function ResultDetail({ row }: { row: ProbeResultRow }) {
@@ -505,23 +510,44 @@ function ResultDetail({ row }: { row: ProbeResultRow }) {
   );
 }
 
-function ResultsMatrix({ rows, catalog, onOpen }: { rows: ProbeResultRow[]; catalog: ProbeCatalogEntry[]; onOpen: (r: ProbeResultRow) => void }) {
+function ResultsMatrix({
+  rows,
+  catalog,
+  onOpen,
+  allGroups,
+}: {
+  rows: ProbeResultRow[];
+  catalog: ProbeCatalogEntry[];
+  onOpen: (r: ProbeResultRow) => void;
+  /** Every region group (with region), so same-named groups get region + ID in the header. */
+  allGroups?: readonly GroupNameLike[];
+}) {
   const cols = useMemo(() => {
     const m = new Map<string, ExitCol>();
     for (const r of rows) {
       const c = m.get(r.exit_id) ?? {
         id: r.exit_id,
         name: r.exit_name || r.exit_id,
-        group: r.exit_groups[0] ? { id: r.exit_groups[0].id, name: r.exit_groups[0].name } : null,
+        group: r.exit_groups[0]
+          ? {
+              id: r.exit_groups[0].id,
+              name: groupLabel(allGroups?.find((g) => g.id === r.exit_groups[0].id) ?? r.exit_groups[0], allGroups ?? r.exit_groups),
+            }
+          : null,
         active: r.exit_groups.some((g) => g.actual_active === r.exit_id),
         modelActive: r.exit_groups.some((g) => g.model_active === r.exit_id),
         families: [],
+        removed: !!r.exit_removed,
       };
       if (!c.families.includes(r.family)) c.families.push(r.family);
       m.set(r.exit_id, c);
     }
-    return [...m.values()].sort((a, b) => (a.group?.name ?? "~").localeCompare(b.group?.name ?? "~") || a.id.localeCompare(b.id));
-  }, [rows]);
+    // Name, then group ID: two groups with the same name must not interleave their columns.
+    return [...m.values()].sort(
+      (a, b) =>
+        (a.group?.name ?? "~").localeCompare(b.group?.name ?? "~") || (a.group?.id ?? "").localeCompare(b.group?.id ?? "") || a.id.localeCompare(b.id),
+    );
+  }, [rows, allGroups]);
   const services = useMemo(() => {
     const ids = [...new Set(rows.map((r) => r.service))];
     const order = new Map(catalog.map((c, i) => [c.service, i]));
@@ -562,6 +588,11 @@ function ResultsMatrix({ rows, catalog, onOpen }: { rows: ProbeResultRow[]; cata
                 >
                   <span>
                     {c.name}
+                    {c.removed ? (
+                      <Tag color="default" style={{ marginLeft: 4 }} data-testid={`removed-exit-${c.id}`}>
+                        已删除的出口
+                      </Tag>
+                    ) : null}
                     {c.active ? (
                       <span className="active-dot" aria-label="枢纽报告组当前使用" />
                     ) : c.modelActive ? (
@@ -618,7 +649,9 @@ function ResultsMatrix({ rows, catalog, onOpen }: { rows: ProbeResultRow[]; cata
 export default function UnlockPage() {
   const catalog = useApi(() => api.getUnlockCatalog(), []);
   const jobs = useApi(() => api.getUnlockJobs(), []);
-  const results = useApi(() => api.getUnlockResults(), []);
+  const [showRemoved, setShowRemoved] = useState(false);
+  const results = useApi(() => api.getUnlockResults(showRemoved ? { include_removed: "1" } : {}), [showRemoved]);
+  const pruneAct = useAction();
   const view = useApi(() => api.getUnlock(), []);
   const groups = useApi(() => api.listGroups(), []);
   const { refresh, status } = useStatus();
@@ -709,7 +742,17 @@ export default function UnlockPage() {
       return { ...s, st, active: s.pin ? s.preferred : st?.active || v.decisions?.[s.rule_id] || s.preferred };
     });
   }, [view.data]);
+  const removedExits = useMemo(() => new Set(view.data?.removed_exits ?? []), [view.data]);
   const nm = (id?: string) => (id ? exitOptions.find((e) => e.id === id)?.name ?? id : "—");
+  /** An exit name, marked when the exit no longer exists in the topology. */
+  const exitCell = (id?: string) =>
+    id && removedExits.has(id) ? (
+      <span>
+        {nm(id)} <Tag data-testid={`history-removed-${id}`}>已删除的出口</Tag>
+      </span>
+    ) : (
+      nm(id)
+    );
 
   return (
     <Page
@@ -754,7 +797,7 @@ export default function UnlockPage() {
               catalog={c.catalog}
               available={available}
               running={running}
-              groups={(groups.data?.groups ?? []).map((g) => ({ id: g.id, name: g.name, members: g.members }))}
+              groups={(groups.data?.groups ?? []).map((g) => ({ id: g.id, name: g.name, label: groupLabel(g, groups.data?.groups), members: g.members }))}
               exits={exitOptions}
               onStarted={(j) => {
                 setJob(j);
@@ -792,7 +835,7 @@ export default function UnlockPage() {
         title="结果"
         extra={
           <Space wrap>
-            <Select allowClear placeholder="地区组" style={{ width: 150 }} value={fGroup} onChange={setFGroup} options={(groups.data?.groups ?? []).map((g) => ({ value: g.id, label: g.name }))} aria-label="按地区组筛选" />
+            <Select allowClear placeholder="地区组" style={{ width: 150 }} value={fGroup} onChange={setFGroup} options={(groups.data?.groups ?? []).map((g) => ({ value: g.id, label: groupLabel(g, groups.data?.groups) }))} aria-label="按地区组筛选" />
             <Select allowClear placeholder="出口" style={{ width: 150 }} value={fExit} onChange={setFExit} options={exitOptions.map((e) => ({ value: e.id, label: e.name }))} aria-label="按出口筛选" />
             <Select allowClear placeholder="服务" style={{ width: 160 }} value={fService} onChange={setFService} options={(catalog.data?.catalog ?? []).map((c) => ({ value: c.service, label: c.name }))} aria-label="按服务筛选" />
             <Select allowClear placeholder="地址族" style={{ width: 100 }} value={fFamily} onChange={setFFamily} options={[{ value: "ipv4", label: "IPv4" }, { value: "ipv6", label: "IPv6" }]} aria-label="按地址族筛选" />
@@ -809,6 +852,43 @@ export default function UnlockPage() {
             <span className="active-dot" /> <span className="muted">组当前使用 / 服务当前所在的出口</span>
           </span>
         </div>
+        {(results.data?.removed_exits?.length ?? 0) > 0 ? (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            data-testid="removed-exits-notice"
+            message={`${results.data!.removed_exits!.reduce((n, e) => n + e.results, 0)} 条结果属于已删除的出口，不作为当前结果显示`}
+            description={
+              <span>
+                出口：<span className="mono-small">{results.data!.removed_exits!.map((e) => e.exit_id).join("、")}</span>
+                。「清理」只删除这里保存的探测结果；解锁状态机的准入记录和历史保留（历史里标为已删除的出口）。
+              </span>
+            }
+            action={
+              <Space direction="vertical">
+                <Button
+                  size="small"
+                  loading={pruneAct.busy === "prune"}
+                  onClick={() =>
+                    void pruneAct.run(async () => {
+                      const r = await api.pruneUnlockResults();
+                      message.success(`已清理 ${r.removed} 条`);
+                      setShowRemoved(false);
+                      void results.reload();
+                    }, "prune")
+                  }
+                >
+                  清理
+                </Button>
+                <Button size="small" type="link" onClick={() => setShowRemoved((v) => !v)}>
+                  {showRemoved ? "隐藏" : "显示它们"}
+                </Button>
+              </Space>
+            }
+          />
+        ) : null}
+        <ApiErrorAlert error={pruneAct.error} onClose={pruneAct.clear} />
         <DataView state={results} rows={5}>
           {() =>
             rows.length === 0 ? (
@@ -817,7 +897,7 @@ export default function UnlockPage() {
                 description={(results.data?.results.length ?? 0) === 0 ? "在上面选择服务和出口，开始一轮探测。" : "换一个筛选条件。"}
               />
             ) : (
-              <ResultsMatrix rows={rows} catalog={catalog.data?.catalog ?? []} onOpen={setOpen} />
+              <ResultsMatrix rows={rows} catalog={catalog.data?.catalog ?? []} onOpen={setOpen} allGroups={groups.data?.groups} />
             )
           }
         </DataView>
@@ -848,9 +928,13 @@ export default function UnlockPage() {
                 scroll={TABLE_SCROLL}
                 columns={[
                   { title: "服务", dataIndex: "name", className: "cell-name" },
-                  { title: "地区组", className: "nowrap", render: (_, r) => <Link to={href("exits", r.pool)}>{r.pool}</Link> },
-                  { title: "首选", className: "nowrap", render: (_, r) => nm(r.preferred) },
-                  { title: "现在承载", className: "nowrap", render: (_, r) => <Typography.Text strong={r.active !== r.preferred}>{nm(r.active)}</Typography.Text> },
+                  { title: "地区组", className: "nowrap", render: (_, r) => {
+                      const g = groups.data?.groups.find((x) => x.id === r.pool);
+                      return <Link to={href("exits", r.pool)}>{g ? groupLabel(g, groups.data?.groups) : r.pool}</Link>;
+                    },
+                  },
+                  { title: "首选", className: "nowrap", render: (_, r) => exitCell(r.preferred) },
+                  { title: "现在承载", className: "nowrap", render: (_, r) => <Typography.Text strong={r.active !== r.preferred}>{exitCell(r.active)}</Typography.Text> },
                   {
                     title: "状态",
                     render: (_, r) => (
@@ -888,7 +972,7 @@ export default function UnlockPage() {
                 { title: "时间", className: "nowrap", render: (_, h) => <TimeText value={h.at} /> },
                 { title: "来源", className: "nowrap", render: (_, h) => HISTORY_KIND[h.kind] ?? h.kind },
                 { title: "服务", dataIndex: "service", className: "cell-name" },
-                { title: "出口", className: "nowrap", render: (_, h) => nm(h.exit_id) },
+                { title: "出口", className: "nowrap", render: (_, h) => exitCell(h.exit_id) },
                 { title: "地址族", className: "nowrap", render: (_, h) => (h.family === "ipv6" ? "IPv6" : h.family === "ipv4" ? "IPv4" : "—") },
                 {
                   title: "结果",

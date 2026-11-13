@@ -96,6 +96,17 @@ export const DEFAULTS: Record<string, Handler> = {
     check: { does: ["只读调用"], does_not: ["不能证明写权限"] },
   }),
   "GET /api/lists/status": () => reply(503, { error: "宿主执行通道不可用", code: "host_unavailable" }),
+  "GET /api/deployments": () => ({
+    nodes: [],
+    gateway: {
+      installed: false,
+      withdrawn: false,
+      plan: { files: [], interfaces: [], units: [], nft_tables: [], route_tables: [] },
+      kept: [],
+      pending: null,
+      last: null,
+    },
+  }),
 };
 
 export interface FakeApi {

@@ -166,6 +166,10 @@ func (s *Server) getUnlock(w http.ResponseWriter, r *http.Request) {
 		"interval_sec":  int(unlock.Interval(t.Settings.UnlockIntervalSec).Seconds()),
 		"pending_apply": snap.PendingApply,
 		"decisions":     unlock.Decisions(snap, servicesOf(t)),
+		// History entries and states that name these exits belong to exits
+		// that were removed from the topology: shown as such, never as
+		// current results.
+		"removed_exits": unlock.RemovedExits(snap, exitExists(t)),
 	})
 }
 

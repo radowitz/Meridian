@@ -30,6 +30,9 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 		renderHubRoutes(&sb, t, tunnels, exits, groups)
 	case model.RoleExit:
 		renderExitRoutes(&sb, t, n, tunnels)
+		if len(meshDNSGroups(groups, n.ID)) > 0 {
+			renderExitMeshDNSRoutes(&sb, n, groups)
+		}
 		if n.DualstackRelay {
 			renderDualstackForward(&sb, t, n, tunnels, exits)
 		}
@@ -306,6 +309,44 @@ func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunne
 	if n.NatDialOut {
 		sb.WriteString("# NAT dial-out: keep the mapping warm. Updates must use wg syncconf, not wg-quick down.\n")
 	}
+}
+
+// renderExitMeshDNSRoutes installs the return path of region-group
+// queries that reach this exit over the Mesh backup (writeGroupResolverDNAT):
+// table tableMeshDNS and its two rules. meshDNSReturnShell is shared, byte
+// for byte, with this exit's meridian-mesh-up.sh, which runs it whenever it
+// seals or unseals the sidecar: the static install and every re-seal
+// agree, and the table points at mmesh only while the sidecar is sealed.
+func renderExitMeshDNSRoutes(sb *strings.Builder, n model.Node, groups []GroupPlan) {
+	sb.WriteString("# region-group resolver over the Mesh backup: replies to queries that arrived on mmesh\n")
+	sb.WriteString("# return on mmesh (table " + fmt.Sprint(tableMeshDNS) + "), never into the hub tunnel or out of the WAN.\n")
+	for _, g := range meshDNSGroups(groups, n.ID) {
+		fmt.Fprintf(sb, "# group %s resolver %s is published by this exit's Mesh node\n", g.Group.ID, g.Resolver)
+	}
+	sb.WriteString(meshDNSReturnShell())
+	sb.WriteString("mesh_dns_return\n")
+	fmt.Fprintf(sb, "del_rule ip -6 rule del fwmark %#x lookup %d\n", markMeshDNS, tableMeshDNS)
+	fmt.Fprintf(sb, "ip -6 rule add fwmark %#x lookup %d priority %d\n", markMeshDNS, tableMeshDNS, prioMeshDNS)
+	fmt.Fprintf(sb, "del_rule ip -6 rule del to %s/128 lookup %d\n", meshDNSAnchor, tableMeshDNS)
+	fmt.Fprintf(sb, "ip -6 rule add to %s/128 lookup %d priority %d\n", meshDNSAnchor, tableMeshDNS, prioMeshDNS+1)
+}
+
+// meshDNSReturnShell defines mesh_dns_return: table tableMeshDNS always has
+// a blackhole default; it gets "default via <sidecar> dev mmesh" only while
+// mmesh exists and /run/meridian/mesh-sealed is present, and loses it
+// otherwise. It never touches another table.
+func meshDNSReturnShell() string {
+	ma := mesh.DefaultAddressing()
+	return fmt.Sprintf(`mesh_dns_return() {
+  ip -6 route replace blackhole default metric 32767 table %[1]d >/dev/null 2>&1 || true
+  if ip link show %[2]s >/dev/null 2>&1 && [ -f /run/meridian/mesh-sealed ]; then
+    ip -6 route replace default via %[3]s dev %[2]s table %[1]d || echo "mesh DNS return route not installed; table %[1]d stays blackholed" >&2
+  else
+    ip -6 route del default via %[3]s dev %[2]s table %[1]d >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+`, tableMeshDNS, mesh.HostIface, ma.NextHopV6())
 }
 
 func renderFailover(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
@@ -670,6 +711,12 @@ func renderHubGroupRoutes(sb *strings.Builder, t model.Topology, west string, gr
 		fmt.Fprintf(sb, "ip -6 route replace blackhole default metric 32767 table %d\n", g.Table)
 		if g.Dynamic {
 			fmt.Fprintf(sb, "group_hop %d %s\n", g.Table, shQuote(hopDev(g.Target)))
+			switch {
+			case g.Mesh && g.MeshResolver != "":
+				fmt.Fprintf(sb, "# group %s on the Mesh hop: resolver %s is answered by exit %s (its Mesh node publishes %s/128)\n", g.Group.ID, g.Resolver, g.MeshResolver, g.Resolver)
+			case g.Mesh:
+				fmt.Fprintf(sb, "# group %s on the Mesh hop: no member answers resolver %s over the Mesh; its names fail there\n", g.Group.ID, g.Resolver)
+			}
 		} else {
 			fmt.Fprintf(sb, "# group %s target %s is not switchable from the hub: blackhole only\n", g.Group.ID, g.Target.Node.ID)
 		}
@@ -866,6 +913,12 @@ group_step() {
     else
       hfail="$want"
     fi
+  elif [ "$active" = "mmesh" ]; then
+    # Staying on Mesh: re-apply every round, so the table follows the seal
+    # (via the sidecar while sealed, blackhole otherwise) and survives a
+    # re-created veth. Not a switch: active and switched stay as they are;
+    # the report reads the table (hop mmesh or blackhole).
+    group_hop "$table" "$MESH_DEV" 2>/dev/null || true
   fi
   if [ "$active" = "$target" ]; then
     reason="$treason"

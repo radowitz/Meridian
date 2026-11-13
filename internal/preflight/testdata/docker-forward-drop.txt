@@ -1,0 +1,69 @@
+meridian-preflight 1
+uid 0
+arch x86_64
+kernel 6.1.0-28-amd64
+os-id debian
+os-version "12"
+os-codename bookworm
+os-pretty "Debian GNU/Linux 12 (bookworm)"
+systemd yes
+mem-total-kb 1012000
+mem-avail-kb 420000
+disk-avail-kb 9000000
+cmd wg no
+cmd nft yes
+cmd ip yes
+cmd ss yes
+cmd iptables yes
+cmd ip6tables yes
+cmd apt-get yes
+cmd systemctl yes
+cmd smartdns no
+cmd wstunnel no
+cmd docker yes
+cmd sha256sum yes
+iptables-version iptables v1.8.9 (nf_tables)
+ipt ipv4 -P INPUT ACCEPT
+ipt ipv4 -P FORWARD DROP
+ipt ipv6 -P INPUT ACCEPT
+ipt ipv6 -P FORWARD DROP
+sysctl net.ipv4.ip_forward 1
+sysctl net.ipv6.conf.all.forwarding 0
+link lo
+link eth0
+link docker0
+addr lo 127.0.0.1/8
+addr eth0 203.0.113.50/24
+addr docker0 172.17.0.1/16
+route4 default via 203.0.113.1 dev eth0
+route4 172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown
+route4 203.0.113.0/24 dev eth0 proto kernel scope link src 203.0.113.50
+rule4 0:	from all lookup local
+rule4 32766:	from all lookup main
+ss tcp   LISTEN 0      4096         0.0.0.0:8388       0.0.0.0:*    users:(("ss-server",pid=1201,fd=6))
+ss udp   UNCONN 0      0            0.0.0.0:8388       0.0.0.0:*    users:(("ss-server",pid=1201,fd=7))
+ss tcp   LISTEN 0      4096            [::]:9443          [::]:*    users:(("sing-box",pid=1302,fd=8))
+nft table ip nat {
+nft chain DOCKER {
+nft chain POSTROUTING {
+nft type nat hook postrouting priority srcnat; policy accept;
+nft table ip filter {
+nft chain DOCKER {
+nft chain FORWARD {
+nft type filter hook forward priority filter; policy drop;
+nft chain DOCKER-USER {
+nft table ip6 nat {
+nft table ip6 filter {
+nft chain FORWARD {
+nft type filter hook forward priority filter; policy drop;
+unit docker.service active enabled 811
+unit containerd.service active enabled 700
+unit nftables.service inactive disabled 0
+unit netfilter-persistent.service inactive not-found 0
+unit smartdns.service inactive not-found 0
+nftables-conf flush
+proc dockerd yes
+proc warp-svc no
+candidate smartdns 40+dfsg-1
+@PATHS@
+meridian-preflight-end

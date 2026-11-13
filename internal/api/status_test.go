@@ -247,3 +247,46 @@ func TestStatusReportsPendingTransaction(t *testing.T) {
 		t.Fatalf("%+v", v.Pending)
 	}
 }
+
+// The probe tile must not say "available" just because a probe channel is
+// configured: the probe runs inside meridian-host, so an unreachable agent
+// makes it unavailable, with a reason the overview can show.
+func TestStatusProbeFollowsAgentReachability(t *testing.T) {
+	s := newTest(t)
+	v := getStatusRaw(t, s)
+	if v["probe_available"] != false || v["probe_reason"] != "not_configured" {
+		t.Fatalf("no prober: %v", v)
+	}
+
+	s.Prober = &fakeProber{}
+	s.Host = downHost{}
+	v = getStatusRaw(t, s)
+	if v["probe_available"] != false || v["probe_reason"] != "agent_unreachable" {
+		t.Fatalf("agent down: %v", v)
+	}
+	if d, _ := v["probe_error"].(string); d == "" {
+		t.Fatalf("agent down needs the health error: %v", v)
+	}
+
+	s.Host = &upHost{}
+	v = getStatusRaw(t, s)
+	if v["probe_available"] != true {
+		t.Fatalf("agent up: %v", v)
+	}
+	if _, ok := v["probe_reason"]; ok {
+		t.Fatalf("available probe carries a reason: %v", v)
+	}
+}
+
+func getStatusRaw(t *testing.T, s *Server) map[string]any {
+	t.Helper()
+	rr := do(s, http.MethodGet, "/api/status", nil)
+	if rr.Code != 200 {
+		t.Fatal(rr.Code, rr.Body.String())
+	}
+	var m map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}

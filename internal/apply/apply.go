@@ -76,6 +76,10 @@ type Applier struct {
 	// when adopting a legacy install). Nil: /proc on the real root, "off"
 	// for a test HostRoot.
 	Forwarding func() (bool, error)
+	// ReadSysctl reads one kernel key for the install's sysctl report
+	// (SysctlReport). Nil: /proc/sys on the real root, not read for a test
+	// HostRoot.
+	ReadSysctl func(key string) (string, error)
 }
 
 func (a Applier) hostRoot() string {
@@ -301,10 +305,15 @@ func (a Applier) Apply(b *compile.Bundle, dryRun bool) (Result, error) {
 	res.Wrote = wrote
 	t := &txn{a: a, j: j, toFiles: local, rt: rt, rep: a.newReport(j)}
 	t.rep.Warnings = append(t.rep.Warnings, notes...)
+	var prevSysctl string
+	if a.Install {
+		prevSysctl = a.readHostSysctl()
+	}
 	if err := t.execute("安装"); err != nil {
 		return Result{}, err
 	}
 	if a.Install {
+		t.attachSysctl(prevSysctl)
 		res.Host = t.rep
 	}
 	return res, nil
@@ -327,6 +336,11 @@ func (a Applier) RollbackReport() (*HostReport, error) {
 		return nil, err
 	}
 	defer unlock()
+	if inst, err := a.Installed(); err != nil {
+		return nil, err
+	} else if a.Install && inst.Withdrawn() {
+		return nil, ErrWithdrawnState
+	}
 	root := a.data()
 	previous := filepath.Join(root, "previous")
 	if _, err := os.Stat(previous); err != nil {
@@ -374,12 +388,17 @@ func (a Applier) RollbackReport() (*HostReport, error) {
 		j.Kind = "rollback"
 	}
 	t := &txn{a: a, j: j, toFiles: files, rt: rt, rep: a.newReport(j)}
+	var prevSysctl string
+	if a.Install {
+		prevSysctl = a.readHostSysctl()
+	}
 	if err := t.execute("回滚"); err != nil {
 		return nil, err
 	}
 	if !a.Install {
 		return nil, nil
 	}
+	t.attachSysctl(prevSysctl)
 	return t.rep, nil
 }
 

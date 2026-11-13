@@ -436,6 +436,58 @@ func TestHubGroupStepMatchesStateMachine(t *testing.T) {
 	}
 }
 
+// A group that stays on the Mesh hop follows the seal every round: it is
+// blackholed while the sidecar is not sealed, moves onto the sidecar's
+// next-hops once the seal appears (no manual group_hop, no switch
+// recorded), and back to the blackhole when the seal goes away.
+func TestHubGroupOnMeshFollowsSeal(t *testing.T) {
+	topo := defaults.Example()
+	h := newHubHarness(t, topo)
+	_, groups := plans(t, topo)
+	hk := mustGroup(t, groups, "hk")
+	if !hk.Policy().Mesh {
+		t.Fatal("hk has no Mesh hop")
+	}
+	now := int64(1_800_000_000)
+	tick := func() {
+		now += 5
+		h.up("hk-ix", false)
+		h.up("hk-2", false)
+		h.up("us", true)
+		h.up("us-2", true)
+		h.tick(now)
+	}
+	table := func(fam string) string {
+		b, _ := os.ReadFile(filepath.Join(h.ctrl, fmt.Sprintf("tbl%s-%d", fam, hk.Table)))
+		return strings.TrimSpace(string(b))
+	}
+	for i := 0; i < pool.FailsNeed+1; i++ {
+		tick()
+	}
+	if h.state("hk", "active") != pool.MeshHop || table("4") != "blackhole default" || table("6") != "blackhole default" {
+		t.Fatalf("unsealed: active %q, tables %q / %q", h.state("hk", "active"), table("4"), table("6"))
+	}
+	switched := h.state("hk", "switched")
+	h.set("link", "1")
+	if err := os.WriteFile(filepath.Join(h.run, "mesh-sealed"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tick()
+	if table("4") != "default via 169.254.66.2 dev mmesh" || table("6") != "default via fe80::66:2 dev mmesh" {
+		t.Fatalf("sealed: tables %q / %q", table("4"), table("6"))
+	}
+	if h.state("hk", "active") != pool.MeshHop || h.state("hk", "switched") != switched || h.state("hk", "reason") != "mesh" {
+		t.Fatalf("re-applying the Mesh hop recorded a switch: active %q switched %q (was %q)", h.state("hk", "active"), h.state("hk", "switched"), switched)
+	}
+	if err := os.Remove(filepath.Join(h.run, "mesh-sealed")); err != nil {
+		t.Fatal(err)
+	}
+	tick()
+	if table("4") != "blackhole default" || table("6") != "blackhole default" {
+		t.Fatalf("seal gone: tables %q / %q", table("4"), table("6"))
+	}
+}
+
 func TestHubGroupHopRefusesForeignTables(t *testing.T) {
 	topo := defaults.Example()
 	h := newHubHarness(t, topo)

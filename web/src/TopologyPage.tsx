@@ -36,6 +36,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Radio,
   Select,
   Space,
   Switch,
@@ -47,7 +48,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import * as api from "./api";
 import { serverReadiness } from "./ServersPage";
 import { href, useRouter, useTopologyDoc } from "./state";
-import type { Issue, Link as TLink, Node, Role, ServerView, Settings, Topology, Transport } from "./types";
+import type { DeploymentView, Issue, Link as TLink, Node, Role, ServerView, Settings, Topology, Transport } from "./types";
+import { DEPLOYMENT_STATUS, WithdrawDialog, withdrawSucceeded } from "./Withdraw";
 import { roleLabel, transportLabel } from "./types";
 import {
   ApiErrorAlert,
@@ -59,6 +61,7 @@ import {
   Section,
   StatusTag,
   TopologyDocBar,
+  groupLabel,
   regionLabel,
   useApi,
   useConfirmDanger,
@@ -416,7 +419,7 @@ function NodeDetail({
             {groups.length > 0 ? (
               groups.map((g) => (
                 <Link key={g.id} to={href("exits", g.id)}>
-                  <Tag style={{ cursor: "pointer" }}>{g.name}</Tag>
+                  <Tag style={{ cursor: "pointer" }}>{groupLabel(g, topo.region_groups)}</Tag>
                 </Link>
               ))
             ) : (
@@ -720,13 +723,36 @@ function NodeDeleteDialog({
   onDelete: (t: Topology) => void;
 }) {
   const [fixes, setFixes] = useState<Record<string, RuleFix>>({});
-  useEffect(() => setFixes({}), [node?.id]);
+  // What is installed on the node's server is a separate question from the
+  // topology: its deployment record decides whether there is anything to
+  // withdraw. Deleting from the topology never withdraws by itself.
+  const [dep, setDep] = useState<{ rec?: DeploymentView; loaded: boolean; error?: string }>({ loaded: false });
+  const [choice, setChoice] = useState<"keep" | "withdraw" | null>(null);
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawnOK, setWithdrawnOK] = useState(false);
+  useEffect(() => {
+    setFixes({});
+    setChoice(null);
+    setWithdrawing(false);
+    setWithdrawnOK(false);
+    setDep({ loaded: false });
+    if (!node) return;
+    let live = true;
+    api
+      .getDeployments()
+      .then((d) => live && setDep({ rec: d.nodes.find((x) => x.node_id === node.id), loaded: true }))
+      .catch((e: Error) => live && setDep({ loaded: true, error: e.message }));
+    return () => {
+      live = false;
+    };
+  }, [node?.id]);
   if (!node) return null;
+  const onHost = !!dep.rec?.on_host && !withdrawnOK;
   const refs = nodeReferences(topo, node.id);
   const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
   const server = node.server_id ? servers?.find((s) => s.id === node.server_id) : undefined;
   const targets = [
-    ...(topo.region_groups ?? []).map((g) => ({ value: `group:${g.id}`, label: `地区组：${g.name}` })),
+    ...(topo.region_groups ?? []).map((g) => ({ value: `group:${g.id}`, label: `地区组：${groupLabel(g, topo.region_groups)}` })),
     ...topo.nodes.filter((n) => n.role === "exit" && n.id !== node.id).map((n) => ({ value: `exit:${n.id}`, label: `固定出口：${n.name || n.id}` })),
   ];
   const undecided = refs.rules.filter((r) => !fixes[r.id]);
@@ -738,10 +764,16 @@ function NodeDeleteDialog({
       onCancel={onCancel}
       width={620}
       destroyOnHidden
-      okText="删除并清理引用"
-      okButtonProps={{ danger: true, disabled: undecided.length > 0 }}
+      okText={onHost && choice === "withdraw" ? "先撤回…" : "删除并清理引用"}
+      okButtonProps={{ danger: true, disabled: undecided.length > 0 || (onHost && !choice) }}
       cancelText="取消"
-      onOk={() => onDelete(deleteNode(topo, node.id, fixes))}
+      onOk={() => {
+        if (onHost && choice === "withdraw") {
+          setWithdrawing(true);
+          return;
+        }
+        onDelete(deleteNode(topo, node.id, fixes));
+      }}
     >
       <div data-testid="node-delete">
         <Typography.Paragraph>
@@ -768,7 +800,7 @@ function NodeDeleteDialog({
                 const left = g.members.filter((m) => m !== node.id).length;
                 return (
                   <li key={g.id}>
-                    <Link to={href("exits", g.id)}>{g.name}</Link>
+                    <Link to={href("exits", g.id)}>{groupLabel(g, topo.region_groups)}</Link>
                     <span className="muted">（剩 {left} 个成员）</span>
                     {left === 0 ? (
                       <div className="consequence">这个组会变成空组：用它的规则（和默认组，如果是）将没有出口可走，校验会报错，保存只能存为草稿，直到你给它加成员。</div>
@@ -812,7 +844,53 @@ function NodeDeleteDialog({
             <span className="muted"> 不会被删除，只是不再被这个节点使用；服务器上已经下发的 Meridian 文件和服务不会被自动清理。</span>
           </div>
         ) : null}
+        {dep.error ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 8 }}
+            data-testid="node-delete-deploy-unknown"
+            message="读不到部署记录，无法判断服务器上是否还有这个节点的安装"
+            description={`${dep.error}。删除只改拓扑；服务器上的安装（如果有）会保留，之后可以在部署页的「部署记录与撤回」里撤回。`}
+          />
+        ) : null}
+        {dep.rec && withdrawnOK ? (
+          <Alert type="success" showIcon style={{ marginTop: 8 }} data-testid="node-delete-withdrawn" message="服务器上的安装已撤回，现在可以从拓扑删除。" />
+        ) : null}
+        {onHost && dep.rec ? (
+          <div className="delete-ref" data-testid="node-delete-deployment">
+            <Typography.Text strong>服务器上的安装：</Typography.Text>{" "}
+            <StatusTag kind={DEPLOYMENT_STATUS[dep.rec.status]?.kind ?? "neutral"}>{DEPLOYMENT_STATUS[dep.rec.status]?.label ?? dep.rec.status}</StatusTag>
+            <span className="mono-small"> {`${dep.rec.server_name || dep.rec.server_id} · ${dep.rec.address}:${dep.rec.port}`}</span>
+            <Typography.Paragraph type="secondary" style={{ marginTop: 4 }}>
+              从拓扑删除节点和撤回服务器上的安装是两件事。撤回只移除 Meridian 受管清单列出的服务、接口、路由、nft 表和文件；装机时安装的软件包（wireguard-tools、nftables、smartdns 等）按设计保留。
+            </Typography.Paragraph>
+            <Radio.Group value={choice} onChange={(e) => setChoice(e.target.value)} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <Radio value="keep">仅从拓扑删除（保留服务器上的安装，之后仍可在部署页撤回）</Radio>
+              <Radio value="withdraw">先撤回再删除</Radio>
+            </Radio.Group>
+            {choice === "keep" ? (
+              <Typography.Text type="warning" style={{ display: "block", marginTop: 4 }}>
+                服务器上的 Meridian 服务、接口和文件会继续运行；部署记录保留，这台服务器和它的凭据在撤回前不能删除。
+              </Typography.Text>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+      {withdrawing ? (
+        <WithdrawDialog
+          nodeId={node.id}
+          nodeName={node.name}
+          mode="manifest"
+          onClose={() => setWithdrawing(false)}
+          onDone={(outcome) => {
+            if (withdrawSucceeded(outcome) && outcome !== "recovered") {
+              setWithdrawnOK(true);
+              setChoice(null);
+            }
+          }}
+        />
+      ) : null}
     </Modal>
   );
 }

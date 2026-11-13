@@ -143,7 +143,7 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 
 以后改拓扑也按这个顺序：先下发受影响的远端节点，再安装网关。地区组的解析要求成员出口已经装上应答组解析地址的规则（「地区组的解析」），新地区组的中转地址要求枢纽已经有那张组表；网关先装，组内的名字在出口更新前解析不了（不会改问国内或别的出口），组流量在枢纽更新前进黑洞。`APPLY_ORDER.txt` 在有可切换地区组时也写明这一点。
 
-差分看的是上一份已应用文本和这一份编译结果。面板不在宿主上直接执行命令：安装和运行态回滚写入 Meridian 自己的文件后，经宿主上的 `meridian-host`（固定的 activate / health / rollback 三个动作，只接受受管资源名；另有名单更新 `/v1/lists`、只读的名单状态 `/v1/lists/status`、解锁探测 `/v1/probe` 和远程接入运行状态 `/v1/remote-access/status`，见「名单源」「解锁」「远程接入」）完成 daemon-reload、启动 `meridian.service` 和相关 unit、健康检查，以及删除旧清单独有的接口、unit、nft 表和路由表。每次安装都记录受管清单（文件、接口、unit、nft 表、路由表、sidecar 和版本），回滚按清单求差并只激活目标清单里的接口，不再扫描 `/etc/wireguard/m*.conf`。数据目录快照和宿主网络在同一份持久事务里，失败即补偿，进程重启时恢复；面板的回滚必须明确选择「含宿主网络」或「只回滚数据目录」（后者在已安装时需要显式 `snapshot_only`）。开机时转发保持关闭，`meridian-guard.service` 先装兜底表，`meridian-up.sh` 在防火墙就绪后才打开转发。`meridian.nft` 是单个 nft 事务，只替换 `inet meridian`（网关上还有 `inet meridian_guard` 兜底表），加载失败时旧表原样保留；`meridian-up.sh` 先 `nft -c` 再 `nft -f`，并且在打开转发和装路由之前完成。网关在路由层没有按入口接口的 `iif … unreachable` 规则（IPv4 和 IPv6 都没有）：从局域网（或 `mra`）转发、既没有国内 mark 也没有出口 mark 的包由兜底表在 forward 上丢弃，原因见下面「局域网兜底」。细节和尚未在 Linux 上验证的部分见 [验收清单](verification.md#防火墙原子替换与-lan-兜底)。
+差分看的是上一份已应用文本和这一份编译结果。面板不在宿主上直接执行命令：安装和运行态回滚写入 Meridian 自己的文件后，经宿主上的 `meridian-host`（固定的 activate / health / rollback / withdraw 动作，只接受受管资源名；只读的安装前预检 `/v1/preflight`，只接受校验过的受管路径，见「装机前预检」；另有名单更新 `/v1/lists`、只读的名单状态 `/v1/lists/status`、解锁探测 `/v1/probe` 和远程接入运行状态 `/v1/remote-access/status`，见「名单源」「解锁」「远程接入」）完成 daemon-reload、启动 `meridian.service` 和相关 unit、健康检查，以及删除旧清单独有的接口、unit、nft 表和路由表。每次安装都记录受管清单（文件、接口、unit、nft 表、路由表、sidecar 和版本），回滚按清单求差并只激活目标清单里的接口，不再扫描 `/etc/wireguard/m*.conf`。数据目录快照和宿主网络在同一份持久事务里，失败即补偿，进程重启时恢复；面板的回滚必须明确选择「含宿主网络」或「只回滚数据目录」（后者在已安装时需要显式 `snapshot_only`）。开机时转发保持关闭，`meridian-guard.service` 先装兜底表，`meridian-up.sh` 在防火墙就绪后才打开转发。`meridian.nft` 是单个 nft 事务，只替换 `inet meridian`（网关上还有 `inet meridian_guard` 兜底表），加载失败时旧表原样保留；`meridian-up.sh` 先 `nft -c` 再 `nft -f`，并且在打开转发和装路由之前完成。网关在路由层没有按入口接口的 `iif … unreachable` 规则（IPv4 和 IPv6 都没有）：从局域网（或 `mra`）转发、既没有国内 mark 也没有出口 mark 的包由兜底表在 forward 上丢弃，原因见下面「局域网兜底」。细节和尚未在 Linux 上验证的部分见 [验收清单](verification.md#防火墙原子替换与-lan-兜底)。
 
 ### 局域网兜底
 
@@ -175,6 +175,7 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 | --- | --- |
 | `agent` | `{configured, ok, error}`：对 host agent 做一次 health（3 秒超时）。`configured=false` 表示面板没有宿主执行通道 |
 | `lists_available` / `probe_available` | 名单更新 / 解锁探测此刻能否执行（动作已配置且 agent 应答） |
+| `probe_reason` / `probe_error` | `probe_available=false` 的原因：`not_configured`（面板启动时没有探测通道）或 `agent_unreachable`（配置了，但 agent 的 health 没有应答，`probe_error` 是那次的错误）。概览的「解锁探测」卡片按这两项显示，不再看 `GET /api/unlock/jobs` 的 `available`——后者只说明配置了探测通道，不检查 agent 是否应答 |
 | `install.state` | 存储的拓扑与**已安装清单**比较（`Manifest.canonical_sha256`，不是已应用快照）：`in_sync`、`changed`、`not_installed`（宿主上什么都没装）、`invalid`（拓扑无法编译，附 `error` 和错误级 `issues`）、`unknown`（接管的旧版安装没有摘要，无法比较） |
 | `install.installed_version` / `installed_at` / `origin` | 已安装清单的版本、时间、来源；未安装为 `null` |
 | `install.applied` / `applied_matches` | 是否应用过，以及存储的拓扑是否等于上一次应用的快照。`changed` 且 `applied_matches=true` 即「已应用（写入数据目录）但未安装」——`/api/diff` 在这种情况下显示没有变化 |
@@ -183,6 +184,16 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 | `jobs.lists` / `jobs.unlock` / `jobs.mesh` | `{state, running, id, started_at, finished_at, error}`：名单任务、解锁探测（运行中的或最近一轮）和 Mesh 部署记录的状态；没有时 `state: "none"`，记录损坏时 `state: "error"` |
 
 `POST /api/diff` 除了与上一次应用的快照逐行比较的 `diff`，还返回 `installed`：安装会让网关的**已安装清单**新增、修改、删除哪些文件和资源（`files_added` / `files_changed` / `files_removed`、接口、unit、nft 表、路由表，按清单里的文件哈希比较；没有安装时为 `null`）。已应用但未安装时 `diff` 为空，面板据此列出安装会改的文件；这种情况下没有逐行内容差分（已安装副本不经 API 读出）。
+
+### 受管 sysctl：写入、生效与显示
+
+- **写入**：每次安装（和运行态回滚）都把网关的 `etc/sysctl.d/99-meridian.conf` 和 `etc/meridian/forwarding.conf` 按编译结果**整份**写入，不管内容是否变化（事务的 converge 写目标清单里的每一个文件）。`install.sh` 或旧版本留在文件里的行在第一次面板安装之后就不在文件里了。
+- **生效**：`meridian.service` 运行 `meridian-up.sh`，它在防火墙和兜底表就绪之后逐行 `sysctl -w` 应用 `99-meridian.conf`（开机转发两行 `ip_forward=0` / `all.forwarding=0` 跳过，它们只给 systemd-sysctl 开机时用），内核没有的键跳过并打印 `skip sysctl: …`，最后打印 `meridian-sysctl: applied N, skipped M from …`；之后才按 `forwarding.conf` 打开转发。不运行 `sysctl --system`。删掉的行不会恢复内核里的旧值。
+- **显示**：事务提交后，面板逐键从运行中的内核读回（容器是 host 网络，`/proc/sys/net` 就是宿主的；测试根目录不读），放进安装结果 `host.sysctl`：`written[]` 每项 `{file, key, want, got, state}`，`state` 是 `in_effect`、`differs`、`missing`（内核没有这个键）、`boot_only`（开机转发两行）或 `not_checked`；`removed[]` 是安装前宿主上的旧文件里有、新文件不再设置的键（`stale`，附当前内核值）；`problems` 是 `differs` + `missing` 的数量。每个问题和旧文件遗留也作为 `host.warnings` 显示。这只是读回，不是泄漏证据，没有在真实网关上执行过。
+
+### 面板开机时等待局域网地址
+
+`cmd/meridian` 在开始服务之前调用 `api.ListenLAN`：`MERIDIAN_BIND` 先经 `CheckBind`（拒绝 `0.0.0.0` / `::`，没有回落）；绑定得到 `EADDRNOTAVAIL`（地址还没分配到任何接口，DHCP 租约未到）时每秒重试，最多 `MERIDIAN_BIND_WAIT`（默认 3 分钟），日志开始时和之后每 10 秒一行 `meridian-bind-waiting`，成功时一行 `meridian-bind-ready`，超时以 `meridian-bind-not-ready` 退出；其他错误立即退出。这样开机时容器处于「运行、在等地址」的可诊断状态，而不是靠 Docker 反复重启一个崩溃的进程。
 
 ### 安装与回滚的错误码（`POST /api/apply`、`POST /api/rollback`、`POST /api/host/recover`）
 
@@ -310,7 +321,7 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 
 部署引用由存储自己检查：面板把 Mesh 部署记录里未撤回完的固定主机（`server_id`、`credential_id`、地址、端口、用户）交给 `credentials.Store.SetDeploymentPins`，删除服务器、改它的地址 / 端口 / 用户 / 认证方式 / 凭据、删除凭据都在存储锁内先查这份列表，命中就返回 409 `in_use` 和引用者（`mesh_deployment`）。schema 2 的旧记录没有 `server_id` 时按地址和端口匹配服务器、按该服务器当前的凭据匹配凭据。部署记录读不出来时所有服务器和凭据都算被引用。原地轮换凭据不受限制。凭据和账户视图带 `in_use_by`、`used_for_mesh`、`bound_deployment`。原来的 `PUT/DELETE /api/mesh/credentials` 仍可用，作用于当前 Mesh 账户（同 account id 时轮换 token，否则新建并选中）。
 
-装机 `POST /api/provision`：`{node_id, dry_run?, generate_keys?}`。`dry_run: true` 只返回带占位符、拒绝运行的预览脚本，不需要服务器。真正执行时先检查节点关联了服务器（409 `no_server`）、指纹已确认、选了凭据——都在生成或轮换 WireGuard 密钥之前；然后经连接器以 `bash -s` 执行，响应 `{dry_run:false, node_id, server_id, auth_method, host_key, public_key, output}`；失败 `{error, code, node_id, server_id, auth_method, output}`（409 主机身份类，502 连接 / 认证 / 执行类）。旧字段 `ssh_host`、`ssh_port`、`ssh_user`、`private_key_pem`、`trust_new_host` 一律 400 `field_removed`，未知字段 400 `unknown_field`。
+装机 `POST /api/provision`：`{node_id, dry_run?, generate_keys?, preflight_id?}`。`dry_run: true` 只返回带占位符、拒绝运行的预览脚本，不需要服务器。真正执行前要过「装机前预检」（下一节）：先检查节点关联了服务器（409 `no_server`）、指纹已确认、选了凭据；第一次装机必须带审阅过的 `preflight_id`（409 `preflight_required`）；随后在同一个固定身份上重新预检——这些都在生成或轮换 WireGuard 密钥之前。然后经连接器以 `bash -s` 执行，成功响应 `{dry_run:false, outcome:"installed", node_id, server_id, auth_method, host_key, public_key, preflight_id, run, output}`；失败 `{error, code, outcome, node_id, server_id, auth_method, leftovers, kept, output, login_help?}`（409 主机身份类与预检类，502 连接 / 认证 / 执行类）。旧字段 `ssh_host`、`ssh_port`、`ssh_user`、`private_key_pem`、`trust_new_host` 一律 400 `field_removed`，未知字段 400 `unknown_field`。
 
 代码：`internal/model`（`Server`、`HostKey`、`ConnectionTest`）、`internal/credentials`（存储、校验、迁移、部署引用）、`internal/sshexec`（连接）、`internal/mesh/permissions.go`（权限检查）、`internal/api/resources.go`、`internal/api/ssh_ops.go`。
 
@@ -323,6 +334,158 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 - Mesh 部署记录 schema 2 升级到 3（见「Mesh」）：每个固定主机补上 `server_id` 和 `credential_id`，其余不变。
 - 已有 `server_id` 的节点再带 `ssh_*` 时，保存被拒绝（422 `ssh_fields_moved`），避免两处地址不一致。
 
+
+## 装机前预检
+
+在面板第一次给远端节点装机、更新它，以及安装到网关之前，都要先看清**要做什么、会和什么冲突**；不能确认可以和主机上已有的服务安全共存时，面板拒绝执行并说明处理办法，而不是覆盖。预检本身**只读**。这一节描述的行为只在仓库里的自动化测试（进程内 SSH 服务器、假宿主代理、本机沙箱）里跑过，**还没有在任何真实主机上执行过**。
+
+### 流程：脚本 → 报告 → 评估 → 关卡
+
+1. **脚本**（`internal/preflight` 的 `Script()`）：一份固定、可审阅的 bash 脚本，对所有节点是同一段文本，拓扑、目标和请求里的东西都不插进去。唯一的参数是这个节点的包要写的主机路径：每个都要过 `preflight.ValidatePaths`（绝对路径、已规范化、只含字母数字和 `._/@+-`、不含 `..`、只在 Meridian 写的那几个目录下、最多 256 个），由 `preflight.Args` 单引号包好；`sshexec.RunPreflight` 连接前再按同样的形状检查一遍，脚本里也再判一次（被拒的参数只报告 `note path argument refused`，不碰）。脚本经已固定指纹的 SSH 通道以 `bash -s -- <路径>` 从标准输入执行。它只运行打印状态的命令（`id`、`uname`、`ip … show`、`ss -Hlntup`、`nft list chains`、`iptables -S`、`systemctl is-active/is-enabled/show -p MainPID`、`dpkg-query`、`apt-cache policy`、`sha256sum`、`head`、`grep`），每条 15 秒上限、标准输入是 `/dev/null`，不写任何文件，**不输出文件内容**（WireGuard 配置里有私钥：只报告类型、大小、前 12 行是否提到 Meridian、SHA-256），整份输出截在 256 KiB + 1 字节。
+2. **报告**：按行的 `键 值…` 格式，首行 `meridian-preflight 1`，末行 `meridian-preflight-end`。`preflight.Parse` 不会失败：报告头之前的登录横幅被忽略；没有报告头、没有结束行、超长或超行数的报告标为不完整；每个值去掉控制字符、双向控制符和非法 UTF-8 并截到 400 个字符；地址、端口、路径、单元名、表名都按各自的形状校验，不符就丢掉；结束行之后的内容、清单块之外的清单行一律忽略。
+3. **评估**（`preflight.FootprintOf` + `preflight.Evaluate`）：从这个节点**编译出来的文件**推出它会建的东西——接口和地址、监听端口（WireGuard `ListenPort`、wstunnel 服务端和客户端、SmartDNS 的 `bind`）、main 表路由和黑洞兜底、策略规则与优先级、路由表号与名字、防火墙标记、nft 表、systemd 单元、要装的软件包和必须已存在的二进制——再和报告逐项对比，得到带严重度（阻断 / 警告 / 信息）、稳定代码、中文说明（发现了什么）、处理办法和受影响资源的结论，外加「拟执行的变更」清单。
+4. **关卡**（`internal/api/preflight.go`、`provision_api.go`）：见下面「执行前复核」。
+
+网关走同样的评估：`meridian-host` 新增只读动作 `POST /v1/preflight`（参数只有同样校验过的路径；程序只从固定表里取：`ip`、`nft`、`ss`、`iptables`、`ip6tables`、`systemctl`、`wg`，参数固定；文件直接读、不回传内容；不占动作锁），用 `preflight.Line` 输出同一种报告。网关的「属于谁」来自安装清单（`apply.Installed`），带 Meridian 标记但不在清单里的文件交给安装事务的旧版接管去决定。
+
+### 它检查什么
+
+| 代码 | 严重度 | 条件 |
+| --- | --- | --- |
+| `report_incomplete` | 阻断 | 报告没有头、没有结束行、被截断或超限 |
+| `not_root` | 阻断 | 登录用户不是 uid 0（这一版不支持 sudo） |
+| `os_unsupported` | 阻断 | 不是 Debian 12 / 13（或读不到 `/etc/os-release`）：装机脚本用 apt 装 wireguard-tools、nftables、smartdns，其他发行版的包名和 SmartDNS 版本没有验证 |
+| `arch_unsupported` | 阻断 | 不是 x86_64 / aarch64 |
+| `kernel_too_old` | 阻断 | 内核早于 5.6（没有内置 WireGuard） |
+| `no_systemd` | 阻断 | 不是 systemd 系统 |
+| `no_apt` | 阻断 | 缺命令要装包，但没有 apt-get |
+| `smartdns_unavailable` | 阻断 | 节点要跑出口解析器，没装且 apt 查不到候选版本 |
+| `wstunnel_missing` | 阻断 | 节点有 wstunnel 单元但主机上没有 wstunnel（面板不下载二进制；提示按架构选 linux_amd64 / linux_arm64） |
+| `forward_policy_drop` | 阻断 | 节点要转发，而 iptables/ip6tables 的 FORWARD 策略是 DROP/REJECT，或别的 nft 表有 `hook forward` 且 `policy drop` 的链（通常是 Docker）。Meridian 自己的转发链 `policy accept` 救不回被别的表丢掉的包；面板**不会**替你改 Docker 或别的防火墙 |
+| `interface_exists` | 阻断 | 要建的接口名已存在且不在受管清单里 |
+| `port_in_use` | 阻断 | 要绑定的 协议/地址/端口 已有监听：通配地址和同端口任何监听冲突，具体地址只和同地址或通配监听冲突（回环上的 systemd-resolved、WARP 不算冲突）；只有「有证据属于这次安装」的不算（见下面「什么算我们的」） |
+| `address_overlap` | 阻断 | 要配置的隧道地址和别的接口上的地址**精确重叠**（不是「同一个 /8」） |
+| `route_overlap` | 阻断 | 要加的 main 表路由会替换、截走或被已有的非默认路由截走；兜底黑洞只在比已有路由更具体（或同前缀同 metric）时算冲突 |
+| `route_table_in_use` | 阻断 | 要独占的路由表里已有路由且不归 Meridian |
+| `fwmark_in_use` | 阻断 | 已有策略规则用了 Meridian 要用的防火墙标记 |
+| `nft_table_exists` | 阻断 | `inet meridian` / `inet meridian_mesh` 已存在但不在受管清单里（装机会整表替换） |
+| `path_occupied` | 阻断 | 要写的路径上有不属于 Meridian 的文件（不在清单、没有 Meridian 标记）、目录或链接，例如另一份 SmartDNS 配置 |
+| `managed_by_other` | 阻断 | 主机上的节点清单属于另一个节点或另一个面板（部署 ID 不同） |
+| `manifest_unreadable` | 阻断 | 有清单但读不懂 |
+| `legacy_install` | 阻断 | 有带 Meridian 标记的文件但没有清单（旧版或手工装的）：无法确认归属，也无法准确补偿 |
+| `previous_run_incomplete` | 阻断 | 上一次装机的 journal 停在 `running` / `incomplete` |
+| `rule_precedes` | 警告 | 一条「几乎全匹配」的规则排在 Meridian 依赖的规则（含 main 表）之前，查的表有默认路由（例如 WARP 的 `not fwmark … lookup 65743`） |
+| `rule_priority_shared` | 警告 | 已有规则和 Meridian 的规则同优先级 |
+| `route_table_name_conflict` | 警告 | 表号已有别的名字 |
+| `input_policy_drop` | 警告 | INPUT 策略是 DROP 而节点要在公网监听（放行规则是否覆盖看不到） |
+| `low_memory` / `low_disk` | 警告 | 可用内存 < 256 MB 或总内存 < 512 MB；根分区 < 200 MB |
+| `nftables_flush_on_reload` | 警告 | nftables.service 启用且 `/etc/nftables.conf` 以 `flush ruleset` 开头 |
+| `firewall_manager` | 警告 | ufw / firewalld 在运行 |
+| `modified_since_install` | 警告 | 受管文件在上次装机后被改过，会被覆盖 |
+| `previous_run_leftovers` | 警告 | 上一次失败已补偿，但 journal 记了残留（例如保留的软件包） |
+| `docker_present`、`docker_missing`、`cloudflare_warp`、`wireguard_present`、`dns_listeners`、`nft_tables_present`、`netfilter_persistent`、`iptables_legacy`、`existing_install`、`forwarding_enable`、`host_summary` | 信息 | 认出来并说明是什么：Docker、主机级 WARP（`warp-svc`、`CloudflareWARP`、`inet cloudflare-warp`、100.96.0.0/12 地址）、别的 WireGuard 接口和端口、53 端口上不冲突的监听、别的 nft 表、legacy iptables、这次会全局打开转发等 |
+
+**不检查**（随每个结果返回，面板里也显示）：放行规则是否覆盖 Meridian 的端口；云厂商安全组和上游 NAT；别的服务以后会不会改网络（Docker 重启、WARP 重连、nftables 重载）；SmartDNS 上游、wstunnel 证书和域名；sudo。预检不修改任何东西，发现的冲突由你处理。
+
+### 什么算「我们的」
+
+只有在主机上已有**本节点、本面板**（远端：节点清单的节点和部署 ID 都对上；网关：面板的安装清单）的安装时，才会有资源被认作这次安装自己的，而且每一项都要有证据，否则照常算冲突：
+
+- 文件、接口、单元、nft 表、路由表：在受管清单里。
+- 监听：所在 WireGuard 接口在清单里（`wg show all listen-port`）；或套接字所在的 cgroup（`ss -Hlntu --cgroup`，经 sock_diag 读取，不需要访问进程）是清单里的单元；或监听解析器端口的是清单里有解析器配置时的 `smartdns.service`，网关上则是 docker compose 管的固定容器 `meridian-smartdns`（宿主代理用固定参数 `docker inspect --format '{{.Id}} {{.State.Running}}' meridian-smartdns` 取它的 ID，与套接字 cgroup 里的容器 ID 比对）。宿主代理的 systemd 单元只有 CAP_NET_ADMIN，`ss -p` 看不到进程名，所以网关上靠 cgroup；读不到 cgroup（旧版 iproute2）时不认，仍报冲突。
+- 地址和路由：在清单里的接口上；或这份包自己写的 lo 中转地址（`ip addr replace … dev lo`）及内核为它加的路由；与包里完全相同的路由。
+- 策略规则：查清单里的路由表、`iif` 是清单里的接口，或与包里同优先级、同标记的规则。
+
+第一次安装、`managed_by_other`、没有清单的旧版安装都不认任何东西。网关安装本身不装软件包：缺 `wg`、`nft`、`ip` 时报 `gateway_tools_missing`（阻断）；SmartDNS 不要求 apt 包，报告它由容器、宿主服务运行还是还没启动（`gateway_dns_runtime`，信息）。
+
+### 执行前复核
+
+- 结果绑定到**目标身份**（服务器 ID、地址、端口、用户、固定的主机指纹、凭据 ID）和这个节点包的**摘要**（`preflight.BundleDigest`：按路径排序的文件哈希，私钥仍是占位符），有效 10 分钟，存在面板数据库（`preflight/<节点>`，只有地址、名字、端口和哈希，不含秘密）。
+- `POST /api/provision` / `POST /api/apply {install:true}`：第一次装机（这台服务器上这个节点从没成功过；网关上没有安装清单）没有 `preflight_id` → 409 `preflight_required`。带了 `preflight_id` 就检查：记录不存在或已被替换、过期 → `preflight_stale`；身份变了 → `target_changed`；包变了 → `bundle_changed`；审阅的结果有阻断 → `preflight_blocked`。然后**在同一个固定身份上重新预检**：有阻断 → `preflight_blocked`；出现了审阅时没有的警告或阻断 → `preflight_changed`（响应里带新的结果）。更新（之前成功过）可以不带 `preflight_id`，但重新预检照样要过。阻断项不能在面板里跳过。
+- 远端脚本本身在动手前再复核一次（`provision.ScriptWith`）：必须是 root；不能有没结束的上一次装机；预检时没有清单（第一次）就要求现在也没有、要建的接口和 nft 表也没有冒出来（`MERIDIAN_REFUSED manifest_appeared` / `interface_appeared` / `nft_table_appeared`，退出码 3，什么都没改）；预检时是本节点的清单就要求现在仍是（`manifest_changed`）。
+- 同一个节点同时只能有一个预检或装机（409 `node_busy`）。
+
+### 失败的装机：补偿或明确残留
+
+远端脚本在 `/var/lib/meridian/node/` 下记 journal（`state running`），先记下装机前的接口、nft 表、规则、路由、相关 sysctl 和单元状态，替换的文件先备份。任何一步失败、或 SSH 会话断开（`HUP`/`PIPE` 被忽略，补偿照样跑完），`EXIT` 陷阱就补偿：停用这次启用的单元、删除这次新建的接口和 nft 表、删掉这次新增且属于 Meridian 优先级的规则、清空这次才有路由的受管表、删掉这次新增的 main 表 Meridian 路由、恢复 sysctl、删除这次新建的文件和目录、恢复被替换的文件（更新时再跑一次恢复后的 `meridian-up.sh`）。装上的软件包**按设计保留**（`MERIDIAN_KEPT package …`，卸载可能牵连别的软件）。撤不掉的逐项打印 `MERIDIAN_LEFTOVER …` 并写进 journal，状态记为 `incomplete`；全部撤掉记为 `compensated`。面板据此返回 `provision_failed_compensated` 或 `provision_failed_leftovers`（带 `leftovers`、`kept`），连接中断等看不到标记时 `outcome: "unknown"`——**任何情况下都不把没有 `MERIDIAN_PROVISION_OK` 的执行当成成功**。下一次预检读到 `incomplete` / `running` 的 journal 会阻断，`compensated` 带残留时给警告。成功时写受管清单 `/var/lib/meridian/node/manifest`（节点、部署 ID、服务器、包摘要、每个文件的 SHA-256、接口、单元、nft 表、路由表、Meridian 装的包；上一版有而这一版没有的文件记为 `orphan`），下一次预检据此区分「本面板、同一节点」与其他情况。
+
+中断的装机由面板恢复（journal 模式）、旧版安装由面板清理（legacy 模式）、已装好的节点由面板撤回，见下一节「撤回与失败后的恢复」。
+
+### 登录方式不被接受
+
+`auth_failed`（服务器试了并拒绝这份凭据）和 `auth_method_unavailable`（服务器根本不提供这种登录方式）分开报告。连接测试、预检和装机在这两种情况下都附带 `login_help`：凭据是密钥时给出它的公钥（`authorized_keys` 一行）和该做的步骤（必要时先开 `PubkeyAuthentication`）；凭据是密码而服务器只收密钥时，列出面板里已有密钥凭据的公钥，没有就提示先生成一把。只含公钥，不含任何秘密。
+
+### API
+
+| 方法与路径 | 请求 | 成功响应 |
+| --- | --- | --- |
+| `POST /api/provision/preflight` | `{node_id, generate_keys?}` | `{"preflight": 预检结果}`：`id`、`kind`、`target`（身份）、`bundle`、`first_install`、`at`、`expires_at`、`host`、`footprint`（受管资源）、`ownership`、`blocking`、`counts`、`findings[]`、`changes[]`、`not_checked[]`；登录失败 502 带 `login_help` |
+| `GET /api/provision/preflight/{node}` | | `{"preflight", "stale"}` |
+| `GET /api/provision/state` | | `{"nodes": {节点: 最近一次装机的结果}}` |
+| `POST /api/host/preflight` | `{}`（不接受任何字段） | `{"preflight": 预检结果}`；503 `host_unavailable`，502 `preflight_failed` |
+| `POST /api/provision` | `{node_id, generate_keys?, preflight_id?}` | 见上；预检类拒绝 409 `preflight_required` / `preflight_stale` / `preflight_blocked` / `preflight_changed` / `bundle_changed` / `target_changed` / `node_busy`，远端复核拒绝 409 `provision_refused`，失败 502 `provision_failed_compensated` / `provision_failed_leftovers` |
+| `POST /api/apply` | `{install:true, preflight_id?}` | 同样的预检类拒绝；宿主代理不支持预检时 503 `host_unavailable` |
+
+代码：`internal/preflight`（脚本、解析、评估）、`internal/provision`（装机脚本的复核、journal、补偿、清单）、`internal/sshexec`（`RunPreflight`）、`internal/hostexec/preflight.go`（网关预检动作）、`internal/api/preflight.go` 与 `provision_api.go`（关卡、记录、登录帮助）、`web/src/Preflight.tsx`（审阅界面）。
+
+## 撤回与失败后的恢复
+
+「从拓扑删除节点」和「撤回装在它服务器上的东西」是两件事，面板分开处理。这一节描述的行为只在仓库的自动化测试里跑过（本机沙箱里真跑撤回脚本、进程内 SSH 服务器、模拟宿主上的真实 `meridian-host` 代理），**还没有在任何真实主机上执行过**。
+
+### 部署记录与绑定
+
+- 每个远端节点的部署记录（面板数据库 `provision_state`）保存装机时绑定的**完整身份**：服务器 ID、地址、端口、用户、固定的主机指纹、凭据 ID、面板部署 ID，以及最近一次装机和撤回的结果。节点从拓扑删除、或在拓扑里改指到另一台服务器，记录都不变；撤回**只去记录里的主机**，不去节点现在指向的服务器。
+- 只要服务器上可能还有东西（装成功过且没撤回、补偿留有残留、结果不明、撤回进行中 / 部分完成 / 结果不明），记录就固定这台服务器和这份凭据：和 Mesh 部署一样，经 `credentials.Store` 的部署固定（`node_deployment` 引用），服务器不能删除、不能改地址 / 端口 / 用户 / 认证方式 / 凭据，凭据不能删除（可以原地轮换）。这样撤回时一定还连得上**那台**主机。
+- 节点仍装在旧服务器上时，在新服务器上预检或装机被拒绝（409 `deployed_elsewhere`）：先撤回旧的，不会静默留下一份安装。
+- 撤回前再核对一次：服务器当前的地址 / 端口 / 用户必须等于记录（否则 409 `target_changed`），它现在信任的指纹必须等于记录（忘记指纹、换成另一把都 409 `host_key_not_pinned_by_deployment`），连接器握手时还要看到这把指纹。服务器上的清单里的 `node`、`deployment`、`server` 三项都要等于本面板的值，否则脚本拒绝（`manifest_other`、`manifest_other_server`）。
+- 服务器确实已经不存在（VPS 已删）时可以「放弃」：输入节点 ID 确认后记录标为 `abandoned`，解除固定；面板明确说明**没有核实**服务器上是否还留有安装，从不把它显示为已撤回。
+
+### 远端节点：一份固定脚本，三种模式
+
+`provision.WithdrawScript` 是一份固定、可审阅的 bash 脚本。只有经 `CheckWithdrawOptions` 校验过的值以单引号赋值放在开头（节点 ID、部署 ID、服务器 ID、运行 ID：`[A-Za-z0-9._-]{1,64}`；模式和动作：固定枚举；摘要：64 位十六进制）。要删什么**从主机自己读**，不从请求里来；没有任意命令接口。脚本经固定指纹的 SSH 以 `bash -s` 从标准输入执行。
+
+每种模式都有两个动作：`plan` 只读，打印将要移除的内容（`MERIDIAN_PLAN …`，每项带 present / absent / changed）和它所依据状态的摘要（`MERIDIAN_PLAN_DIGEST`）；`run` 重新计算摘要，与操作员确认的不同就拒绝（`plan_changed`，什么都不改）。
+
+- **清单模式（`manifest`，默认）**：按装机成功时写的 `/var/lib/meridian/node/manifest`。每个条目在脚本里再校验一次——接口 `m\d{2,3}w?|mmesh|mmesh-c`、单元 `meridian-*` / `wstunnel-meridian` / `wstunnel-client-*` 的 `.service|.timer`、nft 表 `inet meridian[_…]`、路由表 100–252、路径只在 Meridian 写的那几个目录下且不含 `..`；有一条不认识就整次拒绝（`bad_manifest_entry`）。顺序：停用并停止单元 → 清单记录了「SmartDNS 是 Meridian 装的」时停用 `smartdns.service`（软件包保留）→ 清单里有 Mesh sidecar 的 compose 文件时 `docker compose -f … down`（只这一个项目）→ 删除接口 → 删除指向清单路由表的规则并清空这些表 → 删除清单记录的 main 表黑洞路由（新装机的清单才有 `route` 行）→ 删除清单里的 nft 表 → 删除文件（**只在 SHA-256 仍等于清单时**；装机后被改过的文件保留并列为没能移除）→ 需要时 `daemon-reload`、删掉空的 `/etc/meridian` → 复核接口、nft 表、单元确实不在了。全部完成才删除清单，journal 记为 `withdrawn`；有任何没能移除的东西时清单保留、journal 记为 `withdraw_incomplete`（下一次装机和预检会拒绝，提示继续撤回），撤回可以重复执行，已经不在的东西跳过。再撤回一次时脚本回答 `MERIDIAN_WITHDRAW_ALREADY`。
+- **journal 模式（恢复中断的装机）**：journal 为 `running`（会话被硬切断、进程被杀）或 `incomplete`（补偿没做完）时，按这次运行的工作目录（`run-<ID>/`：actions、备份、装机前的 pre-* 状态、`params`）跑**与装机失败时完全相同的补偿**（两边共用 `compensateLib`）：新建的文件和目录删除、被替换的文件恢复、这次新建的接口和 nft 表删除、新增的规则和路由删除、sysctl 恢复、更新时重跑恢复后的 `meridian-up.sh`；每一步可以重复执行。`params` 是装机开 journal 时最后写的：没有它就说明这次运行还没动过主机，恢复只关闭 journal。工作目录不见了、或有动作却没有 `params`，拒绝（`journal_unrecoverable`），只能登录服务器按 journal 手工处理。恢复完成后，之前完整装好的版本（如果有）照旧在，之后可以再按清单撤回。
+- **旧版清理（`legacy`）**：给没有清单的旧版安装。**只看固定路径和名字**：`/etc/wireguard/mNN[w].conf`、`meridian-*` / `wstunnel-meridian*` / `wstunnel-client-*` 单元文件、`/usr/local/sbin/meridian-*`、`/etc/nftables.d/meridian*.nft`、`/etc/sysctl.d/99-meridian.conf`、`/etc/iproute2/rt_tables.d/meridian.conf`、`/etc/smartdns/smartdns.conf`——每个都必须是普通文件且前 12 行提到 Meridian——以及 `/etc/meridian/` 下的文件；接口只取这些 WireGuard 配置的，nft 表只取这些 nft 文件里声明的，路由表只取这个 rt_tables 文件列出的。不带标记的同名文件（例如别人的 `m15.conf`）不碰。旧版的 main 表黑洞路由没有任何记录，脚本**不猜**，只提示去查 `ip route show type blackhole`。确认的清单在执行前重新扫描，有变化就拒绝。界面上要输入节点 ID 并单独提示这是旧版清理。
+
+保留（**按设计**）：装机时装上的软件包（wireguard-tools、nftables、smartdns 等，卸载可能牵连别的软件）；运行中的 sysctl 值（转发、rp_filter，到重启或你自己改之前保持）；SmartDNS 不是 Meridian 装的时它的服务（配置被删，继续用内存里的旧配置直到重启）；清单之外的一切——Docker 和容器、别的 WireGuard 接口、WARP、别的 nft 表、别的文件。每次结果都列出「已移除 / 保留 / 没能移除」。
+
+### 状态与持久化
+
+撤回运行前，记录先写成 `running`（面板在执行中崩溃时显示「撤回中断」，不会是「已撤回」）；然后按脚本标记更新为：`withdrawn` / `already_withdrawn`（已验证，解除固定）、`partial`（列出没能移除的，继续固定）、`refused`（带原因代码，主机没改）、`not_started`（连不上、目标变了，主机没改）、`unknown`（没有结论性标记：连接中断或超时，不当作完成，继续固定）、`recovered` / `recovery_incomplete`（journal 模式）、`abandoned`（放弃）。计划存为 `withdraw_plan/<节点>`，绑定身份、部署 ID 和摘要，10 分钟有效，用一次即作废。服务器端的状态在 `/var/lib/meridian/node/journal`（`kind withdraw`、`state withdrawing|withdrawn|withdraw_incomplete`），预检据此阻断或放行。
+
+### 网关：经安装事务撤回到兜底表
+
+`apply.Applier.Withdraw` 是一份普通的宿主事务（`/var/lib/meridian/host/journal.json`，`kind withdraw`）：从已安装清单收敛到一份只剩兜底表的「已撤回清单」（`origin: withdrawn`，文件只有 `etc/nftables.d/meridian-guard.nft`，nft 表只有 `inet meridian_guard`）。移除经 `meridian-host` 新增的固定动作 `withdraw`：先关 IPv4 / IPv6 转发 → `systemctl stop meridian.service`（它没有 ExecStop，只是取消开机重试、清掉 active 状态；单元保持启用，`meridian-up.sh` 删除后开机会被条件跳过）→ 按清单删除单元、接口、规则和路由表、`inet meridian`（与 rollback 一样只动账本里激活过的名字）→ 确认 `inet meridian_guard` 仍在，不在就重启固定的 `meridian-guard.service`（只从开机文件加载这一张表）再确认，确认不了就失败。这个动作拒绝任何点名兜底表或解析器的请求。之后删除清单里的文件（兜底文件除外），再调一次 `withdraw` 复核。任何一步失败都补偿回撤回前（从已安装副本重写文件并重新激活数据面）；补偿也失败时保留 journal，拒绝新的安装、回滚和撤回，面板「恢复」或重启时处理。为保证总能补偿，撤回前先确认已安装副本能用网关私钥和远程接入密钥还原，否则拒绝、什么都不改。
+
+**兜底表的决定：撤回之后局域网保持 fail-closed。** 兜底表丢弃 Meridian 没有分类的局域网转发流量；撤回后不再有分类，它就丢弃全部局域网转发——仍把这台机器当网关的设备断网，而不是经 ROS 不受保护地直出。`meridian-guard.service` 开机照样加载它，所以重启（或 Docker 开机打开转发）也不会漏。转发保持关闭。移除兜底表是**单独的一步**（`POST /api/host/withdraw {release_guard:true}`），只在撤回完成后提供：经已有的 `rollback` 动作（先关转发再删表）删除 `inet meridian_guard` 和它的开机文件，之后安装清单为空；面板明确提示此后局域网不再由 Meridian 兜底。
+
+撤回后：`GET /api/status` 的 `install.state` 是 `withdrawn`；运行态回滚被拒绝（409 `gateway_withdrawn`，恢复走重新安装）；重新「安装到网关」按第一次安装处理，要先做安装前预检。没有安装清单的旧版网关拒绝撤回（409 `legacy_install`）：先用安装接管它，再撤回。安装清单里没有兜底表的版本拒绝撤回（409 `guard_missing`）。保留：`meridian.service`、`meridian-guard.service`、`meridian-host.service`（install.sh 装的宿主部分）、面板容器、数据目录和配置快照、Docker、SmartDNS 软件包或容器（配置文件若在清单里会被删除）、其他 nft 表和 WireGuard 接口。
+
+### 与 Mesh 的组合
+
+Mesh 撤回仍按 Mesh 部署记录固定的主机、凭据、指纹和 Cloudflare 账户进行（没有改动、没有放宽）。节点撤回（清单模式和旧版清理）在 Mesh 部署记录还忙（运行中、已发布、补偿未完成）且固定了这个节点的主机时拒绝（409 `mesh_deployed`），记录读不了也拒绝：**先撤回 Mesh，再撤回节点**——sidecar 跑在节点的接口上，Cloudflare 上还有它的节点和路由。Mesh 撤回失败时记录保持「补偿未完成」，节点撤回继续被挡住，直到 Mesh 撤回重试成功。journal 模式只撤销那次中断的装机，不碰之前完整安装的 sidecar，所以不受这条限制。网关撤回同样检查 Mesh 是否固定了网关。
+
+### 解锁结果
+
+拓扑里已经没有的出口，它的探测结果不再当作当前结果：`GET /api/unlock/results` 默认不列出（`include_removed=1` 时列出并带 `exit_removed: true`、`is_active: false`），另给 `removed_exits`（每个出口的条数）；`POST /api/unlock/results/prune` 删除这些结果。`GET /api/unlock` 带 `removed_exits`，界面把历史和状态里这些出口标为「已删除的出口」。清理只动面板的结果矩阵；`unlock.Snapshot` 里的准入记录（`Latest`、`Applied`）和历史保留，所以 `unlock.Ingest` 的准入规则不变：同一个出口 ID 以后再出现时，旧的结果也不能从它下面插进来（`TestRemovedExitsMarkedAdmissionKept`）。
+
+### API
+
+| 方法与路径 | 请求 | 响应 |
+| --- | --- | --- |
+| `GET /api/deployments` | | `{nodes: [记录 + node_name、in_topology、server_name、current_server_id、on_host、status、identity_problem、mesh_bound、plan?], gateway: {installed, withdrawn, version, plan, kept, pending, last, mesh_bound}}` |
+| `POST /api/provision/withdraw/plan` | `{node_id, mode?: manifest\|journal\|legacy}` | `{plan: {id, mode, target, digest, owner, items[], expires_at}}`；已撤回时 `{plan, already_withdrawn: true}`；脚本拒绝 409 `withdraw_refused`（`reason`）；身份不符 409 `target_changed` / `host_key_not_pinned_by_deployment`；连不上 502（带 `login_help`） |
+| `POST /api/provision/withdraw` | `{node_id, plan_id, confirm: <节点 ID>}` | `{outcome, removed[], kept[], leftovers[], message, reason, code, restored_previous, output}`；200 `withdrawn` / `already_withdrawn` / `recovered`；409 `confirm_required`（400）、`withdraw_plan_stale`、`mesh_deployed`、`withdraw_refused`、`target_changed`；502 `withdraw_partial`、`withdraw_unknown`、`recovery_incomplete`、`not_started` |
+| `POST /api/provision/withdraw/abandon` | `{node_id, confirm: <节点 ID>}` | `{deployment, changed}` |
+| `DELETE /api/provision/state/{node}` | | `{deleted}`；还可能在主机上时 409 `still_on_host` |
+| `POST /api/host/withdraw` | `{confirm: "gw", release_guard?}` | `{status: withdrawn\|already_withdrawn\|guard_released\|not_installed, removed, kept, host}`；409 `nothing_installed` / `legacy_install` / `guard_missing` / `not_withdrawn` / `transaction_pending` / `mesh_deployed`；500 `activation_failed_compensated` / `activation_failed_uncompensated`（带 `host`） |
+| `POST /api/unlock/results/prune` | | `{removed, exits}` |
+
+代码：`internal/provision/withdraw.go`（脚本与解析）、`internal/provision/provision.go`（共用补偿、清单的 `prio` / `route` 行、`params`）、`internal/apply/withdraw.go`（网关事务）、`internal/hostexec/hostexec.go`（`withdraw` 动作）、`internal/api/withdraw.go`、`internal/unlock/report.go`（`ReferencedExits` / `RemovedExits`）。
+
 ## 地区组（出口的选择与切换）
 
 用户的需求：出口按国家或地区（香港、美国……）分成大组，每个组里有多个出口节点；每个组要么由用户指定用哪一个，要么自动切换，自动切换的顺序由用户手工排。以下是这一版定下来的领域决策，代码在 `internal/model/groups.go`（对象和迁移）、`internal/pool`（有效顺序、选择、状态机）、`internal/compile`（标记、路由、枢纽切换脚本）、`internal/api/region_groups.go`（REST）。
@@ -334,7 +497,7 @@ Cloudflare 账户支持多个：同一面板可能要换账户、或者先录入
 | 字段 | 含义 |
 | --- | --- |
 | `id` | 稳定 ID（小写字母、数字、短横线），规则用它引用 |
-| `name` / `region` | 显示名和地区（`hk`、`us`……）。同一地区允许多个组，例如香港机房组和香港家宽组 |
+| `name` / `region` | 显示名和地区（`hk`、`us`……）。同一地区允许多个组，例如香港机房组和香港家宽组。显示名可以重复：面板在任何列出或选择地区组的地方（出口页卡片、规则的目标选择和列表、拓扑、解锁的选择器和结果矩阵、概览）发现同名（去空格、不分大小写）时显示成「名称（地区 · ID）」，出口页卡片另有「同名」标签，新建 / 编辑时提示已有同名组；只有一个时显示原名 |
 | `members` | 成员出口 ID，按用户排的顺序。一个出口可以属于多个组 |
 | `mode` | `auto`（自动）或 `manual`（手动） |
 | `chosen` | 手动模式下用户指定的成员；自动模式必须为空 |
@@ -438,12 +601,21 @@ end
 
 总超时 30 秒，输出在枢纽上截到 64 KiB + 1 字节，超过 64 KiB 即判为过大。同一时间只允许一次读取（并发返回 409 `refresh_in_progress`）。结果（或读不到的原因）连同读取时间存进面板数据库，页面重新加载后仍显示，并标明读取时间。枢纽打出来的东西只按含义采信（`internal/hubstate`）：逐行严格语法、只允许可打印 ASCII、值是受限字符的短标记、时间必须晚于 2020-01-01 且不晚于枢纽自己的 `now` 5 秒、`switched` 不晚于心跳；任何一行不合格整份拒绝（`parse_error`）。拓扑里没有的组 ID 不显示（`hub_state.last_read.ignored`）；成员 ID 必须在该组编译出的切换顺序里（`mmesh` 只在组有 Mesh 边时），否则这个组是 `invalid_report`。
 
+**读取结果绑定枢纽身份。** 每次读取都记下它是从哪个枢纽读的（`hubstate.Identity`）：枢纽节点 ID、服务器 ID、规范化后的地址（去空白和方括号、小写、去掉末尾的点，IP 字面量写成规范形式，IPv4 映射的 IPv6 写成 IPv4）、SSH 端口（0 视为 22）和固定的主机指纹。身份在读取开始前从当前拓扑和服务器记录取出（`internal/api` 的 `serverIdentity`；指纹只在主机指纹是「已确认」或「不一致」时算作固定，其余状态为空——改地址或端口、清除或重新发现指纹都会清掉它）。三处用同一个身份：
+
+1. 连接：SSH 连接钉在这个身份上（`sshexec.Target` 带地址、端口、用户和指纹），服务器记录在此期间被改过、或主机出示的不是这把钥匙，连接器拒绝（`target_changed` / `host_key_not_pinned_by_deployment`），不会以旧身份读到新主机。
+2. 存储：读取结束后重新取当前身份；与开始时不同，这次结果丢弃、不存为当前状态，接口返回 409 `hub_identity_changed`（「读取期间枢纽的……已变更」），原来存的那次读取保持不变。并发刷新本来就只允许一次（`refresh_in_progress`）。
+3. 显示：每次 `GET /api/region-groups`、`GET /api/region-groups/{id}`、概览和解锁矩阵都把存储的读取与此刻的身份比较；任何一项不同，这次读取对每个可切换组都是 `unavailable` / `hub_identity_changed`，没有成员、原因和切换时间，界面显示「实际使用 未知 · 未验证 · 枢纽已变更」和原因，直到对当前枢纽读取成功。这个比较在 10 分钟的 `read_old` 之前，立即生效；它也兜住了「检查之后、存储之前」身份又变化的窗口。主机出示了与固定指纹不同的钥匙（「不一致」）时身份不变，但成功的报告同样不再采信。`hub_state.last_read.current_hub: false` 加 `identity_code` / `identity_message` 告诉界面那次读取不是当前枢纽的，枢纽状态条上标「不是当前枢纽」，并且不受「1 分钟内读过就不自动读」的限制。
+
+改名、改标签或备注不改变身份；把枢纽节点改到另一台服务器、原地修改同一台服务器的地址或端口（即使之后确认的仍是同一把钥匙）、重新确认成另一把钥匙或清除指纹，都会让旧报告立即变成未知。身份变回原样（例如改回原地址并确认同一把钥匙）时，原来那次读取重新与当前身份一致，仍受部署标识、心跳和 10 分钟读取时效的检查。更早版本存下的读取没有地址和指纹，一律视为身份不同。
+
 **每个组的 `actual.state`**（按顺序判定）：
 
 | 状态 | 条件 | 界面 |
 | --- | --- | --- |
 | `not_switchable` | 组不由枢纽切换（静态选择只能经中继或纯 Mesh 到达，或没有可用成员），枢纽上没有它的状态 | 「不适用 · 枢纽不切换」 |
 | `never_read` | 还没有读过 | 未知 · 未验证 |
+| `unavailable` / `hub_identity_changed` | 存储的读取不是当前枢纽身份（枢纽节点、服务器、地址、SSH 端口、固定指纹任一不同，或主机指纹现在不一致），见上 | 未知 · 未验证 · 枢纽已变更；可读时「重新读取」，否则链到服务器页 / 拓扑 |
 | `unavailable` | `code`：`no_hub`、`hub_no_server`、`server_not_ready`（指纹未确认 / 不一致、没有凭据，带 `ssh_code`）、`ssh_failed`（带 `ssh_code`）、`parse_error`、`state_missing`（枢纽上没有这个组的记录或没有 `group-plan`）、`invalid_report`、`plan_unavailable`（面板编译不出当前计划） | 未知 · 未验证，原因和修复入口 |
 | `version_mismatch` | 枢纽的 `group-plan` 或该组报告的 `plan` 不等于面板现在编译出的部署标识（`deployed_matches: false`）：枢纽还没按当前拓扑装机 | 未知 · 未验证，链到部署页 |
 | `stale` | `heartbeat_old`：枢纽的 `now` 减心跳超过 `compile.HubStaleAfter`；或 `read_old`：读取已超过 10 分钟 | 未知 · 未验证，重新读取 |
@@ -478,13 +650,20 @@ end
 3. **网关的出路（本机发出，兜底表不管）。** 兜底表只挂 forward，本机发出的包靠路由层。带组 mark 的查询：`fwmark <组 mark> lookup 102`（v4/v6 都有）→ 表 102 的 IPv6 只有局域网前缀（不含 `fd66`，校验保证）、`default dev <西向隧道>` 和 metric 32767 的黑洞；隧道路由不在时落到黑洞，再后面还有 `fwmark <组 mark> unreachable`。所以带 mark 的组查询只能进西向隧道或被拒，不会查到表 100 或 main，不会经 ROS。没带 mark 的（例如 SmartDNS 没打上 mark）查 main：`fd66::/48 dev <西向隧道>` 加 metric 32767 的黑洞，同样进不了 ROS；它不会被改写源地址，枢纽也就不会把它送进任何组表（运行时测试里它在隧道里绕到跳数用完），所以表现为解析失败，而不是问错成员。
 4. **网关的源地址。** 枢纽按源地址选组表，本机查询的源地址是隧道接口地址。`transit_snat` 加一条：`ip6 daddr fd66::53:<k> meta mark <组 mark> meta l4proto { tcp, udp } th dport 53 snat ip6 to <组的中转 IPv6>`。只认组 mark、组自己的解析地址、53。能带组 mark 的只有两种包：分类链打的（只在局域网口和 `mra` 入口上跑，而分类链在任何规则之前就丢弃 `fc00::/7` 目的地址，所以转发流量不可能带着组 mark 去解析地址；兜底表也丢弃转发的 53/853）和本机套接字自己设的。回包由 conntrack 改回原来的隧道接口地址，入站链只限制目的端口 53/853，回包不受影响。`internal/probe` 的探测走另一条路（直接绑在 `lo` 的中转地址上，不需要 SNAT），组的中转地址同样在 `lo` 上，不冲突。
 5. **枢纽（没改）。** 组的中转 IPv6 有 `from <中转>/128 lookup <组表>`（优先级 18200+索引，在它前面只有其他中转地址的同类规则）；组表里只有局域网、中转前缀（`fd66:0:0:ff::/64`，不含解析地址）、`group_hop` 装的 `default dev <成员接口>`（v4/v6 一起切）和黑洞。所以发往 `fd66::53:<k>` 的查询进当前成员；回包目的地址是组的中转地址，枢纽 main 里 `fd66:0:0:ff::/64 dev <西向>`，原路回网关。枢纽的 nft 不过滤转发。WireGuard 的 AllowedIPs：西侧对东侧是 `::/0`，东侧对西侧含 `fd66::/48`，正反方向都放行。
-6. **出口。** 每个能被枢纽切换到的出口（枢纽直连 WireGuard），在拓扑里有可切换组时，`table inet meridian` 多一个 `group_dns` 链：`iifname { <枢纽隧道> } ip6 daddr fd66::53:0/112 meta l4proto { tcp, udp } th dport 53 dnat ip6 to <本出口隧道解析地址>`（nat prerouting）。目标就是出口 SmartDNS 绑定的 `[<DNSULA>]:53`；回包源地址由 conntrack 改回组解析地址，不依赖解析器怎么选源地址，也不加第二个监听（在 `[::]` 之外再绑具体地址在这个 SmartDNS 上会失败）。出口没有 input 过滤；回包发往组的中转地址，出口路由 `fd66:0:0:ff::/64 dev <隧道>`，与组数据的回程相同。整个 `/112` 都应答，所以出口加入别的组时不用改出口配置；从 WAN 或 Mesh 进来的不改写。
-7. **组在 Mesh 或黑洞时。** 组表指向 `mmesh`（或因未密封而黑洞）时，组的解析地址后面没有解析器：查询进 Mesh 后没有任何节点应答，或在枢纽被黑洞。解析失败，不改问国内、别的成员或别的国家——这时组的数据也只有 Mesh 或无路可走，失败是如实的。要让 Mesh 路径也能解析，需要 Mesh 对端出口在它的 Mesh 入口上做同样的 DNAT，并让 Mesh 路由带上 `fd66::53:0/112` 和组的中转前缀的回程；这一版没做。
+6. **出口。** 每个能被枢纽切换到的出口（枢纽直连 WireGuard），在拓扑里有可切换组时，`table inet meridian` 多一个 `group_dns` 链：`iifname { <枢纽隧道> } ip6 daddr fd66::53:0/112 meta l4proto { tcp, udp } th dport 53 dnat ip6 to <本出口隧道解析地址>`（nat prerouting）。目标就是出口 SmartDNS 绑定的 `[<DNSULA>]:53`；回包源地址由 conntrack 改回组解析地址，不依赖解析器怎么选源地址，也不加第二个监听（在 `[::]` 之外再绑具体地址在这个 SmartDNS 上会失败）。出口没有 input 过滤；回包发往组的中转地址，出口路由 `fd66:0:0:ff::/64 dev <隧道>`，与组数据的回程相同。整个 `/112` 都应答，所以出口加入别的组时不用改出口配置；从 WAN 或别的接口进来的不改写。Mesh 入口 `mmesh` 只在组的 Mesh 解析成员上改写，见下一条。
+7. **组在 Mesh 上。** 每个有 Mesh 边的可切换组有一个 **Mesh 解析成员**（`GroupPlan.MeshResolver`）：组的有效顺序里第一个与枢纽有待命 Mesh 边、并且有隧道解析器的成员（示例里 `us` 组是 `us`，`hk` 组是 `hk-ix`）。组切到 `mmesh` 后，查询走和组数据相同的 Mesh 路径，由这个出口应答：
+   - **发布。** 这个出口编译出的 `meridian-mesh-up.sh` 带一行 `# meridian-mesh-publish fd66::53:<k>/128 group=<组>`。面板的 Mesh 部署（`mesh.BuildPlan`）把它当作这个出口的 Cloudflare 路由发布（`purpose: "group_resolver"`），和运营者在 `mesh_routes` 里填的路由并列；`fd66::/48` 仍然不能手填。发布行只能是 `fd66::53:0/112` 里的单个 /128，并且每个地址只交给一个出口，否则计划报 `mesh_publish_invalid` / `mesh_route_overlap`。改了组或 Mesh 边之后，要重新下发这个出口并重新部署 Mesh（`APPLY_ORDER.txt` 写明）。
+   - **枢纽去程。** 组表是 `default via fe80::66:2 dev mmesh`（只在 `/run/meridian/mesh-sealed` 存在时，否则黑洞），和组数据同一条；枢纽 sidecar 的表 170 里是 warp 设备上的 `fd66::53:<k>/128`（发布后重新密封时复制）。`group_step` 停留在 Mesh 上时每一轮都重新执行 `group_hop`（不算切换，不改 `active` / `switched`），所以组表跟着密封状态走：sidecar 密封后转到它的下一跳，失去密封后下一轮就回到黑洞。以前组在未密封时切到 Mesh，之后即使密封了，组表也一直是黑洞。
+   - **出口入口。** Mesh 解析成员的 `group_dns` 多一条 `iifname "mmesh" ip6 daddr fd66::53:0/112 … dnat ip6 to <本出口隧道解析地址>`。出口只认这两个受管入口（枢纽隧道和 `mmesh`），别的接口进来的不改写。
+   - **出口回程。** 回包不能按目的地址查表：查询到达出口时的源地址可能是组的中转地址（主路由表里指向已经失效的枢纽隧道），也可能是枢纽 Mesh 节点的地址（出口没有路由，会落到 WAN 默认路由）。所以从 `mmesh` 进来的查询连接打 ct mark `0x4d6d`，在 input 上把源地址改成 `fd66::4d:1`（`fd66::/64` 里不属于任何节点的锚地址），解析器的套接字发回包时就命中 `to fd66::4d:1 lookup 171`；route 类型的 output 链给这个连接的每个回包打 mark `0x4d6d`，conntrack 把目的地址还原后仍按 `fwmark 0x4d6d lookup 171` 走。表 171 只有 `default via fe80::66:2 dev mmesh`（只在密封时）和 metric 32767 的黑洞：回包只回到本机的 sidecar，从不进枢纽隧道，也不从 WAN 出去。表 171 由 `mesh_dns_return` 维护，路由脚本和 `meridian-mesh-up.sh` 共用同一段（后者在每次退出时执行）。出口没有故障切换循环，所以多一个 `meridian-mesh-seal.timer`，每分钟重新密封一次，让 sidecar 表 170 学到 Cloudflare 在 sidecar 启动之后才装上的路由；面板 Mesh 部署的 activate 阶段也先重新密封这些出口，再重新密封枢纽。
+   - **回到枢纽。** 出口 sidecar 从 `mmesh-c` 收到的回包按表 170 走 warp 设备，目的地址是查询到达出口时的源地址。枢纽 sidecar 把进入 Mesh 的流量做源地址转换（compose 里的 `SRCNAT_ENABLED=true`）时，这是枢纽 Mesh 节点的地址，表 170 有它的路由；不做转换时是组的中转地址，Mesh 里没有它的路由，回包在出口 sidecar 不可达，查询超时。组的 Mesh 数据回程依赖的是同一个性质。Cloudflare 连接器在这里到底做不做源地址转换、IPv6 能不能经 Mesh 转发，**没有核实**。
+   - **失败。** Mesh 不通、sidecar 未密封、组没有 Mesh 解析成员（例如组里有 Mesh 边的成员都没有隧道解析器，枢纽路由脚本的注释会写明）时，查询超时或不可达：不改问国内、别的成员或别的国家，也不从局域网口出去。
+   - **证据。** 结构测试（`TestGroupDNSExitDNAT`、`TestGroupDNSMeshResolverPublication`、`TestGroupDNSMeshReturnPath`、`TestGroupDNSMeshReturnFollowsSeal`、`TestHubGroupOnMeshFollowsSeal`、`internal/mesh` 的 `TestPlanPublishesGroupResolvers` 等）只证明生成结果。`TestNetnsGroupDNSFailover` 的第 7–9 阶段在命名空间里用编译出的 `meridian-mesh-up.sh`、两个替身 sidecar 和一个模拟的 Mesh（两个 tun 设备）跑完整条路径，2026-11-13 在一台 Debian 13 上通过（`docs/evidence/2026-11-13-debian13-mesh-dns/`）；它模拟的源地址转换是假设。没有任何真实 Cloudflare Mesh 证据。
 8. **手动组。** `hold`：组表永远指向 `chosen`，DNS 也只问它，它坏了解析和数据一起失败。`fallback`：和自动组一样跟随切换。
 9. **远程接入设备** 的 DNS 被劫持到同一个网关 SmartDNS，行为与局域网客户端相同。
 10. **升级顺序。** 网关装上这一版后，组的查询发往只有重新下发过的出口才会应答的地址；还没更新的出口不应答，组内名字解析失败（不会回落到旧的「问首选成员」的做法——那正是要修的不一致）。所以先下发出口和枢纽，再安装网关（「下发顺序」，面板「部署」页的推荐顺序同样写了）。编译无法知道远端已经是哪一版，所以不出校验问题；`APPLY_ORDER.txt` 在有可切换组时写明这一点，`meridian-verify.sh` 的 `PENDING-HUMAN group_dns_failover` 要求实测。
 
-没有可切换组的拓扑，编译结果里没有这些行（测试 `TestGroupDNSAbsentWithoutSwitchableGroup`）。运行时测试 `TestNetnsGroupDNSFailover`（见[验收清单](verification.md#地区组的解析)）在网络命名空间里用编译出的网关、阿里云、枢纽、两个成员出口的 nft 和路由以及枢纽的 `group_step` 跑完整条路径；2026-11-13 跑通过一次（见 `docs/evidence/2026-11-13-debian13/netns-group-dns.log`）。成员出口上的解析器在测试里是替身，真实出口和真实枢纽上的行为仍是待人工签收。
+没有可切换组的拓扑，编译结果里没有这些行（测试 `TestGroupDNSAbsentWithoutSwitchableGroup`）。运行时测试 `TestNetnsGroupDNSFailover`（见[验收清单](verification.md#地区组的解析)）在网络命名空间里用编译出的网关、阿里云、枢纽、两个成员出口的 nft 和路由以及枢纽的 `group_step` 跑完整条路径；成员之间的切换部分 2026-11-13 跑通过一次（见 `docs/evidence/2026-11-13-debian13/netns-group-dns.log`）；之后加入的 Mesh 阶段（第 7–9 阶段，替身 sidecar 和两个 tun 之间的转发，不是真实 Cloudflare Mesh）在同一天晚些时候连同前 6 个阶段跑通过一次（见 `docs/evidence/2026-11-13-debian13-mesh-dns/netns-group-dns.log`），那次第一遍运行发现编译出的 `meridian-mesh-up.sh` 把封装成功与失败判反，修好后才通过。成员出口上的解析器在测试里是替身，真实出口、真实枢纽和真实 Mesh 上的行为仍是待人工签收。
 
 ### 兼容
 
@@ -500,13 +679,15 @@ end
 
 `POST /api/mesh/withdraw` 不接受任何字段：账户按记录绑定（当前 Mesh 账户的 account id 必须相同，否则 409 `account_mismatch`），主机按记录固定。撤回前先在部署锁内升级旧记录，再检查每台还没恢复的主机：固定的服务器和凭据都还在、服务器仍指向固定的地址。任何一台不满足都 409 `hosts_blocked`，列出原因，**什么也不撤回、不标记任何东西为已移除**。凭据原地轮换不影响撤回（读的是同一 ID 的当前一代）；删除或改指向被存储拒绝（见「服务器、SSH 凭据与 Cloudflare 账户」）。旧请求字段 `private_key_pem`、`trust_new_host`、`nodes`、`ssh_*`（撤回另有 `fail_after`、`account`）一律 400 `field_removed`。
 
+节点撤回与 Mesh 撤回的先后见「撤回与失败后的恢复」→「与 Mesh 的组合」：Mesh 还固定着某个节点的主机时，那个节点不能撤回。
+
 schema 2 → 3 升级（`Deployer.UpgradeJournal`，启动时和每次撤回前运行，可重复）：只处理 `server_id` 为空的固定主机；按「节点当前关联的服务器且地址 / 端口 / 用户一致」→「`migrated_from: node:<ID>` 且一致」→「唯一一台地址 / 端口 / 用户一致的服务器」找服务器，凭据取它当前的凭据；`owned remotes` 里的副本同步更新。找不到的保持为空，撤回时被 `hosts_blocked` 挡住，用户在服务器管理里补上同一台主机后重试即可。已有 `server_id` 的固定值从不被改写；比本程序新的记录被拒绝（`journal_too_new`）。
 
 Mesh 的 Compose 只生成在枢纽和对应出口上。镜像默认是官方的 `cloudflare/mesh:latest`（Cloudflare Mesh 节点，原先的 WARP connector）。要钉版本就在拓扑里写 `mesh_image`，例如 `cloudflare/mesh:2026.10.0` 或带 `@sha256:` 的摘要，不要另起一个不存在的名字。容器要 `NET_ADMIN`、`NET_RAW`、`/dev/net/tun`、`SRCNAT_ENABLED=true`，卷在 `/var/lib/cloudflare-warp`，并且打开 IPv4 转发和 IPv6 `all` / `default` 转发。网络是自己的 `meridian_mesh`，不是 host 网络。令牌放在 `/etc/meridian/mesh.env`（权限 0600），仓库里只有空的示例。
 
 家宽网关的启动脚本和故障切换都不会拉起这个 sidecar；脚本若发现本机有 `192.168.100.88/24` 会直接退出。枢纽脚本如果被要求把 Mesh 装进表 100、102、150 或 main，会拒绝。这三张表仍是国内、境外主路径和 IX 东向，Mesh 进不去。
 
-`mmesh` 是一根 veth（`169.254.66.0/30`，不落在隧道的 `10.66.0.0/16` 里）。宿主只在「sidecar 已密封」之后，才让某张出口表的默认路由指向它。密封做在容器自己的网络命名空间里：从这根 veth 进来的包走优先级 17000 的表 170，里面只有 WARP 设备上的路由，默认是 unreachable；转发出去时，除了 WARP 设备以外一律 drop。这样容器里那条 docker 网桥默认路由（会 NAT 到宿主机的 WAN，在枢纽上就是 VPS 的默认路由）带不走客户流量。WARP 还没装上到对端的路由时，这张表保持黑洞，而不是改走别的国家。要让备路真正通，需要在 Cloudflare 里为这条枢纽到出口的跳发布路由；没有这条路由，流量停在黑洞里。
+`mmesh` 是一根 veth（`169.254.66.0/30`，不落在隧道的 `10.66.0.0/16` 里）。宿主只在「sidecar 已密封」之后，才让某张出口表的默认路由指向它。密封做在容器自己的网络命名空间里：从这根 veth 进来的包走优先级 17000 的表 170，里面只有 WARP 设备上的路由，默认是 unreachable；转发出去时，除了 WARP 设备以外一律 drop。这样容器里那条 docker 网桥默认路由（会 NAT 到宿主机的 WAN，在枢纽上就是 VPS 的默认路由）带不走客户流量。WARP 还没装上到对端的路由时，这张表保持黑洞，而不是改走别的国家。要让备路真正通，需要在 Cloudflare 里为这条枢纽到出口的跳发布路由；没有这条路由，流量停在黑洞里。表 170 的路由是密封时从 warp 设备复制的：`ip route show dev <warp>` 的输出不带 `dev`，复制时补上（以前没补：按 iproute2 的输出格式，链路作用域的路由加不进去，表 170 实际上只剩 unreachable；这一点和修正都还没在真实 sidecar 上看过）。另一个从 5b01903 起就有的错误：`meridian-mesh-up.sh` 判断 sidecar 内密封块结果的条件是反的（`if ! nsenter … bash -s`），密封块成功时报「mesh seal failed」并解除密封，失败时反而去 ping 下一跳并写 `mesh-sealed`。2026-11-13 的命名空间测试第一次运行编译出的脚本时暴露，已改正，`TestMeshUpSealFollowsSidecarBlock` 在 bash 里带桩运行脚本并锁住它。在这之前，任何真实部署都不可能得到正确的密封状态。枢纽每 5 秒重新密封一次（故障切换循环）；是某个地区组 Mesh 解析成员的出口靠 `meridian-mesh-seal.timer` 每分钟重新密封一次（见「地区组的解析」第 7 条）。
 
 ## 解锁
 

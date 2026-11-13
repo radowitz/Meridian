@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -35,6 +36,9 @@ type hubStateBody struct {
 			SSHCode   string   `json:"ssh_code"`
 			Error     string   `json:"error"`
 			Ignored   []string `json:"ignored"`
+			Current   bool     `json:"current_hub"`
+			IDCode    string   `json:"identity_code"`
+			IDMessage string   `json:"identity_message"`
 		} `json:"last_read"`
 		Counts map[string]int `json:"counts"`
 	} `json:"hub_state"`
@@ -387,5 +391,242 @@ func TestHubStateLimitsAgree(t *testing.T) {
 		if strings.Contains(strings.ReplaceAll(sshexec.GroupStateCommand, `"$(date +%s)"`, ""), bad) {
 			t.Fatalf("the fixed command contains %q", bad)
 		}
+	}
+}
+
+// ------------------------------------------------- hub identity binding ---
+
+// okOutput: the hub reports group hk on member hop (fresh, current plan).
+func (f *hubFixture) okOutput(hop, reason string) string {
+	now := time.Now().Unix()
+	return hubOutput(f.plan, now, hubReport("hk", f.plan, now-2, "hop "+hop, "active "+hop, "reason "+reason))
+}
+
+// readOK stores a successful read from the current hub and returns its time.
+func (f *hubFixture) readOK() string {
+	f.t.Helper()
+	f.serve(f.okOutput("hk-2", "failover"), 0)
+	b := f.refresh(nil)
+	hk := b.group(f.t, "hk")
+	if hk.Actual.State != hubstate.StateOK || hk.Actual.Active != "hk-2" || b.HubState.LastRead == nil || !b.HubState.LastRead.Current {
+		f.t.Fatalf("first read: %+v %+v", hk.Actual, b.HubState.LastRead)
+	}
+	return b.HubState.LastRead.ReadAt
+}
+
+// identityChanged: the stored read is shown as unknown because it was
+// taken from another hub identity, on the group and on the hub bar, on
+// both GET endpoints.
+func (f *hubFixture) identityChanged(why string) {
+	f.t.Helper()
+	b := f.list()
+	noActual(f.t, b.group(f.t, "hk"), hubstate.StateUnavailable, hubstate.CodeIdentityChanged)
+	if g := b.group(f.t, "hk"); g.Actual.ReadAt == nil || g.Model.Source != "panel_model" {
+		f.t.Fatalf("%s: %+v", why, g)
+	}
+	lr := b.HubState.LastRead
+	if lr == nil || lr.Current || lr.IDCode != hubstate.CodeIdentityChanged || lr.IDMessage == "" || len(lr.Ignored) != 0 || b.HubState.Counts["ok"] != 0 {
+		f.t.Fatalf("%s: hub state %+v", why, b.HubState)
+	}
+	rr := do(f.s, http.MethodGet, "/api/region-groups/hk", nil)
+	if !strings.Contains(rr.Body.String(), `"code":"`+hubstate.CodeIdentityChanged+`"`) || strings.Contains(rr.Body.String(), `"state":"ok"`) {
+		f.t.Fatalf("%s: GET group %s", why, rr.Body.String())
+	}
+}
+
+// addServer registers another in-process SSH server as a managed server
+// (password credential) and trusts its key.
+func (f *hubFixture) addServer(name string) (*sshtest.Server, string) {
+	f.t.Helper()
+	srv, err := sshtest.Start()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Cleanup(srv.Close)
+	srv.SetPassword(f.pw)
+	rr := do(f.s, http.MethodPost, "/api/ssh-credentials", mustJSON(map[string]any{"name": name, "kind": "password", "password": f.pw}))
+	var c struct{ Credential credView }
+	decode(f.t, rr, &c)
+	rr = do(f.s, http.MethodPost, "/api/servers", mustJSON(map[string]any{"name": name, "address": srv.Host, "port": srv.Port, "user": "ops", "auth": "password", "credential_id": c.Credential.ID}))
+	var sv struct{ Server serverView }
+	decode(f.t, rr, &sv)
+	f.trustServer(sv.Server.ID)
+	return srv, sv.Server.ID
+}
+
+func (f *hubFixture) trustServer(id string) {
+	f.t.Helper()
+	rr := do(f.s, http.MethodPost, "/api/servers/"+id+"/host-key/discover", nil)
+	var disc struct{ Discovery sshexec.Discovery }
+	decode(f.t, rr, &disc)
+	if rr = do(f.s, http.MethodPost, "/api/servers/"+id+"/host-key/trust", mustJSON(map[string]string{"fingerprint": disc.Discovery.Fingerprint})); rr.Code != 200 {
+		f.t.Fatal(rr.Body.String())
+	}
+}
+
+// relink points the hub node at another server.
+func (f *hubFixture) relink(serverID string) {
+	f.t.Helper()
+	topo, _, _ := f.s.Store.Load()
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == "hk-hub" {
+			topo.Nodes[i].ServerID = serverID
+		}
+	}
+	if err := f.s.Store.Save(topo); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *hubFixture) patchServer(body map[string]any) {
+	f.t.Helper()
+	if rr := do(f.s, http.MethodPatch, "/api/servers/"+f.server, mustJSON(body)); rr.Code != 200 {
+		f.t.Fatalf("patch server: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// Re-linking the hub node to another server: the old host's report is
+// unknown at once, and a new read reports the new host.
+func TestHubStateIdentityRelink(t *testing.T) {
+	f := newHubFixture(t, true)
+	f.readOK()
+	srv2, id2 := f.addServer("另一台枢纽")
+	srv2.SetHandler(func(cmd, _ string) (string, uint32) {
+		if cmd != sshexec.GroupStateCommand {
+			return "unexpected", 1
+		}
+		return f.okOutput("hk-ix", "preferred"), 0
+	})
+	f.relink(id2)
+	f.identityChanged("relinked")
+	if b := f.list(); !b.HubState.Readable || b.HubState.ServerID != id2 {
+		t.Fatalf("hub bar after relink %+v", b.HubState)
+	}
+	b := f.refresh(nil)
+	if hk := b.group(t, "hk"); hk.Actual.State != hubstate.StateOK || hk.Actual.Active != "hk-ix" || !b.HubState.LastRead.Current {
+		t.Fatalf("read of the new hub: %+v", hk.Actual)
+	}
+	if cmds := srv2.Commands(); len(cmds) != 1 || cmds[0] != sshexec.GroupStateCommand {
+		t.Fatalf("new hub commands %q", cmds)
+	}
+	// And back: the stored read is now the second server's.
+	f.relink(f.server)
+	f.identityChanged("relinked back")
+}
+
+// Editing the same server's address in place, even when the very same key
+// is pinned again afterwards: the read from the old address is unknown
+// until the new address is read. A rename changes nothing.
+func TestHubStateIdentityAddressEdit(t *testing.T) {
+	f := newHubFixture(t, true)
+	f.readOK()
+	f.patchServer(map[string]any{"name": "改名后的枢纽", "notes": "x"})
+	if hk := f.list().group(t, "hk"); hk.Actual.State != hubstate.StateOK {
+		t.Fatalf("rename invalidated the read: %+v", hk.Actual)
+	}
+	f.patchServer(map[string]any{"address": "localhost"})
+	f.identityChanged("address edited")
+	if b := f.list(); b.HubState.Readable || b.HubState.NotReadable != hubstate.CodeServerNotReady {
+		t.Fatalf("an edited address needs its key confirmed again: %+v", b.HubState)
+	}
+	// Same host, same key pinned again: the address still differs from
+	// the read's.
+	f.trust()
+	f.identityChanged("address edited, key re-pinned")
+	b := f.refresh(nil)
+	if hk := b.group(t, "hk"); hk.Actual.State != hubstate.StateOK || !b.HubState.LastRead.Current {
+		t.Fatalf("read at the new address: %+v %+v", hk.Actual, b.HubState.LastRead)
+	}
+}
+
+// Changing the SSH port: unknown at once.
+func TestHubStateIdentityPortEdit(t *testing.T) {
+	f := newHubFixture(t, true)
+	f.readOK()
+	f.patchServer(map[string]any{"port": 2222})
+	f.identityChanged("port edited")
+	// Back to the old port: the key must be confirmed again, and until
+	// then nothing is pinned, so the old read still does not count.
+	f.patchServer(map[string]any{"port": f.srv.Port})
+	f.identityChanged("port restored, key not pinned")
+}
+
+// A re-pinned (different) host key: unknown at once. A key contradicting
+// the pin (mismatch) also stops the old report from counting.
+func TestHubStateIdentityFingerprint(t *testing.T) {
+	f := newHubFixture(t, true)
+	f.readOK()
+	f.srv.SetHostKey(sshtest.NewHostKey())
+	// Discovery sees the other key: the pin is now contradicted.
+	do(f.s, http.MethodPost, "/api/servers/"+f.server+"/host-key/discover", nil)
+	b := f.list()
+	noActual(t, b.group(t, "hk"), hubstate.StateUnavailable, hubstate.CodeIdentityChanged)
+	if b.HubState.Readable || b.HubState.LastRead.Current {
+		t.Fatalf("mismatch: %+v", b.HubState)
+	}
+	// Confirming the new key: a new pin, a new identity.
+	f.trust()
+	f.identityChanged("re-pinned")
+	if b = f.refresh(nil); b.group(t, "hk").Actual.State != hubstate.StateOK {
+		t.Fatalf("read with the new pin: %+v", b.group(t, "hk").Actual)
+	}
+	// Forgetting the key: nothing pinned, unknown.
+	if rr := do(f.s, http.MethodDelete, "/api/servers/"+f.server+"/host-key", nil); rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	f.identityChanged("pin forgotten")
+}
+
+// A read that was started against the old identity and ends after the
+// identity changed is discarded: the stored read stays what it was and is
+// shown as unknown for the new identity.
+func TestHubStateIdentityLateResult(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(f *hubFixture)
+	}{
+		{"relink", func(f *hubFixture) { _, id2 := f.addServer("另一台"); f.relink(id2) }},
+		{"repin", func(f *hubFixture) { f.srv.SetHostKey(sshtest.NewHostKey()); f.trust() }},
+		{"address", func(f *hubFixture) { f.patchServer(map[string]any{"address": "localhost"}) }},
+		{"port", func(f *hubFixture) { f.patchServer(map[string]any{"port": 2222}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newHubFixture(t, true)
+			first := f.readOK()
+			release := make(chan struct{})
+			started := make(chan struct{}, 1)
+			f.mu.Lock()
+			f.answer = func() (string, uint32) {
+				started <- struct{}{}
+				<-release
+				return f.okOutput("hk-ix", "preferred"), 0
+			}
+			f.mu.Unlock()
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() { done <- do(f.s, http.MethodPost, "/api/region-groups/runtime/refresh", nil) }()
+			select {
+			case <-started:
+			case <-time.After(20 * time.Second):
+				t.Fatal("read never reached the hub")
+			}
+			tc.change(f)
+			// GETs while the read runs already show the change.
+			f.identityChanged("during the read")
+			close(release)
+			rr := <-done
+			var e apiErr
+			_ = json.Unmarshal(rr.Body.Bytes(), &e)
+			if rr.Code != http.StatusConflict || e.Code != hubstate.CodeIdentityChanged {
+				t.Fatalf("late result: %d %s", rr.Code, rr.Body.String())
+			}
+			b := f.list()
+			if b.HubState.LastRead == nil || b.HubState.LastRead.ReadAt != first || b.HubState.Refreshing {
+				t.Fatalf("late result was stored: %+v", b.HubState)
+			}
+			f.identityChanged("after the late result")
+			if strings.Contains(rr.Body.String(), f.pw) {
+				t.Fatal("password in the response")
+			}
+		})
 	}
 }

@@ -1,0 +1,38 @@
+meridian-preflight 1
+uid 0
+arch x86_64
+kernel 6.12.12-amd64
+os-id debian
+os-version 13
+os-pretty "Debian GNU/Linux 13 (trixie)"
+systemd yes
+mem-total-kb 4000000
+mem-avail-kb 3000000
+disk-avail-kb 9000000
+cmd wg yes
+cmd nft yes
+cmd ip yes
+cmd apt-get yes
+cmd systemctl yes
+cmd smartdns no
+cmd wstunnel yes
+sysctl net.ipv4.ip_forward 1
+sysctl net.ipv6.conf.all.forwarding 1
+link lo
+link eth0
+addr lo 127.0.0.1/8
+addr eth0 203.0.113.70/24
+route4 default via 203.0.113.1 dev eth0
+route4 203.0.113.0/24 dev eth0 proto kernel scope link src 203.0.113.70
+rule4 0:	from all lookup local
+rule4 32766:	from all lookup main
+ss tcp   LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:(("nginx",pid=1000,fd=6))
+ss tcp   LISTEN 0      511          0.0.0.0:443        0.0.0.0:*    users:(("nginx",pid=1000,fd=7))
+ss tcp   LISTEN 0      511             [::]:443           [::]:*    users:(("nginx",pid=1000,fd=8))
+ss tcp   LISTEN 0      4096         0.0.0.0:8080       0.0.0.0:*    users:(("wstunnel",pid=1100,fd=3))
+ss udp   UNCONN 0      0          127.0.0.1:52000      0.0.0.0:*    users:(("wstunnel",pid=1100,fd=9))
+unit docker.service inactive not-found 0
+version wstunnel wstunnel 10.1.0
+candidate smartdns 46.1+dfsg-1
+@PATHS@
+meridian-preflight-end

@@ -202,7 +202,13 @@ func (s *Server) testServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, _ := s.topology()
-	writeJSON(w, http.StatusOK, map[string]any{"test": sv.LastTest, "server": s.serverView(cs, sv, t)})
+	out := map[string]any{"test": sv.LastTest, "server": s.serverView(cs, sv, t)}
+	// A login the server does not accept comes with what to do about it,
+	// including the credential's public key (never anything secret).
+	if h := s.loginHelpFor(cs, id, ct.Code); h != nil && !ct.OK {
+		out["login_help"] = h
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func resCode(err error) string {
@@ -286,11 +292,13 @@ func (s *Server) deploymentPins() ([]credentials.PinnedHost, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Node deployments (provision records) that may still be on their
+	// host pin the server and credential a withdraw needs (withdraw.go).
+	out := s.nodeDeploymentPins()
 	if j == nil || !j.Busy() {
-		return nil, nil
+		return out, nil
 	}
 	ref := credentials.Ref{Kind: "mesh_deployment", ID: j.RunID, Name: "Mesh 部署（" + j.State + "）"}
-	var out []credentials.PinnedHost
 	for _, h := range j.Hosts {
 		out = append(out, credentials.PinnedHost{Deployment: ref, ServerID: h.ServerID, CredentialID: h.CredentialID,
 			Address: h.SSHHost, Port: h.SSHPort, User: h.SSHUser})

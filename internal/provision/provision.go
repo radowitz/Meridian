@@ -6,8 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path"
+	"regexp"
+	"sort"
 	"strings"
 
 	"golang.org/x/crypto/curve25519"
@@ -15,6 +18,7 @@ import (
 	"github.com/radowitz/meridian/internal/apply"
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/preflight"
 )
 
 const PrivatePlaceholder = compile.PrivateKeyPlaceholder
@@ -43,14 +47,74 @@ func GenerateKeypair() (Keypair, error) {
 	}, nil
 }
 
-// Script writes the node's rendered files and reloads WireGuard with
-// syncconf when the interface already exists, so a NAT mapping is not torn down.
+// Script is ScriptWith without a target identity: the result refuses to
+// run on a host (it is only good for review and syntax checks). Real
+// provisioning always goes through ScriptWith.
+func Script(nodeName string, files map[string]string) string {
+	return ScriptWith(nodeName, files, Options{})
+}
+
+// Options binds a provision script to the target and to what the preflight
+// saw immediately before execution.
+type Options struct {
+	NodeID     string
+	Deployment string // this panel's deployment id
+	ServerID   string
+	Bundle     string // preflight.BundleDigest of the files (hex)
+	Run        string // run id (journal, work directory)
+	// Expect is the ownership the preflight found: "none" (first install:
+	// no manifest, no planned interface or nft table may exist when the
+	// script starts) or "same" (the manifest must still name this node and
+	// deployment).
+	Expect string
+}
+
+var optRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// CheckOptions validates every value that is placed into the script.
+func CheckOptions(o Options) error {
+	for name, v := range map[string]string{"node": o.NodeID, "deployment": o.Deployment, "server": o.ServerID, "run": o.Run} {
+		if !optRe.MatchString(v) {
+			return fmt.Errorf("provision %s %q 不合法", name, v)
+		}
+	}
+	if len(o.Bundle) != 64 || strings.Trim(o.Bundle, "0123456789abcdef") != "" {
+		return errors.New("provision bundle 摘要不合法")
+	}
+	if o.Expect != "none" && o.Expect != "same" {
+		return errors.New("provision expect 只能是 none 或 same")
+	}
+	return nil
+}
+
+var (
+	ifaceNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,14}$`)
+	unitNameRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9@.-]{0,80}\.(service|timer)$`)
+	nftNameRe   = regexp.MustCompile(`^inet [a-z][a-z0-9_]{0,40}$`)
+)
+
+// ScriptWith writes the node's rendered files and reloads WireGuard with
+// syncconf when the interface already exists, so a NAT mapping is not torn
+// down.
+//
+// Before anything is changed it re-validates, on the host, what the
+// preflight saw (root, no unfinished earlier run, manifest ownership, and
+// for a first install that no planned interface or nft table appeared).
+// Then it keeps a journal under /var/lib/meridian/node and, if any step
+// fails or the session is cut, compensates: units it enabled are
+// disabled, interfaces and nft tables it created are deleted, rules and
+// routes it added are removed, sysctls are restored, files it created are
+// removed and files it replaced are restored (an update re-runs the
+// restored meridian-up.sh). What cannot be undone is printed as
+// MERIDIAN_LEFTOVER and recorded in the journal; packages it installed are
+// kept and recorded (MERIDIAN_KEPT). Success writes the ownership manifest
+// and prints MERIDIAN_PROVISION_OK.
 //
 // WireGuard configs are written 0600 through a temp file. If a config still
 // holds the private-key placeholder (a preview), the script refuses to run
 // before it writes anything. When the node has a SmartDNS config, the
 // resolver is installed before any file is written and must be active at the end.
-func Script(nodeName string, files map[string]string) string {
+func ScriptWith(nodeName string, files map[string]string, o Options) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("# Meridian provision\n")
@@ -64,14 +128,64 @@ func Script(nodeName string, files map[string]string) string {
 		sb.WriteString("echo 'meridian: preview script still has the private-key placeholder; refusing to overwrite configs' >&2\n")
 		sb.WriteString("exit 1\n")
 	}
+	if err := CheckOptions(o); err != nil {
+		sb.WriteString("# NOT BOUND to a target: built without a node, deployment and preflight.\n")
+		sb.WriteString("echo 'meridian: provision script without a target identity; refusing to run' >&2\n")
+		sb.WriteString("exit 1\n")
+		o = Options{NodeID: "unbound", Deployment: "unbound", ServerID: "unbound", Run: "unbound", Expect: "none", Bundle: strings.Repeat("0", 64)}
+	}
+	fp := preflight.FootprintOf(files)
+	var ifaces, units, nfts, tables, prios, dsts []string
+	for _, i := range fp.Interfaces {
+		if ifaceNameRe.MatchString(i.Name) {
+			ifaces = append(ifaces, i.Name)
+		}
+	}
+	if _, ok := files["/etc/meridian/mesh-sidecar.compose.yml"]; ok {
+		ifaces = append(ifaces, "mmesh", "mmesh-c")
+	}
+	for _, u := range fp.Units {
+		if unitNameRe.MatchString(u) {
+			units = append(units, u)
+		}
+	}
+	for _, t := range fp.NFTTables {
+		if nftNameRe.MatchString(t) {
+			nfts = append(nfts, strings.TrimPrefix(t, "inet "))
+		}
+	}
+	for _, n := range fp.Tables {
+		tables = append(tables, fmt.Sprint(n))
+	}
+	seenPrio := map[int]bool{}
+	for _, r := range fp.Rules {
+		if !seenPrio[r.Priority] {
+			seenPrio[r.Priority] = true
+			prios = append(prios, fmt.Sprint(r.Priority))
+		}
+	}
+	seenDst := map[string]bool{}
+	for _, r := range fp.Routes {
+		if r.Table == 0 && !seenDst[r.Dst.String()] {
+			seenDst[r.Dst.String()] = true
+			dsts = append(dsts, r.Dst.String())
+		}
+	}
+	sort.Strings(dsts)
+	needWstunnel := len(fp.Binaries) > 0
+	fmt.Fprintf(&sb, "M_NODE=%s\nM_DEPLOYMENT=%s\nM_SERVER=%s\nM_BUNDLE=%s\nM_RUN=%s\nM_EXPECT=%s\n",
+		shellQuote(o.NodeID), shellQuote(o.Deployment), shellQuote(o.ServerID), shellQuote(o.Bundle), shellQuote(o.Run), shellQuote(o.Expect))
+	fmt.Fprintf(&sb, "M_IFACES=%s\nM_UNITS=%s\nM_NFT=%s\nM_TABLES=%s\nM_PRIOS=%s\nM_DSTS=%s\n",
+		shellQuote(strings.Join(ifaces, " ")), shellQuote(strings.Join(units, " ")), shellQuote(strings.Join(nfts, " ")),
+		shellQuote(strings.Join(tables, " ")), shellQuote(strings.Join(prios, " ")), shellQuote(strings.Join(dsts, " ")))
+	sb.WriteString(provisionPrelude)
+	if needWstunnel {
+		sb.WriteString("command -v wstunnel >/dev/null 2>&1 || m_refuse wstunnel_missing 'wstunnel is missing. Install a pinned release from https://github.com/erebe/wstunnel/releases to /usr/local/bin/wstunnel'\n")
+	}
+	sb.WriteString("{\n")
+	sb.WriteString("m_begin\n")
 	sb.WriteString("export DEBIAN_FRONTEND=noninteractive\n")
-	sb.WriteString("if ! command -v wg >/dev/null 2>&1; then\n")
-	sb.WriteString("  apt-get update -y\n")
-	sb.WriteString("  apt-get install -y wireguard-tools nftables iproute2\n")
-	sb.WriteString("fi\n")
-	sb.WriteString("if ! command -v wstunnel >/dev/null 2>&1; then\n")
-	sb.WriteString("  echo 'wstunnel is missing. Install a pinned release from https://github.com/erebe/wstunnel/releases to /usr/local/bin/wstunnel' >&2\n")
-	sb.WriteString("fi\n")
+	sb.WriteString(packageInstall)
 	_, hasDNS := files["/etc/smartdns/smartdns.conf"]
 	if hasDNS {
 		sb.WriteString(smartDNSInstall)
@@ -97,8 +211,10 @@ func Script(nodeName string, files map[string]string) string {
 			mode = "755"
 		}
 		dir := dirOf(clean)
+		fmt.Fprintf(&sb, "m_track %s\n", shellQuote(clean))
 		fmt.Fprintf(&sb, "install -d -m %s %s\n", dirMode, shellQuote(dir))
 		fmt.Fprintf(&sb, "tmp=$(mktemp %s)\n", shellQuote(dir+"/.meridian.XXXXXX"))
+		sb.WriteString("m_note tmp \"$tmp\"\n")
 		fmt.Fprintf(&sb, "chmod %s \"$tmp\"\n", mode)
 		fmt.Fprintf(&sb, "cat > \"$tmp\" <<'%s'\n%s%s\n", delim, ensureNL(body), delim)
 		fmt.Fprintf(&sb, "mv -f \"$tmp\" %s\n", shellQuote(clean))
@@ -109,9 +225,255 @@ func Script(nodeName string, files map[string]string) string {
 	if hasDNS {
 		sb.WriteString(smartDNSStart)
 	}
+	sb.WriteString("m_commit\n")
 	sb.WriteString("echo MERIDIAN_PROVISION_OK\n")
+	sb.WriteString("} </dev/null\n")
 	return sb.String()
 }
+
+// provisionPrelude defines the guard, journal, compensation and commit
+// helpers and re-validates the target before anything changes. The part
+// that changes the host is one { … } </dev/null group: bash reads it whole
+// before running it, and no command in it can consume the script that
+// bash reads from stdin.
+const provisionPrelude = provisionGuard + compensateLib + provisionTxn
+
+// provisionGuard re-validates the target before anything changes.
+const provisionGuard = `M_ROOT=''
+M_STATE=$M_ROOT/var/lib/meridian/node
+M_MANIFEST=$M_STATE/manifest
+M_JOURNAL=$M_STATE/journal
+M_WORK=$M_STATE/run-$M_RUN
+M_DONE=0
+M_LEFT=0
+m_refuse() {
+  echo "MERIDIAN_REFUSED $1"
+  echo "meridian: $2; nothing was changed" >&2
+  exit 3
+}
+# Re-validate, immediately before changing anything, what the preflight saw.
+[ "$(id -u)" = 0 ] || m_refuse not_root 'provisioning needs root'
+if [ -f "$M_JOURNAL" ] && ! grep -qx 'state done' "$M_JOURNAL" && ! grep -qx 'state compensated' "$M_JOURNAL" && ! grep -qx 'state withdrawn' "$M_JOURNAL"; then
+  if grep -qx 'kind withdraw' "$M_JOURNAL"; then
+    m_refuse withdraw_incomplete "an earlier withdraw did not finish (see $M_JOURNAL); finish it from the panel's deploy page"
+  fi
+  m_refuse previous_run_incomplete "an earlier run did not finish cleanly (see $M_JOURNAL)"
+fi
+case "$M_EXPECT" in
+  none)
+    [ ! -e "$M_MANIFEST" ] || m_refuse manifest_appeared 'a Meridian manifest appeared since the preflight'
+    for i in $M_IFACES; do
+      if ip link show "$i" >/dev/null 2>&1; then m_refuse interface_appeared "interface $i appeared since the preflight"; fi
+    done
+    for t in $M_NFT; do
+      if command -v nft >/dev/null 2>&1 && nft list table inet "$t" >/dev/null 2>&1; then m_refuse nft_table_appeared "nft table inet $t appeared since the preflight"; fi
+    done ;;
+  same)
+    if ! grep -qx "node $M_NODE" "$M_MANIFEST" 2>/dev/null || ! grep -qx "deployment $M_DEPLOYMENT" "$M_MANIFEST" 2>/dev/null; then
+      m_refuse manifest_changed 'the Meridian manifest on this host no longer names this node and deployment'
+    fi ;;
+  *) m_refuse bad_expectation 'unknown expectation' ;;
+esac
+`
+
+// compensateLib undoes a provision run from its work directory
+// ($M_WORK: actions, backups and the pre-* state recorded by m_begin). It
+// is shared by the provision script (trap on failure) and the withdraw
+// script's journal mode (panel-driven recovery of an interrupted run), so
+// both undo exactly the same way. It expects M_WORK, M_JOURNAL, M_DONE,
+// M_EXPECT, M_IFACES, M_UNITS, M_NFT, M_TABLES, M_PRIOS, M_DSTS and M_ROOT
+// (empty on a host). Every step is idempotent: running it again after a
+// partial compensation only retries what is still there.
+const compensateLib = `m_note() { printf '%s\n' "$*" >> "$M_WORK/actions"; }
+m_jot() { printf '%s\n' "$*" >> "$M_JOURNAL"; }
+m_left() { echo "MERIDIAN_LEFTOVER $*"; m_jot "leftover $*"; M_LEFT=1; }
+m_kept() { echo "MERIDIAN_KEPT $*"; m_jot "leftover $* (kept on purpose)"; }
+m_pre_unit() { awk -v u="$1" -v c="$2" '$1==u {print $c}' "$M_WORK/pre-units"; }
+m_compensate() {
+  local rc=$?
+  local kind p u i t fam line prio sel tbl d v
+  trap - EXIT
+  # The SSH session may be gone: ignore hangups and broken pipes so the
+  # compensation runs to the end and lands in the journal.
+  trap '' HUP INT TERM PIPE
+  set +eu
+  if [ "$M_DONE" = 1 ]; then exit "$rc"; fi
+  [ "$rc" != 0 ] || rc=1
+  echo "MERIDIAN_COMPENSATING exit=$rc"
+  m_jot "failed exit $rc"
+  for u in $M_UNITS; do
+    if [ "$(m_pre_unit "$u" 2)" != enabled ]; then systemctl disable "$u" >/dev/null 2>&1; fi
+    if [ "$(m_pre_unit "$u" 3)" != active ] && systemctl is-active --quiet "$u" 2>/dev/null; then
+      systemctl stop "$u" >/dev/null 2>&1 || m_left unit "$u still running"
+    fi
+  done
+  if grep -qx 'pkg smartdns' "$M_WORK/actions" 2>/dev/null; then
+    systemctl disable --now smartdns.service >/dev/null 2>&1 || m_left unit 'smartdns.service still running'
+  fi
+  if grep -qx "file-new $M_ROOT/etc/meridian/mesh-sidecar.compose.yml" "$M_WORK/actions" 2>/dev/null && command -v docker >/dev/null 2>&1; then
+    docker compose -f "$M_ROOT/etc/meridian/mesh-sidecar.compose.yml" down >/dev/null 2>&1 || m_left container 'mesh sidecar (docker compose down failed)'
+  fi
+  for i in $M_IFACES; do
+    if ! grep -qx "$i" "$M_WORK/pre-links" && ip link show "$i" >/dev/null 2>&1; then
+      ip link del "$i" >/dev/null 2>&1 || m_left interface "$i"
+    fi
+  done
+  for t in $M_NFT; do
+    if ! grep -qx "table inet $t" "$M_WORK/pre-nft" && nft list table inet "$t" >/dev/null 2>&1; then
+      nft delete table inet "$t" >/dev/null 2>&1 || m_left nft "inet $t"
+    fi
+  done
+  for fam in 4 6; do
+    ip -"$fam" rule show 2>/dev/null | while IFS= read -r line; do
+      grep -qxF -- "$line" "$M_WORK/pre-rule$fam" && continue
+      prio=${line%%:*}
+      sel=${line#*:}
+      case " $M_PRIOS " in *" $prio "*) ;; *) continue ;; esac
+      # shellcheck disable=SC2086
+      ip -"$fam" rule del priority "$prio" $sel >/dev/null 2>&1 || m_left rule "IPv$fam $line"
+    done
+    for tbl in $M_TABLES; do
+      if ! grep -Eq "table ($tbl|meridian_[a-z0-9_]+)( |\$)" "$M_WORK/pre-route$fam"; then
+        ip -"$fam" route flush table "$tbl" >/dev/null 2>&1
+      fi
+    done
+    ip -"$fam" route show table main 2>/dev/null | while IFS= read -r line; do
+      grep -qxF -- "$line" "$M_WORK/pre-route$fam" && continue
+      d=${line#blackhole }
+      d=${d%% *}
+      case " $M_DSTS " in *" $d "*) ;; *) continue ;; esac
+      # shellcheck disable=SC2086
+      ip -"$fam" route del $line >/dev/null 2>&1 || m_left route "IPv$fam $line"
+    done
+  done
+  while read -r p v; do
+    [ -w "$p" ] || continue
+    if [ "$(head -c 32 "$p")" != "$v" ]; then printf '%s\n' "$v" > "$p" 2>/dev/null || m_left sysctl "$p"; fi
+  done < "$M_WORK/pre-sysctl"
+  tac "$M_WORK/actions" 2>/dev/null | while read -r kind p; do
+    case "$kind" in
+      tmp) rm -f -- "$p" ;;
+      file-new) rm -f -- "$p" || m_left file "$p" ;;
+      file-replaced) cp -a -- "$M_WORK/backup$p" "$p" || m_left file "$p (backup in $M_WORK/backup$p)" ;;
+      dir-new) [ ! -d "$p" ] || rmdir -- "$p" 2>/dev/null || m_left dir "$p" ;;
+      pkg) m_kept package "$p" ;;
+    esac
+  done
+  if [ "$M_EXPECT" = same ] && [ -x "$M_ROOT/usr/local/sbin/meridian-up.sh" ]; then
+    if "$M_ROOT/usr/local/sbin/meridian-up.sh" >/dev/null 2>&1; then
+      echo MERIDIAN_RESTORED_PREVIOUS
+    else
+      m_left runtime 'previous meridian-up.sh failed after the files were restored'
+    fi
+  fi
+  if grep -q '^leftover ' "$M_JOURNAL" && grep -v 'kept on purpose' "$M_JOURNAL" | grep -q '^leftover '; then
+    sed -i 's/^state running$/state incomplete/' "$M_JOURNAL"
+    echo MERIDIAN_COMPENSATION_INCOMPLETE
+  else
+    sed -i 's/^state running$/state compensated/' "$M_JOURNAL"
+    rm -rf "$M_WORK"
+    echo MERIDIAN_COMPENSATED
+  fi
+  exit "$rc"
+}
+`
+
+// provisionTxn opens the journal, tracks files and commits the manifest.
+const provisionTxn = `m_begin() {
+  install -d -m 700 "$M_STATE"
+  rm -rf "$M_WORK"
+  install -d -m 700 "$M_WORK" "$M_WORK/backup"
+  printf 'meridian-node-journal 1\nstate running\nnode %s\ndeployment %s\nrun %s\nstarted %s\n' "$M_NODE" "$M_DEPLOYMENT" "$M_RUN" "$(date +%s)" > "$M_JOURNAL"
+  : > "$M_WORK/actions"
+  { ip -o link show 2>/dev/null || true; } | awk -F': ' '{print $2}' | sed 's/@.*//' > "$M_WORK/pre-links"
+  { nft list tables 2>/dev/null || true; } > "$M_WORK/pre-nft"
+  for fam in 4 6; do
+    { ip -"$fam" rule show 2>/dev/null || true; } > "$M_WORK/pre-rule$fam"
+    { ip -"$fam" route show table all 2>/dev/null || true; } > "$M_WORK/pre-route$fam"
+  done
+  for f in /proc/sys/net/ipv4/ip_forward /proc/sys/net/ipv6/conf/all/forwarding /proc/sys/net/ipv4/conf/*/rp_filter /proc/sys/net/ipv4/conf/*/send_redirects /proc/sys/net/ipv4/conf/*/accept_redirects /proc/sys/net/ipv6/conf/*/accept_redirects; do
+    if [ -r "$f" ]; then printf '%s %s\n' "$f" "$(head -c 32 "$f")"; fi
+  done > "$M_WORK/pre-sysctl"
+  for u in $M_UNITS smartdns.service; do
+    printf '%s %s %s\n' "$u" "$(systemctl is-enabled "$u" 2>/dev/null || true)" "$(systemctl is-active "$u" 2>/dev/null || true)"
+  done > "$M_WORK/pre-units"
+  # Written last: its presence means the pre-* state above is complete, so
+  # a panel-driven recovery (withdraw script, journal mode) can compensate.
+  # Without it, nothing of this run changed the host yet.
+  printf 'ifaces %s\nunits %s\nnft %s\ntables %s\nprios %s\ndsts %s\nexpect %s\n' "$M_IFACES" "$M_UNITS" "$M_NFT" "$M_TABLES" "$M_PRIOS" "$M_DSTS" "$M_EXPECT" > "$M_WORK/params.next"
+  mv -f "$M_WORK/params.next" "$M_WORK/params"
+  trap m_compensate EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+# m_track records whether a file is new or replaced (and backs it up) and
+# which directories this run creates.
+m_track() {
+  local p=$1 d missing=""
+  d=${p%/*}
+  while [ -n "$d" ] && [ ! -d "$d" ]; do missing="$d $missing"; d=${d%/*}; done
+  # Outermost first, so compensation (which replays in reverse) removes
+  # the innermost directory first.
+  for d in $missing; do m_note "dir-new $d"; done
+  if [ -e "$p" ] || [ -L "$p" ]; then
+    install -d -m 700 "$M_WORK/backup${p%/*}"
+    cp -a -- "$p" "$M_WORK/backup$p"
+    m_note "file-replaced $p"
+  else
+    m_note "file-new $p"
+  fi
+}
+# m_commit writes the ownership manifest (what the next preflight reads to
+# tell "ours, same node" from everything else, and what a withdraw removes)
+# and closes the journal.
+m_commit() {
+  local next=$M_MANIFEST.next p
+  {
+    echo 'meridian-node-manifest 1'
+    echo "node $M_NODE"
+    echo "deployment $M_DEPLOYMENT"
+    echo "server $M_SERVER"
+    echo "bundle $M_BUNDLE"
+    echo "installed $(date +%s)"
+    awk '$1=="file-new" || $1=="file-replaced" {print $2}' "$M_WORK/actions" | sort -u | while read -r p; do
+      echo "file $p $(sha256sum -- "$p" | cut -c1-64)"
+    done
+    if [ -f "$M_MANIFEST" ]; then
+      awk '$1=="file" || $1=="orphan" {print $2}' "$M_MANIFEST" | sort -u | while read -r p; do
+        grep -qE "^(file-new|file-replaced) $p\$" "$M_WORK/actions" || echo "orphan $p"
+      done
+      grep '^pkg ' "$M_MANIFEST" || true
+    fi
+    for p in $M_IFACES; do echo "iface $p"; done
+    for p in $M_UNITS; do echo "unit $p"; done
+    for p in $M_NFT; do echo "nft inet $p"; done
+    for p in $M_TABLES; do echo "table $p"; done
+    for p in $M_PRIOS; do echo "prio $p"; done
+    for p in $M_DSTS; do echo "route $p"; done
+    awk '$1=="pkg" {print "pkg " $2}' "$M_WORK/actions"
+  } > "$next"
+  chmod 600 "$next"
+  mv -f "$next" "$M_MANIFEST"
+  sed -i 's/^state running$/state done/' "$M_JOURNAL"
+  M_DONE=1
+  rm -rf "$M_WORK"
+}
+`
+
+// packageInstall installs only what is missing, one package per missing
+// command, and records each for the manifest (never removed on failure).
+const packageInstall = `m_need=""
+command -v wg >/dev/null 2>&1 || m_need="$m_need wireguard-tools"
+command -v nft >/dev/null 2>&1 || m_need="$m_need nftables"
+command -v ip >/dev/null 2>&1 || m_need="$m_need iproute2"
+if [ -n "$m_need" ]; then
+  apt-get update -y
+  # shellcheck disable=SC2086
+  apt-get install -y $m_need
+  for m_p in $m_need; do m_note "pkg $m_p"; done
+fi
+`
 
 // smartDNSInstall installs the resolver before any config is replaced. The
 // distro package would otherwise start with its stock config (bind [::]:53 on
@@ -130,6 +492,7 @@ const smartDNSInstall = `if ! command -v smartdns >/dev/null 2>&1; then
     echo 'smartdns is not installable from apt. Install a pinned release from https://github.com/pymumu/smartdns/releases, then rerun.' >&2
     exit 1
   fi
+  m_note "pkg smartdns"
   if [ "$hold_rc" = 1 ]; then rm -f /usr/sbin/policy-rc.d; fi
 fi
 `

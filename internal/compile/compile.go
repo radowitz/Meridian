@@ -197,7 +197,8 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		add(prefix+"etc/meridian/forwarding.conf", renderForwarding(t, n))
 		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, exits, groups))
 		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, exits, groups))
-		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels))
+		meshDNS := n.Role == model.RoleExit && len(meshDNSGroups(groups, n.ID)) > 0
+		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels, meshDNS))
 		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, groups, mss4, mss6, decisions, clamps))
 		if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
 			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels, exits, groups))
@@ -222,7 +223,11 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		if n.Role != model.RoleGateway && meshPeer(t, n.ID) {
 			add(prefix+"etc/meridian/mesh-sidecar.compose.yml", renderMeshCompose(t))
 			add(prefix+"etc/meridian/mesh.env.example", renderMeshEnvExample())
-			add(prefix+"usr/local/sbin/meridian-mesh-up.sh", renderMeshUp(t))
+			add(prefix+"usr/local/sbin/meridian-mesh-up.sh", renderMeshUp(t, n, groups))
+		}
+		if meshDNS {
+			add(prefix+"etc/systemd/system/meridian-mesh-seal.service", renderMeshSealService())
+			add(prefix+"etc/systemd/system/meridian-mesh-seal.timer", renderMeshSealTimer())
 		}
 		if srv := renderWstunnelServer(n, tunnels); srv != "" {
 			add(prefix+"etc/systemd/system/wstunnel-meridian.service", srv)
@@ -338,6 +343,12 @@ func renderOrder(order []string, groups []GroupPlan) string {
 			sb.WriteString("# group names until the member in use is re-published; it never falls back to\n")
 			sb.WriteString("# another resolver.\n")
 			break
+		}
+	}
+	for _, g := range groups {
+		if g.Dynamic && g.Mesh && g.MeshResolver != "" {
+			fmt.Fprintf(&sb, "# Group %s on the Mesh backup resolves at exit %s: after changing groups or Mesh\n", g.Group.ID, g.MeshResolver)
+			fmt.Fprintf(&sb, "# edges, publish that exit and redeploy Mesh so its node publishes %s/128.\n", g.Resolver)
 		}
 	}
 	for i, id := range order {

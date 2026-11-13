@@ -1,0 +1,55 @@
+meridian-preflight 1
+uid 0
+arch x86_64
+kernel 6.12.12-amd64
+os-id debian
+os-version 13
+os-pretty "Debian GNU/Linux 13 (trixie)"
+systemd yes
+mem-total-kb 1000000
+mem-avail-kb 600000
+disk-avail-kb 9000000
+cmd wg no
+cmd nft yes
+cmd ip yes
+cmd apt-get yes
+cmd systemctl yes
+cmd smartdns no
+iptables-version iptables v1.8.11 (nf_tables)
+ipt ipv4 -P INPUT ACCEPT
+ipt ipv4 -P FORWARD ACCEPT
+sysctl net.ipv4.ip_forward 0
+sysctl net.ipv6.conf.all.forwarding 0
+link lo
+link eth0
+link CloudflareWARP
+addr lo 127.0.0.1/8
+addr eth0 192.0.2.80/24
+addr CloudflareWARP 100.96.0.12/32
+addr CloudflareWARP 2001:db8:4700::12/128
+route4 default via 192.0.2.1 dev eth0
+route4 192.0.2.0/24 dev eth0 proto kernel scope link src 192.0.2.80
+rule4 0:	from all lookup local
+rule4 32765:	not from all fwmark 0x100cf lookup 65743
+rule4 32766:	from all lookup main
+rule6 32765:	not from all fwmark 0x100cf lookup 65743
+rtable4 65743 route
+rtable4 65743 default
+rtable4 local route
+ss udp   UNCONN 0      0         127.0.0.53%lo:53      0.0.0.0:*    users:(("systemd-resolve",pid=300,fd=12))
+ss udp   UNCONN 0      0          127.0.2.2:53         0.0.0.0:*    users:(("warp-svc",pid=1500,fd=20))
+ss udp   UNCONN 0      0        100.96.0.12:53         0.0.0.0:*    users:(("warp-svc",pid=1500,fd=21))
+ss tcp   LISTEN 0      1024       127.0.2.2:53         0.0.0.0:*    users:(("warp-svc",pid=1500,fd=22))
+nft table inet cloudflare-warp {
+nft chain input {
+nft type filter hook input priority filter; policy accept;
+nft chain output {
+nft type filter hook output priority filter; policy accept;
+unit warp-svc.service active enabled 1500
+unit systemd-resolved.service active enabled 300
+unit netfilter-persistent.service active enabled 0
+unit nftables.service inactive disabled 0
+proc warp-svc yes
+candidate smartdns 46.1+dfsg-1
+@PATHS@
+meridian-preflight-end

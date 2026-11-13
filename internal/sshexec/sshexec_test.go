@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -346,5 +348,28 @@ func TestKeyNotOfferedIsNotAuthFailed(t *testing.T) {
 	ct, _ = f.conn.Test(context.Background(), sv.ID)
 	if ct.Code != CodeAuthFailed {
 		t.Fatalf("wrong key: %+v", ct)
+	}
+}
+
+// The preflight's arguments are checked before anything connects.
+func TestRunPreflightRefusesBadArgs(t *testing.T) {
+	dialed := false
+	c := &Connector{Dial: func(context.Context, string, string) (net.Conn, error) { dialed = true; return nil, errors.New("no") }}
+	for _, args := range [][]string{
+		{"/etc/wireguard/m01.conf"},       // not quoted
+		{"'/etc/wireguard/m01.conf'; id"}, // trailing command
+		{"'/etc/wireguard/$(id)'"},        // substitution
+		{"'/etc/wireguard/../../shadow'"}, // traversal
+		{"'relative'"},                    // not absolute
+		{"'/etc/wireguard/a b'"},          // space
+		{"'/etc/wireguard/a'\n'/etc/x'"},  // newline
+	} {
+		_, err := c.RunPreflight(context.Background(), Target{ServerID: "srv"}, args)
+		if CodeOf(err) != CodeBadArgs {
+			t.Fatalf("%q: %v", args, err)
+		}
+	}
+	if dialed {
+		t.Fatal("dialed with refused arguments")
 	}
 }

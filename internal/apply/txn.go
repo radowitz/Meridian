@@ -84,6 +84,14 @@ type Manifest struct {
 // Empty is the state "nothing of Meridian is installed".
 func (m Manifest) Empty() bool { return len(m.Files) == 0 }
 
+// OriginWithdrawn marks the manifest a gateway withdraw leaves behind: only
+// the LAN guard (its boot file and table inet meridian_guard) is still
+// installed. See Applier.Withdraw.
+const OriginWithdrawn = "withdrawn"
+
+// Withdrawn reports whether the host was withdrawn down to the guard.
+func (m Manifest) Withdrawn() bool { return m.Origin == OriginWithdrawn }
+
 func (m Manifest) resources() hostexec.Resources {
 	return hostexec.Resources{Units: m.Units, Interfaces: m.Interfaces, NFTTables: m.NFTTables, RouteTables: m.RouteTables}
 }
@@ -257,6 +265,23 @@ type HostReport struct {
 	Warnings    []string        `json:"warnings,omitempty"`
 	Committed   bool            `json:"committed"`
 	Compensated bool            `json:"compensated,omitempty"`
+	// Sysctl: the managed sysctl files as written and as read back from
+	// the running kernel after a committed install or runtime rollback.
+	Sysctl *SysctlReport `json:"sysctl,omitempty"`
+}
+
+// attachSysctl adds the sysctl report of a committed transaction (and its
+// problems as warnings). Withdrawn or empty targets have no report.
+func (t *txn) attachSysctl(previous string) {
+	if !t.rep.Committed || t.j.To.Empty() || t.j.To.Withdrawn() {
+		return
+	}
+	r := t.a.sysctlReport(previous, t.toFiles)
+	if r == nil {
+		return
+	}
+	t.rep.Sysctl = r
+	t.rep.Warnings = append(t.rep.Warnings, r.Warnings()...)
 }
 
 // TxnError is a failed host transaction. Compensated reports whether the
@@ -712,8 +737,14 @@ func (t *txn) converge(from, to Manifest, toFiles map[string]string, tag string)
 		NFTTables:   minus(from.NFTTables, to.NFTTables),
 		RouteTables: minusInt(from.RouteTables, to.RouteTables),
 	}
+	// Towards the withdrawn state the agent's withdraw action removes the
+	// resources: forwarding off first and the LAN guard kept and verified.
+	removal := hostexec.ActionRollback
+	if to.Withdrawn() {
+		removal = hostexec.ActionWithdraw
+	}
 	if !rm.Empty() {
-		if err := t.call(hostexec.ActionRollback, tag+"-remove", rm); err != nil {
+		if err := t.call(removal, tag+"-remove", rm); err != nil {
 			return err
 		}
 	}
@@ -740,6 +771,12 @@ func (t *txn) converge(from, to Manifest, toFiles map[string]string, tag string)
 	}
 	if to.Empty() {
 		return nil
+	}
+	if to.Withdrawn() {
+		// Nothing is activated: the agent checks that forwarding is off,
+		// meridian.service is stopped and the guard (whose boot file was
+		// just written or kept) is loaded.
+		return t.call(hostexec.ActionWithdraw, tag+"-guard", hostexec.Resources{})
 	}
 	r := to.resources()
 	// Restart the resolver only when its config is new or changed.

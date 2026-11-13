@@ -37,7 +37,9 @@ import (
 //     the sidecar, warp-cli Connected; at Cloudflare: node
 //     status "healthy". Nothing is published before this passes.
 //  6. routes     publish the planned CIDR routes for the exit nodes.
-//  7. activate   re-seal the hub sidecar so its table 170 picks the routes up.
+//  7. activate   re-seal the sidecars of exits that publish a region-group
+//     resolver address, then the hub, so each table 170 picks the
+//     routes up.
 //
 // The resulting state is "published", and the data plane stays "unverified":
 // publishing routes is not evidence that packets cross the Mesh.
@@ -1059,21 +1061,44 @@ func (d *Deployer) stageActivate(ctx context.Context, j *Journal, p Plan, rec *S
 	if !ok {
 		return errors.New("计划里没有枢纽")
 	}
+	// An exit that answers a region group's resolver over the Mesh replies
+	// through its own sidecar's table 170, which must hold the Mesh routes
+	// Cloudflare installed after the sidecar was sealed. Exits first, the
+	// hub last (its table 170 picks up the routes just published).
+	seen := map[string]bool{}
+	for _, r := range p.Routes {
+		if r.Purpose != PurposeGroupResolver || seen[r.ExitID] {
+			continue
+		}
+		seen[r.ExitID] = true
+		if err := d.refresh(ctx, j, r.ExitID, rec); err != nil {
+			return fmt.Errorf("出口 %s 重新封装：%v", r.ExitID, err)
+		}
+	}
+	if err := d.refresh(ctx, j, hub.ID, rec); err != nil {
+		return fmt.Errorf("枢纽重新封装：%v", err)
+	}
+	rec.Detail = append(rec.Detail, "路由已发布。数据面仍是「未验证」：需要 deploy/verify-mesh-veth.sh 与真实转发证据。")
+	return nil
+}
+
+// refresh re-seals one host's sidecar (RefreshScript) and records its
+// table 170.
+func (d *Deployer) refresh(ctx context.Context, j *Journal, nodeID string, rec *StageRecord) error {
 	script, err := RefreshScript(j.RunID)
 	if err != nil {
 		return err
 	}
-	out, err := d.exec(ctx, j, hub.ID, ActRefresh, script)
+	out, err := d.exec(ctx, j, nodeID, ActRefresh, script)
 	for _, l := range ParseChecks(d.red(out)) {
-		rec.Detail = append(rec.Detail, hub.ID+": "+l)
+		rec.Detail = append(rec.Detail, nodeID+": "+l)
 	}
 	if err == nil && !strings.Contains(out, "MESH_REFRESH_OK") {
 		err = errors.New("刷新脚本没有报告 MESH_REFRESH_OK")
 	}
 	if err != nil {
-		return fmt.Errorf("枢纽重新封装：%v %s", err, tail(d.red(out)))
+		return fmt.Errorf("%v %s", err, tail(d.red(out)))
 	}
-	rec.Detail = append(rec.Detail, "路由已发布。数据面仍是「未验证」：需要 deploy/verify-mesh-veth.sh 与真实转发证据。")
 	return nil
 }
 

@@ -115,6 +115,15 @@ func (h *simHost) Run(ctx context.Context, prog string, args ...string) (string,
 			h.nft[m[1]+" "+m[2]] = true
 		}
 		h.units["meridian.service"] = true
+	case prog == "systemctl" && args[0] == "restart" && args[1] == "meridian-guard.service":
+		// Loads only the guard table from its boot file.
+		if _, err := os.Stat(filepath.Join(h.root, "etc", "nftables.d", "meridian-guard.nft")); err != nil {
+			return "", errors.New("ConditionPathExists failed")
+		}
+		h.nft["inet meridian_guard"] = true
+		h.units["meridian-guard.service"] = true
+	case prog == "systemctl" && args[0] == "stop":
+		delete(h.units, args[1])
 	case prog == "systemctl" && args[0] == "restart":
 		if !unitFile(args[1]) {
 			return "", errors.New("unit not found")

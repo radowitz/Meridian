@@ -66,6 +66,8 @@ import {
   Section,
   StatusTag,
   TimeText,
+  groupLabel,
+  isDuplicateGroupName,
   regionLabel,
   showFieldError,
   useAction,
@@ -126,6 +128,7 @@ export const ACTUAL_CODE: Record<string, string> = {
   table_diverged: "枢纽路由表与切换器的选择不一致",
   static_only: "枢纽不切换这个组",
   not_read: "还没有读取枢纽状态",
+  hub_identity_changed: "上次读取的不是当前枢纽（枢纽节点、服务器、地址、SSH 端口或主机指纹已变更），需要重新读取",
 };
 
 /** Tag for a group's actual state: never "ok"-coloured unless the hub reported it. */
@@ -144,6 +147,7 @@ export function actualTag(a: GroupActualView): { kind: StatusKind; label: string
     case "never_read":
       return { kind: "unverified", label: "未验证 · 未读取" };
     default:
+      if (a.code === "hub_identity_changed") return { kind: "unverified", label: "未验证 · 枢纽已变更" };
       return { kind: "unverified", label: "未验证 · 读不到" };
   }
 }
@@ -162,6 +166,14 @@ function ActualFix({ a, hub, onRefresh, refreshing }: { a: GroupActualView; hub?
       return <Link to={href("topology", hub?.hub_node)}>为枢纽节点选择服务器</Link>;
     case "server_not_ready":
       return hub?.server_id ? <Link to={href("servers", hub.server_id)}>到服务器页确认指纹和凭据</Link> : <Link to={href("servers")}>到服务器页</Link>;
+    case "hub_identity_changed":
+      // The old report is not the current hub's: read the current one, or
+      // first make it readable (a new address or port needs its key
+      // confirmed again).
+      if (hub && !hub.readable) {
+        return hub.server_id ? <Link to={href("servers", hub.server_id)}>到服务器页确认指纹和凭据</Link> : <Link to={href("topology", hub.hub_node)}>为枢纽节点选择服务器</Link>;
+      }
+      return refresh;
     case "plan_differs":
     case "state_missing":
       return (
@@ -256,8 +268,11 @@ function GroupCard({
   hub,
   onRefresh,
   refreshing,
+  allGroups,
 }: {
   g: RegionGroupView;
+  /** Every group: decides whether this one's name needs region + ID to be unambiguous. */
+  allGroups: readonly RegionGroupView[];
   names: Map<string, string>;
   thresholds: GroupThresholds | undefined;
   hub?: GroupHubState;
@@ -283,6 +298,9 @@ function GroupCard({
   }, [highlighted]);
 
   const name = (id: string) => (id === MESH_ACTIVE ? "Mesh 备路" : names.get(id) ?? id);
+  // Unambiguous name for titles, labels and messages (region + ID when another group has the same name).
+  const label = groupLabel(g, allGroups);
+  const duplicate = isDuplicateGroupName(g, allGroups);
   const statusById = new Map(g.member_status.map((m) => [m.id, m]));
   const userOrder = order ?? g.members;
   const dirtyOrder = order !== null && order.join() !== g.members.join();
@@ -328,6 +346,13 @@ function GroupCard({
           <Typography.Text type="secondary" className="mono-small">
             {g.id}
           </Typography.Text>
+          {duplicate ? (
+            <Tooltip title="另有一个地区组同名；按地区和 ID 区分，选择器里也会显示它们">
+              <Tag color="warning" data-testid={`dup-name-${g.id}`}>
+                同名 · {regionLabel(g.region)}
+              </Tag>
+            </Tooltip>
+          ) : null}
           {g.is_default ? (
             <Tooltip title="没有命中任何规则的境外流量走这个组">
               <Tag color="processing" icon={<StarOutlined />}>
@@ -347,7 +372,7 @@ function GroupCard({
             { value: "auto", label: "自动" },
             { value: "manual", label: "手动" },
           ]}
-          aria-label={`${g.name} 的模式`}
+          aria-label={`${label} 的模式`}
         />
       </div>
       <Space size={[4, 4]} wrap style={{ marginBottom: 8 }}>
@@ -489,7 +514,7 @@ function GroupCard({
               size="small"
               style={{ minWidth: 200 }}
               value={g.chosen || undefined}
-              aria-label={`${g.name} 的指定成员`}
+              aria-label={`${label} 的指定成员`}
               disabled={!!act.busy}
               onChange={(chosen: string) => void patch({ chosen }, `已指定 ${name(chosen)}`, "chosen")}
               options={g.member_status.map((m) => ({
@@ -504,7 +529,7 @@ function GroupCard({
             value={g.on_failure_effective ?? g.on_failure ?? "hold"}
             disabled={!!act.busy}
             onChange={(e) => void patch({ on_failure: e.target.value }, `指定成员不可用时：${ON_FAILURE[e.target.value as "hold"].title}`, "on_failure")}
-            aria-label={`${g.name} 指定成员不可用时`}
+            aria-label={`${label} 指定成员不可用时`}
           >
             {(["hold", "fallback"] as const).map((k) => (
               <Radio key={k} value={k}>
@@ -533,7 +558,7 @@ function GroupCard({
       {userOrder.length === 0 ? (
         <Typography.Paragraph type="secondary">组里还没有成员。编辑这个组来添加出口。</Typography.Paragraph>
       ) : (
-        <ol className="member-list" aria-label={`${g.name} 的成员`}>
+        <ol className="member-list" aria-label={`${label} 的成员`}>
           {userOrder.map((id, i) => {
             const m = statusById.get(id);
             const excluded = !m || !m.eligible;
@@ -669,7 +694,7 @@ function GroupCard({
               onClick={() =>
                 act.run(async () => {
                   const r = await api.setDefaultGroup(g.id);
-                  onChanged(r.group, `${g.name} 已设为默认组`);
+                  onChanged(r.group, `${label} 已设为默认组`);
                 }, "default")
               }
             >
@@ -685,7 +710,7 @@ function GroupCard({
             icon={<DeleteOutlined />}
             onClick={() =>
               confirm({
-                title: `删除地区组「${g.name}」？`,
+                title: `删除地区组「${label}」？`,
                 consequence:
                   g.in_use_by.length > 0
                     ? "这个组还被规则或默认组设置引用，删除会被拒绝；先把引用改到别的组。"
@@ -712,7 +737,7 @@ function GroupCard({
           </Button>
         </Space>
       </div>
-      <RefusedDialog error={refused} title={`地区组「${g.name}」仍被引用，未删除`} onClose={() => setRefused(null)} />
+      <RefusedDialog error={refused} title={`地区组「${label}」仍被引用，未删除`} onClose={() => setRefused(null)} />
     </div>
   );
 }
@@ -741,7 +766,11 @@ function HubStateBar({ hub, onRefresh, refreshing }: { hub: GroupHubState | unde
           <>
             <Typography.Text type="secondary">· 上次读取</Typography.Text>
             <TimeText value={lr.read_at} />
-            {lr.ok ? (
+            {lr.current_hub === false ? (
+              <StatusTag kind="unverified" title={lr.identity_message}>
+                不是当前枢纽
+              </StatusTag>
+            ) : lr.ok ? (
               <StatusTag kind="ok">读取成功</StatusTag>
             ) : (
               <StatusTag kind="failed" title={lr.error}>
@@ -763,6 +792,10 @@ function HubStateBar({ hub, onRefresh, refreshing }: { hub: GroupHubState | unde
           {ACTUAL_CODE[hub.not_readable_code ?? ""] ?? hub.not_readable_code}
           {hub.not_readable_message ? `：${hub.not_readable_message}` : ""}{" "}
           <ActualFix a={{ state: "unavailable", code: hub.not_readable_code, active: "", alert: false, last_switch: null, read_at: null, hub_reported_at: null, deployed_matches: null }} hub={hub} />
+        </Typography.Paragraph>
+      ) : lr && lr.current_hub === false ? (
+        <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }} data-testid="hub-identity-changed">
+          {lr.identity_message || ACTUAL_CODE.hub_identity_changed}
         </Typography.Paragraph>
       ) : lr && !lr.ok && lr.error ? (
         <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }}>
@@ -802,12 +835,15 @@ function GroupDrawer({
   open,
   group,
   exits,
+  others,
   onClose,
   onSaved,
 }: {
   open: boolean;
   group: RegionGroupView | null;
   exits: Node[];
+  /** The existing groups: a name that another group already has gets a hint. */
+  others?: readonly RegionGroupView[];
   onClose: () => void;
   onSaved: (g: RegionGroupView, created: boolean) => void;
 }) {
@@ -815,6 +851,10 @@ function GroupDrawer({
   const act = useAction();
   const [fieldHandled, setFieldHandled] = useState(false);
   const mode = Form.useWatch("mode", form) ?? group?.mode ?? "auto";
+  const typedName = (Form.useWatch("name", form) as string | undefined) ?? group?.name ?? "";
+  const sameName = typedName.trim()
+    ? (others ?? []).filter((o) => o.id !== group?.id && o.name.trim().toLocaleLowerCase() === typedName.trim().toLocaleLowerCase())
+    : [];
   const members = Form.useWatch("members", form) ?? group?.members ?? [];
   const regions = useMemo(() => {
     const set = new Set<string>(REGION_CODES);
@@ -901,7 +941,18 @@ function GroupDrawer({
     >
       {act.error && !fieldHandled ? <ApiErrorAlert error={act.error} /> : null}
       <Form form={form} layout="vertical" initialValues={initial} requiredMark="optional" autoComplete="off">
-        <Form.Item name="name" label="名称" rules={[{ required: true, message: "请填写名称" }]}>
+        <Form.Item
+          name="name"
+          label="名称"
+          rules={[{ required: true, message: "请填写名称" }]}
+          extra={
+            sameName.length > 0 ? (
+              <span data-testid="group-same-name">
+                已有同名地区组 {sameName.map((o) => `${o.id}（${regionLabel(o.region)}）`).join("、")}。可以保存；列表和选择器会附上地区和 ID 区分它们，起个不同的名字更好认。
+              </span>
+            ) : undefined
+          }
+        >
           <Input placeholder="例如 香港（机房）" />
         </Form.Item>
         {!group ? (
@@ -983,10 +1034,18 @@ export default function ExitsPage() {
   const focus = route.params[0];
   const refreshing = hubAct.busy === "hub";
   const refreshHub = () =>
-    void hubAct.run(async () => {
-      const d: RegionGroupsView = await api.refreshGroupRuntime();
-      groups.setData(d);
-    }, "hub");
+    void hubAct.run(
+      async () => {
+        const d: RegionGroupsView = await api.refreshGroupRuntime();
+        groups.setData(d);
+      },
+      "hub",
+      // The hub changed while the read ran: the result was discarded;
+      // show the current hub's state (unknown until read again).
+      (e) => {
+        if (e.code === "hub_identity_changed") void groups.reload();
+      },
+    );
   // One automatic read per visit, bounded: only when the hub can be read
   // and nothing recent is stored. No polling.
   const autoRead = useRef(false);
@@ -995,7 +1054,8 @@ export default function ExitsPage() {
     if (!h || autoRead.current) return;
     autoRead.current = true;
     if (!h.readable || h.refreshing) return;
-    const last = h.last_read ? Date.parse(h.last_read.read_at) : 0;
+    // A read of another hub identity says nothing about this one.
+    const last = h.last_read && h.last_read.current_hub !== false ? Date.parse(h.last_read.read_at) : 0;
     if (Date.now() - last < AUTO_REFRESH_AFTER_MS) return;
     refreshHub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1075,6 +1135,7 @@ export default function ExitsPage() {
                     <GroupCard
                       key={g.id}
                       g={g}
+                      allGroups={d.groups}
                       names={names}
                       thresholds={d.thresholds}
                       hub={d.hub_state}
@@ -1109,12 +1170,12 @@ export default function ExitsPage() {
                 <Dropdown
                   trigger={["click"]}
                   menu={{
-                    items: (groups.data?.groups ?? []).map((g) => ({ key: g.id, label: g.name })),
+                    items: (groups.data?.groups ?? []).map((g) => ({ key: g.id, label: groupLabel(g, groups.data?.groups) })),
                     onClick: ({ key }) => {
                       const g = groups.data!.groups.find((x) => x.id === key)!;
                       void act.run(async () => {
                         const r = await api.updateGroup(g.id, { members: [...g.members, n.id] });
-                        afterChange(putGroup(r.group), `${n.name} 已加入 ${g.name}`);
+                        afterChange(putGroup(r.group), `${n.name} 已加入 ${groupLabel(g, groups.data?.groups)}`);
                       }, `join:${n.id}`);
                     },
                   }}
@@ -1132,6 +1193,7 @@ export default function ExitsPage() {
         open={editing !== null}
         group={editing === "new" ? null : editing}
         exits={exits}
+        others={groups.data?.groups}
         onClose={() => setEditing(null)}
         onSaved={(g, created) => {
           setEditing(null);

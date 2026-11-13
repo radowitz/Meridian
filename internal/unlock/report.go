@@ -264,3 +264,55 @@ func admit(snap *Snapshot, key ResultKey, ok bool, kind Kind, observed, received
 	snap.Latest[k] = ResultRecord{OK: ok, Kind: kind, ObservedAt: observed, ReceivedAt: received}
 	return ""
 }
+
+// ReferencedExits lists, sorted, every exit id the snapshot mentions: in
+// the admitted results (Latest, Applied), the history and the services'
+// active and preferred members. The panel uses it to mark records of exits
+// that no longer exist in the topology (see RemovedExits).
+//
+// Nothing here changes admission: Latest and Applied keep their entries
+// for removed exits, so an old result replayed for an exit id that comes
+// back cannot slip in underneath a newer one.
+func ReferencedExits(snap Snapshot) []string {
+	set := map[string]bool{}
+	add := func(id string) {
+		if id != "" {
+			set[id] = true
+		}
+	}
+	for k := range snap.Latest {
+		parts := strings.SplitN(k, "|", 3)
+		if len(parts) >= 2 {
+			add(parts[1])
+		}
+	}
+	for k := range snap.Applied {
+		if _, exit, ok := strings.Cut(k, "|"); ok {
+			add(exit)
+		}
+	}
+	for _, h := range snap.History {
+		add(h.ExitID)
+	}
+	for _, st := range snap.Services {
+		add(st.Active)
+		add(st.Preferred)
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RemovedExits is ReferencedExits minus the exits that still exist.
+func RemovedExits(snap Snapshot, exists func(string) bool) []string {
+	out := []string{}
+	for _, id := range ReferencedExits(snap) {
+		if !exists(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}

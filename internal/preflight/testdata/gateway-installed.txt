@@ -1,0 +1,132 @@
+meridian-preflight 1
+uid 0
+arch x86_64
+kernel 6.12.12-amd64
+os-id debian
+os-version 13
+os-codename trixie
+os-pretty Debian GNU/Linux 13 (trixie)
+systemd yes
+mem-total-kb 4018108
+mem-avail-kb 3119976
+disk-avail-kb 30000000
+cmd wg yes
+cmd wg-quick yes
+cmd nft yes
+cmd ip yes
+cmd ss yes
+cmd iptables yes
+cmd ip6tables yes
+cmd apt-get yes
+cmd systemctl yes
+cmd smartdns no
+cmd wstunnel yes
+cmd docker yes
+cmd sha256sum yes
+iptables-version iptables v1.8.11 (nf_tables)
+ipt ipv4 -P INPUT ACCEPT
+ipt ipv4 -P FORWARD ACCEPT
+ipt ipv6 -P INPUT ACCEPT
+ipt ipv6 -P FORWARD ACCEPT
+sysctl net.ipv4.ip_forward 1
+sysctl net.ipv6.conf.all.forwarding 1
+link lo
+link eth0
+link docker0
+link m02
+link m02w
+link m03
+wglink m02
+wglink m02w
+wglink m03
+addr lo 127.0.0.1/8
+addr lo 10.66.200.10/32
+addr lo fd66:0:0:ff::a/128
+addr lo 10.66.200.11/32
+addr lo fd66:0:0:ff::b/128
+addr eth0 192.168.100.88/24
+addr eth0 2001:db8:100::88/64
+addr docker0 172.17.0.1/16
+addr m02 10.66.1.1/30
+addr m02 fd66:0:0:1::1/64
+addr m02w 10.66.102.1/30
+addr m02w fd66:0:0:82::1/64
+addr m03 10.66.4.1/30
+addr m03 fd66:0:0:4::1/64
+route4 default via 192.168.100.1 dev eth0 onlink
+route4 10.66.0.0/16 dev m02 scope link
+route4 blackhole 10.66.0.0/16 metric 32767
+route4 10.66.1.0/30 dev m02 proto kernel scope link src 10.66.1.1
+route4 10.66.4.0/30 dev m03 proto kernel scope link src 10.66.4.1
+route4 10.66.102.0/30 dev m02w proto kernel scope link src 10.66.102.1
+route4 172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown
+route4 192.168.100.0/24 dev eth0 proto kernel scope link src 192.168.100.88
+route4 203.0.113.10 via 192.168.100.1 dev eth0
+route4 203.0.113.20 via 192.168.100.1 dev eth0
+route6 2001:db8:100::/64 dev eth0 proto kernel metric 256 pref medium
+route6 fd66:0:0:1::/64 dev m02 proto kernel metric 256 pref medium
+route6 fd66:0:0:4::/64 dev m03 proto kernel metric 256 pref medium
+route6 fd66:0:0:82::/64 dev m02w proto kernel metric 256 pref medium
+route6 fd66:0:0:ff::a dev lo proto kernel metric 256 pref medium
+route6 fd66:0:0:ff::b dev lo proto kernel metric 256 pref medium
+route6 fd66::/48 dev m02 metric 1024 pref medium
+route6 blackhole fd66::/48 dev lo metric 32767 pref medium
+route6 fe80::/64 dev eth0 proto kernel metric 256 pref medium
+route6 default via fe80::1 dev eth0 metric 1024 pref medium
+rule4 0:	from all lookup local
+rule4 17000:	from all fwmark 0x4d72 lookup main
+rule4 17200:	from all fwmark 0x101 lookup meridian_foreign
+rule4 17600:	from all fwmark 0x101 unreachable
+rule4 32766:	from all lookup main
+rule4 32767:	from all lookup default
+rule6 0:	from all lookup local
+rule6 17000:	from all fwmark 0x4d72 lookup main
+rule6 17200:	from all fwmark 0x101 lookup meridian_foreign
+rule6 17600:	from all fwmark 0x101 unreachable
+rule6 32766:	from all lookup main
+rtable4 meridian_domestic route
+rtable4 meridian_domestic default
+rtable4 meridian_foreign route
+rtable4 meridian_foreign default
+rtable4 local route
+rtable6 meridian_foreign default
+rtable6 local route
+rtname 255 local
+rtname 254 main
+rtname 253 default
+rtname 100 meridian_domestic
+rtname 102 meridian_foreign
+rtname 150 meridian_east
+ss udp   UNCONN 0      0                    *:53                *:*
+ss udp   UNCONN 0      0            127.0.0.1:52002       0.0.0.0:*
+ss udp   UNCONN 0      0            127.0.0.1:52003       0.0.0.0:*
+ss tcp   LISTEN 0      4096    192.168.100.88:8787        0.0.0.0:*
+ss tcp   LISTEN 0      128            0.0.0.0:22          0.0.0.0:*
+ss tcp   LISTEN 0      4096                 *:53                *:*
+ss tcp   LISTEN 0      4096                 *:853               *:*
+ssc udp   UNCONN 0      0                    *:53                *:* cgroup:/system.slice/docker-1111111111111111111111111111111111111111111111111111111111111111.scope
+ssc udp   UNCONN 0      0            127.0.0.1:52002       0.0.0.0:* cgroup:/system.slice/wstunnel-client-gw-ali.service
+ssc udp   UNCONN 0      0            127.0.0.1:52003       0.0.0.0:* cgroup:/system.slice/wstunnel-client-gw-hub-wss.service
+ssc tcp   LISTEN 0      4096    192.168.100.88:8787        0.0.0.0:* cgroup:/system.slice/docker-2222222222222222222222222222222222222222222222222222222222222222.scope
+ssc tcp   LISTEN 0      128            0.0.0.0:22          0.0.0.0:* cgroup:/system.slice/ssh.service
+ssc tcp   LISTEN 0      4096                 *:53                *:* cgroup:/system.slice/docker-1111111111111111111111111111111111111111111111111111111111111111.scope
+ssc tcp   LISTEN 0      4096                 *:853               *:* cgroup:/system.slice/docker-1111111111111111111111111111111111111111111111111111111111111111.scope
+nft table inet meridian_guard {
+nft chain forward {
+nft type filter hook forward priority filter - 10; policy drop;
+nft table inet meridian {
+nft chain forward {
+nft type filter hook forward priority filter; policy accept;
+unit docker.service active enabled 700
+unit containerd.service active enabled 650
+unit nftables.service inactive disabled 0
+unit netfilter-persistent.service inactive not-found 0
+unit ufw.service inactive not-found 0
+unit firewalld.service inactive not-found 0
+unit smartdns.service inactive not-found 0
+unit systemd-resolved.service inactive not-found 0
+unit warp-svc.service inactive not-found 0
+nftables-conf flush
+container meridian-smartdns 1111111111111111111111111111111111111111111111111111111111111111 true
+@PATHS@
+meridian-preflight-end

@@ -28,6 +28,9 @@ package api
 //	GET  /api/unlock/catalog          adapters, capabilities, sources, validation status
 //	POST /api/unlock/run              {services?, exits?, groups?, families?} → 202 {job}
 //	GET  /api/unlock/jobs             {jobs (newest first), running, catalog, available}
+//	                                  (available = a probe channel is configured; it does
+//	                                  not check that meridian-host answers — GET
+//	                                  /api/status probe_available / probe_reason does)
 //	GET  /api/unlock/jobs/{id}        {job, running}
 //	POST /api/unlock/jobs/{id}/cancel
 //	GET  /api/unlock/results          newest item per service/exit/family, with the
@@ -1046,6 +1049,24 @@ type resultRow struct {
 	ServiceActive string `json:"service_active,omitempty"`
 	IsActive      bool   `json:"is_active"`
 	Ingestible    bool   `json:"ingestible"`
+	// ExitRemoved: the exit is no longer in the topology. Such rows are
+	// history, never current results; they are left out unless asked for
+	// (include_removed=1) and can be deleted (POST /api/unlock/results/prune).
+	ExitRemoved bool `json:"exit_removed"`
+}
+
+// removedExitCount is how many stored results belong to one removed exit.
+type removedExitCount struct {
+	ExitID  string `json:"exit_id"`
+	Results int    `json:"results"`
+}
+
+// exitExists: the id names an exit node of the topology.
+func exitExists(t model.Topology) func(string) bool {
+	return func(id string) bool {
+		n, ok := t.NodeByID(id)
+		return ok && n.Role == model.RoleExit
+	}
 }
 
 func (s *Server) getUnlockResults(w http.ResponseWriter, r *http.Request) {
@@ -1063,7 +1084,7 @@ func (s *Server) getUnlockResults(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	plans := plansOf(t)
-	hub := s.groupHub()
+	hub := s.groupHub(t)
 	groupsOf := map[string][]exitGroupRef{}
 	for _, g := range sortedGroups(t) {
 		v := viewGroup(t, g, plans, runtime, hub)
@@ -1080,12 +1101,22 @@ func (s *Server) getUnlockResults(w http.ResponseWriter, r *http.Request) {
 		svcs[svc.RuleID] = svc
 	}
 	fService, fExit, fGroup, fFam := q.Get("service"), q.Get("exit"), q.Get("group"), q.Get("family")
+	includeRemoved := q.Get("include_removed") == "1"
+	exists := exitExists(t)
+	removed := map[string]int{}
 	rows := []resultRow{}
 	for _, it := range doc.Items {
+		gone := !exists(it.ExitID)
+		if gone {
+			removed[it.ExitID]++
+			if !includeRemoved {
+				continue
+			}
+		}
 		if (fService != "" && it.Service != fService) || (fExit != "" && it.ExitID != fExit) || (fFam != "" && string(it.Family) != fFam) {
 			continue
 		}
-		row := resultRow{probeJobItem: it, ExitName: nodeName(t, it.ExitID), ExitGroups: groupsOf[it.ExitID]}
+		row := resultRow{probeJobItem: it, ExitName: nodeName(t, it.ExitID), ExitGroups: groupsOf[it.ExitID], ExitRemoved: gone}
 		if row.ExitGroups == nil {
 			row.ExitGroups = []exitGroupRef{}
 		}
@@ -1098,7 +1129,7 @@ func (s *Server) getUnlockResults(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		if svc, ok := svcs[it.Service]; ok {
+		if svc, ok := svcs[it.Service]; ok && !gone {
 			row.ServiceActive = activeFor(snap, svc)
 			row.IsActive = row.ServiceActive == it.ExitID
 		}
@@ -1115,9 +1146,57 @@ func (s *Server) getUnlockResults(w http.ResponseWriter, r *http.Request) {
 		}
 		return a.Family < b.Family
 	})
+	gone := []removedExitCount{}
+	for id, n := range removed {
+		gone = append(gone, removedExitCount{ExitID: id, Results: n})
+	}
+	sort.Slice(gone, func(i, j int) bool { return gone[i].ExitID < gone[j].ExitID })
 	writeJSON(w, http.StatusOK, map[string]any{
 		"results": rows, "validation": probe.Validation, "validation_text": probe.ValidationText,
+		"removed_exits": gone,
 	})
+}
+
+// postUnlockResultsPrune deletes the stored probe results of exits that are
+// no longer in the topology. It touches only the panel's result matrix:
+// the unlock state's admission records (unlock.Snapshot Latest/Applied) and
+// its history are kept, so admission is unchanged and the history still
+// shows what happened (marked as a removed exit by GET /api/unlock).
+func (s *Server) postUnlockResultsPrune(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, err := s.topology()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	exists := exitExists(t)
+	doc := s.loadResults()
+	exits := map[string]bool{}
+	n := 0
+	for k, it := range doc.Items {
+		if !exists(it.ExitID) {
+			delete(doc.Items, k)
+			exits[it.ExitID] = true
+			n++
+		}
+	}
+	if n > 0 {
+		buf, err := json.Marshal(doc)
+		if err == nil {
+			err = s.Store.Put(probeResultsKey, string(buf))
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	ids := make([]string, 0, len(exits))
+	for id := range exits {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	writeJSON(w, http.StatusOK, map[string]any{"removed": n, "exits": ids})
 }
 
 func (s *Server) postUnlockJobCancel(w http.ResponseWriter, r *http.Request) {

@@ -12,11 +12,14 @@
 // group's compiled switch order when the state is judged (Evaluate). A
 // state is only "ok" — shown as the member actually in use — when the
 // report is fresh, was written by the plan the panel would deploy now, and
-// the hub saw the table holding what its switcher chose.
+// the hub saw the table holding what its switcher chose, and when the read
+// was taken from the hub the panel would read now (Identity: hub node,
+// server, normalised address, SSH port and pinned host-key fingerprint).
 package hubstate
 
 import (
 	"fmt"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -349,14 +352,90 @@ const (
 	CodeStaticOrHold      = "static_only"
 	CodeNotRead           = "not_read"
 	CodeRefreshInProgress = "refresh_in_progress"
+	// CodeIdentityChanged: the stored read was taken from another hub
+	// identity (hub node, server, address, port or pinned host key) than
+	// the one the panel would read now. Also the refresh answer when the
+	// identity changed while the read ran (the result is discarded).
+	CodeIdentityChanged = "hub_identity_changed"
 )
+
+// Identity is the hub a read was taken from, or the hub the panel would
+// read now. A read only says something about the current hub when every
+// field is equal (Equal); any change makes the stored read unknown at once,
+// independent of ReadMaxAge.
+type Identity struct {
+	HubNode  string `json:"hub_node,omitempty"`
+	ServerID string `json:"server_id,omitempty"`
+	// Address is NormalizeAddress of the server's address.
+	Address string `json:"address,omitempty"`
+	// Port is the SSH port (0 is stored as 22).
+	Port int `json:"port,omitempty"`
+	// Fingerprint is the pinned host key ("" when nothing is pinned).
+	Fingerprint string `json:"host_key_fingerprint,omitempty"`
+	// Trusted (current identity only, never stored): the pinned key is
+	// trusted now. A pin in the mismatch state is still the same pin (the
+	// host presented another key and every connection is refused), so it
+	// does not change the identity, but no report counts while it lasts.
+	Trusted bool `json:"-"`
+}
+
+// NewIdentity builds a normalised identity; fingerprint is the pinned key
+// ("" when none), and Trusted is set when there is one (the caller clears
+// it when the pin is in the mismatch state).
+func NewIdentity(hubNode, serverID, address string, port int, fingerprint string) Identity {
+	if port == 0 && address != "" {
+		port = 22
+	}
+	fp := strings.TrimSpace(fingerprint)
+	return Identity{HubNode: hubNode, ServerID: serverID, Address: NormalizeAddress(address), Port: port, Fingerprint: fp, Trusted: fp != ""}
+}
+
+// NormalizeAddress makes equal addresses compare equal: surrounding space,
+// brackets, letter case and a trailing dot are ignored, and IP literals are
+// written canonically (IPv4-mapped IPv6 as IPv4, IPv6 compressed).
+func NormalizeAddress(a string) string {
+	a = strings.TrimSpace(a)
+	a = strings.TrimSuffix(strings.TrimPrefix(a, "["), "]")
+	if ip, err := netip.ParseAddr(a); err == nil {
+		return ip.Unmap().String()
+	}
+	return strings.TrimSuffix(strings.ToLower(a), ".")
+}
+
+// Equal: same hub node, server, address, port and pinned key (Trusted is
+// not part of the identity).
+func (i Identity) Equal(o Identity) bool {
+	return i.HubNode == o.HubNode && i.ServerID == o.ServerID && i.Address == o.Address && i.Port == o.Port && i.Fingerprint == o.Fingerprint
+}
+
+// Differs names the fields that differ, for the message.
+func (i Identity) Differs(o Identity) []string {
+	var d []string
+	if i.HubNode != o.HubNode {
+		d = append(d, "枢纽节点")
+	}
+	if i.ServerID != o.ServerID {
+		d = append(d, "服务器")
+	}
+	if i.Address != o.Address {
+		d = append(d, "地址")
+	}
+	if i.Port != o.Port {
+		d = append(d, "SSH 端口")
+	}
+	if i.Fingerprint != o.Fingerprint {
+		d = append(d, "主机指纹")
+	}
+	return d
+}
 
 // Read is one stored attempt to read the hub (successful or not).
 type Read struct {
-	ReadAt    time.Time `json:"read_at"`
-	HubNode   string    `json:"hub_node,omitempty"`
-	ServerID  string    `json:"server_id,omitempty"`
-	ErrorCode string    `json:"error_code,omitempty"`
+	ReadAt time.Time `json:"read_at"`
+	// Identity is the hub the read was taken from (captured before the
+	// read; the connection is pinned to its address, port and key).
+	Identity
+	ErrorCode string `json:"error_code,omitempty"`
 	// SSHCode is the connector's code when ErrorCode is ssh_failed or
 	// server_not_ready.
 	SSHCode  string    `json:"ssh_code,omitempty"`
@@ -421,10 +500,38 @@ func tp(t time.Time) *time.Time { return &t }
 
 func bp(b bool) *bool { return &b }
 
-// Evaluate judges one group against the last read. currentPlan is the
+// Bound says whether the read was taken from the current hub identity. A
+// failed read records the identity it tried (possibly without server or
+// pinned key: that is why it failed) and stays bound while that is still
+// the current one. A report counts only from a server with a pinned key.
+func (r Read) Bound(current Identity) bool {
+	if !r.Identity.Equal(current) {
+		return false
+	}
+	if r.ErrorCode == "" && r.Snapshot != nil {
+		return r.ServerID != "" && r.Fingerprint != "" && current.Trusted
+	}
+	return true
+}
+
+// IdentityMessage explains why a read does not describe the current hub.
+func IdentityMessage(read, current Identity) string {
+	what := strings.Join(read.Differs(current), "、")
+	if what == "" {
+		what = "主机指纹"
+	}
+	if len(read.Differs(current)) == 0 {
+		return "枢纽服务器的主机指纹现在与固定的不一致或未确认；上次读取的报告不再采信，核实指纹后重新读取"
+	}
+	return "上次读取的不是当前的枢纽（" + what + "已变更）；旧报告不再采信，需要对当前枢纽重新读取"
+}
+
+// Evaluate judges one group against the last read. current is the hub
+// identity the panel would read now; a read from any other identity is
+// unknown (CodeIdentityChanged) whatever it says. currentPlan is the
 // GroupPlanID the panel compiles now ("" when it cannot compile);
 // staleAfter is compile.HubStaleAfter; now is the panel's clock.
-func Evaluate(g GroupSpec, rd *Read, currentPlan string, staleAfter time.Duration, now time.Time) Actual {
+func Evaluate(g GroupSpec, rd *Read, current Identity, currentPlan string, staleAfter time.Duration, now time.Time) Actual {
 	if !g.Dynamic {
 		return Actual{State: StateNotSwitchable, Code: CodeStaticOrHold,
 			Message: "枢纽不切换这个组（成员经中继或 Mesh 到达，或没有可用成员），没有枢纽运行状态可读"}
@@ -433,6 +540,12 @@ func Evaluate(g GroupSpec, rd *Read, currentPlan string, staleAfter time.Duratio
 		return Actual{State: StateNeverRead, Code: CodeNotRead, Message: "还没有读取过枢纽的运行状态"}
 	}
 	a := Actual{ReadAt: tp(rd.ReadAt)}
+	if !rd.Bound(current) {
+		// Checked before anything the read says: an error of the old hub is
+		// as irrelevant as its report.
+		a.State, a.Code, a.Message = StateUnavailable, CodeIdentityChanged, IdentityMessage(rd.Identity, current)
+		return a
+	}
 	if rd.ErrorCode != "" || rd.Snapshot == nil {
 		a.State, a.Code, a.SSHCode, a.Message = StateUnavailable, rd.ErrorCode, rd.SSHCode, rd.Error
 		if a.Code == "" {

@@ -38,7 +38,7 @@ sudo bash deploy/debian/install.sh
 - Docker 启动后再把转发关掉（这台机器上还没有数据面）；如果 `iptables -S FORWARD` / `ip6tables -S FORWARD` 仍显示 `-P FORWARD DROP`（以前装过 Docker 的机器），脚本用 `!!!` 醒目提示并在最后再提醒一次：**重启本机即可清除**（Docker 不会再建它）；确认没有别的程序依赖时也可手动 `iptables -P FORWARD ACCEPT`。提示出现时先重启，再去面板安装
 - 把 `/etc/wireguard` 设成 0700（已存在也收紧）
 - 启用 `meridian.service`，开机时若 `/usr/local/sbin/meridian-up.sh` 已存在就只恢复 Meridian 自己的表和路由；启用 `meridian-guard.service`，开机时先于 systemd-sysctl 和 Docker 加载局域网兜底表
-- 构建面板镜像，把同一个 `meridian` 二进制复制到 `/usr/local/bin`，生成 `/etc/meridian-host/agent.token`（0600），启动 `meridian-host.service`。面板容器只能通过它的 root-only socket 请求固定动作（激活、健康检查、回滚），没有 `NET_ADMIN`、`/dev/net/tun` 或 systemd。`meridian-host` 没运行时，面板的「安装到本机」会直接报错，不会假装成功
+- 构建面板镜像，把同一个 `meridian` 二进制复制到 `/usr/local/bin`，生成 `/etc/meridian-host/agent.token`（0600），启动 `meridian-host.service`。面板容器只能通过它的 root-only socket 请求固定动作（激活、健康检查、回滚、撤回，以及只读的安装前预检、名单更新、解锁探测和远程接入状态），没有 `NET_ADMIN`、`/dev/net/tun` 或 systemd。`meridian-host` 没运行时，面板的「安装到本机」会直接报错，不会假装成功
 - 不停止、不修改任何名字里带 mihomo 的服务
 
 脚本不会自动改网卡地址。如果当前没有 `192.168.100.88`，它只打印警告。
@@ -56,7 +56,13 @@ sudo bash deploy/debian/install.sh
 - 升级前数据面没有运行：保持原样，不打开转发，最后提示去面板安装或修好原因后 `systemctl restart meridian.service`
 - 以上任何一步失败（含新版 `meridian-host` 起不来）：把备份的二进制和 unit 放回去、重启旧版 `meridian-host`；数据面升级前在运行而现在没有就再启动一次 `meridian.service`；升级前是关的转发再关上；打印当前数据面和转发状态，退出码 1
 
-无论哪种模式，脚本开始时为 0 的转发项在结束时仍是 0。之后用新镜像重建面板容器（不影响数据面）：
+无论哪种模式，脚本开始时为 0 的转发项在结束时仍是 0。
+
+**`meridian-host` 和面板一起升级。** 这一版的「安装到网关」在写任何文件之前要先经 `meridian-host` 的只读动作 `/v1/preflight` 做安装前预检；旧版 `meridian-host` 没有这个动作，新面板配旧 agent 时安装会以 503 `host_unavailable` 拒绝（什么都不写）。`install.sh` 的升级模式会同时换掉 `/usr/local/bin/meridian` 并重启 `meridian-host`，所以按本节先跑 `install.sh`、再重建面板容器即可；只重建容器、不跑 `install.sh` 是不够的。
+
+**受管 sysctl 文件。** 升级模式不重写 `99-meridian.conf`（只把「开机即打开转发」的行改成 0），所以升级之后、下一次面板安装之前，文件里可能还留着 `install.sh` 或旧版本写的行。下一次「安装到网关」会**整份重写**这个文件和 `/etc/meridian/forwarding.conf`（每次安装都是，不管内容变没变），`meridian-up.sh` 应用其中除开机转发两行之外的每一行并在日志里写一行 `meridian-sysctl: applied N, skipped M`。安装结果里有一块「内核参数」：写入了哪些键、每个键安装后从运行中的内核读回的值是否一致（不一致或内核没有这个键的会同时列为警告），以及**旧文件里有、新文件不再设置的键**——文件里它们已经没有了，但运行中的内核保留原值直到重启，Meridian 不知道原来的默认值，不去改它们。这块结果只是读回内核值，不是泄漏结论；它和下面所有新功能一样**还没有在真实网关上执行过**。
+
+之后用新镜像重建面板容器（不影响数据面）：
 
 ```bash
 sudo docker compose -f deploy/docker-compose.yml up -d            # 或离线镜像：up -d --no-build
@@ -116,6 +122,8 @@ sudo docker compose -f deploy/docker-compose.yml exec meridian cat /var/lib/meri
 
 浏览器打开 `http://192.168.100.88:8787`，把这串口令填进面板。也可以事先设置 `MERIDIAN_TOKEN`。
 
+**开机时局域网地址还没就绪。** 局域网口用 DHCP（`allow-hotplug`）时，Docker 会在拿到租约之前就启动面板容器，这时绑定 `MERIDIAN_BIND` 会得到 `cannot assign requested address`。面板不再靠容器反复崩溃重启来等：它每秒重试一次，最多等 `MERIDIAN_BIND_WAIT`（Compose 里是 `180s`，默认 3 分钟），开始时和之后每 10 秒在日志里写一行 `meridian-bind-waiting: <地址> is not assigned to any interface yet …`，地址出现后写 `meridian-bind-ready …` 并开始服务；等满仍没有就以 `meridian-bind-not-ready: …` 退出（说明要检查局域网口、租约或 `MERIDIAN_BIND`），此时由 Compose 的 `restart: unless-stopped` 再拉起一次。其他绑定错误（端口被占用等）立即退出，不等待。它永远不会改绑 `0.0.0.0`。查看：`sudo docker compose -f deploy/docker-compose.yml logs meridian`。这个等待只在自动化测试里验证过（模拟的 `EADDRNOTAVAIL` 和本机未分配的文档地址），**还没有在真实网关开机时观察过**。
+
 第二个命名卷 `meridian-secrets`（容器里 `/var/lib/meridian-secrets`，`MERIDIAN_SECRETS_DIR`）放服务器、SSH 凭据（密码、私钥、口令）、Cloudflare 令牌，以及远程接入的网关私钥和预共享密钥。它**只靠权限保护**：目录 0700、文件 0600，权限更宽的文件面板拒绝使用；**没有静态加密**，能以 root 读宿主或 Docker 卷的人就能读到这些秘密。它不进数据卷的快照、日志和 API 响应；备份时要单独、加密地备份这个卷，并且不要把它改成宿主绑定目录或放进 git。不用 Docker 时默认在 `MERIDIAN_DATA/secrets`。
 
 Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧的 `docker-compose` 命令时，用那一个；这份 Compose 文件需要 v2 的 `profiles`。
@@ -145,6 +153,18 @@ Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧
 
 远程节点的装机脚本可以先演练（`POST /api/provision` 带 `dry_run: true`，不需要服务器，脚本里只有占位符）。真正装机经下面「服务器、密钥与 Cloudflare」里配好的服务器执行，请求里只有节点 ID，不再粘贴私钥。响应里不会出现新生成的 WireGuard 私钥明文。
 
+**装机前预检。** 在「部署 → 远端节点」点「生成密钥并下发」或「下发」，面板先经已固定指纹的 SSH 运行一份固定的**只读**预检脚本，列出：目标（服务器、地址、端口、固定指纹、凭据）、要做的变更（新建或替换的文件、接口、监听端口、路由、规则、nft 表、服务、软件包、会打开的转发）和与主机上已有东西的冲突（按「阻断 / 警告 / 信息」分组，每条都写了发现了什么、怎么处理）。有阻断项时「执行」按钮不可用，面板这一版**不能跳过**阻断项，也**不会替你改**别的服务（例如 Docker 的 `FORWARD DROP`）。确认后执行，面板在执行前还会在同一台主机上再预检一次，结果变了就拒绝并显示新结果。安装到网关同理：「安装前预检」经 `meridian-host` 的只读动作做同样的检查，第一次安装前必须先做。
+
+预检会拒绝的典型情况：不是 Debian 12 / 13（例如 Ubuntu 20.04）、不是 x86_64 / aarch64、不是 root、没有 systemd；FORWARD 策略是 DROP（通常是 Docker）；接口名、监听端口（WireGuard、WSS 443、wstunnel 本地端口、解析器的隧道地址:53）、隧道地址或路由与已有的重叠；路由表、防火墙标记、`inet meridian` 已被别人用；要写的路径上有不属于 Meridian 的文件（例如另一份 `/etc/smartdns/smartdns.conf`）；主机已被另一个节点或另一个面板装过；需要 wstunnel 却没有。完整列表、判定方法和它**不检查**的东西见 [架构](architecture.md)「装机前预检」。
+
+第一次装机失败时，脚本会补偿：撤掉这次新建的文件、接口、nft 表、规则、路由和服务，恢复被替换的文件和 sysctl；装上的软件包保留并列出。撤不掉的会逐项列出，也写在服务器的 `/var/lib/meridian/node/journal`；在处理之前，下一次预检会阻止再装。遇到「上一次装机没有正常结束」（`previous_run_incomplete`）时，在部署页对这个节点点「恢复中断的装机」：面板先只读列出这次运行做过的事，你确认后按服务器上的工作目录跑同一套补偿（见第 9 节）。工作目录不在了时面板会拒绝并说明，这时才需要登录服务器按 journal 手工处理。
+
+**旧版本装过的远端节点**（没有 `/var/lib/meridian/node/manifest`）会被预检判为 `legacy_install` 而拒绝：面板无法确认这些文件属于哪个节点，也无法准确补偿。在部署页对这个节点做「旧版清理」（第 9 节）：只处理固定路径上带 Meridian 标记的文件和它们声明的接口、服务、nft 表、路由表，先列清单、你确认后才删。也可以手工停用并移走旧文件。之后按第一次装机处理。
+
+**登录方式不被接受**时（例如服务器只收密钥），连接测试和预检会直接说明是「服务器不提供这种登录方式」还是「这份凭据被拒」，并给出可以复制的公钥（面板保存的密钥凭据的公钥，不含任何秘密）和把它加进 `authorized_keys` 的步骤。
+
+以上预检、复核和补偿只在仓库的自动化测试里跑过（进程内 SSH 服务器、假宿主代理、带桩命令的本机沙箱），**还没有在真实服务器上执行过**。
+
 wstunnel 需要单独安装到 `/usr/local/bin/wstunnel`，版本请钉死你核对过的 [erebe/wstunnel](https://github.com/erebe/wstunnel/releases) release。脚本不会从网络上直接下载二进制。
 
 ## 5. 服务器、密钥与 Cloudflare
@@ -154,8 +174,45 @@ wstunnel 需要单独安装到 `/usr/local/bin/wstunnel`，版本请钉死你核
 1. **密钥**（侧边栏「资源 → 密钥」）：添加 SSH 凭据——密码，或导入私钥（可带口令），或让面板生成一把并把显示的 `authorized_keys` 公钥放到远端。秘密只写不读，之后只显示类型、指纹和是否带口令。
 2. **服务器**（「资源 → 服务器」）：填地址、端口、用户，选认证方式和凭据；在「拓扑」里把远端节点关联到这台服务器（每台服务器只对应一个节点，网关节点不关联服务器）。
 3. **确认主机指纹**：点「发现指纹」只做密钥交换、不认证；把显示的 SHA256 指纹和你在远端控制台上看到的（`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`）核对一致，再点「确认」。之后指纹变了连接会在认证之前被拒绝（`host_key_mismatch`），原指纹保留，直到你确认新的。
-4. **连接测试**：只登录并运行固定命令读架构、内核和系统版本。通过后服务器显示「就绪」，装机和 Mesh 部署都要求这个状态。轮换凭据、改地址或用户会清掉测试结果。
+4. **连接测试**：只登录并运行固定命令读架构、内核和系统版本。通过后服务器显示「就绪」。轮换凭据、改地址或用户会清掉测试结果。装机、预检和 Mesh 部署**强制要求**的是「可操作」（已确认指纹、已选凭据）；连接测试是面板建议的一步（概览「下一步」和服务器列表会提示），本身不是关卡——没做测试直接预检，预检同样要登录，登录不了会在那一步失败并说明原因。
 5. **Cloudflare**（「资源 → Cloudflare」）：添加账户（account id 和账户级 API token，只写不读），点「检查权限」。检查只调用只读接口：证明令牌有效、属于这个账户、能读 Mesh 节点和路由；**不能证明写权限**（读取令牌自身的权限清单需要额外权限，面板不要求），缺写权限会在部署的「创建节点」阶段失败并被补偿。所需权限见下面「Mesh」。
+
+### 第一次部署：按面板的顺序
+
+下面是面板自己的顺序，每一步都会拒绝在前一步之前做（括号里是被拒时的错误码）。整条顺序有一个端到端的自动化测试（`internal/api/e2e_flow_test.go` 的 `TestPanelFlowEndToEnd`：进程内 SSH 服务器充当远端节点，真实的 `meridian-host` 代理代码跑在 Unix socket 上、命令执行是模拟的），**没有在真实服务器或网关上走过**。
+
+1. **密钥**：添加一份 SSH 凭据（密码、导入的私钥或面板生成的密钥）。服务器不能引用不存在的凭据。
+2. **服务器**：地址、端口、用户、认证方式和凭据。
+3. **确认主机指纹**：「发现指纹」→ 核对 → 「确认」。确认之前连接测试、预检和装机都被拒（409 `host_key_untrusted`），面板不会登录；提交一个不是刚发现的指纹不会被确认。
+4. **连接测试**：通过后服务器显示「就绪」（建议步骤，不是关卡，见上面第 4 点）。
+5. **拓扑**：在「拓扑」里为远端节点选择这台服务器。没选之前预检被拒（409 `no_server`）。
+6. **远端预检**：「部署 → 远端节点 → 生成密钥并下发」先跑只读预检并显示结果。第一次装机没有审阅过的预检时被拒（409 `preflight_required`），不生成密钥、不运行脚本；预检过期、被替换（`preflight_stale`）、之后拓扑或目标身份变了（`bundle_changed`、`target_changed`）、有阻断项（`preflight_blocked`）或执行前复核出了新问题（`preflight_changed`）都拒绝。
+7. **第一次装机**：确认后执行；成功时节点有了公钥，部署记录固定这台服务器、凭据和指纹。所有远端节点按 `APPLY_ORDER.txt` 先装。
+8. **网关预检**：「部署 → 安装前预检」，经 `meridian-host` 的 `/v1/preflight`。第一次安装（以及撤回之后重新安装）没有审阅过的网关预检时被拒（409 `preflight_required`），网关上什么都不写、不激活；预检之后改了拓扑，这份预检就不再对应要安装的内容（409 `bundle_changed`），重新预检。网关的直接 WireGuard 对端没有公钥时安装被拒（422 `peer_keys_missing`）。
+9. **安装到网关**：持久事务；结果里有宿主步骤、资源差异和「内核参数」一块（见上面「升级」）。之后状态是「与网关一致」。
+10. **名单 → 立即更新** 一次，再在网关上跑 `meridian-verify.sh`，然后按 [验收清单](verification.md) 做人工签收项。
+
+撤回和恢复见第 9 节。
+
+### 预检发现冲突时怎么办
+
+预检只读，发现冲突时**拒绝并说明**，不替你改别的服务。阻断项不能跳过；处理完再点「重新预检」。常见的几类：
+
+| 发现 | 意思 | 怎么处理 |
+| --- | --- | --- |
+| `not_root` | 登录用户不是 root | 服务器改用 root（这一版不支持 sudo） |
+| `os_unsupported`、`arch_unsupported`、`no_systemd` | 不是 Debian 12 / 13、不是 x86_64 / aarch64，或没有 systemd | 换系统；面板不会在别的环境上装 |
+| `forward_policy_drop` | iptables FORWARD 策略是 DROP（通常是 Docker） | 确认没有别的程序依赖后 `iptables -P FORWARD ACCEPT`，或在没有 Docker 时重启；有 Docker 的主机**目前没有共存方案**，预检会一直拒绝 |
+| `port_in_use` | WireGuard 端口、443、wstunnel 本地端口或解析器的 :53 已被别的进程占用 | 停掉或改那个服务，或在拓扑里换端口 |
+| `interface_exists`、`address_overlap`、`route_overlap`、`route_table_in_use`、`fwmark_in_use`、`nft_table_exists` | 主机上已有同名接口，或重叠的地址 / 路由 / 路由表 / 标记 / `inet meridian` | 改拓扑里的名字或前缀，或移走主机上的旧配置 |
+| `path_occupied`：要写的路径上有不属于 Meridian 的文件 | 例如另一份 `/etc/smartdns/smartdns.conf` | 先自己备份并移走；面板不覆盖 |
+| `modified_since_install`（警告） | Meridian 装过的文件之后被改过 | 看清改了什么；继续安装会整份覆盖它 |
+| `managed_by_other`：主机属于另一个节点或另一个面板 | 部署清单里的节点或部署 ID 不同 | 先在原来那边撤回，或换服务器 |
+| `legacy_install` | 旧版本装过、没有清单 | 第 9 节「旧版清理」 |
+| `previous_run_incomplete` | 上一次装机没有正常结束 | 第 9 节「恢复中断的装机」 |
+| 登录方式不被接受（连接错误 `auth_method_unavailable`） | 服务器不提供这种登录方式 | 按面板给出的公钥加进 `authorized_keys`，改用密钥凭据 |
+
+警告不阻止执行，但执行前复核时出现的**新**警告会让这次执行被拒（`preflight_changed`），要重新审阅。完整的检查列表和它不检查的东西见 [架构](architecture.md)「装机前预检」。
 
 ## 6. 名单
 
@@ -204,7 +261,7 @@ sudo docker compose -f deploy/docker-compose.yml --profile dns up -d
   1. 在 Cloudflare 控制台建一个**账户级** API token，只给两项权限：`Cloudflare One Connectors Write`（创建 / 查询 / 删除 Mesh 节点、读取节点令牌）和 `Cloudflare One Networks Write`（发布 / 撤回 CIDR 路由）。在 Cloudflare 页添加账户（token 只写不读，存放在 `meridian-secrets` 卷里，0600），点「检查权限」，再把它选为 Mesh 账户。Cloudflare 文档要求第一个 API token 在控制台创建。
   2. 账户一侧的前置设置由你在 Cloudflare 控制台完成，面板不改（那需要更大的 `Zero Trust Write` 权限）：Zero Trust 组织；Mesh 节点的设备配置文件用 **MASQUE**（IPv6 路由要求）、Traffic and DNS 模式、Split Tunnels Include 包含 `100.96.0.0/12` **以及你要发布的路由**；设备互通与唯一 IP；Gateway 代理开启 TCP/UDP。
   3. 在拓扑里给每条 Mesh 边填「Mesh 发布路由」（出口端节点要通告的 CIDR；不接受默认路由），并保证枢纽已用新版本装机（预检会拒绝仍是 `default dev mmesh` 的旧脚本）。
-  4. 确认计划里每个节点都关联了「就绪」的服务器（Cloudflare 页的部署卡片会列出缺凭据、缺指纹或缺连接测试的节点，有任何一个就拒绝部署），点「部署 Mesh」。面板依次：计划校验 → 远端预检 → 为每台主机创建 Cloudflare Mesh 节点 → 写入 compose / `meridian-mesh-up.sh` / `mesh.env`（0600）并启动 sidecar → 健康检查 → 发布路由 → 枢纽重新封装。任何一步失败都会撤回本次创建的东西；补偿没做完时面板会列出来，修好后点「撤回 / 重试补偿」。部署记录固定了每台主机的服务器 ID、凭据 ID、地址、端口、用户和已确认的主机指纹，以及 Cloudflare 账户：撤回只连接这些主机并要求同一指纹（之后在拓扑里删节点不影响撤回；被固定的服务器和凭据在撤回完成前不能删除或改指向，凭据可以原地轮换），只用原账户的凭据；撤回完成前面板拒绝切换到别的账户，同一账户可以更换 token。
+  4. 确认计划里每个节点都关联了可操作的服务器（Cloudflare 页的部署卡片会列出缺服务器、缺凭据或缺已确认指纹的节点，有任何一个就拒绝部署；连接测试建议先做，但不是这里的关卡），点「部署 Mesh」。面板依次：计划校验 → 远端预检 → 为每台主机创建 Cloudflare Mesh 节点 → 写入 compose / `meridian-mesh-up.sh` / `mesh.env`（0600）并启动 sidecar → 健康检查 → 发布路由 → 枢纽重新封装。任何一步失败都会撤回本次创建的东西；补偿没做完时面板会列出来，修好后点「撤回 / 重试补偿」。部署记录固定了每台主机的服务器 ID、凭据 ID、地址、端口、用户和已确认的主机指纹，以及 Cloudflare 账户：撤回只连接这些主机并要求同一指纹（之后在拓扑里删节点不影响撤回；被固定的服务器和凭据在撤回完成前不能删除或改指向，凭据可以原地轮换），只用原账户的凭据；撤回完成前面板拒绝切换到别的账户，同一账户可以更换 token。
   5. 结果「路由已发布」**不等于 Mesh 可用**。Mesh 数据面保持「未验证」，直到在隔离 Linux 主机上跑过 `sudo bash deploy/verify-mesh-veth.sh` 并做完 [验收清单](verification.md) 里的 Mesh 实机签收。
 
   家宽网关不运行 Mesh，Compose 里也没有 Mesh 服务。镜像是官方的 `cloudflare/mesh:latest`；要钉住摘要，在拓扑的 `mesh_image` 里写。没有路由时 sidecar 会把这一跳留在黑洞，不会改从 VPS 的默认路由出去。
@@ -219,3 +276,25 @@ sudo docker compose -f deploy/docker-compose.yml --profile dns up -d
 - `rp_filter` 必须是 loose（2）。国内回程可能由 ROS 直接交给客户端。
 - 关闭本机发送 ICMP 重定向。ROS 自己仍可能对客户端发重定向，这不在这台机器的控制范围内。
 - 不要做代理 ARP，不要占用 `.1`。
+
+## 9. 撤回（卸载）与失败后的恢复
+
+**从拓扑删除节点不会动服务器。** 删除时面板会问：「仅从拓扑删除（保留服务器上的安装，之后仍可在部署页撤回）」还是「先撤回再删除」。只删拓扑时，部署记录照旧保留绑定的服务器、地址、端口、用户、主机指纹和凭据，部署页继续显示「节点已从拓扑删除，安装仍在服务器上」；在撤回完成之前，这台服务器和这份凭据不能删除或改指向（凭据可以原地轮换），节点也不能装到另一台服务器上。
+
+**撤回远端节点**（部署页 → 部署记录 → 撤回）：
+
+1. 「生成撤回计划」：面板经已固定指纹的 SSH 在**部署时的那台主机**上只读运行固定的撤回脚本，列出服务器上清单记录的服务、接口、路由表、nft 表和文件，以及要保留的东西。清单属于别的节点、别的面板部署或别的服务器时直接拒绝并说明原因；服务器的地址或指纹和部署时不同也拒绝。
+2. 输入节点 ID 确认后执行。计划生成之后服务器上的状态变了会被拒绝（重新生成计划即可）。
+3. 结果分三列：已移除 / 保留（有意）/ 没能移除。装机后被你改过的文件不会被删除，会列在「没能移除」里；处理后再撤回一次（可以重复执行，已经不在的东西跳过）。
+4. 有意保留：装上的软件包（wireguard-tools、nftables、smartdns 等）、运行中的转发和 rp_filter 值（到重启前不变）、清单之外的一切（Docker、WARP、别的 WireGuard 接口和 nft 表）。
+
+节点上还部署着 Mesh 时先在 Mesh 部署卡片撤回 Mesh（它按部署时的主机和 Cloudflare 账户撤回），再撤回节点。服务器已经不存在（VPS 已删除）时可以「放弃」：记录标为已放弃并解除绑定，面板明确说明它**没有核实**服务器上是否还有东西。
+
+**恢复中断的装机**和**旧版清理**走同一个对话框（计划 → 确认 → 结果），入口在预检结果的对应阻断项旁边，也在部署记录里。
+
+**撤回网关**（部署页 → 网关 → 撤回网关，输入 `gw` 确认）：面板经 `meridian-host` 的固定动作，在一份持久事务里先关掉转发、停掉 `meridian.service`，再按安装清单删除 WireGuard 接口、服务、路由表和规则、`inet meridian` 表和清单里的文件。**局域网兜底表 `inet meridian_guard` 和它的开机文件保留**：仍把网关当默认网关的设备会断网，而不是经 ROS 直出；重启后 `meridian-guard.service` 照样加载它。任一步失败都会补偿回撤回前的运行状态；补偿也失败时页面显示未完成的事务，修好后点「恢复」。之后：
+
+- 重新使用 Meridian：再做一次安装前预检并「安装到网关」（不能用回滚恢复）。
+- 彻底不用：点「移除兜底表」（单独确认）。此后局域网不再由 Meridian 兜底，转发保持关闭，直到别的东西打开它。宿主上的 `meridian.service`、`meridian-guard.service`、`meridian-host.service` 和面板容器属于 install.sh 的安装，撤回不动它们；要连这些一起去掉，按第 2 节反过来手工 `systemctl disable --now` 并删除单元文件。
+
+以上流程只在仓库的自动化测试里跑过（本机沙箱、进程内 SSH 服务器、模拟宿主），**还没有在真实服务器或网关上执行过**；第一次在真实主机上使用前，按 [验收清单](verification.md)「撤回与恢复」在可以随意重装的机器上走一遍。

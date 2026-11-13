@@ -89,6 +89,40 @@ volumes:
 `, meshImage(t))
 }
 
+// renderMeshSealService / renderMeshSealTimer re-seal the Mesh sidecar of an
+// exit that answers region-group queries over the Mesh: the hub re-seals
+// every 5 s from its failover loop, an exit has no such loop. Re-sealing
+// copies the routes Cloudflare installed on the warp device since the last
+// seal into table 170 and runs mesh_dns_return. Without the script (Mesh
+// withdrawn) the unit does nothing.
+func renderMeshSealService() string {
+	return `[Unit]
+Description=Meridian Mesh sidecar re-seal (region-group DNS over the Mesh)
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+StandardInput=null
+ExecStart=/bin/sh -c 'if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then exec /usr/local/sbin/meridian-mesh-up.sh --seal-only; fi'
+`
+}
+
+func renderMeshSealTimer() string {
+	return `# Re-seal the Mesh sidecar of this exit once a minute (and after boot, when
+# Cloudflare installs its routes only after the sidecar started).
+[Unit]
+Description=Meridian Mesh sidecar re-seal every 60 seconds
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
+`
+}
+
 func renderMeshEnvExample() string {
 	return `# Copy to /etc/meridian/mesh.env and chmod 600.
 # Put the Cloudflare Mesh node token here. Leave it empty in git.
@@ -102,10 +136,30 @@ MESH_NODE_TOKEN=
 // addresses and permanent neighbour entries for each other; the host's
 // exit tables then use "via <sidecar> dev mmesh" (see mesh.Addressing).
 // The seal is only written after both next-hops answered a ping.
-func renderMeshUp(t model.Topology) string {
+//
+// On an exit that is some region group's Mesh resolver (meshDNSGroups) the
+// script also carries the "meridian-mesh-publish" lines the panel's Mesh
+// deployment publishes for this exit's Mesh node (mesh.BuildPlan reads
+// them), and runs mesh_dns_return on every exit path, so table 171 points
+// at the sidecar exactly while it is sealed (renderExitMeshDNSRoutes).
+func renderMeshUp(t model.Topology, n model.Node, groups []GroupPlan) string {
 	a := mesh.DefaultAddressing()
 	ret4, ret6 := mesh.ReturnPrefixes(t)
+	publish, exitDNS := "", ""
+	if gs := meshDNSGroups(groups, n.ID); n.Role == model.RoleExit && len(gs) > 0 {
+		var pb strings.Builder
+		pb.WriteString("# Region-group resolver addresses this exit answers on mmesh. The panel's Mesh\n")
+		pb.WriteString("# deployment publishes each as a Cloudflare route of this exit's Mesh node:\n")
+		for _, g := range gs {
+			fmt.Fprintf(&pb, "%s %s/128 group=%s\n", mesh.PublishMarker, g.Resolver, g.Group.ID)
+		}
+		publish = pb.String()
+		exitDNS = "# Table 171 (replies to region-group queries from mmesh) follows the seal on\n" +
+			"# every exit path of this script.\n" + meshDNSReturnShell() + "trap mesh_dns_return EXIT\n"
+	}
 	return strings.NewReplacer(
+		"@PUBLISH@\n", publish,
+		"@EXITDNS@\n", exitDNS,
 		"@HOST4@", a.HostV4CIDR(),
 		"@SIDE4@", a.SidecarV4CIDR(),
 		"@NH4@", a.NextHopV4(),
@@ -141,7 +195,9 @@ const meshUpBody = `#!/bin/bash
 # The seal (/run/meridian/mesh-sealed) is only written when both next-hops
 # answer from the host.
 # This script refuses to run on the home gateway (192.168.100.88).
+@PUBLISH@
 set -u
+@EXITDNS@
 seal_only=0
 if [ "${1:-}" = "--seal-only" ]; then
   seal_only=1
@@ -220,7 +276,9 @@ for key in net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter net.ipv4.
     echo 2 > "$path" || true
   fi
 done
-if ! nsenter -t "$pid" -n bash -s <<'EOS'
+# The seal block below must succeed as a whole (set -eu) before the host
+# writes the seal; any failure inside the sidecar netns leaves it unsealed.
+if nsenter -t "$pid" -n bash -s <<'EOS'
 set -eu
 ip link set mmesh-c address @SIDEMAC@
 ip link set mmesh-c addrgenmode none >/dev/null 2>&1 || true
@@ -259,6 +317,13 @@ copy_routes() {
     [ -n "$spec" ] || continue
     case "$spec" in
       *'dev eth'*|*'dev docker'*|*'dev br-'*|*'dev veth'*) continue ;;
+    esac
+    # "ip route show dev X" leaves "dev X" out of each line; without it a
+    # link-scope route (what Cloudflare installs on the warp device) cannot
+    # be added, and table @TABLE@ would stay unreachable.
+    case " $spec " in
+      *' dev '*) ;;
+      *) spec="$spec dev $dev" ;;
     esac
     # shellcheck disable=SC2086
     ip $fam route replace $spec table @TABLE@ || true
@@ -1238,7 +1303,7 @@ pending tunnel_cut "take the exit tunnel down while the test device keeps browsi
 notrun netns_reload_no_leak "isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run 'TestNetnsReloadNoLeak|TestNetnsULALANHomeAccess' (archive the log)"
 if [ -n "$grp_dns" ]; then
   pending group_dns_failover "with a member of a switchable group stopped completely (tunnel and resolver): the hub moves the group, a new name of a group rule resolves and connects through the next member, and a capture on $iface shows no query to a domestic resolver or ROS for it (docs/verification.md)"
-  notrun netns_group_dns "isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsGroupDNSFailover (archive the log)"
+  notrun netns_group_dns "isolated Linux integration: sudo MERIDIAN_NETNS_TEST=1 go test ./internal/compile -run TestNetnsGroupDNSFailover (members, the Mesh backup over an emulated overlay, refusal; archive the log)"
 fi
 notrun smartdns "sudo bash deploy/verify-smartdns.sh (archive the output)"
 notrun host_exec "sudo bash deploy/verify-host-exec.sh and --boot after a reboot (archive the output)"

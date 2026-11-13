@@ -233,9 +233,35 @@ export interface HostReport {
   warnings?: string[];
   committed: boolean;
   compensated?: boolean;
+  /** Managed sysctl files as written and as read back from the kernel after a committed install / runtime rollback. */
+  sysctl?: SysctlReport;
+}
+
+/** in_effect | differs | missing (no such key) | boot_only (boot-time forwarding=0) | stale (removed from the file) | not_checked */
+export type SysctlState = "in_effect" | "differs" | "missing" | "boot_only" | "stale" | "not_checked";
+
+export interface SysctlEntry {
+  file: string;
+  key: string;
+  want?: string;
+  got?: string;
+  state: SysctlState;
+}
+
+export interface SysctlReport {
+  /** The running kernel was read back after activation. */
+  checked: boolean;
+  reason?: string;
+  written: SysctlEntry[];
+  /** Keys the previous 99-meridian.conf set and the new one does not; the kernel keeps them until reboot. */
+  removed?: SysctlEntry[];
+  /** Written entries not in effect (differs or missing). */
+  problems: number;
 }
 
 export interface InstalledManifest {
+  /** The gateway was withdrawn: only the LAN guard is still installed. */
+  withdrawn?: boolean;
   version: number;
   created_at?: string;
   files: number;
@@ -255,7 +281,8 @@ export interface HostStatus {
 }
 
 /** GET /api/status: the cheap read-only summary behind the top bar. */
-export type InstallStateCode = "in_sync" | "changed" | "not_installed" | "invalid" | "unknown";
+/** withdrawn: the gateway was withdrawn down to the LAN guard (POST /api/host/withdraw). */
+export type InstallStateCode = "in_sync" | "changed" | "not_installed" | "invalid" | "unknown" | "withdrawn";
 
 export interface StatusJob {
   /** none | running | done | failed | cancelled | timeout | interrupted | published | compensating | compensation_failed | withdrawn | error */
@@ -271,8 +298,12 @@ export interface PanelStatus {
   agent: { configured: boolean; ok: boolean; error?: string };
   /** A list update could run now (lists action configured and agent reachable). */
   lists_available: boolean;
-  /** An unlock probe could run now. */
+  /** An unlock probe could run now (probe channel configured AND meridian-host answered). */
   probe_available: boolean;
+  /** Why probe_available is false: not_configured | agent_unreachable. */
+  probe_reason?: "not_configured" | "agent_unreachable";
+  /** agent_unreachable: the agent's health error. */
+  probe_error?: string;
   install: {
     /** Stored topology vs the INSTALLED manifest (not the applied snapshot). */
     state: InstallStateCode;
@@ -340,7 +371,100 @@ export interface ProvisionResult {
   dry_run: boolean;
   node_id: string;
   script?: string;
+  /** installed (only with 200) | refused | compensated | left_behind | unknown | not_started */
+  outcome?: string;
+  preflight_id?: string;
+  /** What the failed run could not undo (MERIDIAN_LEFTOVER lines). */
+  leftovers?: string[];
+  /** What it kept on purpose (installed packages). */
+  kept?: string[];
   [extra: string]: unknown;
+}
+
+// ---- Install pre-check (preflight) -----------------------------------------
+
+export type FindingSeverity = "blocking" | "warning" | "info";
+
+export interface PreflightFinding {
+  severity: FindingSeverity;
+  /** Stable code, e.g. forward_policy_drop, port_in_use, os_unsupported. */
+  code: string;
+  /** What was found. */
+  message: string;
+  /** What to do about it. */
+  action?: string;
+  /** The affected resource (interface, port, path, table …). */
+  resource?: string;
+}
+
+export interface PreflightChange {
+  /** file | interface | listen | route | rule | nft | unit | package | sysctl | state */
+  kind: string;
+  /** create | replace | update | bind | add | enable | install | set */
+  action: string;
+  resource: string;
+  detail?: string;
+}
+
+/** What a preflight result is bound to; execution is refused when it changes. */
+export interface PreflightTarget {
+  server_id: string;
+  server_name: string;
+  address: string;
+  port: number;
+  user: string;
+  fingerprint: string;
+  key_type?: string;
+  credential_id: string;
+  credential_name?: string;
+  auth_method?: string;
+}
+
+export interface PreflightRecord {
+  id: string;
+  kind: "remote" | "gateway";
+  node_id: string;
+  node_name: string;
+  role: string;
+  target?: PreflightTarget;
+  deployment: string;
+  bundle: string;
+  first_install: boolean;
+  at: string;
+  expires_at: string;
+  host: { os?: string; arch?: string; kernel?: string; mem_total_kb: number; mem_avail_kb: number; complete: boolean; notes?: string[] };
+  footprint: {
+    files: string[];
+    interfaces: { name: string; listen_port?: number; addresses: string[] }[];
+    listens: { proto: string; addr: string; wildcard: boolean; port: number; owner: string }[];
+    route_tables: number[];
+    nft_tables: string[];
+    units: string[];
+    packages: { package: string; command: string }[];
+    binaries: string[];
+  };
+  not_checked: string[];
+  /** none | same | other | legacy | unknown */
+  ownership: string;
+  blocking: boolean;
+  findings: PreflightFinding[];
+  changes: PreflightChange[];
+  counts: { blocking: number; warning: number; info: number };
+}
+
+/** How to get a login the server accepts. Public keys only. */
+export interface LoginHelp {
+  code: string;
+  method: "password" | "key";
+  user: string;
+  address: string;
+  credential_id?: string;
+  credential_name?: string;
+  /** The credential's public key, to append to authorized_keys. */
+  public_key?: string;
+  /** Panel-held key credentials (password credential, server wants keys). */
+  key_credentials?: { id: string; name: string; public_key: string }[];
+  steps: string[];
 }
 
 // ---- Servers ---------------------------------------------------------------
@@ -793,7 +917,7 @@ export type GroupActualState = "ok" | "stale" | "version_mismatch" | "switch_fai
 
 export interface GroupActualView {
   state: GroupActualState;
-  /** Machine reason for every state but ok (no_hub, hub_no_server, server_not_ready, ssh_failed, state_missing, parse_error, invalid_report, plan_unavailable, heartbeat_old, read_old, plan_differs, hop_failed, table_diverged, static_only, not_read). */
+  /** Machine reason for every state but ok (no_hub, hub_no_server, server_not_ready, ssh_failed, state_missing, parse_error, invalid_report, plan_unavailable, heartbeat_old, read_old, plan_differs, hop_failed, table_diverged, static_only, not_read, hub_identity_changed: the stored read was taken from another hub node, server, address, SSH port or pinned host key). */
   code?: string;
   ssh_code?: string;
   message?: string;
@@ -868,6 +992,10 @@ export interface GroupHubState {
     ssh_code?: string;
     error?: string;
     clock_skew_sec?: number;
+    /** false: the read was taken from another hub identity (hub node, server, address, SSH port, pinned host key) and says nothing about the current hub. */
+    current_hub?: boolean;
+    identity_code?: string;
+    identity_message?: string;
     ignored: string[];
   } | null;
   refreshing: boolean;
@@ -1047,6 +1175,8 @@ export interface UnlockView {
   interval_sec: number;
   pending_apply: boolean;
   decisions: Record<string, string>;
+  /** Exits the unlock state mentions that are no longer in the topology. */
+  removed_exits?: string[];
 }
 
 /** network_ok | unlocked | not_unlocked | failed | unknown | not_applicable (nothing sent: the check does not support the family) */
@@ -1157,6 +1287,8 @@ export interface ProbeResultRow extends ProbeJobItem {
   service_active?: string;
   is_active: boolean;
   ingestible: boolean;
+  /** The exit was removed from the topology: history, never a current result. */
+  exit_removed?: boolean;
 }
 
 export interface ProbeSelection {
@@ -1175,4 +1307,148 @@ export interface LeakItem {
   scope?: string;
   title: string;
   detail: string;
+}
+
+// ---- Deployments and withdraw (撤回) -----------------------------------------------
+
+export type WithdrawMode = "manifest" | "journal" | "legacy";
+
+/** The last withdraw / recovery of a node (internal/api/withdraw.go withdrawRecord). */
+export interface WithdrawRecord {
+  /** running | withdrawn | already_withdrawn | partial | refused | not_started | unknown | recovered | recovery_incomplete | abandoned */
+  state: string;
+  mode: string;
+  run: string;
+  at: string;
+  finished?: string;
+  code?: string;
+  reason?: string;
+  message?: string;
+  removed?: string[];
+  kept?: string[];
+  leftovers?: string[];
+  restored_previous?: boolean;
+}
+
+export interface WithdrawTarget {
+  server_id: string;
+  server_name: string;
+  address: string;
+  port: number;
+  user: string;
+  fingerprint: string;
+  credential_id: string;
+  credential_name?: string;
+}
+
+export interface WithdrawPlan {
+  id: string;
+  node_id: string;
+  mode: WithdrawMode;
+  target: WithdrawTarget;
+  deployment: string;
+  digest: string;
+  owner?: string;
+  items: string[];
+  at: string;
+  expires_at: string;
+  already: boolean;
+}
+
+/** installed | left_behind | unknown | withdrawing | withdraw_interrupted | withdrawn | abandoned | withdraw_partial | not_installed */
+export type DeploymentStatus = string;
+
+/** One node deployment record (GET /api/deployments). */
+export interface DeploymentView {
+  node_id: string;
+  node_name: string;
+  in_topology: boolean;
+  server_id: string;
+  server_name?: string;
+  current_server_id?: string;
+  address: string;
+  port: number;
+  fingerprint: string;
+  user?: string;
+  credential_id?: string;
+  deployment?: string;
+  run: string;
+  bundle: string;
+  at: string;
+  ok: boolean;
+  code?: string;
+  reason?: string;
+  leftovers?: string[];
+  kept?: string[];
+  installed: boolean;
+  outcome?: string;
+  withdraw?: WithdrawRecord;
+  on_host: boolean;
+  status: DeploymentStatus;
+  identity_problem?: string;
+  mesh_bound?: string;
+  plan?: WithdrawPlan;
+}
+
+export interface WithdrawSet {
+  files: string[];
+  interfaces: string[];
+  units: string[];
+  nft_tables: string[];
+  route_tables: number[];
+}
+
+export interface GatewayWithdrawRecord {
+  /** withdrawn | guard_released | already_withdrawn | not_installed | refused | compensated | uncompensated | check_failed */
+  state: string;
+  at: string;
+  code?: string;
+  message?: string;
+  removed: WithdrawSet;
+  kept: string[];
+  host?: HostReport | null;
+  compensated?: boolean;
+  release_guard?: boolean;
+  pending?: HostStatus["pending"];
+}
+
+export interface GatewayDeploymentView {
+  installed: boolean;
+  withdrawn: boolean;
+  version?: number;
+  origin?: string;
+  plan: WithdrawSet;
+  kept: string[];
+  pending: HostStatus["pending"];
+  last: GatewayWithdrawRecord | null;
+  mesh_bound?: string;
+  error?: string;
+}
+
+export interface DeploymentsView {
+  nodes: DeploymentView[];
+  gateway: GatewayDeploymentView;
+}
+
+export interface WithdrawRunResult {
+  node_id: string;
+  mode: WithdrawMode;
+  outcome: string;
+  code?: string;
+  reason?: string;
+  error?: string;
+  message?: string;
+  removed: string[];
+  kept: string[];
+  leftovers: string[];
+  restored_previous?: boolean;
+  output?: string;
+  target?: WithdrawTarget;
+}
+
+export interface HostWithdrawResult {
+  status: string;
+  removed: WithdrawSet;
+  kept: string[];
+  host?: HostReport | null;
 }

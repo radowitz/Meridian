@@ -1,0 +1,6 @@
+=== RUN   TestNetnsULALANHomeAccess
+    netns_reload_linux_test.go:863: EVIDENCE ula-lan e2e ok: device to a ULA home host (masquerade on the LAN NIC, reply out of mra) (dev -> fd12:3456:789a:1::50)
+    netns_reload_linux_test.go:863: EVIDENCE ula-lan e2e ok: ULA home host to the device (cli -> fd67::2)
+    netns_reload_linux_test.go:877: EVIDENCE ula-lan outside-prefix ULA from device and LAN client: arrived_at_gateway=20 forwarded=0 at_ros=0 (expected: arrived > 0, forwarded 0, at_ros 0)
+meridian-netns-ula-lan-test-ok
+--- PASS: TestNetnsULALANHomeAccess (17.88s)

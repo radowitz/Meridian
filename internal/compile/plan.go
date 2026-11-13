@@ -119,6 +119,15 @@ type GroupPlan struct {
 	// (docs/architecture.md「地区组的解析」).
 	Resolver string
 	DNSGroup string
+	// MeshResolver is the member that answers Resolver while the hub has
+	// the group on the Mesh hop: the first member of the effective order
+	// with a standby Mesh edge to the hub and a tunnel resolver
+	// (meshDNSCapable). Its Mesh node publishes Resolver/128 (the
+	// "meridian-mesh-publish" line of its meridian-mesh-up.sh), and it
+	// answers the resolver range on its Mesh ingress (render_nft.go). Empty
+	// when the group has no Mesh hop or no such member: the group's names
+	// then fail while it is on Mesh, as before.
+	MeshResolver string
 }
 
 // Policy is the state-machine view of the plan, shared by the panel model
@@ -169,6 +178,14 @@ func planGroups(t model.Topology, exits []ExitPlan) []GroupPlan {
 				}
 			}
 			gp.Mesh = !gp.Hold && groupHasMesh(t, gp.Selection.Order)
+			if gp.Mesh {
+				for _, id := range gp.Selection.Order {
+					if e, ok := exitByID(exits, id); ok && meshDNSCapable(t, e) {
+						gp.MeshResolver = id
+						break
+					}
+				}
+			}
 		}
 		out = append(out, gp)
 	}
@@ -217,6 +234,48 @@ func groupHasMesh(t model.Topology, members []string) bool {
 		}
 	}
 	return false
+}
+
+// hubMeshStandby: an enabled standby cf_mesh link joins the hub and id.
+func hubMeshStandby(t model.Topology, id string) bool {
+	hub := ""
+	for _, n := range t.Nodes {
+		if n.Role == model.RoleHub {
+			hub = n.ID
+			break
+		}
+	}
+	if hub == "" || id == "" {
+		return false
+	}
+	for _, l := range t.Links {
+		if l.Transport != model.TransportCFMesh || !l.Enabled || !l.Standby {
+			continue
+		}
+		if l.From == hub && l.To == id || l.To == hub && l.From == id {
+			return true
+		}
+	}
+	return false
+}
+
+// meshDNSCapable: the exit can answer a region group's resolver address on
+// its Mesh ingress: it has a standby Mesh edge to the hub and a tunnel
+// resolver to DNAT to.
+func meshDNSCapable(t model.Topology, e ExitPlan) bool {
+	return e.Node.Role == model.RoleExit && e.DNSULA != "" && hubMeshStandby(t, e.Node.ID)
+}
+
+// meshDNSGroups are the groups whose Mesh resolver is exit id, sorted by
+// group ID (the plan order).
+func meshDNSGroups(groups []GroupPlan, id string) []GroupPlan {
+	var out []GroupPlan
+	for _, g := range groups {
+		if g.Dynamic && g.Mesh && g.MeshResolver != "" && g.MeshResolver == id {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // target is where a rule's (or the default traffic's) packets go: the exit

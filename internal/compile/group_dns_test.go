@@ -3,12 +3,16 @@ package compile
 import (
 	"fmt"
 	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/validate"
 )
@@ -483,8 +487,9 @@ func TestGroupDNSGatewaySNAT(t *testing.T) {
 }
 
 // Exits: every exit the hub can switch a group to DNATs the whole resolver
-// range, from its hub tunnel only, to the address its resolver binds;
-// nothing else is translated and other exits are unchanged.
+// range, from its hub tunnel, to the address its resolver binds; a group's
+// Mesh resolver member does the same from mmesh, and only it. Nothing else
+// is translated and other exits are unchanged.
 func TestGroupDNSExitDNAT(t *testing.T) {
 	topo, _ := groupDNSExample()
 	b := mustCompile(t, topo)
@@ -497,45 +502,87 @@ func TestGroupDNSExitDNAT(t *testing.T) {
 		}
 	}
 	reDNAT := regexp.MustCompile(`(?m)^    iifname \{ ("[^"]+"(?:, "[^"]+")*) \} ip6 daddr (\S+) meta l4proto \{ tcp, udp \} th dport 53 dnat ip6 to (\S+) comment `)
+	reMesh := regexp.MustCompile(`(?m)^    iifname "mmesh" ip6 daddr (\S+) meta l4proto \{ tcp, udp \} th dport 53 dnat ip6 to (\S+) comment `)
+	meshExits := 0
 	for _, e := range exits {
 		nft := b.File("nodes/" + e.Node.ID + "/etc/nftables.d/meridian.nft")
 		dns := b.File("nodes/" + e.Node.ID + "/etc/smartdns/smartdns.conf")
+		meshIn := len(meshDNSGroups(groups, e.Node.ID)) > 0
 		has := strings.Contains(nft, "chain group_dns {")
 		if members[e.Node.ID] && !has {
 			t.Fatalf("group member %s does not answer the group resolver addresses", e.Node.ID)
 		}
-		if has != switchable(e) {
-			t.Fatalf("exit %s: group_dns chain %v, switchable %v", e.Node.ID, has, switchable(e))
+		if has != (switchable(e) || meshIn) {
+			t.Fatalf("exit %s: group_dns chain %v, switchable %v, Mesh resolver %v", e.Node.ID, has, switchable(e), meshIn)
 		}
 		if !has {
-			if strings.Contains(nft, "fd66::53") {
-				t.Fatalf("exit %s mentions the resolver range without the chain", e.Node.ID)
+			if strings.Contains(nft, "fd66::53") || strings.Contains(nft, "mmesh") {
+				t.Fatalf("exit %s mentions the resolver range or mmesh without the chain", e.Node.ID)
 			}
 			continue
 		}
 		ms := reDNAT.FindAllStringSubmatch(nft, -1)
-		if len(ms) != 1 || strings.Count(nft, " dnat ") != 1 {
-			t.Fatalf("exit %s: want one DNAT rule:\n%s", e.Node.ID, nft)
+		mm := reMesh.FindAllStringSubmatch(nft, -1)
+		wantHub, wantMesh := 0, 0
+		if switchable(e) {
+			wantHub = 1
 		}
-		m := ms[0]
-		if m[2] != validate.GroupResolverNet.String() || m[3] != e.DNSULA {
-			t.Fatalf("exit %s DNAT %s -> %s, want %s -> %s", e.Node.ID, m[2], m[3], validate.GroupResolverNet, e.DNSULA)
+		if meshIn {
+			wantMesh = 1
+			meshExits++
+		}
+		if len(ms) != wantHub || len(mm) != wantMesh || strings.Count(nft, " dnat ") != wantHub+wantMesh {
+			t.Fatalf("exit %s: want %d hub-tunnel and %d Mesh DNAT rules:\n%s", e.Node.ID, wantHub, wantMesh, nft)
+		}
+		for _, m := range ms {
+			if m[2] != validate.GroupResolverNet.String() || m[3] != e.DNSULA {
+				t.Fatalf("exit %s DNAT %s -> %s, want %s -> %s", e.Node.ID, m[2], m[3], validate.GroupResolverNet, e.DNSULA)
+			}
+			want := `"` + hubDirect(tunnels, e.Node.ID).Iface() + `"`
+			if m[1] != want || strings.Contains(m[1], `"`+e.Node.WANInterface+`"`) {
+				t.Fatalf("exit %s DNAT ingress %s, want only the hub tunnel %s", e.Node.ID, m[1], want)
+			}
+			// The reply goes to a transit address: routed back into the tunnel.
+			routes := b.File("nodes/" + e.Node.ID + "/usr/local/sbin/meridian-routes.sh")
+			if !strings.Contains(routes, "ip -6 route replace "+transitV6Net()+" dev "+strings.Trim(want, `"`)+"\n") {
+				t.Fatalf("exit %s does not route the transit prefix back into its hub tunnel", e.Node.ID)
+			}
+		}
+		for _, m := range mm {
+			if m[1] != validate.GroupResolverNet.String() || m[2] != e.DNSULA {
+				t.Fatalf("exit %s Mesh DNAT %s -> %s, want %s -> %s", e.Node.ID, m[1], m[2], validate.GroupResolverNet, e.DNSULA)
+			}
 		}
 		if !strings.Contains(dns, "bind ["+e.DNSULA+"]:53\n") || !strings.Contains(dns, "bind-tcp ["+e.DNSULA+"]:53\n") {
 			t.Fatalf("exit %s resolver does not bind the DNAT target %s:\n%s", e.Node.ID, e.DNSULA, dns)
 		}
-		want := `"` + hubDirect(tunnels, e.Node.ID).Iface() + `"`
-		if m[1] != want || strings.Contains(m[1], `"`+e.Node.WANInterface+`"`) {
-			t.Fatalf("exit %s DNAT ingress %s, want only the hub tunnel %s", e.Node.ID, m[1], want)
-		}
 		if !strings.Contains(nft, "type nat hook prerouting priority dstnat; policy accept;") {
 			t.Fatalf("exit %s DNAT chain hook:\n%s", e.Node.ID, nft)
 		}
-		// The reply goes to a transit address: routed back into the tunnel.
-		routes := b.File("nodes/" + e.Node.ID + "/usr/local/sbin/meridian-routes.sh")
-		if !strings.Contains(routes, "ip -6 route replace "+transitV6Net()+" dev "+strings.Trim(want, `"`)+"\n") {
-			t.Fatalf("exit %s does not route the transit prefix back into its hub tunnel", e.Node.ID)
+		mark := fmt.Sprintf("%#x", markMeshDNS)
+		if meshIn != strings.Contains(nft, mark) {
+			t.Fatalf("exit %s: Mesh return mark %s present=%v, Mesh resolver %v", e.Node.ID, mark, strings.Contains(nft, mark), meshIn)
 		}
+		if !meshIn {
+			continue
+		}
+		for _, line := range []string{
+			"    type filter hook prerouting priority mangle; policy accept;\n    iifname \"mmesh\" ip6 daddr " + validate.GroupResolverNet.String() + " meta l4proto { tcp, udp } th dport 53 ct mark set " + mark + " comment ",
+			"    type nat hook input priority 100; policy accept;\n    iifname \"mmesh\" ct mark " + mark + " ip6 daddr " + e.DNSULA + " meta l4proto { tcp, udp } th dport 53 snat ip6 to " + meshDNSAnchor + " comment ",
+			"    type route hook output priority mangle; policy accept;\n    ct direction reply ct mark " + mark + " meta mark set " + mark + " comment ",
+		} {
+			if !strings.Contains(nft, line) {
+				t.Fatalf("exit %s misses %q:\n%s", e.Node.ID, line, nft)
+			}
+		}
+		// The mark and the anchor rewrite are only ever applied to what
+		// arrived on mmesh: every rule naming the mark is one of the three.
+		if n := strings.Count(nft, mark); n != 4 {
+			t.Fatalf("exit %s names the Mesh mark %d times, want 4:\n%s", e.Node.ID, n, nft)
+		}
+	}
+	if meshExits == 0 {
+		t.Fatal("the example has no Mesh resolver exit")
 	}
 }
 
@@ -632,4 +679,238 @@ func mustTunnels(t *testing.T, topo model.Topology) []Tunnel {
 		t.Fatal(err)
 	}
 	return tunnels
+}
+
+// Mesh backup (docs/architecture.md「地区组的解析」): each switchable group
+// with a Mesh hop has one Mesh resolver member (the first member of its
+// order that has a standby Mesh edge and a tunnel resolver); that exit's
+// compiled meridian-mesh-up.sh names the group's resolver/128 for its Mesh
+// node to publish, and mesh.BuildPlan turns exactly those lines into
+// Cloudflare routes of that exit. Nobody else publishes or answers.
+func TestGroupDNSMeshResolverPublication(t *testing.T) {
+	topo, _ := groupDNSExample()
+	b := mustCompile(t, topo)
+	exits, groups := plans(t, topo)
+	want := map[string]string{} // resolver/128 -> exit
+	for _, g := range groups {
+		if !g.Dynamic || !g.Mesh {
+			if g.MeshResolver != "" {
+				t.Fatalf("group %s without a Mesh hop has a Mesh resolver %s", g.Group.ID, g.MeshResolver)
+			}
+			continue
+		}
+		first := ""
+		for _, id := range g.Selection.Order {
+			if e, ok := exitByID(exits, id); ok && e.DNSULA != "" && hubMeshStandby(topo, id) {
+				first = id
+				break
+			}
+		}
+		if g.MeshResolver != first {
+			t.Fatalf("group %s Mesh resolver %q, want the first capable member %q", g.Group.ID, g.MeshResolver, first)
+		}
+		if first != "" {
+			want[g.Resolver+"/128"] = first
+		}
+	}
+	if want[mustGroup(t, groups, "us").Resolver+"/128"] != "us" || want[mustGroup(t, groups, "hk").Resolver+"/128"] != "hk-ix" {
+		t.Fatalf("example Mesh resolvers: %v", want)
+	}
+	reMarker := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(mesh.PublishMarker) + ` (\S+) group=(\S+)$`)
+	got := map[string]string{}
+	for path, body := range b.Files {
+		for _, m := range reMarker.FindAllStringSubmatch(body, -1) {
+			if !strings.HasSuffix(path, "/usr/local/sbin/meridian-mesh-up.sh") {
+				t.Fatalf("%s carries a publish line", path)
+			}
+			node := strings.Split(strings.TrimPrefix(path, "nodes/"), "/")[0]
+			if prev, dup := got[m[1]]; dup {
+				t.Fatalf("%s published by %s and %s", m[1], prev, node)
+			}
+			got[m[1]] = node
+			g := mustGroup(t, groups, m[2])
+			if m[1] != g.Resolver+"/128" {
+				t.Fatalf("%s: publish line for group %s names %s, its resolver is %s", path, m[2], m[1], g.Resolver)
+			}
+		}
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("publish lines %v, want %v", got, want)
+	}
+	plan := mesh.BuildPlan(topo, b.Files)
+	pub := map[string]string{}
+	for _, r := range plan.Routes {
+		if r.Purpose != mesh.PurposeGroupResolver {
+			if strings.HasPrefix(r.Network, "fd66:") {
+				t.Fatalf("operator route in fd66::/48: %+v", r)
+			}
+			continue
+		}
+		pub[r.Network] = r.ExitID
+		if want[r.Network] != r.ExitID || r.Group == "" {
+			t.Fatalf("plan publishes %+v", r)
+		}
+	}
+	if fmt.Sprint(pub) != fmt.Sprint(want) {
+		t.Fatalf("plan routes %v, want %v", pub, want)
+	}
+	for _, is := range plan.Issues {
+		if is.Code == "mesh_publish_invalid" || (is.Code == "mesh_route_overlap" && strings.Contains(is.Message, "fd66::53")) {
+			t.Fatalf("plan rejects the compiled publication: %+v", is)
+		}
+	}
+	if mesh.GroupResolverNet != validate.GroupResolverNet {
+		t.Fatalf("mesh.GroupResolverNet %s != validate.GroupResolverNet %s", mesh.GroupResolverNet, validate.GroupResolverNet)
+	}
+}
+
+// The exit's return path for queries that came over the Mesh: table 171
+// holds only "default via <sidecar> dev mmesh" (while sealed) and a
+// blackhole, reached by the reply mark and the anchor address; the routes
+// script and meridian-mesh-up.sh run the same mesh_dns_return; the exit
+// re-seals on a timer. Exits that are no group's Mesh resolver have none
+// of it.
+func TestGroupDNSMeshReturnPath(t *testing.T) {
+	topo, _ := groupDNSExample()
+	b := mustCompile(t, topo)
+	exits, groups := plans(t, topo)
+	fn := meshDNSReturnShell()
+	ma := mesh.DefaultAddressing()
+	reTable := regexp.MustCompile(fmt.Sprintf(`(?m)^.*\btable %d\b.*$`, tableMeshDNS))
+	n := 0
+	for _, e := range exits {
+		pre := "nodes/" + e.Node.ID + "/"
+		routes := b.File(pre + "usr/local/sbin/meridian-routes.sh")
+		up := b.File(pre + "usr/local/sbin/meridian-up.sh")
+		meshUp := b.Files[pre+"usr/local/sbin/meridian-mesh-up.sh"]
+		rt := b.File(pre + "etc/iproute2/rt_tables.d/meridian.conf")
+		_, unit := b.Files[pre+"etc/systemd/system/meridian-mesh-seal.timer"]
+		if len(meshDNSGroups(groups, e.Node.ID)) == 0 {
+			if strings.Contains(routes, "mesh_dns_return") || strings.Contains(meshUp, "mesh_dns_return") || strings.Contains(rt, "171") || unit || strings.Contains(up, "meridian-mesh-seal") {
+				t.Fatalf("exit %s is no Mesh resolver but has the Mesh DNS return path", e.Node.ID)
+			}
+			continue
+		}
+		n++
+		if !strings.Contains(routes, fn+"mesh_dns_return\n") || !strings.Contains(meshUp, fn+"trap mesh_dns_return EXIT\n") {
+			t.Fatalf("exit %s: routes script and mesh-up do not share mesh_dns_return", e.Node.ID)
+		}
+		for _, l := range []string{
+			fmt.Sprintf("ip -6 rule add fwmark %#x lookup %d priority %d\n", markMeshDNS, tableMeshDNS, prioMeshDNS),
+			fmt.Sprintf("ip -6 rule add to %s/128 lookup %d priority %d\n", meshDNSAnchor, tableMeshDNS, prioMeshDNS+1),
+		} {
+			if !strings.Contains(routes, l) {
+				t.Fatalf("exit %s routes miss %q", e.Node.ID, l)
+			}
+		}
+		// Every route of table 171, in either script: the sidecar next-hop
+		// on mmesh or a blackhole. Never the hub tunnel, never the WAN.
+		for _, body := range []string{routes, meshUp} {
+			for _, l := range reTable.FindAllString(body, -1) {
+				l = strings.TrimSpace(l)
+				switch {
+				case strings.Contains(l, "rule add"), strings.Contains(l, "rule del"), strings.HasPrefix(l, "echo "), strings.HasPrefix(l, "#"):
+				case strings.Contains(l, "route replace blackhole default metric 32767 table 171"):
+				case strings.Contains(l, "route replace default via "+ma.NextHopV6()+" dev mmesh table 171"),
+					strings.Contains(l, "route del default via "+ma.NextHopV6()+" dev mmesh table 171"):
+				default:
+					t.Fatalf("exit %s: unexpected table 171 line %q", e.Node.ID, l)
+				}
+				if strings.Contains(l, " dev "+hubDirect(mustTunnels(t, topo), e.Node.ID).Iface()) || strings.Contains(l, "eth0") {
+					t.Fatalf("exit %s: table 171 leaves through the tunnel or WAN: %q", e.Node.ID, l)
+				}
+			}
+		}
+		if !strings.Contains(rt, fmt.Sprintf("%d\tmeridian_mesh_dns\n", tableMeshDNS)) {
+			t.Fatalf("exit %s rt_tables:\n%s", e.Node.ID, rt)
+		}
+		if !unit || !strings.Contains(up, "enable_unit meridian-mesh-seal.timer\n") ||
+			!strings.Contains(b.File(pre+"etc/systemd/system/meridian-mesh-seal.service"), "meridian-mesh-up.sh --seal-only") {
+			t.Fatalf("exit %s does not re-seal its sidecar on a timer", e.Node.ID)
+		}
+		if bashOK() {
+			dir := t.TempDir()
+			for name, body := range map[string]string{"routes.sh": routes, "mesh-up.sh": meshUp} {
+				p := filepath.Join(dir, name)
+				if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command("bash", "-n", p).CombinedOutput(); err != nil {
+					t.Fatalf("exit %s %s: bash -n: %v\n%s", e.Node.ID, name, err, out)
+				}
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no Mesh resolver exit in the example")
+	}
+	// The hub's sidecar seal still never leaves table 170, and its
+	// copy_routes keeps the warp device on each copied route.
+	hubUp := b.File("nodes/hk-hub/usr/local/sbin/meridian-mesh-up.sh")
+	if strings.Contains(hubUp, "mesh_dns_return") || strings.Contains(hubUp, mesh.PublishMarker) {
+		t.Fatal("the hub's mesh-up carries exit-only Mesh DNS parts")
+	}
+	if !strings.Contains(hubUp, `*) spec="$spec dev $dev" ;;`) {
+		t.Fatal("copy_routes drops the warp device from copied routes")
+	}
+}
+
+// mesh_dns_return under bash with a stub ip: the table points at the
+// sidecar only while mmesh exists and the seal is present, and loses that
+// route as soon as either is gone; the blackhole is always there.
+func TestGroupDNSMeshReturnFollowsSeal(t *testing.T) {
+	if !bashOK() {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	run, ctrl, bin := filepath.Join(dir, "run"), filepath.Join(dir, "ctrl"), filepath.Join(dir, "bin")
+	for _, d := range []string{run, ctrl, bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub := "#!/bin/bash\nif [ \"$1\" = link ]; then [ -f " + ctrl + "/link ]; exit; fi\necho \"ip $*\" >> " + ctrl + "/ip.log\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "ip"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "export PATH=" + bin + ":$PATH\n" + strings.ReplaceAll(meshDNSReturnShell(), "/run/meridian", run) + "mesh_dns_return\n"
+	call := func() string {
+		_ = os.Remove(filepath.Join(ctrl, "ip.log"))
+		p := filepath.Join(dir, "drive.sh")
+		if err := os.WriteFile(p, []byte(script), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("bash", p).CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		log, _ := os.ReadFile(filepath.Join(ctrl, "ip.log"))
+		return string(log)
+	}
+	via := "ip -6 route replace default via fe80::66:2 dev mmesh table 171"
+	del := "ip -6 route del default via fe80::66:2 dev mmesh table 171"
+	floor := "ip -6 route replace blackhole default metric 32767 table 171"
+	set := func(name string, on bool) {
+		p := filepath.Join(map[string]string{"link": ctrl, "mesh-sealed": run}[name], name)
+		if on {
+			_ = os.WriteFile(p, nil, 0o644)
+		} else {
+			_ = os.Remove(p)
+		}
+	}
+	for _, c := range []struct {
+		link, sealed bool
+		want, not    string
+	}{
+		{false, false, del, via},
+		{true, false, del, via},
+		{false, true, del, via},
+		{true, true, via, del},
+	} {
+		set("link", c.link)
+		set("mesh-sealed", c.sealed)
+		log := call()
+		if !strings.Contains(log, floor) || !strings.Contains(log, c.want) || strings.Contains(log, c.not) {
+			t.Fatalf("link=%v sealed=%v:\n%s", c.link, c.sealed, log)
+		}
+	}
 }

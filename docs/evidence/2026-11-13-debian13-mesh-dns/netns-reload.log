@@ -1,0 +1,45 @@
+=== RUN   TestNetnsReloadNoLeak
+    netns_reload_linux_test.go:279: EVIDENCE control(no tables): foreign4=135 foreign6=134 domestic4=67 domestic6=135 tunnel_tx=0 (expected: foreign v4 and v6 leak, nothing enters a tunnel)
+    netns_reload_linux_test.go:280: EVIDENCE control(no tables) remote device: raw_at_ros=267 raw4_at_ros=134 (expected: untranslated v4 and v6 leak)
+    netns_reload_linux_test.go:314: EVIDENCE first-install: foreign4=0 foreign6=0 domestic4=69 domestic6=136 tunnel_tx=274
+    netns_reload_linux_test.go:325: EVIDENCE first-install remote device: raw_at_ros=0 domestic4=68 domestic6=68 into_tunnels=138
+    netns_reload_linux_test.go:326: EVIDENCE first-install e2e ok: LAN client to domestic IPv4 (hairpin out of the LAN NIC) (cli -> 198.18.0.2)
+    netns_reload_linux_test.go:326: EVIDENCE first-install e2e ok: LAN client to domestic IPv6 (cli -> 2001:db8:cccc::1)
+    netns_reload_linux_test.go:326: EVIDENCE first-install e2e ok: device to domestic IPv4 (NAT on the LAN NIC, reply out of mra) (dev -> 198.18.0.2)
+    netns_reload_linux_test.go:326: EVIDENCE first-install e2e ok: device to domestic IPv6 (NAT on the LAN NIC, reply out of mra) (dev -> 2001:db8:cccc::1)
+    netns_reload_linux_test.go:326: EVIDENCE first-install e2e ok: LAN client to device IPv4 (cli -> 10.67.0.2)
+    netns_reload_linux_test.go:326: EVIDENCE first-install e2e ok: LAN client to device IPv6 (cli -> fd67::2)
+    netns_reload_linux_test.go:326: EVIDENCE first-install e2e ok: device to LAN client IPv4 (dev -> 192.168.100.50)
+    netns_reload_linux_test.go:326: EVIDENCE first-install e2e ok: device to LAN client IPv6 (dev -> 2001:db8:100::50)
+    netns_reload_linux_test.go:326: EVIDENCE first-install: 15 route-validation checks ok (replies from 3 tunnels to the LAN client and the device, LAN/device domestic and reply)
+    netns_reload_linux_test.go:336: EVIDENCE 200 reloads under traffic: foreign4=0 foreign6=0 domestic4=6 tunnel_tx=6076
+    netns_reload_linux_test.go:340: EVIDENCE 200 reloads remote device: raw_at_ros=0 domestic4=3 domestic6=2 into_tunnels=3025
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads e2e ok: LAN client to domestic IPv4 (hairpin out of the LAN NIC) (cli -> 198.18.0.2)
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads e2e ok: LAN client to domestic IPv6 (cli -> 2001:db8:cccc::1)
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads e2e ok: device to domestic IPv4 (NAT on the LAN NIC, reply out of mra) (dev -> 198.18.0.2)
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads e2e ok: device to domestic IPv6 (NAT on the LAN NIC, reply out of mra) (dev -> 2001:db8:cccc::1)
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads e2e ok: LAN client to device IPv4 (cli -> 10.67.0.2)
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads e2e ok: LAN client to device IPv6 (cli -> fd67::2)
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads e2e ok: device to LAN client IPv4 (dev -> 192.168.100.50)
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads e2e ok: device to LAN client IPv6 (dev -> 2001:db8:100::50)
+    netns_reload_linux_test.go:363: EVIDENCE after 200 reloads: 15 route-validation checks ok (replies from 3 tunnels to the LAN client and the device, LAN/device domestic and reply)
+    netns_reload_linux_test.go:405: EVIDENCE injected load failures: foreign4=0 foreign6=0 domestic6=185 (old ruleset kept)
+    netns_reload_linux_test.go:412: EVIDENCE injected load failures remote device: raw_at_ros=0 domestic4=94 domestic6=93 into_tunnels=186
+    netns_reload_linux_test.go:458: EVIDENCE 20 group switches (nft + routes) under traffic: foreign4=0 foreign6=0
+    netns_reload_linux_test.go:480: EVIDENCE after group switch and 20 routes reloads: foreign4=0 foreign6=0 domestic4=68 domestic6=135 tunnel_tx=271
+    netns_reload_linux_test.go:488: EVIDENCE after group switch remote device: raw_at_ros=0 domestic4=68 domestic6=68 into_tunnels=135
+    netns_reload_linux_test.go:489: EVIDENCE after group switch e2e ok: LAN client to domestic IPv4 (hairpin out of the LAN NIC) (cli -> 198.18.0.2)
+    netns_reload_linux_test.go:489: EVIDENCE after group switch e2e ok: LAN client to domestic IPv6 (cli -> 2001:db8:cccc::1)
+    netns_reload_linux_test.go:489: EVIDENCE after group switch e2e ok: device to domestic IPv4 (NAT on the LAN NIC, reply out of mra) (dev -> 198.18.0.2)
+    netns_reload_linux_test.go:489: EVIDENCE after group switch e2e ok: device to domestic IPv6 (NAT on the LAN NIC, reply out of mra) (dev -> 2001:db8:cccc::1)
+    netns_reload_linux_test.go:489: EVIDENCE after group switch e2e ok: LAN client to device IPv4 (cli -> 10.67.0.2)
+    netns_reload_linux_test.go:489: EVIDENCE after group switch e2e ok: LAN client to device IPv6 (cli -> fd67::2)
+    netns_reload_linux_test.go:489: EVIDENCE after group switch e2e ok: device to LAN client IPv4 (dev -> 192.168.100.50)
+    netns_reload_linux_test.go:489: EVIDENCE after group switch e2e ok: device to LAN client IPv6 (dev -> 2001:db8:100::50)
+    netns_reload_linux_test.go:489: EVIDENCE after group switch: 15 route-validation checks ok (replies from 3 tunnels to the LAN client and the device, LAN/device domestic and reply)
+    netns_reload_linux_test.go:497: EVIDENCE guard only (inet meridian deleted): foreign4=0 foreign6=0 domestic4=0 domestic6=0
+    netns_reload_linux_test.go:501: EVIDENCE guard only remote device: raw_at_ros=0 domestic4=0 domestic6=0 into_tunnels=0
+    netns_reload_linux_test.go:514: EVIDENCE early-boot guard file only: foreign4=0 foreign6=0 domestic4=0 domestic6=0
+    netns_reload_linux_test.go:518: EVIDENCE early-boot guard only remote device: raw_at_ros=0 domestic4=0 domestic6=0 into_tunnels=0
+meridian-netns-reload-test-ok
+--- PASS: TestNetnsReloadNoLeak (129.54s)

@@ -42,6 +42,13 @@ services:
       - /etc/meridian-host/agent.token:/run/secrets/meridian-host.token:ro
     environment:
       MERIDIAN_BIND: 192.168.100.88:8787
+      # At boot the LAN address can appear after the container starts
+      # (allow-hotplug + DHCP). The panel waits up to this long for it,
+      # logging "meridian-bind-waiting" every 10 s and "meridian-bind-ready"
+      # when it listens; then it exits with "meridian-bind-not-ready" and
+      # the restart policy below starts it again. It never binds 0.0.0.0.
+      # See the logs with: docker compose logs meridian
+      MERIDIAN_BIND_WAIT: 180s
       MERIDIAN_DATA: /var/lib/meridian
       MERIDIAN_SECRETS_DIR: /var/lib/meridian-secrets
       MERIDIAN_WEB_DIR: /usr/share/meridian/web

@@ -344,7 +344,7 @@ func (s *Server) getGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plans := plansOf(t)
-	hub := s.groupHub()
+	hub := s.groupHub(t)
 	writeJSON(w, http.StatusOK, map[string]any{"group": viewGroup(t, g, plans, s.groupRuntime(), hub), "thresholds": thresholds(), "hub_state": hub.view(t, s.hubReachability(t), plans)})
 }
 

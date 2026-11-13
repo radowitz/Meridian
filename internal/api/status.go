@@ -71,10 +71,17 @@ type statusJob struct {
 }
 
 type statusView struct {
-	Agent          statusAgent   `json:"agent"`
-	ListsAvailable bool          `json:"lists_available"`
-	ProbeAvailable bool          `json:"probe_available"`
-	Install        statusInstall `json:"install"`
+	Agent          statusAgent `json:"agent"`
+	ListsAvailable bool        `json:"lists_available"`
+	ProbeAvailable bool        `json:"probe_available"`
+	// ProbeReason says why ProbeAvailable is false: "not_configured" (the
+	// panel was started without a probe channel) or "agent_unreachable"
+	// (the channel is configured but meridian-host did not answer the
+	// health call). Empty when a probe could run now.
+	ProbeReason string `json:"probe_reason,omitempty"`
+	// ProbeError is the agent's health error for "agent_unreachable".
+	ProbeError string        `json:"probe_error,omitempty"`
+	Install    statusInstall `json:"install"`
 	// PreviousAvailable: a previous snapshot exists, so a rollback has
 	// something to go back to.
 	PreviousAvailable bool               `json:"previous_available"`
@@ -90,7 +97,7 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 	var v statusView
 	v.Agent = s.agentStatus(r.Context())
 	v.ListsAvailable = s.Lists != nil && v.Agent.OK
-	v.ProbeAvailable = s.Prober != nil && v.Agent.OK
+	v.ProbeAvailable, v.ProbeReason, v.ProbeError = probeState(s.Prober != nil, v.Agent)
 
 	ap := s.applier(true)
 	pending, err := ap.Pending()
@@ -160,6 +167,20 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v)
 }
 
+// probeState decides whether an unlock probe can run now. A configured
+// probe channel is not enough: the probe is executed by meridian-host, so
+// an unreachable agent makes it unavailable, and the reason says which.
+func probeState(configured bool, agent statusAgent) (ok bool, reason, detail string) {
+	switch {
+	case !configured:
+		return false, "not_configured", ""
+	case !agent.OK:
+		return false, "agent_unreachable", agent.Error
+	default:
+		return true, "", ""
+	}
+}
+
 // agentStatus asks the host agent for its health once, with a short timeout.
 func (s *Server) agentStatus(ctx context.Context) statusAgent {
 	switch {
@@ -208,6 +229,9 @@ func (s *Server) installState(ap apply.Applier, inst apply.Manifest, build func(
 	switch {
 	case inst.Empty():
 		out.State = "not_installed"
+	case inst.Withdrawn():
+		// Down to the LAN guard (POST /api/host/withdraw).
+		out.State = "withdrawn"
 	case inst.Canonical == "":
 		out.State = "unknown"
 	default:

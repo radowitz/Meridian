@@ -42,6 +42,8 @@ import type {
   ProbeResultRow,
   ProbeSelection,
   ProvisionResult,
+  PreflightRecord,
+  LoginHelp,
   Ref,
   RegionGroupInput,
   RegionGroupPatch,
@@ -66,6 +68,12 @@ import type {
   Topology,
   TopologySaveResult,
   UnlockView,
+  DeploymentsView,
+  HostWithdrawResult,
+  WithdrawMode,
+  WithdrawPlan,
+  WithdrawRunResult,
+  DeploymentView,
 } from "./types";
 
 // Re-exported for the components that still import them from here.
@@ -227,8 +235,12 @@ export const compile = (topo?: Topology) => request<Record<string, unknown>>("PO
 /** Without a topology the stored document is compiled and compared. */
 export const diff = (topo?: Topology) => request<DiffResult>("POST", "/api/diff", topo ?? {});
 
-export const apply = (dryRun: boolean, install: boolean) =>
-  request<ApplyResult>("POST", "/api/apply", { dry_run: dryRun, install });
+/** `preflightId`: the reviewed install pre-check (required for the first install to the gateway). */
+export const apply = (dryRun: boolean, install: boolean, preflightId?: string) =>
+  request<ApplyResult>("POST", "/api/apply", { dry_run: dryRun, install, ...(preflightId ? { preflight_id: preflightId } : {}) });
+
+/** Read-only install pre-check of the gateway through meridian-host. */
+export const hostPreflight = () => request<{ preflight: PreflightRecord }>("POST", "/api/host/preflight", {});
 
 /**
  * "runtime" restores the host and the data directory in one transaction;
@@ -245,14 +257,23 @@ export const getStatus = () => request<PanelStatus>("GET", "/api/status");
 export const hostStatus = () => request<HostStatus>("GET", "/api/host");
 export const recoverHost = () => request<{ status: string; host?: HostReport | null }>("POST", "/api/host/recover", {});
 
-/** Dry run by default; `dryRun: false` really connects and provisions. */
-export function provision(nodeId: string, opts: { dryRun?: boolean; generateKeys?: boolean } = {}) {
+/**
+ * Dry run by default; `dryRun: false` really connects and provisions. A run
+ * takes the reviewed `preflightId` (required for a first install); the
+ * server re-runs the preflight right before executing.
+ */
+export function provision(nodeId: string, opts: { dryRun?: boolean; generateKeys?: boolean; preflightId?: string } = {}) {
   return request<ProvisionResult>("POST", "/api/provision", {
     node_id: nodeId,
     dry_run: opts.dryRun ?? true,
     ...(opts.generateKeys ? { generate_keys: true } : {}),
+    ...(opts.preflightId ? { preflight_id: opts.preflightId } : {}),
   });
 }
+
+/** Read-only preflight of a remote node's server over the pinned SSH channel. */
+export const provisionPreflight = (nodeId: string) =>
+  request<{ preflight: PreflightRecord }>("POST", "/api/provision/preflight", { node_id: nodeId });
 
 // --------------------------------------------------------------- servers ---
 
@@ -269,7 +290,7 @@ export const trustHostKey = (id: string, fingerprint: string) =>
   request<{ server: ServerView }>("POST", `/api/servers/${enc(id)}/host-key/trust`, { fingerprint });
 export const forgetHostKey = (id: string) => request<{ server: ServerView }>("DELETE", `/api/servers/${enc(id)}/host-key`);
 export const testServer = (id: string) =>
-  request<{ test: ConnectionTest; server: ServerView }>("POST", `/api/servers/${enc(id)}/test`, {});
+  request<{ test: ConnectionTest; server: ServerView; login_help?: LoginHelp }>("POST", `/api/servers/${enc(id)}/test`, {});
 
 // ------------------------------------------------------- SSH credentials ---
 
@@ -379,15 +400,40 @@ export const getUnlockJob = (id: string) =>
   request<{ job: ProbeJob; running: boolean }>("GET", `/api/unlock/jobs/${enc(id)}`);
 export const cancelUnlockJob = (id: string) =>
   request<{ cancelled: string }>("POST", `/api/unlock/jobs/${enc(id)}/cancel`);
-export function getUnlockResults(filter: { service?: string; exit?: string; group?: string; family?: string } = {}) {
+export function getUnlockResults(
+  filter: { service?: string; exit?: string; group?: string; family?: string; include_removed?: string } = {},
+) {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(filter)) if (v) q.set(k, v);
   const qs = q.toString();
-  return request<{ results: ProbeResultRow[]; validation: string; validation_text: string }>(
+  return request<{
+    results: ProbeResultRow[];
+    validation: string;
+    validation_text: string;
+    removed_exits?: { exit_id: string; results: number }[];
+  }>(
     "GET",
     `/api/unlock/results${qs ? `?${qs}` : ""}`,
   );
 }
+
+/** Deletes stored probe results of exits no longer in the topology (admission records are kept). */
+export const pruneUnlockResults = () => request<{ removed: number; exits: string[] }>("POST", "/api/unlock/results/prune", {});
+
+// -------------------------------------------------------------- withdraw ---
+
+export const getDeployments = () => request<DeploymentsView>("GET", "/api/deployments");
+/** Read-only plan on the deployment's bound server. */
+export const withdrawPlan = (nodeId: string, mode: WithdrawMode = "manifest") =>
+  request<{ plan: WithdrawPlan; already_withdrawn?: boolean }>("POST", "/api/provision/withdraw/plan", { node_id: nodeId, mode });
+/** Runs a reviewed plan; confirm is the node id typed by the operator. */
+export const withdrawRun = (nodeId: string, planId: string, confirm: string) =>
+  request<WithdrawRunResult>("POST", "/api/provision/withdraw", { node_id: nodeId, plan_id: planId, confirm });
+export const withdrawAbandon = (nodeId: string, confirm: string) =>
+  request<{ deployment: DeploymentView; changed: boolean }>("POST", "/api/provision/withdraw/abandon", { node_id: nodeId, confirm });
+export const forgetDeployment = (nodeId: string) => request<{ deleted: string }>("DELETE", `/api/provision/state/${enc(nodeId)}`);
+export const hostWithdraw = (confirm: string, releaseGuard = false) =>
+  request<HostWithdrawResult>("POST", "/api/host/withdraw", releaseGuard ? { confirm, release_guard: true } : { confirm });
 
 // ------------------------------------------------------------------ leak ---
 

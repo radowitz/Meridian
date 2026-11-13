@@ -198,8 +198,8 @@ export type InstallState =
    * still runs the older installed version.
    */
   | { kind: "changed"; version: number | null; appliedOnly: boolean }
-  /** Nothing installed on the gateway yet. */
-  | { kind: "not_installed" }
+  /** Nothing installed on the gateway yet (withdrawn: withdrawn down to the LAN guard). */
+  | { kind: "not_installed"; withdrawn?: boolean }
   /** The stored topology does not compile (draft with errors). */
   | { kind: "error"; message: string }
   /** Installed by an adopted legacy install without a hash: cannot compare. */
@@ -237,6 +237,8 @@ export function installStateOf(s: PanelStatus): InstallState {
       return { kind: "changed", version: i.installed_version, appliedOnly: i.applied && i.applied_matches };
     case "not_installed":
       return { kind: "not_installed" };
+    case "withdrawn":
+      return { kind: "not_installed", withdrawn: true };
     case "invalid":
       return { kind: "error", message: i.error || "拓扑无法编译" };
     default:

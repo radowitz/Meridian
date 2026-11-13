@@ -26,7 +26,8 @@ import * as api from "./api";
 import type { ApiError } from "./api";
 import { CredentialCreateDrawer, kindLabel } from "./CredentialsPage";
 import { href, useRouter } from "./state";
-import type { AuthMethod, SSHCredentialView, ServerInput, ServerPatch, ServerView } from "./types";
+import { LoginHelpView } from "./Preflight";
+import type { AuthMethod, LoginHelp, SSHCredentialView, ServerInput, ServerPatch, ServerView } from "./types";
 import {
   ERROR_TEXT,
   RowActions,
@@ -325,6 +326,7 @@ function ServerFlow({
   onCredCreated: (c: SSHCredentialView) => void;
 }) {
   const act = useAction();
+  const [loginHelp, setLoginHelp] = useState<LoginHelp | null>(null);
   const confirm = useConfirmDanger();
   const { message } = AntApp.useApp();
   const [pick, setPick] = useState<string | undefined>(undefined);
@@ -375,8 +377,12 @@ function ServerFlow({
   const test = () =>
     act.run(async () => {
       try {
+        setLoginHelp(null);
         const r = await api.testServer(server.id);
         onChanged(r.server);
+        // A login the server did not accept comes with what to do and the
+        // public key to paste (never anything secret).
+        setLoginHelp(r.login_help ?? null);
         if (r.test.ok) message.success("连接测试通过");
       } finally {
         // A failed test is recorded on the server too.
@@ -591,6 +597,7 @@ function ServerFlow({
                           <Typography.Text type="secondary">
                             <TimeText value={lt.at} />
                           </Typography.Text>
+                          {loginHelp && loginHelp.code === lt.code ? <LoginHelpView help={loginHelp} /> : null}
                         </>
                       }
                     />

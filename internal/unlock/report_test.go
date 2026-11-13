@@ -3,6 +3,7 @@ package unlock
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -284,5 +285,30 @@ func TestStaleAndWrongExitResultsRejected(t *testing.T) {
 	after := snap.Services["auto-openai"]
 	if after.Active != before.Active || after.Demoted != before.Demoted || after.Known["jp"] || !after.PreferredOKAt.IsZero() {
 		t.Fatalf("wrong-exit result changed the state: %+v", after)
+	}
+}
+
+// Records of an exit that was removed are found for marking, and finding
+// them changes nothing: admission still rejects an old replay for that id.
+func TestRemovedExitsMarkedAdmissionKept(t *testing.T) {
+	snap := Snapshot{Services: map[string]State{"netflix": {Active: "jp", Preferred: "tw"}}}
+	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	Ingest(&snap, Observation{Service: "netflix", ExitID: "gone", Kind: KindScheduled, ObservedAt: t0, Results: map[Family]bool{FamilyIPv4: true}}, []string{"tw", "gone"}, "", t0)
+	got := RemovedExits(snap, func(id string) bool { return id == "tw" || id == "jp" })
+	if len(got) != 1 || got[0] != "gone" {
+		t.Fatalf("removed exits %v", got)
+	}
+	refs := ReferencedExits(snap)
+	if strings.Join(refs, ",") != "gone,jp,tw" {
+		t.Fatalf("referenced %v", refs)
+	}
+	before := len(snap.Latest)
+	_ = RemovedExits(snap, func(string) bool { return false })
+	if len(snap.Latest) != before {
+		t.Fatal("marking removed exits changed admission state")
+	}
+	out := Ingest(&snap, Observation{Service: "netflix", ExitID: "gone", Kind: KindScheduled, ObservedAt: t0.Add(-time.Minute), Results: map[Family]bool{FamilyIPv4: true}}, []string{"tw", "gone"}, "", t0.Add(time.Minute))
+	if len(out) != 1 || out[0].Accepted || out[0].Rejected != RejectOutOfOrder {
+		t.Fatalf("old replay for a removed exit id: %+v", out)
 	}
 }

@@ -1,0 +1,759 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/radowitz/meridian/internal/apply"
+	"github.com/radowitz/meridian/internal/credentials"
+	"github.com/radowitz/meridian/internal/hostexec"
+	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/preflight"
+	"github.com/radowitz/meridian/internal/provision"
+	"github.com/radowitz/meridian/internal/sshexec"
+)
+
+// The install pre-check ("preflight") before a remote node is provisioned
+// and before the gateway install. See docs/architecture.md「装机前预检」.
+//
+//   - POST /api/provision/preflight {node_id} runs the fixed, read-only
+//     preflight script on the node's server (pinned host key) and stores
+//     the result bound to the target identity (server, address, port,
+//     user, pinned fingerprint, credential) and to the digest of the
+//     node's bundle, valid for preflightTTL.
+//   - POST /api/host/preflight {} does the same for the gateway through
+//     meridian-host's fixed preflight action.
+//   - POST /api/provision and POST /api/apply {install:true} take the
+//     reviewed preflight_id. A first install without one is refused
+//     (preflight_required). Immediately before executing, the preflight is
+//     run again; execution is refused when it has blocking findings
+//     (preflight_blocked), when the reviewed result is stale
+//     (preflight_stale), when the target identity changed
+//     (target_changed), when the node's bundle changed (bundle_changed) or
+//     when new warnings or blocking findings appeared (preflight_changed).
+//     Blocking findings cannot be overridden.
+
+const (
+	codePreflightRequired = "preflight_required"
+	codePreflightStale    = "preflight_stale"
+	codePreflightBlocked  = "preflight_blocked"
+	codePreflightChanged  = "preflight_changed"
+	codePreflightFailed   = "preflight_failed"
+	codeBundleChanged     = "bundle_changed"
+	codeNodeBusy          = "node_busy"
+
+	codeProvisionRefused     = "provision_refused"
+	codeProvisionCompensated = "provision_failed_compensated"
+	codeProvisionLeftovers   = "provision_failed_leftovers"
+
+	// preflightTTL is how long a reviewed result may be used.
+	preflightTTL = 10 * time.Minute
+
+	deploymentKey     = "panel_deployment_id"
+	provisionStateKey = "provision_state"
+)
+
+// notChecked is shown with every result: what the preflight does not
+// establish.
+var notChecked = []string{
+	"不检查放行规则是否覆盖 Meridian 的端口（只看 INPUT/FORWARD 的默认策略和别的表的 drop 链）",
+	"不检查云厂商安全组、上游防火墙或 NAT：端口能否从外面到达要在装好后看握手",
+	"不检查别的服务以后会不会改动网络（Docker 重启、WARP 重连、nftables 重载）",
+	"不检查 SmartDNS 上游、wstunnel 证书和域名是否可用",
+	"不检查 sudo：只接受 root 登录",
+	"不修改任何东西：发现的冲突要由你处理，面板这一版不会替你改 Docker 或别的防火墙规则",
+}
+
+// targetIdentity is what a preflight result is bound to.
+type targetIdentity struct {
+	ServerID       string `json:"server_id"`
+	ServerName     string `json:"server_name"`
+	Address        string `json:"address"`
+	Port           int    `json:"port"`
+	User           string `json:"user"`
+	Fingerprint    string `json:"fingerprint"`
+	KeyType        string `json:"key_type,omitempty"`
+	CredentialID   string `json:"credential_id"`
+	CredentialName string `json:"credential_name,omitempty"`
+	AuthMethod     string `json:"auth_method,omitempty"`
+}
+
+func (a targetIdentity) same(b targetIdentity) bool {
+	return a.ServerID == b.ServerID && a.Address == b.Address && a.Port == b.Port && a.User == b.User &&
+		a.Fingerprint == b.Fingerprint && a.CredentialID == b.CredentialID
+}
+
+type hostSummary struct {
+	OS         string   `json:"os,omitempty"`
+	Arch       string   `json:"arch,omitempty"`
+	Kernel     string   `json:"kernel,omitempty"`
+	MemTotalKB int64    `json:"mem_total_kb"`
+	MemAvailKB int64    `json:"mem_avail_kb"`
+	Complete   bool     `json:"complete"`
+	Notes      []string `json:"notes,omitempty"`
+}
+
+// preflightRecord is one stored result. It holds no secret: addresses,
+// names, ports and hashes only.
+type preflightRecord struct {
+	ID           string              `json:"id"`
+	Kind         string              `json:"kind"` // remote | gateway
+	NodeID       string              `json:"node_id"`
+	NodeName     string              `json:"node_name"`
+	Role         string              `json:"role"`
+	Target       *targetIdentity     `json:"target,omitempty"`
+	Deployment   string              `json:"deployment"`
+	Bundle       string              `json:"bundle"`
+	FirstInstall bool                `json:"first_install"`
+	At           time.Time           `json:"at"`
+	ExpiresAt    time.Time           `json:"expires_at"`
+	Host         hostSummary         `json:"host"`
+	Footprint    preflight.Footprint `json:"footprint"`
+	NotChecked   []string            `json:"not_checked"`
+	preflight.Evaluation
+}
+
+func preflightKey(node string) string { return "preflight/" + node }
+
+func (s *Server) savePreflight(rec *preflightRecord) error {
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.Store.Put(preflightKey(rec.NodeID), string(b))
+}
+
+func (s *Server) loadPreflight(node string) *preflightRecord {
+	raw, ok, err := s.Store.Get(preflightKey(node))
+	if err != nil || !ok || raw == "" {
+		return nil
+	}
+	var rec preflightRecord
+	if json.Unmarshal([]byte(raw), &rec) != nil {
+		return nil
+	}
+	return &rec
+}
+
+// deploymentID identifies this panel installation in node manifests, so a
+// host provisioned by another panel is not taken for ours.
+func (s *Server) deploymentID() (string, error) {
+	s.provMu.Lock()
+	defer s.provMu.Unlock()
+	if v, ok, err := s.Store.Get(deploymentKey); err != nil {
+		return "", err
+	} else if ok && v != "" {
+		return v, nil
+	}
+	id := "dep-" + randHex(8)
+	return id, s.Store.Put(deploymentKey, id)
+}
+
+// lockNode keeps one preflight or provision per node at a time.
+func (s *Server) lockNode(id string) bool {
+	s.provMu.Lock()
+	defer s.provMu.Unlock()
+	if s.provBusy == nil {
+		s.provBusy = map[string]bool{}
+	}
+	if s.provBusy[id] {
+		return false
+	}
+	s.provBusy[id] = true
+	return true
+}
+
+func (s *Server) unlockNode(id string) {
+	s.provMu.Lock()
+	delete(s.provBusy, id)
+	s.provMu.Unlock()
+}
+
+func refuseBusy(w http.ResponseWriter, node string) {
+	writeCoded(w, http.StatusConflict, codeNodeBusy, fmt.Sprintf("节点 %s 正在预检或装机，等它结束再试", node), nil)
+}
+
+// identityOf is the node's current target: its server's address, port,
+// user, pinned fingerprint and credential.
+func identityOf(cs *credentials.Store, n model.Node) (targetIdentity, error) {
+	sv, err := cs.Server(n.ServerID)
+	if err != nil {
+		return targetIdentity{}, err
+	}
+	id := targetIdentity{ServerID: sv.ID, ServerName: sv.Name, Address: sv.Address, Port: sv.Port, User: sv.User,
+		Fingerprint: sv.HostKey.Fingerprint, KeyType: sv.HostKey.KeyType, CredentialID: sv.CredentialID, AuthMethod: sv.Auth}
+	if c, err := cs.SSHCredential(sv.CredentialID); err == nil {
+		id.CredentialName = c.Name
+	}
+	return id, nil
+}
+
+func (t targetIdentity) target() sshexec.Target {
+	return sshexec.Target{ServerID: t.ServerID, CredentialID: t.CredentialID, Address: t.Address, Port: t.Port, User: t.User, Fingerprint: t.Fingerprint}
+}
+
+func summaryOf(r preflight.Report) hostSummary {
+	return hostSummary{OS: r.OSPretty, Arch: r.Arch, Kernel: r.Kernel, MemTotalKB: r.MemTotalKB, MemAvailKB: r.MemAvailKB, Complete: r.Complete, Notes: r.Notes}
+}
+
+// ------------------------------------------------------------ remote ---
+
+// runRemotePreflight runs the fixed preflight on the node's server, pinned
+// to ident, and stores the evaluated result.
+func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, n model.Node, files map[string]string, ident targetIdentity, first bool) (*preflightRecord, error) {
+	dep, err := s.deploymentID()
+	if err != nil {
+		return nil, err
+	}
+	fp := preflight.FootprintOf(files)
+	args, err := preflight.Args(fp.Files)
+	if err != nil {
+		return nil, &credentials.Error{Code: codePreflightFailed, Msg: "节点的文件路径不能交给预检：" + err.Error()}
+	}
+	res, err := s.connector(cs).RunPreflight(ctx, ident.target(), args)
+	if err != nil {
+		return nil, err
+	}
+	rep := preflight.Parse(res.Output)
+	rep.Source = "ssh"
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep})
+	now := time.Now().UTC()
+	if res.AuthMethod != "" {
+		ident.AuthMethod = res.AuthMethod
+	}
+	rec := &preflightRecord{ID: "pf-" + randHex(8), Kind: "remote", NodeID: n.ID, NodeName: n.Name, Role: string(n.Role), Target: &ident,
+		Deployment: dep, Bundle: preflight.BundleDigest(files), FirstInstall: first, At: now, ExpiresAt: now.Add(preflightTTL),
+		Host: summaryOf(rep), Footprint: fp, NotChecked: notChecked, Evaluation: ev}
+	if err := s.savePreflight(rec); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+type preflightBody struct {
+	NodeID       string `json:"node_id"`
+	GenerateKeys bool   `json:"generate_keys"`
+}
+
+func (s *Server) postProvisionPreflight(w http.ResponseWriter, r *http.Request) {
+	var body preflightBody
+	if err := decodeStrict(w, r, &body, []string{"node_id", "generate_keys"}, provisionRemoved, false); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	t, err := s.topology()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	node, ok := t.NodeByID(body.NodeID)
+	if !ok {
+		writeResErr(w, &credentials.Error{Code: credentials.CodeNotFound, Field: "node_id", Msg: "节点不存在"})
+		return
+	}
+	if !node.Managed || node.Role == model.RoleGateway {
+		writeResErr(w, &credentials.Error{Code: codeBadRequest, Field: "node_id", Msg: "该节点不经 SSH 装机（网关用「安装到网关」，IX 专线不需要装机）"})
+		return
+	}
+	cs, err := s.credStore()
+	if err != nil {
+		writeResErr(w, err)
+		return
+	}
+	if err := checkServerOperable(cs, node); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	if !s.lockNode(node.ID) {
+		refuseBusy(w, node.ID)
+		return
+	}
+	defer s.unlockNode(node.ID)
+	if s.refuseDeployedElsewhere(w, node) {
+		return
+	}
+	b, err := s.compileTopo(t)
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	ident, err := identityOf(cs, node)
+	if err != nil {
+		writeResErr(w, err)
+		return
+	}
+	rec, err := s.runRemotePreflight(r.Context(), cs, node, provision.FilesFor(b.Files, node.ID), ident, !s.provisionedOK(node, ident))
+	if err != nil {
+		s.writeSSHErrHelp(w, cs, node.ServerID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"preflight": rec})
+}
+
+func (s *Server) getProvisionPreflight(w http.ResponseWriter, r *http.Request) {
+	rec := s.loadPreflight(r.PathValue("node"))
+	if rec == nil {
+		writeResErr(w, &credentials.Error{Code: credentials.CodeNotFound, Msg: "这个节点还没有预检记录"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"preflight": rec, "stale": time.Now().After(rec.ExpiresAt)})
+}
+
+// gateReviewed checks a reviewed result before anything is re-run. It
+// writes the refusal and returns nil, false when execution must not go on.
+func (s *Server) gateReviewed(w http.ResponseWriter, node, id, bundle string, ident *targetIdentity) (*preflightRecord, bool) {
+	rec := s.loadPreflight(node)
+	dep, _ := s.deploymentID()
+	switch {
+	case rec == nil || rec.ID != id || rec.NodeID != node:
+		writeCoded(w, http.StatusConflict, codePreflightStale, "这条预检记录不存在，或已被更新的预检替换：重新预检后再执行", nil)
+	case rec.Deployment != dep:
+		writeCoded(w, http.StatusConflict, codePreflightStale, "预检记录属于另一个面板实例：重新预检", nil)
+	case time.Now().After(rec.ExpiresAt):
+		writeCoded(w, http.StatusConflict, codePreflightStale,
+			fmt.Sprintf("预检结果已过期（%s 做的，有效 %d 分钟）：重新预检后再执行", rec.At.Format(time.RFC3339), int(preflightTTL.Minutes())), map[string]any{"preflight": rec})
+	case ident != nil && (rec.Target == nil || !rec.Target.same(*ident)):
+		was := "—"
+		if rec.Target != nil {
+			was = fmt.Sprintf("%s@%s:%d（%s，凭据 %s）", rec.Target.User, rec.Target.Address, rec.Target.Port, rec.Target.Fingerprint, rec.Target.CredentialID)
+		}
+		writeCoded(w, http.StatusConflict, sshexec.CodeTargetChanged,
+			fmt.Sprintf("预检之后目标变了：预检时是 %s，现在是 %s@%s:%d（%s，凭据 %s）。重新预检后再执行", was, ident.User, ident.Address, ident.Port, ident.Fingerprint, ident.CredentialID),
+			map[string]any{"preflight": rec})
+	case rec.Bundle != bundle:
+		writeCoded(w, http.StatusConflict, codeBundleChanged, "预检之后这个节点要下发的配置变了（拓扑被修改）：重新预检后再执行", map[string]any{"preflight": rec})
+	case rec.Blocking:
+		writeCoded(w, http.StatusConflict, codePreflightBlocked, "预检有阻断项，不能执行：按每一项的处理办法解决后重新预检", map[string]any{"preflight": rec})
+	default:
+		return rec, true
+	}
+	return nil, false
+}
+
+// newConcerns lists warnings and blocking findings of fresh that the
+// reviewed result did not have.
+func newConcerns(reviewed, fresh *preflightRecord) []preflight.Finding {
+	seen := map[string]bool{}
+	for _, f := range reviewed.Findings {
+		seen[f.Code+"\x00"+f.Resource] = true
+	}
+	var out []preflight.Finding
+	for _, f := range fresh.Findings {
+		if f.Severity != preflight.Info && !seen[f.Code+"\x00"+f.Resource] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// gateFresh refuses on the result of the re-run right before execution.
+func gateFresh(w http.ResponseWriter, reviewed, fresh *preflightRecord) bool {
+	if fresh.Blocking {
+		writeCoded(w, http.StatusConflict, codePreflightBlocked, "执行前重新预检发现阻断项，没有执行：按每一项的处理办法解决后重新预检", map[string]any{"preflight": fresh})
+		return false
+	}
+	if reviewed != nil {
+		if added := newConcerns(reviewed, fresh); len(added) > 0 {
+			var codes []string
+			for _, f := range added {
+				codes = append(codes, f.Code)
+			}
+			writeCoded(w, http.StatusConflict, codePreflightChanged,
+				"执行前重新预检出现了审阅时没有的问题（"+strings.Join(codes, "、")+"）：请审阅新的结果后再执行", map[string]any{"preflight": fresh})
+			return false
+		}
+	}
+	return true
+}
+
+// ------------------------------------------------------ provision state ---
+
+// provisionOutcome is the last provision of a node, as the panel saw it.
+type provisionOutcome struct {
+	NodeID      string    `json:"node_id"`
+	ServerID    string    `json:"server_id"`
+	Address     string    `json:"address"`
+	Port        int       `json:"port"`
+	Fingerprint string    `json:"fingerprint"`
+	Run         string    `json:"run"`
+	Bundle      string    `json:"bundle"`
+	At          time.Time `json:"at"`
+	OK          bool      `json:"ok"`
+	Code        string    `json:"code,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+	Leftovers   []string  `json:"leftovers,omitempty"`
+	Kept        []string  `json:"kept,omitempty"`
+	Restored    bool      `json:"restored_previous,omitempty"`
+	// Installed: a provision of this node on this server succeeded before
+	// (kept across later failures; "first install" means it never did).
+	// A verified withdraw clears it.
+	Installed bool `json:"installed"`
+	// The rest of the identity the run was bound to, so a withdraw reaches
+	// exactly that host with exactly that credential even after the node
+	// was removed from the topology or moved to another server.
+	User         string `json:"user,omitempty"`
+	CredentialID string `json:"credential_id,omitempty"`
+	Deployment   string `json:"deployment,omitempty"`
+	NodeName     string `json:"node_name,omitempty"`
+	// Outcome is the last provision's: installed, refused, compensated,
+	// left_behind or unknown.
+	Outcome string `json:"outcome,omitempty"`
+	// Withdraw is the last withdraw / recovery of this node (withdraw.go).
+	Withdraw *withdrawRecord `json:"withdraw,omitempty"`
+}
+
+func (s *Server) loadOutcomes() map[string]provisionOutcome {
+	out := map[string]provisionOutcome{}
+	if raw, ok, err := s.Store.Get(provisionStateKey); err == nil && ok {
+		_ = json.Unmarshal([]byte(raw), &out)
+	}
+	return out
+}
+
+func (s *Server) saveOutcome(o provisionOutcome) {
+	s.provMu.Lock()
+	defer s.provMu.Unlock()
+	all := s.loadOutcomes()
+	if prev, ok := all[o.NodeID]; ok && prev.Installed && prev.ServerID == o.ServerID {
+		o.Installed = true
+	}
+	if prev, ok := all[o.NodeID]; ok && !o.OK && prev.ServerID == o.ServerID && prev.Withdraw != nil && o.Withdraw == nil {
+		// A failed provision does not erase what a withdraw left behind.
+		o.Withdraw = prev.Withdraw
+	}
+	if o.OK {
+		o.Installed = true
+	}
+	all[o.NodeID] = o
+	if b, err := json.Marshal(all); err == nil {
+		_ = s.Store.Put(provisionStateKey, string(b))
+	}
+}
+
+// provisionedOK: this node was successfully provisioned on this server
+// (same address and pinned key) before.
+func (s *Server) provisionedOK(n model.Node, ident targetIdentity) bool {
+	o, ok := s.loadOutcomes()[n.ID]
+	return ok && o.Installed && o.ServerID == ident.ServerID && o.Address == ident.Address && o.Fingerprint == ident.Fingerprint
+}
+
+// updateOutcome changes one node's record under the lock.
+func (s *Server) updateOutcome(node string, f func(o *provisionOutcome)) {
+	s.provMu.Lock()
+	defer s.provMu.Unlock()
+	all := s.loadOutcomes()
+	o, ok := all[node]
+	if !ok {
+		o = provisionOutcome{NodeID: node}
+	}
+	f(&o)
+	all[node] = o
+	if b, err := json.Marshal(all); err == nil {
+		_ = s.Store.Put(provisionStateKey, string(b))
+	}
+}
+
+func (s *Server) getProvisionState(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": s.loadOutcomes()})
+}
+
+// scriptOutcome reads the markers the provision script prints.
+type scriptOutcome struct {
+	OK, Compensated, Incomplete, Restored bool
+	Refused                               string
+	Leftovers, Kept                       []string
+}
+
+func parseScriptOutcome(out string) scriptOutcome {
+	var o scriptOutcome
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		switch {
+		case l == "MERIDIAN_PROVISION_OK":
+			o.OK = true
+		case l == "MERIDIAN_COMPENSATED":
+			o.Compensated = true
+		case l == "MERIDIAN_COMPENSATION_INCOMPLETE":
+			o.Incomplete = true
+		case l == "MERIDIAN_RESTORED_PREVIOUS":
+			o.Restored = true
+		case strings.HasPrefix(l, "MERIDIAN_REFUSED "):
+			o.Refused = preflight.Clean(strings.TrimPrefix(l, "MERIDIAN_REFUSED "))
+		case strings.HasPrefix(l, "MERIDIAN_LEFTOVER "):
+			if len(o.Leftovers) < 64 {
+				o.Leftovers = append(o.Leftovers, preflight.Clean(strings.TrimPrefix(l, "MERIDIAN_LEFTOVER ")))
+			}
+		case strings.HasPrefix(l, "MERIDIAN_KEPT "):
+			if len(o.Kept) < 64 {
+				o.Kept = append(o.Kept, preflight.Clean(strings.TrimPrefix(l, "MERIDIAN_KEPT ")))
+			}
+		}
+	}
+	return o
+}
+
+// ----------------------------------------------------------- gateway ---
+
+// HostPreflightRuntime is meridian-host's read-only preflight action
+// (hostexec.Client).
+type HostPreflightRuntime interface {
+	Preflight(ctx context.Context, paths []string) (string, error)
+}
+
+func (s *Server) hostPreflighter() HostPreflightRuntime {
+	if s.HostPreflight != nil {
+		return s.HostPreflight
+	}
+	if p, ok := s.Host.(HostPreflightRuntime); ok {
+		return p
+	}
+	return nil
+}
+
+// gatewayGateActive: installs go to a real host (or a test fake), so the
+// pre-check applies. Without Host the install itself is refused
+// (host_unavailable) or runs against the test shim.
+func (s *Server) gatewayGateActive() bool {
+	return s.Host != nil || s.HostPreflight != nil
+}
+
+func ownedOf(m apply.Manifest) *preflight.Owned {
+	if m.Empty() {
+		return nil
+	}
+	o := &preflight.Owned{Files: map[string]string{}, Interfaces: m.Interfaces, Units: m.Units, NFTTables: m.NFTTables, Tables: m.RouteTables, DNS: m.DNS}
+	for _, f := range m.Files {
+		// The installed copy holds the placeholder, the host the injected
+		// key: hashes are not comparable, so none is given.
+		o.Files["/"+strings.TrimPrefix(f.Path, "/")] = ""
+	}
+	return o
+}
+
+func (s *Server) runHostPreflight(ctx context.Context, files map[string]string) (*preflightRecord, error) {
+	p := s.hostPreflighter()
+	if p == nil {
+		return nil, hostexec.ErrUnavailable
+	}
+	dep, err := s.deploymentID()
+	if err != nil {
+		return nil, err
+	}
+	inst, err := s.applier(true).Installed()
+	if err != nil {
+		return nil, err
+	}
+	fp := preflight.FootprintOf(files)
+	if err := preflight.ValidatePaths(fp.Files); err != nil {
+		return nil, &credentials.Error{Code: codePreflightFailed, Msg: "网关的文件路径不能交给预检：" + err.Error()}
+	}
+	text, err := p.Preflight(ctx, fp.Files)
+	if err != nil {
+		return nil, err
+	}
+	rep := preflight.Parse(text)
+	rep.Source = "host-agent"
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: localNodeID, Deployment: dep, Gateway: true, Owned: ownedOf(inst)})
+	now := time.Now().UTC()
+	rec := &preflightRecord{ID: "pf-" + randHex(8), Kind: "gateway", NodeID: localNodeID, NodeName: "网关", Role: string(model.RoleGateway),
+		Deployment: dep, Bundle: preflight.BundleDigest(files), FirstInstall: inst.Empty() || inst.Withdrawn(), At: now, ExpiresAt: now.Add(preflightTTL),
+		Host: summaryOf(rep), Footprint: fp, NotChecked: notChecked, Evaluation: ev}
+	if err := s.savePreflight(rec); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+func writeHostPreflightErr(w http.ResponseWriter, err error) {
+	var ce *credentials.Error
+	switch {
+	case errors.As(err, &ce):
+		writeCoded(w, http.StatusUnprocessableEntity, ce.Code, ce.Msg, nil)
+	case errors.Is(err, hostexec.ErrUnavailable):
+		writeCoded(w, http.StatusServiceUnavailable, codeHostUnavailable, "宿主执行通道不可用，不能做安装前预检："+err.Error(), nil)
+	case errors.Is(err, hostexec.ErrPreflightUnsupported):
+		writeCoded(w, http.StatusServiceUnavailable, codeHostUnavailable, err.Error(), nil)
+	default:
+		writeCoded(w, http.StatusBadGateway, codePreflightFailed, "安装前预检失败："+err.Error(), nil)
+	}
+}
+
+func (s *Server) gatewayFiles() (map[string]string, error) {
+	t, err := s.topology()
+	if err != nil {
+		return nil, err
+	}
+	b, err := s.compileTopo(t)
+	if err != nil {
+		return nil, err
+	}
+	return provision.FilesFor(b.Files, localNodeID), nil
+}
+
+func (s *Server) postHostPreflight(w http.ResponseWriter, r *http.Request) {
+	if err := decodeStrict(w, r, &struct{}{}, nil, nil, true); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	if s.hostPreflighter() == nil {
+		writeHostPreflightErr(w, hostexec.ErrUnavailable)
+		return
+	}
+	if !s.lockNode(localNodeID) {
+		refuseBusy(w, localNodeID)
+		return
+	}
+	defer s.unlockNode(localNodeID)
+	files, err := s.gatewayFiles()
+	if err != nil {
+		if refuseInvalid(w, err) {
+			return
+		}
+		writeCoded(w, http.StatusUnprocessableEntity, codeTopologyInvalid, err.Error(), nil)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	rec, err := s.runHostPreflight(ctx, files)
+	if err != nil {
+		writeHostPreflightErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"preflight": rec})
+}
+
+// gateGatewayInstall runs the gateway pre-check gate for POST /api/apply
+// {install:true}. files are the gateway's files compiled before any key
+// is generated. It writes the refusal and returns false when the install
+// must not go on.
+func (s *Server) gateGatewayInstall(w http.ResponseWriter, r *http.Request, files map[string]string, reviewedID string) bool {
+	if !s.gatewayGateActive() {
+		return true
+	}
+	if s.hostPreflighter() == nil {
+		writeCoded(w, http.StatusServiceUnavailable, codeHostUnavailable, "宿主执行通道不支持安装前预检（meridian-host 未运行、不可用或版本过旧），拒绝安装；宿主上没有写入任何文件", nil)
+		return false
+	}
+	if !s.lockNode(localNodeID) {
+		refuseBusy(w, localNodeID)
+		return false
+	}
+	defer s.unlockNode(localNodeID)
+	inst, err := s.applier(true).Installed()
+	if err != nil {
+		writeCoded(w, http.StatusInternalServerError, codeHostStateMalformed, err.Error(), nil)
+		return false
+	}
+	bundle := preflight.BundleDigest(files)
+	var reviewed *preflightRecord
+	switch {
+	case reviewedID != "":
+		var ok bool
+		if reviewed, ok = s.gateReviewed(w, localNodeID, reviewedID, bundle, nil); !ok {
+			return false
+		}
+	case inst.Empty() || inst.Withdrawn():
+		writeCoded(w, http.StatusConflict, codePreflightRequired, "第一次安装到网关前（或撤回之后重新安装前）必须先做安装前预检并审阅结果（POST /api/host/preflight），再带上 preflight_id 安装", nil)
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	fresh, err := s.runHostPreflight(ctx, files)
+	if err != nil {
+		writeHostPreflightErr(w, err)
+		return false
+	}
+	return gateFresh(w, reviewed, fresh)
+}
+
+// ------------------------------------------------------- login help ---
+
+// keyHint is a panel-held key credential's public half.
+type keyHint struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"`
+}
+
+// loginHelp tells the operator how to get a login the server accepts. It
+// carries only public keys.
+type loginHelp struct {
+	Code           string    `json:"code"`
+	Method         string    `json:"method"` // the credential's: password | key
+	User           string    `json:"user"`
+	Address        string    `json:"address"`
+	CredentialID   string    `json:"credential_id,omitempty"`
+	CredentialName string    `json:"credential_name,omitempty"`
+	PublicKey      string    `json:"public_key,omitempty"`
+	KeyCredentials []keyHint `json:"key_credentials,omitempty"`
+	Steps          []string  `json:"steps"`
+}
+
+func (s *Server) loginHelpFor(cs *credentials.Store, serverID, code string) *loginHelp {
+	if code != sshexec.CodeAuthFailed && code != sshexec.CodeAuthMethodUnavailable {
+		return nil
+	}
+	sv, err := cs.Server(serverID)
+	if err != nil {
+		return nil
+	}
+	c, err := cs.SSHCredential(sv.CredentialID)
+	if err != nil {
+		return nil
+	}
+	h := &loginHelp{Code: code, User: sv.User, Address: sv.Address, CredentialID: c.ID, CredentialName: c.Name, Steps: []string{}}
+	where := fmt.Sprintf("%s@%s 的 ~/.ssh/authorized_keys", sv.User, sv.Address)
+	if c.Kind == credentials.KindPrivateKey {
+		h.Method = model.AuthKey
+		h.PublicKey = c.PublicKey
+		if code == sshexec.CodeAuthMethodUnavailable {
+			h.Steps = append(h.Steps, "服务器没有提供公钥登录：在 sshd_config 里设 PubkeyAuthentication yes 并重载 sshd")
+		}
+		h.Steps = append(h.Steps, "把下面这把公钥追加到 "+where+"（一行，权限 600，目录 700）", "然后在服务器页重新「测试连接」")
+		return h
+	}
+	h.Method = model.AuthPassword
+	if code == sshexec.CodeAuthFailed {
+		h.Steps = append(h.Steps, "服务器接受密码登录，但这份密码没有通过：在凭据页更新密码后重新测试")
+		return h
+	}
+	for _, k := range cs.SSHCredentials() {
+		if k.Kind == credentials.KindPrivateKey && k.PublicKey != "" && len(h.KeyCredentials) < 8 {
+			h.KeyCredentials = append(h.KeyCredentials, keyHint{ID: k.ID, Name: k.Name, PublicKey: k.PublicKey})
+		}
+	}
+	sort.Slice(h.KeyCredentials, func(i, j int) bool { return h.KeyCredentials[i].Name < h.KeyCredentials[j].Name })
+	if len(h.KeyCredentials) > 0 {
+		h.Steps = append(h.Steps, "服务器只接受密钥登录：把面板里一把密钥的公钥追加到 "+where+"，再在服务器页把认证方式改为密钥并选这份凭据")
+	} else {
+		h.Steps = append(h.Steps, "服务器只接受密钥登录：在凭据页「生成密钥」，把显示的公钥追加到 "+where+"，再在服务器页把认证方式改为密钥并选这份凭据")
+	}
+	return h
+}
+
+// writeSSHErrHelp is writeSSHErr plus login help for login failures.
+func (s *Server) writeSSHErrHelp(w http.ResponseWriter, cs *credentials.Store, serverID string, err error) {
+	if h := s.loginHelpFor(cs, serverID, sshexec.CodeOf(err)); h != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "code": sshexec.CodeOf(err), "login_help": h})
+		return
+	}
+	var ce *credentials.Error
+	if errors.As(err, &ce) && ce.Code == codePreflightFailed {
+		writeCoded(w, http.StatusUnprocessableEntity, ce.Code, ce.Msg, nil)
+		return
+	}
+	writeSSHErr(w, err)
+}
+
+func (s *Server) registerPreflight(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/provision/preflight", s.postProvisionPreflight)
+	mux.HandleFunc("GET /api/provision/preflight/{node}", s.getProvisionPreflight)
+	mux.HandleFunc("GET /api/provision/state", s.getProvisionState)
+	mux.HandleFunc("POST /api/host/preflight", s.postHostPreflight)
+}

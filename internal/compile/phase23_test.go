@@ -282,3 +282,75 @@ func bashOK() bool {
 	_, err := exec.LookPath("bash")
 	return err == nil
 }
+
+// The compiled meridian-mesh-up.sh under bash with stubs (docker, nsenter,
+// ip, ping, sysctl): the seal file is written only when the sealing block
+// inside the sidecar netns succeeded and both next-hops answer. A failed
+// block must leave the host unsealed. (Until 2026-11-13 the condition was
+// inverted: a successful block unsealed, a failed one sealed.)
+func TestMeshUpSealFollowsSidecarBlock(t *testing.T) {
+	if !bashOK() {
+		t.Skip("bash not available")
+	}
+	b, err := Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []string{"hk-hub", "us"} {
+		body := b.File("nodes/" + node + "/usr/local/sbin/meridian-mesh-up.sh")
+		for _, c := range []struct {
+			block, ping string
+			sealed      bool
+			says        string
+		}{
+			{"0", "0", true, "mesh sidecar sealed"},
+			{"1", "0", false, "mesh seal failed"},
+			{"0", "1", false, "does not answer"},
+		} {
+			dir := t.TempDir()
+			run, etc, bin := filepath.Join(dir, "run"), filepath.Join(dir, "etc"), filepath.Join(dir, "bin")
+			for _, d := range []string{run, etc, bin} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeFile(t, filepath.Join(etc, "mesh.env"), "MESH_NODE_TOKEN=stub\n")
+			writeFile(t, filepath.Join(etc, "mesh-sidecar.compose.yml"), "# stub\n")
+			stubs := map[string]string{
+				"docker": "case \"$1 $2\" in \"compose -f\") shift 3; [ \"$1\" = ps ] && echo cid; exit 0 ;; \"inspect -f\") echo 999999; exit 0 ;; esac\nexit 1\n",
+				// "ip link show mmesh-c" inside the netns: present; the
+				// sealing block (bash -s) exits with the case's status.
+				"nsenter": "while [ $# -gt 0 ] && [ \"$1\" != bash ] && [ \"$1\" != ip ]; do shift; done\nif [ \"$1\" = bash ]; then cat >/dev/null; exit " + c.block + "; fi\nexit 0\n",
+				"ip":      "exit 0\n",
+				"ping":    "exit " + c.ping + "\n",
+				"sysctl":  "exit 0\n",
+			}
+			for name, s := range stubs {
+				if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/bash\n"+s), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			script := strings.ReplaceAll(body, "/run/meridian", run)
+			script = strings.ReplaceAll(script, "/etc/meridian/", etc+"/")
+			p := filepath.Join(dir, "mesh-up.sh")
+			writeFile(t, p, script)
+			cmd := exec.Command("bash", p)
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s block=%s ping=%s: %v\n%s", node, c.block, c.ping, err, out)
+			}
+			_, serr := os.Stat(filepath.Join(run, "mesh-sealed"))
+			if (serr == nil) != c.sealed || !strings.Contains(string(out), c.says) {
+				t.Fatalf("%s block=%s ping=%s: sealed=%v (want %v)\n%s", node, c.block, c.ping, serr == nil, c.sealed, out)
+			}
+		}
+	}
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

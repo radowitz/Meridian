@@ -4,8 +4,10 @@
 // port, user and credential come from the credential store, and the secret
 // is read only after the host has presented its pinned key, inside the
 // authentication callback. Nothing in a request can supply key material, a
-// target or a command: scripts are built by the panel, and the connection
-// test runs one fixed command.
+// target or a command: scripts are built by the panel, the connection
+// test runs one fixed command, and the install preflight runs one fixed,
+// read-only script (internal/preflight) whose only arguments are validated
+// host paths (RunPreflight).
 //
 // Host keys. Discover connects only far enough to read the host key (no
 // authentication is attempted, nothing is executed) and records it with
@@ -24,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +36,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/preflight"
 )
 
 // Error codes (stable, for the panel).
@@ -642,15 +646,56 @@ const GroupStateTimeout = 30 * time.Second
 // ReadGroupState logs in to the server with its stored credential (trusted,
 // pinned host key required) and runs GroupStateCommand. The output is
 // returned scrubbed and capped at GroupStateMax+1 bytes; the caller parses
-// it.
-func (c *Connector) ReadGroupState(ctx context.Context, serverID string) (string, error) {
+// it. t.ServerID is required; the caller pins t.Address/Port/User and
+// t.Fingerprint to the hub identity it captured, so a server edited or
+// re-pinned in the meantime is refused (target_changed /
+// host_key_not_pinned_by_deployment) instead of being read under the old
+// identity. No command or credential comes from t.
+func (c *Connector) ReadGroupState(ctx context.Context, t Target) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, GroupStateTimeout)
 	defer cancel()
 	cc := *c
 	cc.MaxOutput = GroupStateMax + 1
-	res, err := cc.run(ctx, Target{ServerID: serverID}, GroupStateCommand, nil)
+	res, err := cc.run(ctx, Target{ServerID: t.ServerID, Address: t.Address, Port: t.Port, User: t.User, Fingerprint: t.Fingerprint}, GroupStateCommand, nil)
 	if err != nil {
 		return "", err
 	}
 	return res.Output, nil
+}
+
+// PreflightTimeout bounds one remote preflight (connect, login, run).
+const PreflightTimeout = 90 * time.Second
+
+// preflightArg is the only argument shape the preflight command accepts:
+// a single-quoted absolute path of letters, digits and ._/@+-
+// (preflight.Args). Anything else is refused before connecting.
+var preflightArg = regexp.MustCompile(`^'/[A-Za-z0-9._/@+-]{1,200}'$`)
+
+// CodeBadArgs: the preflight arguments were refused before connecting.
+const CodeBadArgs = "preflight_bad_args"
+
+// RunPreflight sends the fixed read-only preflight script to "bash -s --
+// <paths>" on the target (trusted, pinned host key; t pins the identity
+// the caller captured) and returns its report, capped at
+// preflight.MaxReport+1 bytes so an oversized answer is recognisable. The
+// script text is preflight.Script(); args come from preflight.Args and are
+// checked again here.
+func (c *Connector) RunPreflight(ctx context.Context, t Target, args []string) (Result, error) {
+	if len(args) > preflight.MaxPaths {
+		return Result{ServerID: t.ServerID}, errf(CodeBadArgs, "预检参数过多")
+	}
+	for _, a := range args {
+		if !preflightArg.MatchString(a) || strings.Contains(a, "..") {
+			return Result{ServerID: t.ServerID}, errf(CodeBadArgs, "预检参数不合法：%q", a)
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, PreflightTimeout)
+	defer cancel()
+	cc := *c
+	cc.MaxOutput = preflight.MaxReport + 1
+	command := "bash -s"
+	if len(args) > 0 {
+		command += " -- " + strings.Join(args, " ")
+	}
+	return cc.run(ctx, t, command, strings.NewReader(preflight.Script()))
 }

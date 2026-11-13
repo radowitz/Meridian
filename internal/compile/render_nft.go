@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/radowitz/meridian/internal/mesh"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/validate"
 )
@@ -307,26 +308,44 @@ func renderExitNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exi
 }
 
 // writeGroupResolverDNAT answers the region-group resolver addresses on an
-// exit the hub can switch a group to (a direct WireGuard tunnel from the
-// hub). A query to any address of validate.GroupResolverNet that arrives
-// from the hub's tunnel is DNATed to this exit's own tunnel resolver, the
-// address its SmartDNS binds (renderExitDNS). Connection tracking turns the
-// reply's source back into the resolver address the gateway asked, so the
-// answer is accepted whatever source the resolver picks, and no second
-// listener is needed. The reply goes to the group's transit address, which
-// this exit routes back into the tunnel (renderExitRoutes), the same return
-// path as the group's data. Every group address is answered, not only
-// those of the groups this exit is in today: a group that gains this exit
-// as a member then needs no new configuration here. Queries arriving on any
-// other interface (the WAN, the Mesh) are not translated. A topology with
-// no switchable group renders nothing here.
+// exit, on exactly the two managed ingresses a group's queries can use:
+//
+//   - the hub's direct WireGuard tunnel, on an exit the hub can switch a
+//     group to (switchable). The reply goes to the group's transit
+//     address, which this exit routes back into the tunnel
+//     (renderExitRoutes), the same return path as the group's data.
+//   - the Mesh veth mmesh, on an exit that is some group's Mesh resolver
+//     (GroupPlan.MeshResolver): while the hub has the group on the Mesh
+//     hop, the query reaches this exit through the Cloudflare Mesh (its
+//     Mesh node publishes the group's resolver/128) and its sidecar. The
+//     connection gets ct mark markMeshDNS and its source is rewritten on
+//     input to meshDNSAnchor; every reply packet is marked and routed by
+//     table tableMeshDNS back onto mmesh (meshDNSReturnShell), never into
+//     the hub tunnel (the WireGuard path is the one that failed) and never
+//     out of the WAN. Whatever source the query carries (the transit
+//     address or a Mesh address after the sidecar's source NAT), the
+//     reply follows the connection back into the sidecar.
+//
+// A query to any address of validate.GroupResolverNet on those ingresses is
+// DNATed to this exit's own tunnel resolver, the address its SmartDNS binds
+// (renderExitDNS). Connection tracking turns the reply's source back into
+// the resolver address the gateway asked, so the answer is accepted
+// whatever source the resolver picks, and no second listener is needed.
+// Every group address is answered, not only those of the groups this exit
+// is in today. Queries arriving on any other interface (the WAN, another
+// tunnel) are not translated. A topology with no switchable group renders
+// nothing here.
 func writeGroupResolverDNAT(sb *strings.Builder, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) {
 	any := false
 	for _, g := range groups {
 		any = any || g.Dynamic
 	}
 	e, ok := exitByID(exits, n.ID)
-	if !any || !ok || !switchable(e) {
+	if !any || !ok {
+		return
+	}
+	meshGroups := meshDNSGroups(groups, n.ID)
+	if !switchable(e) && len(meshGroups) == 0 {
 		return
 	}
 	if e.DNSULA == "" {
@@ -335,21 +354,49 @@ func writeGroupResolverDNAT(sb *strings.Builder, n model.Node, tunnels []Tunnel,
 	}
 	var ifs []string
 	seen := map[string]bool{}
-	for _, tun := range tunnels {
-		if tun.East.ID != n.ID || tun.West.Role != model.RoleHub || tun.Standby || seen[tun.Iface()] {
-			continue
+	if switchable(e) {
+		for _, tun := range tunnels {
+			if tun.East.ID != n.ID || tun.West.Role != model.RoleHub || tun.Standby || seen[tun.Iface()] {
+				continue
+			}
+			seen[tun.Iface()] = true
+			ifs = append(ifs, "\""+tun.Iface()+"\"")
 		}
-		seen[tun.Iface()] = true
-		ifs = append(ifs, "\""+tun.Iface()+"\"")
 	}
-	if len(ifs) == 0 {
+	if len(ifs) == 0 && len(meshGroups) == 0 {
 		return
 	}
 	sortStrings(ifs)
 	sb.WriteString("  chain group_dns {\n    type nat hook prerouting priority dstnat; policy accept;\n")
-	fmt.Fprintf(sb, "    iifname { %s } ip6 daddr %s meta l4proto { tcp, udp } th dport 53 dnat ip6 to %s comment \"region-group resolver addresses: this exit's tunnel resolver\"\n",
-		strings.Join(ifs, ", "), validate.GroupResolverNet, e.DNSULA)
+	if len(ifs) > 0 {
+		fmt.Fprintf(sb, "    iifname { %s } ip6 daddr %s meta l4proto { tcp, udp } th dport 53 dnat ip6 to %s comment \"region-group resolver addresses: this exit's tunnel resolver\"\n",
+			strings.Join(ifs, ", "), validate.GroupResolverNet, e.DNSULA)
+	}
+	if len(meshGroups) > 0 {
+		var ids []string
+		for _, g := range meshGroups {
+			ids = append(ids, verifyLabel(g.Group.ID))
+		}
+		fmt.Fprintf(sb, "    iifname \"%s\" ip6 daddr %s meta l4proto { tcp, udp } th dport 53 dnat ip6 to %s comment \"region-group resolver addresses over the Mesh backup (groups %s)\"\n",
+			mesh.HostIface, validate.GroupResolverNet, e.DNSULA, strings.Join(ids, " "))
+	}
 	sb.WriteString("  }\n")
+	if len(meshGroups) == 0 {
+		return
+	}
+	fmt.Fprintf(sb, `  chain group_dns_mesh_in {
+    type filter hook prerouting priority mangle; policy accept;
+    iifname "%[1]s" ip6 daddr %[2]s meta l4proto { tcp, udp } th dport 53 ct mark set %#[3]x comment "Mesh ingress of region-group queries: reply on mmesh"
+  }
+  chain group_dns_mesh_anchor {
+    type nat hook input priority 100; policy accept;
+    iifname "%[1]s" ct mark %#[3]x ip6 daddr %[4]s meta l4proto { tcp, udp } th dport 53 snat ip6 to %[5]s comment "the reply has a route at the socket: table %[6]d"
+  }
+  chain group_dns_mesh_reply {
+    type route hook output priority mangle; policy accept;
+    ct direction reply ct mark %#[3]x meta mark set %#[3]x comment "every reply packet: table %[6]d, mmesh or blackhole"
+  }
+`, mesh.HostIface, validate.GroupResolverNet, markMeshDNS, e.DNSULA, meshDNSAnchor, tableMeshDNS)
 }
 
 func renderTransitNFT(n model.Node, tunnels []Tunnel) string {

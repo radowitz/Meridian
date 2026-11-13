@@ -1,0 +1,57 @@
+meridian-preflight 1
+uid 0
+arch x86_64
+kernel 6.1.0-28-amd64
+os-id debian
+os-version 12
+os-pretty "Debian GNU/Linux 12 (bookworm)"
+systemd yes
+mem-total-kb 2000000
+mem-avail-kb 1500000
+disk-avail-kb 9000000
+cmd wg yes
+cmd wg-quick yes
+cmd nft yes
+cmd ip yes
+cmd apt-get yes
+cmd systemctl yes
+cmd smartdns no
+cmd wstunnel no
+sysctl net.ipv4.ip_forward 1
+sysctl net.ipv6.conf.all.forwarding 0
+link lo
+link eth0
+link wg0
+link wg1
+link wg2
+wglink wg0
+wglink wg1
+wglink wg2
+wgport wg0	51820
+wgport wg1	51821
+wgport wg2	51822
+addr lo 127.0.0.1/8
+addr eth0 198.51.100.60/24
+addr wg0 10.8.0.1/24
+addr wg1 10.66.11.1/24
+addr wg2 10.67.0.1/24
+route4 default via 198.51.100.1 dev eth0
+route4 198.51.100.0/24 dev eth0 proto kernel scope link src 198.51.100.60
+route4 10.8.0.0/24 dev wg0 proto kernel scope link src 10.8.0.1
+route4 10.66.11.0/24 dev wg1 proto kernel scope link src 10.66.11.1
+route4 10.66.0.0/16 dev wg1 scope link
+route4 10.67.0.0/24 dev wg2 proto kernel scope link src 10.67.0.1
+rule4 0:	from all lookup local
+rule4 32766:	from all lookup main
+ss udp   UNCONN 0      0            0.0.0.0:51820      0.0.0.0:*
+ss udp   UNCONN 0      0               [::]:51820         [::]:*
+ss udp   UNCONN 0      0            0.0.0.0:51821      0.0.0.0:*
+ss udp   UNCONN 0      0            0.0.0.0:51822      0.0.0.0:*
+unit wg-quick@wg0.service active enabled 0
+unit wg-quick@wg1.service active enabled 0
+unit wg-quick@wg2.service active enabled 0
+unit docker.service inactive not-found 0
+nftables-conf noflush
+candidate smartdns 40+dfsg-1
+@PATHS@
+meridian-preflight-end

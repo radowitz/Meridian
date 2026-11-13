@@ -484,3 +484,55 @@ func TestVerifyHostExecJudgesForwardingOnlyWhenActive(t *testing.T) {
 		t.Fatal("forwarding must only be reported ok inside the meridian.service-active branch")
 	}
 }
+
+// The managed sysctl file is applied whole by meridian-up.sh, except the
+// boot-time forwarding lines, and the result is summarised in the journal.
+// Runs the compiled loop with a fake sysctl (no root, no kernel change).
+func TestUpAppliesManagedSysctlAndSummarises(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	b := exampleBundle(t)
+	up := b.File("nodes/gw/usr/local/sbin/meridian-up.sh")
+	start := strings.Index(up, "if [ -f /etc/sysctl.d/99-meridian.conf ]; then\n")
+	end := strings.Index(up, "MERIDIAN_FWD=/etc/meridian/forwarding.conf")
+	if start < 0 || end < start {
+		t.Fatalf("sysctl loop not found:\n%s", up)
+	}
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "99-meridian.conf")
+	body := b.File("nodes/gw/etc/sysctl.d/99-meridian.conf") + "net.ipv4.conf.nosuch0.rp_filter=2\n"
+	if err := os.WriteFile(conf, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "calls")
+	fake := "#!/bin/sh\n[ \"$1\" = -w ] || exit 2\necho \"$2\" >> " + log + "\ncase \"$2\" in *nosuch0*) exit 1 ;; esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "sysctl"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loop := strings.ReplaceAll(up[start:end], "/etc/sysctl.d/99-meridian.conf", conf)
+	cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+loop)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	calls, _ := os.ReadFile(log)
+	want := 0
+	for _, ln := range strings.Split(body, "\n") {
+		if ln == "" || strings.HasPrefix(ln, "#") || strings.Contains(ln, "ip_forward=") || strings.Contains(ln, ".forwarding=") {
+			continue
+		}
+		want++
+		if !strings.Contains(string(calls), ln+"\n") {
+			t.Fatalf("%s not applied; calls:\n%s", ln, calls)
+		}
+	}
+	if strings.Contains(string(calls), "ip_forward") || strings.Contains(string(calls), ".forwarding=") {
+		t.Fatalf("boot-time forwarding line applied at runtime:\n%s", calls)
+	}
+	if !strings.Contains(string(out), "skip sysctl: net.ipv4.conf.nosuch0.rp_filter=2") ||
+		!strings.Contains(string(out), "meridian-sysctl: applied "+strconv.Itoa(want-1)+", skipped 1") {
+		t.Fatalf("summary missing:\n%s", out)
+	}
+}

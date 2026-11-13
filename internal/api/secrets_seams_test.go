@@ -78,7 +78,8 @@ func TestKeyCredentialProvisionKeepsKeyInStore(t *testing.T) {
 	}
 	noSecretIn(t, "connection test", rr.Body.String(), secrets...)
 
-	rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","generate_keys":true}`))
+	pfID := reviewPreflight(t, s, "tw")
+	rr = do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw","generate_keys":true,"preflight_id":"`+pfID+`"}`))
 	tw := storedNode(t, s, "tw")
 	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "MERIDIAN_PROVISION_OK") || !strings.Contains(rr.Body.String(), `"auth_method":"key"`) {
 		t.Fatalf("provision over a key: %d %s", rr.Code, rr.Body.String())

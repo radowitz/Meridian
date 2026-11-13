@@ -430,7 +430,7 @@ func (s *Server) deleteServer(w http.ResponseWriter, r *http.Request) {
 		}
 		if refs := serverRefs(cs, id, t); len(refs) > 0 {
 			return &credentials.Error{Code: credentials.CodeInUse, InUse: refs,
-				Msg: fmt.Sprintf("服务器 %s 仍被引用（拓扑节点或未撤回完的 Mesh 部署），先解除引用", sv.Name)}
+				Msg: fmt.Sprintf("服务器 %s 仍被引用（拓扑节点，或未撤回完的节点安装 / Mesh 部署），先解除引用或撤回", sv.Name)}
 		}
 		return cs.DeleteServer(id)
 	})
@@ -580,7 +580,7 @@ func (s *Server) deleteCred(w http.ResponseWriter, r *http.Request) {
 		}
 		if refs := credRefs(cs, id); len(refs) > 0 {
 			return &credentials.Error{Code: credentials.CodeInUse, InUse: refs,
-				Msg: fmt.Sprintf("SSH 凭据 %s 仍被服务器或未撤回完的 Mesh 部署使用，先改用别的凭据或撤回", c.Name)}
+				Msg: fmt.Sprintf("SSH 凭据 %s 仍被服务器或未撤回完的节点安装 / Mesh 部署使用，先改用别的凭据或撤回", c.Name)}
 		}
 		return cs.DeleteSSHCredential(id)
 	})
