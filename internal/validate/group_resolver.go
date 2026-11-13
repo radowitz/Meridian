@@ -25,6 +25,22 @@ var (
 	groupResolverLink = netip.MustParsePrefix("fd66::/64")
 )
 
+// ExitResolverNet holds the per-exit resolver addresses a gateway with a
+// backup hub asks instead of an exit's tunnel address
+// (compile.ExitPlan.Resolver): fd66::54:<i+1> for the exit with plan index
+// i. Like the group addresses they belong to no node and sit in the
+// reserved fd66::/64; both hubs route each one to their tunnel to that exit,
+// which DNATs it to its own resolver.
+var ExitResolverNet = netip.MustParsePrefix("fd66::54:0/112")
+
+// ExitResolverAddr is the resolver address of the exit with plan index i.
+func ExitResolverAddr(index int) netip.Addr {
+	b := ExitResolverNet.Addr().As16()
+	v := uint16(index + 1)
+	b[14], b[15] = byte(v>>8), byte(v)
+	return netip.AddrFrom16(b)
+}
+
 // GroupResolverAddr is the resolver address of the region group with plan
 // index i (the index that also numbers its mark, transit address and hub
 // table): fd66::53:<i+1>. One address per group, so that no two SmartDNS

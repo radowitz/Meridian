@@ -190,6 +190,15 @@ meridian_preflight() {
       echo "unit $u active enabled 0"
     done
   fi
+  # Whether ufw is actually enabled: ufw.service stays active (exited) on
+  # Ubuntu while the firewall is disabled; ENABLED= in ufw.conf is what
+  # "ufw enable" / "ufw disable" set.
+  if [ -r /etc/ufw/ufw.conf ]; then
+    v=$(sed -n 's/^[[:space:]]*ENABLED[[:space:]]*=[[:space:]]*//p' /etc/ufw/ufw.conf | tr -d "\"' " | first)
+    case "$v" in yes|no) echo "ufw-conf $v" ;; *) echo 'ufw-conf absent' ;; esac
+  else
+    echo 'ufw-conf absent'
+  fi
   # Whether nftables.service flushes the whole ruleset when it stops
   # (Debian's unit runs a whole-ruleset flush as its ExecStop).
   if have systemctl; then

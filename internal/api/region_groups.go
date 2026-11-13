@@ -66,6 +66,22 @@ func plansOf(t model.Topology) groupPlans {
 	return out
 }
 
+// plansForHub is plansOf for the plan hub runs (its own interfaces; the
+// backup hub's plan ID differs from the primary's).
+func plansForHub(t model.Topology, hub string) groupPlans {
+	out := groupPlans{byID: map[string]compile.GroupPlan{}}
+	plans, err := compile.PlanGroupsForHub(t, hub)
+	if err == nil {
+		out.compiled = true
+		out.planID = compile.GroupPlanID(plans)
+		out.staleAfter = compile.HubStaleAfter(plans)
+		for _, p := range plans {
+			out.byID[p.Group.ID] = p
+		}
+	}
+	return out
+}
+
 // plan is the group's compiled plan, or the uncompiled fallback.
 func (gp groupPlans) plan(t model.Topology, g model.RegionGroup) compile.GroupPlan {
 	if p, ok := gp.byID[g.ID]; ok {
@@ -126,6 +142,13 @@ type memberView struct {
 type actualView struct {
 	hubstate.Actual
 	AlertMessage string `json:"alert_message,omitempty"`
+	// HubTier / HubNode / HubName / ServerName: the hub (and its server)
+	// the state was judged from: the carrying hub. Empty when the carrying
+	// hub is unknown (state unavailable, code carrying_unknown).
+	HubTier    model.HubTier `json:"hub_tier,omitempty"`
+	HubNode    string        `json:"hub_node,omitempty"`
+	HubName    string        `json:"hub_name,omitempty"`
+	ServerName string        `json:"server_name,omitempty"`
 }
 
 // modelView is the panel's own computation of the hub's state machine
@@ -151,20 +174,23 @@ type modelView struct {
 
 type groupView struct {
 	model.RegionGroup
-	OnFailureEffective model.OnFailure   `json:"on_failure_effective,omitempty"`
-	IsDefault          bool              `json:"is_default"`
-	EffectiveOrder     []string          `json:"effective_order"`
-	Target             string            `json:"target"`
-	TargetReason       string            `json:"target_reason"`
-	Switchable         bool              `json:"switchable"`
-	SwitchOrder        []string          `json:"switch_order"`
-	MeshBackup         bool              `json:"mesh_backup"`
-	Fwmark             string            `json:"fwmark,omitempty"`
-	Table              int               `json:"table,omitempty"`
-	MemberStatus       []memberView      `json:"member_status"`
-	Actual             actualView        `json:"actual"`
-	Model              modelView         `json:"model"`
-	InUseBy            []credentials.Ref `json:"in_use_by"`
+	OnFailureEffective model.OnFailure `json:"on_failure_effective,omitempty"`
+	IsDefault          bool            `json:"is_default"`
+	EffectiveOrder     []string        `json:"effective_order"`
+	Target             string          `json:"target"`
+	TargetReason       string          `json:"target_reason"`
+	Switchable         bool            `json:"switchable"`
+	SwitchOrder        []string        `json:"switch_order"`
+	MeshBackup         bool            `json:"mesh_backup"`
+	Fwmark             string          `json:"fwmark,omitempty"`
+	Table              int             `json:"table,omitempty"`
+	MemberStatus       []memberView    `json:"member_status"`
+	Actual             actualView      `json:"actual"`
+	// ActualByHub (backup hub topologies): each hub's own judgement of the
+	// group, marked with the one that carries. Only Actual is the state in use.
+	ActualByHub []hubActual       `json:"actual_by_hub,omitempty"`
+	Model       modelView         `json:"model"`
+	InUseBy     []credentials.Ref `json:"in_use_by"`
 }
 
 func groupRefs(t model.Topology, id string) []credentials.Ref {
@@ -187,7 +213,7 @@ func (gp groupPlans) spec(t model.Topology, g model.RegionGroup) hubstate.GroupS
 	return hubstate.GroupSpec{ID: g.ID, Dynamic: gp.compiled && p.Dynamic, Members: append([]string(nil), pol.Try...), Mesh: pol.Mesh}
 }
 
-func viewGroup(t model.Topology, g model.RegionGroup, plans groupPlans, runtime map[string]pool.Runtime, hub groupHub) groupView {
+func viewGroup(t model.Topology, g model.RegionGroup, plans groupPlans, runtime map[string]pool.Runtime, hs hubSet) groupView {
 	p := plans.plan(t, g)
 	pol := p.Policy()
 	v := groupView{
@@ -230,7 +256,8 @@ func viewGroup(t model.Topology, g model.RegionGroup, plans groupPlans, runtime 
 	}
 	st.AlertMessage = alertMessage(t, g, st.Alert, st.Reason, st.Active, p.Selection.Target)
 	v.Model = st
-	act := actualView{Actual: hub.actual(plans, plans.spec(t, g))}
+	act, byHub := hs.actualOf(t, g)
+	v.ActualByHub = byHub
 	if act.State == hubstate.StateOK {
 		act.AlertMessage = alertMessage(t, g, act.Alert, act.Reason, act.Active, p.Selection.Target)
 		if act.Alert && act.AlertMessage == "" {
@@ -323,7 +350,7 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		writeResErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.groupsBody(t))
+	writeJSON(w, http.StatusOK, s.groupsBody(r.Context(), t))
 }
 
 func sortedGroups(t model.Topology) []model.RegionGroup {
@@ -344,8 +371,14 @@ func (s *Server) getGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plans := plansOf(t)
-	hub := s.groupHub(t)
-	writeJSON(w, http.StatusOK, map[string]any{"group": viewGroup(t, g, plans, s.groupRuntime(), hub), "thresholds": thresholds(), "hub_state": hub.view(t, s.hubReachability(t), plans)})
+	hs := s.hubSet(r.Context(), t)
+	body := map[string]any{"group": viewGroup(t, g, plans, s.groupRuntime(), hs), "thresholds": thresholds(), "hub_states": hs.views(t), "carrying": hs.carrying}
+	if v := hs.views(t); len(v) > 0 {
+		body["hub_state"] = v[0]
+	} else {
+		body["hub_state"] = s.groupHub(t).view(t, s.hubReachability(t), plans)
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // groupInput is the create/patch body. Absent fields are left unchanged
@@ -568,7 +601,7 @@ func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, _ := t.GroupByID(id)
-	writeJSON(w, http.StatusCreated, map[string]any{"group": s.oneGroupView(t, g), "apply_required": true})
+	writeJSON(w, http.StatusCreated, map[string]any{"group": s.oneGroupView(r.Context(), t, g), "apply_required": true})
 }
 
 func (s *Server) mutateGroupsCreate(in *groupInput, idOut *string) (model.Topology, error) {
@@ -635,7 +668,7 @@ func (s *Server) patchGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, _ := t.GroupByID(id)
-	writeJSON(w, http.StatusOK, map[string]any{"group": s.oneGroupView(t, g), "apply_required": true})
+	writeJSON(w, http.StatusOK, map[string]any{"group": s.oneGroupView(r.Context(), t, g), "apply_required": true})
 }
 
 func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request) {
@@ -686,7 +719,7 @@ func (s *Server) putDefaultGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g, _ := t.GroupByID(id)
-	writeJSON(w, http.StatusOK, map[string]any{"default_group": id, "group": s.oneGroupView(t, g), "apply_required": true})
+	writeJSON(w, http.StatusOK, map[string]any{"default_group": id, "group": s.oneGroupView(r.Context(), t, g), "apply_required": true})
 }
 
 // ----------------------------------------------------------- health ---
@@ -786,7 +819,7 @@ func (s *Server) postGroupHealth(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body := s.groupsBody(t)
+	body := s.groupsBody(r.Context(), t)
 	body["flipped"] = flipped
 	writeJSON(w, http.StatusOK, body)
 }

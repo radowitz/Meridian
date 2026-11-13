@@ -323,6 +323,9 @@ func sysctlIfaces(t model.Topology, n model.Node, nodeTunnels []Tunnel) []string
 		}
 	}
 	add(sysctlIface(t, n))
+	if model.IsIXHub(n) {
+		add(n.IngressInterface)
+	}
 	if n.Role == model.RoleGateway {
 		for _, name := range gatewayTunnelIfaces(nodeTunnels) {
 			add(name)

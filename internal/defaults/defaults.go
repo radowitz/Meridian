@@ -171,7 +171,7 @@ func Example() model.Topology {
 			},
 			{
 				ID: "hk-hub", Name: "香港枢纽", Role: model.RoleHub, Region: "hk",
-				Managed: true, X: 660, Y: 200,
+				Managed: true, X: 660, Y: 200, HubTier: model.HubPrimary,
 				WANInterface: "eth0", EndpointV4: "203.0.113.20", ListenPort: 51820,
 				PathV4: true, PathV6: false,
 				SSHHost: "hk-hub.example.invalid", SSHPort: 22, SSHUser: "root",

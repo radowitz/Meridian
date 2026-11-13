@@ -27,9 +27,34 @@ type ExitPlan struct {
 	PeerV4    string // exit tunnel address, routed via the relay when ViaRelay is set
 	PeerULA   string
 	Group     string // smartdns group
+	// Hub is the hub this plan was made for (the primary for the gateway
+	// and the exits; each hub's own plan for its routes and failover).
+	Hub string
+	// Resolver is the exit's hub-independent resolver address
+	// (validate.ExitResolverAddr of Index). With a backup hub the gateway
+	// asks it instead of DNSULA: both hubs route it to their tunnel to the
+	// exit, which DNATs it to its own resolver, so a pinned exit's names
+	// resolve through whichever hub carries the traffic. Unused (and not
+	// rendered) in a single-hub topology.
+	Resolver string
 }
 
+// primaryHubID is the primary hub's node ID ("" without a hub).
+func primaryHubID(t model.Topology) string {
+	n, _ := t.PrimaryHub()
+	return n.ID
+}
+
+// planExits plans the exits as the primary hub reaches them: the plan the
+// gateway, the exits and the primary hub use.
 func planExits(t model.Topology, tunnels []Tunnel) []ExitPlan {
+	return planExitsHub(t, tunnels, primaryHubID(t))
+}
+
+// planExitsHub plans the exits as hub reaches them. Index, mark, table,
+// transit and resolver addresses depend on the exit alone, so they are the
+// same on both hubs; only the hub interface and peer addresses differ.
+func planExitsHub(t model.Topology, tunnels []Tunnel, hub string) []ExitPlan {
 	var exits []model.Node
 	for _, n := range t.Nodes {
 		if n.Role == model.RoleExit {
@@ -47,9 +72,11 @@ func planExits(t model.Topology, tunnels []Tunnel) []ExitPlan {
 			TransitV4: fmt.Sprintf("10.66.200.%d", 10+i),
 			TransitV6: fmt.Sprintf("fd66:0:0:ff::%x", 10+i),
 			Group:     "g_" + strings.ReplaceAll(n.ID, "-", "_"),
+			Hub:       hub,
+			Resolver:  validate.ExitResolverAddr(i).String(),
 		}
-		p.HubIface, p.ViaRelay, p.Mesh, p.PeerV4, p.PeerULA = locateExit(t, n, tunnels)
-		if tun := exitIngress(n, tunnels); tun.LinkID != "" {
+		p.HubIface, p.ViaRelay, p.Mesh, p.PeerV4, p.PeerULA = locateExit(t, n, tunnels, hub)
+		if tun := exitIngress(n, tunnels, hub); tun.LinkID != "" {
 			p.DNSV4 = tun.EastV4
 			p.DNSULA = tun.EastULA
 			if p.HubIface == "" && !p.Mesh {
@@ -148,7 +175,18 @@ func (g GroupPlan) tableName() string {
 	return "meridian_grp_" + strings.ReplaceAll(g.Group.ID, "-", "_")
 }
 
+// planGroups plans the region groups on the primary hub (the plan the
+// gateway compiles its marks, rules and resolvers from).
 func planGroups(t model.Topology, exits []ExitPlan) []GroupPlan {
+	return planGroupsHub(t, exits, primaryHubID(t))
+}
+
+// planGroupsHub plans the groups on hub with exits planned for that hub:
+// the same groups in the same order with the same marks, tables, transit
+// and resolver addresses, constraints and switch order (validation keeps
+// every exit switchable on both hubs or on neither), so either hub can
+// carry a group the gateway marked. Only the primary has the Mesh hop.
+func planGroupsHub(t model.Topology, exits []ExitPlan, hub string) []GroupPlan {
 	groups := append([]model.RegionGroup(nil), t.Groups...)
 	sort.Slice(groups, func(i, j int) bool { return groups[i].ID < groups[j].ID })
 	sw := switchableMap(exits)
@@ -177,7 +215,7 @@ func planGroups(t model.Topology, exits []ExitPlan) []GroupPlan {
 					gp.Try = append(gp.Try, e)
 				}
 			}
-			gp.Mesh = !gp.Hold && groupHasMesh(t, gp.Selection.Order)
+			gp.Mesh = !gp.Hold && hub == primaryHubID(t) && groupHasMesh(t, gp.Selection.Order)
 			if gp.Mesh {
 				for _, id := range gp.Selection.Order {
 					if e, ok := exitByID(exits, id); ok && meshDNSCapable(t, e) {
@@ -195,11 +233,17 @@ func planGroups(t model.Topology, exits []ExitPlan) []GroupPlan {
 // PlanGroups compiles the group plans of t (no validation): what the panel
 // uses to run the same state machine as the hub.
 func PlanGroups(t model.Topology) ([]GroupPlan, error) {
+	return PlanGroupsForHub(t, primaryHubID(t))
+}
+
+// PlanGroupsForHub compiles the group plans hub runs (no validation): the
+// plan its failover script carries, whose GroupPlanID that hub reports.
+func PlanGroupsForHub(t model.Topology, hub string) ([]GroupPlan, error) {
 	tunnels, err := buildTunnels(t)
 	if err != nil {
 		return nil, err
 	}
-	return planGroups(t, planExits(t, tunnels)), nil
+	return planGroupsHub(t, planExitsHub(t, tunnels, hub), hub), nil
 }
 
 func groupByID(groups []GroupPlan, id string) (GroupPlan, bool) {
@@ -218,13 +262,7 @@ func groupHasMesh(t model.Topology, members []string) bool {
 	for _, id := range members {
 		in[id] = true
 	}
-	hub := ""
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleHub {
-			hub = n.ID
-			break
-		}
-	}
+	hub := primaryHubID(t)
 	for _, l := range t.Links {
 		if l.Transport != model.TransportCFMesh || !l.Enabled || !l.Standby {
 			continue
@@ -238,13 +276,7 @@ func groupHasMesh(t model.Topology, members []string) bool {
 
 // hubMeshStandby: an enabled standby cf_mesh link joins the hub and id.
 func hubMeshStandby(t model.Topology, id string) bool {
-	hub := ""
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleHub {
-			hub = n.ID
-			break
-		}
-	}
+	hub := primaryHubID(t)
 	if hub == "" || id == "" {
 		return false
 	}
@@ -411,7 +443,7 @@ func containsID(ids []string, id string) bool {
 
 // locateExit decides which interface on the hub carries this exit.
 // A pure-v6 exit is never given the hub's own (nonexistent) v6 path.
-func locateExit(t model.Topology, n model.Node, tunnels []Tunnel) (iface, via string, mesh bool, peerV4, peerULA string) {
+func locateExit(t model.Topology, n model.Node, tunnels []Tunnel, hub string) (iface, via string, mesh bool, peerV4, peerULA string) {
 	pure := !n.PathV4 && n.PathV6
 	if pure && n.V6Workaround == model.WorkaroundMesh {
 		return "mmesh", "", true, "", ""
@@ -419,18 +451,19 @@ func locateExit(t model.Topology, n model.Node, tunnels []Tunnel) (iface, via st
 	if pure && n.V6Workaround == model.WorkaroundDualstackRelay {
 		relay, down := relayTunnel(t, n, tunnels)
 		if relay.ID != "" {
-			hubTun := hubTunnelTo(tunnels, relay.ID)
+			hubTun := hubTunnelTo(tunnels, relay.ID, hub)
 			return hubTun.Iface(), relay.ID, false, down.EastV4, down.EastULA
 		}
 	}
-	direct := hubDirect(tunnels, n.ID)
+	direct := hubDirect(tunnels, n.ID, hub)
 	return direct.Iface(), "", false, direct.EastV4, direct.EastULA
 }
 
-func hubDirect(tunnels []Tunnel, exitID string) Tunnel {
+// hubDirect is hub's own tunnel to the exit (UDP preferred over WSS).
+func hubDirect(tunnels []Tunnel, exitID, hub string) Tunnel {
 	var found Tunnel
 	for _, tun := range tunnels {
-		if tun.Standby || tun.East.ID != exitID || tun.West.Role != model.RoleHub {
+		if tun.Standby || tun.East.ID != exitID || tun.West.Role != model.RoleHub || tun.West.ID != hub {
 			continue
 		}
 		if tun.Mode == "wss" && found.LinkID != "" {
@@ -454,21 +487,21 @@ func relayTunnel(t model.Topology, exit model.Node, tunnels []Tunnel) (model.Nod
 	return model.Node{}, Tunnel{}
 }
 
-func hubTunnelTo(tunnels []Tunnel, relayID string) Tunnel {
+func hubTunnelTo(tunnels []Tunnel, relayID, hub string) Tunnel {
 	for _, tun := range tunnels {
 		if tun.Standby || tun.Mode == "wss" {
 			continue
 		}
-		if tun.East.ID == relayID && tun.West.Role == model.RoleHub && tun.Transport == model.TransportDirectWG {
+		if tun.East.ID == relayID && tun.West.Role == model.RoleHub && tun.West.ID == hub && tun.Transport == model.TransportDirectWG {
 			return tun
 		}
 	}
 	return Tunnel{}
 }
 
-// exitIngress is the tunnel that brings this exit's reply traffic home.
-// Pure-v6 exits come from the dual-stack relay, not from the hub.
-func exitIngress(n model.Node, tunnels []Tunnel) Tunnel {
+// exitIngress is the tunnel from hub that brings this exit's reply traffic
+// home. Pure-v6 exits come from the dual-stack relay, not from the hub.
+func exitIngress(n model.Node, tunnels []Tunnel, hubID string) Tunnel {
 	pureMesh := !n.PathV4 && n.PathV6 && n.V6Workaround == model.WorkaroundMesh
 	if pureMesh {
 		return Tunnel{}
@@ -479,7 +512,9 @@ func exitIngress(n model.Node, tunnels []Tunnel) Tunnel {
 			continue
 		}
 		if c.West.Role == model.RoleHub {
-			hub = c
+			if c.West.ID == hubID {
+				hub = c
+			}
 		} else if other.LinkID == "" {
 			other = c
 		}

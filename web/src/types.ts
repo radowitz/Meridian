@@ -49,7 +49,18 @@ export interface Node {
   wss_path_prefix?: string;
   tls_cert_path?: string;
   tls_key_path?: string;
+  /** Hub nodes only: primary or backup. Empty on a lone hub means primary. */
+  hub_tier?: HubTier;
+  /** Primary hub only: this hub IS the IX (managed server on the dedicated
+   * line). endpoint_v4 is then its Hong Kong egress address. */
+  ix_line?: boolean;
+  /** IX hub only: domestic ingress IPv4 the relays dial (required with ix_line). */
+  ingress_v4?: string;
+  /** IX hub only: optional interface carrying ingress_v4. */
+  ingress_interface?: string;
 }
+
+export type HubTier = "primary" | "backup";
 
 export interface Link {
   id: string;
@@ -987,6 +998,12 @@ export type GroupActualState = "ok" | "stale" | "version_mismatch" | "switch_fai
 
 export interface GroupActualView {
   state: GroupActualState;
+  /** The hub (and its server) the state was judged from: the carrying hub.
+   * Empty when the carrying hub is unknown (state unavailable, code carrying_unknown). */
+  hub_tier?: HubTier;
+  hub_node?: string;
+  hub_name?: string;
+  server_name?: string;
   /** Machine reason for every state but ok (no_hub, hub_no_server, server_not_ready, ssh_failed, state_missing, parse_error, invalid_report, plan_unavailable, heartbeat_old, read_old, plan_differs, hop_failed, table_diverged, static_only, not_read, hub_identity_changed: the stored read was taken from another hub node, server, address, SSH port or pinned host key). */
   code?: string;
   ssh_code?: string;
@@ -1035,8 +1052,18 @@ export interface RegionGroupView extends RegionGroup {
   table?: number;
   member_status: GroupMemberView[];
   actual: GroupActualView;
+  /** Backup hub topologies only: each hub's own judgement, marked with the
+   * one that carries. Only `actual` is the state in use. */
+  actual_by_hub?: GroupHubActual[];
   model: GroupModelView;
   in_use_by: Ref[];
+}
+
+export interface GroupHubActual extends Omit<GroupActualView, "hub_tier" | "hub_node" | "hub_name" | "server_name" | "alert_message"> {
+  tier: HubTier;
+  hub_node: string;
+  hub_name?: string;
+  carrying: boolean;
 }
 
 export interface GroupThresholds {
@@ -1046,6 +1073,12 @@ export interface GroupThresholds {
 }
 
 export interface GroupHubState {
+  /** hub_states entries: primary or backup. */
+  tier?: HubTier;
+  /** hub_states entries: this hub carries the traffic now (always true in single mode). */
+  carrying?: boolean;
+  /** hub_states entries: the group plan the panel would deploy to this hub now. */
+  plan_id?: string;
   hub_node?: string;
   hub_name?: string;
   server_id?: string;
@@ -1082,7 +1115,30 @@ export interface RegionGroupsView {
   groups: RegionGroupView[];
   default_group: string;
   thresholds: GroupThresholds;
+  /** = the primary's entry of hub_states (compatibility). */
   hub_state: GroupHubState;
+  hub_states?: GroupHubState[];
+  carrying?: Carrying;
+}
+
+/** Which hub carries the gateway's traffic (GET /api/upstream, region groups body). */
+export type CarryingCode = "agent_unavailable" | "read_failed" | "not_recorded" | "invalid_record" | "record_mismatch" | "stale";
+
+export interface Carrying {
+  mode: "single" | "dual";
+  known: boolean;
+  tier?: HubTier;
+  hub_node?: string;
+  hub_name?: string;
+  path?: string;
+  iface?: string;
+  state?: "static" | "ok" | "switching" | "down";
+  since?: string;
+  beat?: string;
+  source: "topology" | "gateway";
+  code?: CarryingCode | string;
+  message?: string;
+  read_at?: string;
 }
 
 export type RegionGroupInput = Omit<RegionGroup, "migrated_from">;

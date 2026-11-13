@@ -171,6 +171,9 @@ type ManifestArtifact struct {
 type PkgState struct {
 	Installed string `json:"installed,omitempty"` // "" = not installed
 	Candidate string `json:"candidate,omitempty"` // "" = apt has none
+	// Unreadable: the line carried a value that is not a Debian version
+	// (hostile or garbled output); nothing about availability is concluded.
+	Unreadable bool `json:"unreadable,omitempty"`
 }
 
 // NodeJournal is the provision journal at /var/lib/meridian/node/journal.
@@ -216,6 +219,10 @@ type Report struct {
 	// NFTStop: whether nftables.service flushes the whole ruleset when it
 	// stops ("flush" | "noflush"; "" when not reported).
 	NFTStop string `json:"nftables_stop,omitempty"`
+	// UFWConf: ENABLED= of /etc/ufw/ufw.conf ("yes" | "no" | "absent";
+	// "" when not reported). Ubuntu keeps ufw.service active (exited) even
+	// when the firewall is disabled, so the unit state alone says nothing.
+	UFWConf string `json:"ufw_conf,omitempty"`
 	// WARPDeps are safe dependency clues on a host-level WARP client:
 	// processes holding connections to its local listeners, a resolv.conf
 	// that points at it. Names and addresses only, never contents.
@@ -397,6 +404,11 @@ func Parse(text string) Report {
 			if len(f) == 2 && (f[0] == "ipv4" || f[0] == "ipv6") {
 				r.IptOurs[f[0]] = atoi(f[1], 0)
 			}
+		case "ufw-conf":
+			// "ufw-conf yes|no|absent": ENABLED= in /etc/ufw/ufw.conf.
+			if w := word(rest); w == "yes" || w == "no" || w == "absent" {
+				r.UFWConf = w
+			}
 		case "nftables-stop":
 			if w := word(rest); w == "flush" || w == "noflush" {
 				r.NFTStop = w
@@ -562,11 +574,19 @@ func Parse(text string) Report {
 			// "pkg <name> <installed|-> <candidate|->"
 			if len(f) == 3 && validName(f[0]) && len(r.Packages) < 16 {
 				ps := PkgState{}
-				if f[1] != "-" && validName(f[1]) {
-					ps.Installed = f[1]
+				if f[1] != "-" {
+					if ValidDebVersion(f[1]) {
+						ps.Installed = f[1]
+					} else {
+						ps.Unreadable = true
+					}
 				}
-				if f[2] != "-" && validName(f[2]) {
-					ps.Candidate = f[2]
+				if f[2] != "-" {
+					if ValidDebVersion(f[2]) {
+						ps.Candidate = f[2]
+					} else {
+						ps.Unreadable = true
+					}
 				}
 				r.Packages[f[0]] = ps
 			}
@@ -955,6 +975,23 @@ func isHexN(s string, n int) bool {
 	}
 	for _, c := range s {
 		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidDebVersion: a Debian / Ubuntu package version as dpkg and apt print
+// it ([epoch:]upstream[-revision]): starts with a digit, only letters,
+// digits and . + ~ : -, at most 64 bytes. "~" (pre-release, Ubuntu
+// backports such as 1.0.20200513-1~20.04.2), "+" (1:2.3-4+b1) and the epoch
+// colon are legitimate; nothing a shell or the panel would interpret is.
+func ValidDebVersion(s string) bool {
+	if s == "" || len(s) > 64 || s[0] < '0' || s[0] > '9' {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune(".+~:-", c)) {
 			return false
 		}
 	}

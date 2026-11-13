@@ -190,13 +190,20 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 	for _, n := range managedNodes(t) {
 		prefix := "nodes/" + n.ID + "/"
 		nodeTunnels := tunnelsFor(tunnels, n.ID)
+		// A hub routes with its own plan: its interfaces toward the exits.
+		// Everything else (and a lone or primary hub) uses the primary's.
+		hubExits, hubGroups := exits, groups
+		if n.Role == model.RoleHub && n.ID != primaryHubID(t) {
+			hubExits = planExitsHub(t, tunnels, n.ID)
+			hubGroups = planGroupsHub(t, hubExits, n.ID)
+		}
 		for _, tun := range nodeTunnels {
 			add(prefix+"etc/wireguard/"+tun.Iface()+".conf", renderWG(t, tun, n))
 		}
 		add(prefix+"etc/sysctl.d/99-meridian.conf", renderSysctl(t, n))
 		add(prefix+"etc/meridian/forwarding.conf", renderForwarding(t, n))
-		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, exits, groups))
-		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, exits, groups))
+		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, hubExits, hubGroups))
+		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, hubExits, hubGroups))
 		meshDNS := n.Role == model.RoleExit && len(meshDNSGroups(groups, n.ID)) > 0
 		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels, meshDNS))
 		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, groups, mss4, mss6, decisions, clamps))
@@ -211,7 +218,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			}
 		}
 		if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
-			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels, exits, groups))
+			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels, hubExits, hubGroups))
 			add(prefix+"etc/systemd/system/meridian-failover.service", renderFailoverUnit())
 		}
 		if n.Role == model.RoleGateway {
@@ -254,7 +261,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			add(prefix+"usr/local/sbin/meridian-update-chnroute.sh", renderChnrouteScript(t))
 			add(prefix+"usr/local/sbin/meridian-update-geosite.sh", renderGeositeScript(t))
 		case model.RoleExit:
-			add(prefix+"etc/smartdns/smartdns.conf", renderExitDNS(n, tunnels))
+			add(prefix+"etc/smartdns/smartdns.conf", renderExitDNS(t, n, tunnels))
 			add(prefix+"etc/systemd/system/"+SmartDNSUnit, renderSmartDNSUnit())
 		}
 	}

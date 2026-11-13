@@ -276,3 +276,34 @@ func TestParseRejects(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Two hubs (primary and backup): a read is judged only against the hub it
+// was taken from. The backup's read never describes the primary (other hub
+// node, server, address, key), even with the same plan; a read of the
+// right hub with the other hub's plan is a version mismatch, not ok.
+func TestEvaluateIdentityPerHub(t *testing.T) {
+	snap, err := Parse(output(report()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(hubNow, 0)
+	primary := NewIdentity("ix", "srv-ix", "198.51.100.10", 2222, "SHA256:iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii")
+	backup := NewIdentity("hk5", "srv-hk5", "203.0.113.30", 22, "SHA256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	fromBackup := &Read{ReadAt: at, Identity: backup, Snapshot: &snap}
+	if a := Evaluate(spec, fromBackup, backup, plan, time.Minute, at); a.State != StateOK {
+		t.Fatalf("backup read on the backup: %+v", a)
+	}
+	if a := Evaluate(spec, fromBackup, primary, plan, time.Minute, at); a.State != StateUnavailable || a.Code != CodeIdentityChanged || a.Active != "" {
+		t.Fatalf("backup read judged as the primary: %+v", a)
+	}
+	// Same server, but the node is now the other hub (tiers swapped).
+	swapped := NewIdentity("ix", "srv-hk5", "203.0.113.30", 22, "SHA256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if a := Evaluate(spec, fromBackup, swapped, plan, time.Minute, at); a.Code != CodeIdentityChanged {
+		t.Fatalf("swapped hub node accepted: %+v", a)
+	}
+	// The primary's plan differs from the backup's: the backup's report is
+	// not ok against the primary's plan ID.
+	if a := Evaluate(spec, fromBackup, backup, "fedcba9876543210fedcba98", time.Minute, at); a.State != StateVersionMismatch {
+		t.Fatalf("other hub's plan accepted: %+v", a)
+	}
+}

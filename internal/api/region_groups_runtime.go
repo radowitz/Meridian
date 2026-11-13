@@ -36,9 +36,22 @@ import (
 
 const groupHubKey = "group_hub_state"
 
-// groupHub is the stored read and what is needed to judge it: current is
-// the hub identity the panel would read now.
+// groupHubKeyBackup holds the backup hub's read (the primary keeps the
+// original key, so a stored single-hub read stays where it was; it is
+// bound to its hub node anyway).
+const groupHubKeyBackup = "group_hub_state_backup"
+
+func hubStoreKey(tier model.HubTier) string {
+	if tier == model.HubBackup {
+		return groupHubKeyBackup
+	}
+	return groupHubKey
+}
+
+// groupHub is one hub's stored read and what is needed to judge it:
+// current is the identity of that hub as the panel would read it now.
 type groupHub struct {
+	tier       model.HubTier
 	read       *hubstate.Read
 	current    hubstate.Identity
 	refreshing bool
@@ -59,8 +72,8 @@ func (h groupHub) actual(plans groupPlans, spec hubstate.GroupSpec) hubstate.Act
 	return hubstate.Evaluate(spec, h.read, h.current, plans.planID, plans.staleAfter, h.now)
 }
 
-func (s *Server) loadGroupHub() *hubstate.Read {
-	raw, ok, err := s.Store.Get(groupHubKey)
+func (s *Server) loadGroupHub(tier model.HubTier) *hubstate.Read {
+	raw, ok, err := s.Store.Get(hubStoreKey(tier))
 	if err != nil || !ok {
 		return nil
 	}
@@ -71,34 +84,57 @@ func (s *Server) loadGroupHub() *hubstate.Read {
 	return &rd
 }
 
-func (s *Server) saveGroupHub(rd hubstate.Read) error {
+func (s *Server) saveGroupHub(tier model.HubTier, rd hubstate.Read) error {
 	buf, err := json.Marshal(rd)
 	if err != nil {
 		return err
 	}
-	return s.Store.Put(groupHubKey, string(buf))
+	return s.Store.Put(hubStoreKey(tier), string(buf))
 }
 
-// groupHub loads the stored read with the identity of t's hub as it is now.
+// groupHub loads the primary hub's stored read with its identity as it is now.
 func (s *Server) groupHub(t model.Topology) groupHub {
+	return s.groupHubTier(t, model.HubPrimary)
+}
+
+func (s *Server) groupHubTier(t model.Topology, tier model.HubTier) groupHub {
 	s.groupHubMu.Lock()
 	refreshing := s.groupHubBusy
 	s.groupHubMu.Unlock()
-	return groupHub{read: s.loadGroupHub(), current: s.hubReachability(t).identity, refreshing: refreshing, now: time.Now().UTC()}
+	return groupHub{tier: tier, read: s.loadGroupHub(tier), current: s.hubReachabilityTier(t, tier).identity, refreshing: refreshing, now: time.Now().UTC()}
 }
 
-func hubNode(t model.Topology) (model.Node, bool) {
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleHub {
-			return n, true
-		}
+// hubByTier is the topology's primary or backup hub.
+func hubByTier(t model.Topology, tier model.HubTier) (model.Node, bool) {
+	if tier == model.HubBackup {
+		return t.BackupHub()
 	}
-	return model.Node{}, false
+	return t.PrimaryHub()
+}
+
+// hubTiers are the tiers the topology has, primary first.
+func hubTiers(t model.Topology) []model.HubTier {
+	var out []model.HubTier
+	if _, ok := t.PrimaryHub(); ok {
+		out = append(out, model.HubPrimary)
+	}
+	if t.DualHub() {
+		out = append(out, model.HubBackup)
+	}
+	return out
+}
+
+func tierText(tier model.HubTier) string {
+	if tier == model.HubBackup {
+		return "备用枢纽"
+	}
+	return "主枢纽"
 }
 
 // hubReach says whether the hub can be read now, and if not why (a
 // hubstate code and a message).
 type hubReach struct {
+	tier   model.HubTier
 	node   model.Node
 	server model.Server
 	// identity is the hub the panel would read now; its fingerprint is set
@@ -111,13 +147,17 @@ type hubReach struct {
 }
 
 func (s *Server) hubReachability(t model.Topology) hubReach {
-	n, ok := hubNode(t)
+	return s.hubReachabilityTier(t, model.HubPrimary)
+}
+
+func (s *Server) hubReachabilityTier(t model.Topology, tier model.HubTier) hubReach {
+	n, ok := hubByTier(t, tier)
 	if !ok {
-		return hubReach{code: hubstate.CodeNoHub, msg: "拓扑里没有枢纽节点"}
+		return hubReach{tier: tier, code: hubstate.CodeNoHub, msg: "拓扑里没有" + tierText(tier) + "节点"}
 	}
-	r := hubReach{node: n, identity: hubstate.Identity{HubNode: n.ID, ServerID: n.ServerID}}
+	r := hubReach{tier: tier, node: n, identity: hubstate.Identity{HubNode: n.ID, ServerID: n.ServerID}}
 	if n.ServerID == "" {
-		r.code, r.msg = hubstate.CodeHubNoServer, fmt.Sprintf("枢纽节点 %s 还没有关联服务器；在拓扑里为它选择服务器", nodeName(t, n.ID))
+		r.code, r.msg = hubstate.CodeHubNoServer, fmt.Sprintf("%s %s 还没有关联服务器；在拓扑里为它选择服务器", tierText(tier), nodeName(t, n.ID))
 		return r
 	}
 	cs, err := s.credStore()
@@ -127,7 +167,7 @@ func (s *Server) hubReachability(t model.Topology) hubReach {
 	}
 	sv, err := cs.Server(n.ServerID)
 	if err != nil {
-		r.code, r.msg = hubstate.CodeHubNoServer, fmt.Sprintf("枢纽节点 %s 关联的服务器不存在", nodeName(t, n.ID))
+		r.code, r.msg = hubstate.CodeHubNoServer, fmt.Sprintf("%s %s 关联的服务器不存在", tierText(tier), nodeName(t, n.ID))
 		return r
 	}
 	r.server = sv
@@ -157,24 +197,31 @@ func serverIdentity(nodeID string, sv model.Server) hubstate.Identity {
 }
 
 type hubStateView struct {
-	HubNode       string `json:"hub_node,omitempty"`
-	HubName       string `json:"hub_name,omitempty"`
-	ServerID      string `json:"server_id,omitempty"`
-	ServerName    string `json:"server_name,omitempty"`
-	Readable      bool   `json:"readable"`
-	NotReadable   string `json:"not_readable_code,omitempty"`
-	NotReadableSC string `json:"not_readable_ssh_code,omitempty"`
-	NotReadableMs string `json:"not_readable_message,omitempty"`
+	// Tier is primary or backup.
+	Tier          model.HubTier `json:"tier"`
+	HubNode       string        `json:"hub_node,omitempty"`
+	HubName       string        `json:"hub_name,omitempty"`
+	ServerID      string        `json:"server_id,omitempty"`
+	ServerName    string        `json:"server_name,omitempty"`
+	Readable      bool          `json:"readable"`
+	NotReadable   string        `json:"not_readable_code,omitempty"`
+	NotReadableSC string        `json:"not_readable_ssh_code,omitempty"`
+	NotReadableMs string        `json:"not_readable_message,omitempty"`
+	// Carrying: this hub carries the gateway's traffic now, as the gateway
+	// recorded it (always true for a lone hub).
+	Carrying bool `json:"carrying"`
 	// LastRead is the stored read: when, and why it failed if it did.
 	LastRead *lastReadView `json:"last_read"`
 	// Refreshing: a read is running now.
 	Refreshing bool `json:"refreshing"`
+	// PlanID is the group plan the panel would deploy to this hub now.
+	PlanID string `json:"plan_id,omitempty"`
 	// The rules the states follow (seconds).
 	LoopIntervalSec int `json:"loop_interval_sec"`
 	StaleAfterSec   int `json:"stale_after_sec"`
 	ReadMaxAgeSec   int `json:"read_max_age_sec"`
 	SkewWarnSec     int `json:"skew_warn_sec"`
-	// Counts of actual states over the groups.
+	// Counts of actual states over the groups (this hub's own judgement).
 	Counts map[string]int `json:"counts"`
 }
 
@@ -200,14 +247,19 @@ type lastReadView struct {
 
 func (h groupHub) view(t model.Topology, reach hubReach, plans groupPlans) hubStateView {
 	v := hubStateView{
+		Tier:    reach.tier,
 		HubNode: reach.node.ID, HubName: reach.node.Name, ServerID: reach.server.ID, ServerName: reach.server.Name,
 		Readable: reach.readable, NotReadable: reach.code, NotReadableSC: reach.sshCode, NotReadableMs: reach.msg,
 		Refreshing:      h.refreshing,
+		PlanID:          plans.planID,
 		LoopIntervalSec: int(compile.HubLoopInterval / time.Second),
 		StaleAfterSec:   int(plans.staleAfter / time.Second),
 		ReadMaxAgeSec:   int(hubstate.ReadMaxAge / time.Second),
 		SkewWarnSec:     int(hubstate.SkewWarn / time.Second),
 		Counts:          map[string]int{},
+	}
+	if v.Tier == "" {
+		v.Tier = model.HubPrimary
 	}
 	if v.ServerID == "" {
 		v.ServerID = reach.node.ServerID
@@ -234,25 +286,145 @@ func (h groupHub) view(t model.Topology, reach hubReach, plans groupPlans) hubSt
 	return v
 }
 
-func (s *Server) groupsBody(t model.Topology) map[string]any {
-	plans, rt := plansOf(t), s.groupRuntime()
-	hub := s.groupHub(t)
-	out := []groupView{}
-	for _, g := range sortedGroups(t) {
-		out = append(out, viewGroup(t, g, plans, rt, hub))
-	}
-	hv := hub.view(t, s.hubReachability(t), plans)
-	for _, g := range out {
-		hv.Counts[g.Actual.State]++
-	}
-	return map[string]any{
-		"groups": out, "default_group": t.Settings.DefaultGroup, "thresholds": thresholds(), "hub_state": hv,
-	}
+// hubCtx is one hub as one request sees it.
+type hubCtx struct {
+	tier  model.HubTier
+	reach hubReach
+	hub   groupHub
+	plans groupPlans
 }
 
-func (s *Server) oneGroupView(t model.Topology, g model.RegionGroup) groupView {
+// hubSet is every hub of the topology plus which one carries the traffic.
+type hubSet struct {
+	dual     bool
+	hubs     []hubCtx
+	carrying carryingView
+}
+
+// hubSet builds the per-hub reads and plans and asks the gateway which hub
+// carries the traffic (dual-hub topologies only).
+func (s *Server) hubSet(ctx context.Context, t model.Topology) hubSet {
+	hs := hubSet{dual: t.DualHub()}
+	for _, tier := range hubTiers(t) {
+		n, _ := hubByTier(t, tier)
+		plans := plansOf(t)
+		if tier != model.HubPrimary {
+			plans = plansForHub(t, n.ID)
+		}
+		hs.hubs = append(hs.hubs, hubCtx{tier: tier, reach: s.hubReachabilityTier(t, tier), hub: s.groupHubTier(t, tier), plans: plans})
+	}
+	hs.carrying = s.carryingHub(ctx, t)
+	return hs
+}
+
+// carrier is the hub whose state is the group's actual state: the lone
+// hub, or the hub the gateway recorded as carrying; nil when that is not
+// known (the state is then not shown as measured).
+func (hs hubSet) carrier() *hubCtx {
+	if len(hs.hubs) == 0 {
+		return nil
+	}
+	if !hs.dual {
+		return &hs.hubs[0]
+	}
+	if !hs.carrying.Known {
+		return nil
+	}
+	for i := range hs.hubs {
+		if hs.hubs[i].tier == hs.carrying.Tier {
+			return &hs.hubs[i]
+		}
+	}
+	return nil
+}
+
+// hubActual is one hub's judgement of a group (dual-hub views).
+type hubActual struct {
+	Tier    model.HubTier `json:"tier"`
+	HubNode string        `json:"hub_node"`
+	HubName string        `json:"hub_name,omitempty"`
+	hubstate.Actual
+	Carrying bool `json:"carrying"`
+}
+
+// actualOf judges group g on the carrying hub, plus every hub separately.
+func (hs hubSet) actualOf(t model.Topology, g model.RegionGroup) (actualView, []hubActual) {
+	var by []hubActual
+	if hs.dual {
+		for _, h := range hs.hubs {
+			by = append(by, hubActual{Tier: h.tier, HubNode: h.reach.node.ID, HubName: h.reach.node.Name,
+				Actual: h.hub.actual(h.plans, h.plans.spec(t, g)), Carrying: hs.carrying.Known && hs.carrying.Tier == h.tier})
+		}
+	}
+	c := hs.carrier()
+	if c == nil {
+		a := actualView{Actual: hubstate.Actual{State: hubstate.StateUnavailable, Code: CodeCarryingUnknown,
+			Message: "不知道现在由哪个枢纽承载（" + hs.carrying.Message + "）；不把任一枢纽的报告当作实际使用"}}
+		return a, by
+	}
+	a := actualView{Actual: c.hub.actual(c.plans, c.plans.spec(t, g)), HubTier: c.tier, HubNode: c.reach.node.ID, HubName: c.reach.node.Name, ServerName: c.reach.server.Name}
+	return a, by
+}
+
+// CodeCarryingUnknown: with a backup hub, the gateway did not tell which
+// hub carries the traffic (agent unreachable, no or stale record), so no
+// hub's report is shown as the member in use.
+const CodeCarryingUnknown = "carrying_unknown"
+
+func (s *Server) groupsBody(ctx context.Context, t model.Topology) map[string]any {
+	plans, rt := plansOf(t), s.groupRuntime()
+	hs := s.hubSet(ctx, t)
+	out := []groupView{}
+	for _, g := range sortedGroups(t) {
+		out = append(out, viewGroup(t, g, plans, rt, hs))
+	}
+	views := hs.views(t)
+	for _, g := range out {
+		if len(views) > 0 {
+			views[0].Counts[g.Actual.State]++
+		}
+	}
+	if hs.dual {
+		// Per-hub counts are each hub's own judgement.
+		for i := range views {
+			views[i].Counts = map[string]int{}
+		}
+		for _, g := range out {
+			for _, a := range g.ActualByHub {
+				for i := range views {
+					if views[i].Tier == a.Tier {
+						views[i].Counts[a.State]++
+					}
+				}
+			}
+		}
+	}
+	body := map[string]any{
+		"groups": out, "default_group": t.Settings.DefaultGroup, "thresholds": thresholds(),
+		"hub_states": views, "carrying": hs.carrying,
+	}
+	if len(views) > 0 {
+		body["hub_state"] = views[0]
+	} else {
+		body["hub_state"] = s.groupHub(t).view(t, s.hubReachability(t), plans)
+	}
+	return body
+}
+
+// views are the per-hub state views, primary first.
+func (hs hubSet) views(t model.Topology) []hubStateView {
+	out := []hubStateView{}
+	for _, h := range hs.hubs {
+		v := h.hub.view(t, h.reach, h.plans)
+		v.Carrying = !hs.dual || (hs.carrying.Known && hs.carrying.Tier == h.tier)
+		out = append(out, v)
+	}
+	return out
+}
+
+func (s *Server) oneGroupView(ctx context.Context, t model.Topology, g model.RegionGroup) groupView {
 	plans := plansOf(t)
-	return viewGroup(t, g, plans, s.groupRuntime(), s.groupHub(t))
+	return viewGroup(t, g, plans, s.groupRuntime(), s.hubSet(ctx, t))
 }
 
 // refreshGroupRuntime reads the hub's group state once. 200 with the
@@ -280,28 +452,42 @@ func (s *Server) refreshGroupRuntime(w http.ResponseWriter, r *http.Request) {
 		writeResErr(w, err)
 		return
 	}
-	reach := s.hubReachability(t)
-	rd := s.readHub(r.Context(), reach)
-	// Late-result guard: the read describes reach.identity only. If the
-	// hub node, its server, the address, port or pinned key changed while
-	// it ran, the result is not stored as the current state. (A change
-	// after this check is still caught: the stored read carries its
-	// identity and every display compares it with the current one.)
+	// Every hub of the topology, one after the other; each read is bound to
+	// its own hub's identity and stored under its tier.
+	var discarded []string
+	for _, tier := range hubTiers(t) {
+		reach := s.hubReachabilityTier(t, tier)
+		rd := s.readHub(r.Context(), reach)
+		// Late-result guard: the read describes reach.identity only. If the
+		// hub node, its server, the address, port or pinned key changed while
+		// it ran, the result is not stored as the current state. (A change
+		// after this check is still caught: the stored read carries its
+		// identity and every display compares it with the current one.)
+		t2, err := s.topology()
+		if err != nil {
+			writeResErr(w, err)
+			return
+		}
+		if now := s.hubReachabilityTier(t2, tier).identity; !now.Equal(rd.Identity) {
+			discarded = append(discarded, fmt.Sprintf("%s的%s", tierText(tier), strings.Join(rd.Identity.Differs(now), "、")))
+			continue
+		}
+		if err := s.saveGroupHub(tier, rd); err != nil {
+			writeResErr(w, err)
+			return
+		}
+	}
+	if len(discarded) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]any{"code": hubstate.CodeIdentityChanged,
+			"error": "读取期间" + strings.Join(discarded, "；") + "已变更，这次读取的结果已丢弃，没有作为当前状态保存；请对当前枢纽重新读取"})
+		return
+	}
 	t2, err := s.topology()
 	if err != nil {
 		writeResErr(w, err)
 		return
 	}
-	if now := s.hubReachability(t2).identity; !now.Equal(rd.Identity) {
-		writeJSON(w, http.StatusConflict, map[string]any{"code": hubstate.CodeIdentityChanged,
-			"error": "读取期间枢纽的" + strings.Join(rd.Identity.Differs(now), "、") + "已变更，这次读取的结果已丢弃，没有作为当前状态保存；请对当前枢纽重新读取"})
-		return
-	}
-	if err := s.saveGroupHub(rd); err != nil {
-		writeResErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, s.groupsBody(t2))
+	writeJSON(w, http.StatusOK, s.groupsBody(r.Context(), t2))
 }
 
 // readHub performs the read against the identity in reach; every failure

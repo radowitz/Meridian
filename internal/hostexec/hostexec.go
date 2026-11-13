@@ -342,8 +342,8 @@ type Agent struct {
 	ListsTimeout time.Duration
 	listsBusy    chan struct{}
 
-	// PreflightRoot replaces "/" for the files the install pre-check reads
-	// (tests only).
+	// PreflightRoot replaces "/" for the files the install pre-check and
+	// the upstream status read (tests only).
 	PreflightRoot string
 
 	once   sync.Once
@@ -400,7 +400,7 @@ func (a *Agent) init() {
 }
 
 // Handler serves POST /v1/action, /v1/probe, /v1/lists, /v1/lists/status,
-// /v1/remote-access/status and /v1/preflight.
+// /v1/remote-access/status, /v1/upstream/status and /v1/preflight.
 func (a *Agent) Handler() http.Handler {
 	a.init()
 	mux := http.NewServeMux()
@@ -409,6 +409,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/lists", a.serveLists)
 	mux.HandleFunc("POST /v1/lists/status", a.serveListsStatus)
 	mux.HandleFunc("POST /v1/remote-access/status", a.serveRemoteAccessStatus)
+	mux.HandleFunc("POST /v1/upstream/status", a.serveUpstreamStatus)
 	mux.HandleFunc("POST /v1/preflight", a.servePreflight)
 	return mux
 }

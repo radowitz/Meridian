@@ -2608,3 +2608,152 @@ describe("ports", () => {
     expect(await within(detail).findByLabelText("WSS 监听端口")).toBeInTheDocument();
   });
 });
+
+// ----------------------------------------------- primary and backup hub ---
+
+describe("primary and backup hub", () => {
+  afterEach(() => clearCooldowns());
+
+  function dualTopology(): Topology {
+    const t = topology();
+    t.nodes = t.nodes.map((n) => (n.id === "hk-hub" ? { ...n, name: "hk1", hub_tier: "primary" as const, ix_line: true, ingress_v4: "198.51.100.10", endpoint_v4: "203.0.113.10" } : n));
+    t.nodes.push({ ...exitNode("hk5", "hk5", { role: "hub" }), hub_tier: "backup", endpoint_v4: "203.0.113.50", wss_listen_port: 8443 });
+    return t;
+  }
+
+  const recent = () => new Date().toISOString();
+  const primary = (over: Partial<GroupHubState> = {}) =>
+    hubState({ tier: "primary", hub_node: "hk-hub", hub_name: "hk1", server_name: "IX 服务器", plan_id: "aaaaaaaaaaaaaaaa", carrying: false, last_read: { read_at: recent(), ok: true, ignored: [] }, ...over });
+  const backup = (over: Partial<GroupHubState> = {}) =>
+    hubState({ tier: "backup", hub_node: "hk5", hub_name: "hk5", server_id: "srv-hk5", server_name: "hk5 机房", plan_id: "bbbbbbbbbbbbbbbb", carrying: false, last_read: { read_at: recent(), ok: true, ignored: [] }, ...over });
+
+  it("shows the backup hub as carrying and the group's actual state read from it", async () => {
+    const g = group({
+      actual: { ...actualOK("hk-2"), hub_tier: "backup", hub_node: "hk5", hub_name: "hk5", server_name: "hk5 机房" },
+      actual_by_hub: [
+        { ...NEVER_READ, tier: "primary", hub_node: "hk-hub", hub_name: "hk1", carrying: false, state: "stale", code: "heartbeat_old" },
+        { ...actualOK("hk-2"), tier: "backup", hub_node: "hk5", hub_name: "hk5", carrying: true },
+      ],
+      member_status: group().member_status.map((m) => ({ ...m, actual_active: m.id === "hk-2" })),
+    });
+    const hubs = [primary(), backup({ carrying: true })];
+    const body = () => ({
+      groups: [g],
+      default_group: "hk",
+      thresholds: THRESHOLDS,
+      hub_state: hubs[0],
+      hub_states: hubs,
+      carrying: { mode: "dual", known: true, tier: "backup", hub_node: "hk5", hub_name: "hk5", path: "backup", iface: "wg-hk5", state: "ok", since: NOW, beat: recent(), source: "gateway" },
+    });
+    fakeApi({
+      "GET /api/topology": () => dualTopology(),
+      "GET /api/region-groups": body,
+      "POST /api/region-groups/runtime/refresh": body,
+    });
+    renderAt("#/exits");
+    const bar = await screen.findByTestId("hub-state-bar");
+    expect(bar).toHaveAttribute("data-mode", "dual");
+    expect(within(bar).getByTestId("carrying")).toHaveTextContent("当前承载：备用枢纽 hk5（经 WSS，自");
+    expect(within(bar).getByTestId("hub-row-primary")).toHaveTextContent("主枢纽");
+    expect(within(bar).getByTestId("hub-row-primary")).toHaveTextContent("IX 服务器");
+    expect(within(bar).getByTestId("hub-row-primary")).toHaveAttribute("data-carrying", "false");
+    expect(within(bar).getByTestId("hub-row-backup")).toHaveTextContent("备用枢纽");
+    expect(within(bar).getByTestId("hub-row-backup")).toHaveTextContent("hk5 机房");
+    expect(within(bar).getByTestId("hub-row-backup")).toHaveAttribute("data-carrying", "true");
+    expect(within(bar).getByTestId("hub-row-backup")).toHaveTextContent("承载中");
+    const card = screen.getByTestId("group-hk");
+    const actual = within(card).getByTestId("group-actual");
+    expect(actual).toHaveTextContent("实际使用香港二号");
+    expect(within(actual).getByTestId("group-actual-source")).toHaveTextContent("实测 · 读自 备用枢纽 hk5（服务器 hk5 机房）");
+    expect(within(screen.getByTestId("member-hk-hk-2")).getByText("使用中")).toBeInTheDocument();
+    // The model stays its own labelled line.
+    expect(within(card).getByTestId("group-model")).toHaveTextContent("面板推算");
+    expect(within(card).getByTestId("group-model")).not.toHaveTextContent("实测");
+    expect(within(card).queryByTestId("group-hub-reports")).toBeNull();
+  });
+
+  it("with the carrying hub unknown, shows no member in use, the reason and each hub's unconfirmed report", async () => {
+    const why = "网关还没有上游记录（还没有按带备用枢纽的拓扑安装到本机，或切换服务没有运行）";
+    const g = group({
+      actual: { ...NEVER_READ, state: "unavailable", code: "carrying_unknown", message: `不知道现在由哪个枢纽承载（${why}）；不把任一枢纽的报告当作实际使用`, read_at: null },
+      actual_by_hub: [
+        { ...actualOK("hk-ix"), tier: "primary", hub_node: "hk-hub", hub_name: "hk1", carrying: false },
+        { ...actualOK("hk-2"), tier: "backup", hub_node: "hk5", hub_name: "hk5", carrying: false },
+      ],
+    });
+    const hubs = [primary(), backup()];
+    fakeApi({
+      "GET /api/topology": () => dualTopology(),
+      "GET /api/servers": () => ({ servers: [server()] }),
+      "GET /api/region-groups": () => ({
+        groups: [g],
+        default_group: "hk",
+        thresholds: THRESHOLDS,
+        hub_state: hubs[0],
+        hub_states: hubs,
+        carrying: { mode: "dual", known: false, source: "gateway", code: "not_recorded", message: why },
+      }),
+    });
+    renderAt("#/exits");
+    const bar = await screen.findByTestId("hub-state-bar");
+    expect(within(bar).getByTestId("carrying")).toHaveTextContent(`承载枢纽未知：${why}`);
+    expect(within(bar).getByTestId("hub-row-primary")).toHaveAttribute("data-carrying", "false");
+    expect(within(bar).getByTestId("hub-row-backup")).toHaveAttribute("data-carrying", "false");
+    const card = screen.getByTestId("group-hk");
+    const actual = within(card).getByTestId("group-actual");
+    expect(actual).toHaveAttribute("data-state", "unavailable");
+    expect(actual).toHaveTextContent("实际使用未知");
+    expect(actual).not.toHaveTextContent("香港二号");
+    expect(within(card).queryByText("使用中")).toBeNull();
+    const whyEl = within(card).getByTestId("group-actual-why");
+    expect(whyEl).toHaveTextContent("不知道现在由哪个枢纽承载");
+    expect(whyEl).toHaveTextContent("网关还没有上游记录");
+    const reports = within(card).getByTestId("group-hub-reports");
+    expect(reports).toHaveTextContent("各枢纽报告（未确认承载）");
+    expect(within(reports).getByTestId("hub-report-backup")).toHaveTextContent("备用枢纽 hk5");
+    expect(within(reports).getByTestId("hub-report-backup")).toHaveTextContent("未确认承载");
+    expect(reports.querySelector('[data-status="ok"]')).toBeNull();
+
+    // The overview names the unknown carrying hub too.
+    renderAt("#/");
+    await waitFor(() => expect(screen.getAllByTestId("carrying").some((e) => e.textContent?.includes("承载枢纽未知"))).toBe(true));
+  });
+
+  it("shows the IX hub fields in the topology editor", async () => {
+    fakeApi({
+      "GET /api/topology": () => dualTopology(),
+      "GET /api/servers": () => ({ servers: [server()] }),
+    });
+    renderAt("#/topology/hk-hub");
+    const detail = await screen.findByTestId("node-detail");
+    expect(within(detail).getByRole("combobox", { name: "枢纽角色" })).toBeInTheDocument();
+    expect(within(detail).getByText("主枢纽")).toBeInTheDocument();
+    expect(within(detail).getByRole("switch", { name: "IX 即主枢纽" })).toBeChecked();
+    expect(within(detail).getByLabelText("国内入口地址（中继拨入）")).toHaveValue("198.51.100.10");
+    expect(within(detail).getByLabelText("国内入口接口（可选）")).toHaveValue("");
+    expect(within(detail).getByLabelText("香港出口地址（出口拨入）")).toHaveValue("203.0.113.10");
+    expect(within(detail).queryByText("公网 IPv4")).toBeNull();
+    // Not an old single-hub topology: no migration notice.
+    expect(screen.queryByTestId("ix-hub-migration")).toBeNull();
+  });
+
+  it("offers the IX-as-primary-hub migration on an old topology with an ix node, converting nothing", async () => {
+    const t = topology();
+    t.nodes.push({ ...exitNode("ix", "IX 专线", { role: "ix", managed: false }) });
+    fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [server()] }),
+    });
+    renderAt("#/topology/hk-hub");
+    const notice = await screen.findByTestId("ix-hub-migration");
+    expect(notice).toHaveTextContent("IX 即主枢纽");
+    expect(notice).toHaveTextContent("不会自动转换");
+    // The lone hub reads as primary; its IX fields stay hidden until switched on.
+    const detail = await screen.findByTestId("node-detail");
+    expect(within(detail).getByText("主枢纽")).toBeInTheDocument();
+    expect(within(detail).getByRole("switch", { name: "IX 即主枢纽" })).not.toBeChecked();
+    expect(within(detail).queryByLabelText("国内入口地址（中继拨入）")).toBeNull();
+    await userEvent.click(within(notice.closest(".ant-alert") as HTMLElement).getByRole("button", { name: /close|关闭/i }));
+    await waitFor(() => expect(screen.queryByTestId("ix-hub-migration")).toBeNull());
+  });
+});

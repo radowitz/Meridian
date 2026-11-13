@@ -61,6 +61,13 @@ type Footprint struct {
 	WAN     string   `json:"wan,omitempty"`
 	WANSet  bool     `json:"wan_set,omitempty"`
 	WANNeed []string `json:"wan_need,omitempty"`
+	// IXIngress / IXIngressIface / IXEgress: the node is the IX as primary
+	// hub ("# meridian-ix-hub:" in meridian-up.sh): the domestic ingress
+	// address the relays dial (on IXIngressIface when the topology names
+	// one) and the Hong Kong egress address toward the exits.
+	IXIngress      string `json:"ix_ingress,omitempty"`
+	IXIngressIface string `json:"ix_ingress_iface,omitempty"`
+	IXEgress       string `json:"ix_egress,omitempty"`
 	// RAKeep: meridian-up.sh keeps router advertisements on the host's
 	// RA-dependent interfaces (accept_ra=2) before turning IPv6 forwarding on.
 	RAKeep bool `json:"ra_keep,omitempty"`
@@ -134,6 +141,7 @@ var (
 	reFWTag      = regexp.MustCompile(`(?m)^FW_TAG=(meridian-fw-[0-9a-f]{8})$`)
 	reFWChain    = regexp.MustCompile(`(?m)^FW_CHAIN=([A-Za-z0-9_-]{1,28})$`)
 	reFWRule     = regexp.MustCompile(`(?m)^  "(-i [A-Za-z0-9_.@-]{1,15} -o [A-Za-z0-9_.@-]{1,15}(?: -m conntrack --ctstate RELATED,ESTABLISHED)?)"$`)
+	reIXHub      = regexp.MustCompile(`(?m)^# meridian-ix-hub: ingress=([0-9.]{7,15}) iface=([A-Za-z0-9_.@-]{1,15}|-) egress=([0-9.]{7,15}|-)$`)
 	reWAN        = regexp.MustCompile(`(?m)^# meridian-wan: ([A-Za-z0-9_.@-]{1,15}) (set|default) need=((?:4|6|any)(?:,(?:4|6))?)$`)
 	reSysctlLine = regexp.MustCompile(`(?m)^\s*-?\s*(net\.[a-z0-9_.@-]+)\s*=`)
 )
@@ -316,6 +324,9 @@ func FootprintOf(files map[string]string) Footprint {
 					fp.WAN, fp.WANSet, fp.WANNeed = m[1], m[2] == "set", strings.Split(m[3], ",")
 				}
 				fp.RAKeep = strings.Contains(body, "MERIDIAN_RA_STATE=")
+				if m := reIXHub.FindStringSubmatch(body); m != nil {
+					fp.IXIngress, fp.IXIngressIface, fp.IXEgress = m[1], strings.TrimPrefix(m[2], "-"), strings.TrimPrefix(m[3], "-")
+				}
 			}
 			for _, m := range reHarden.FindAllStringSubmatch(body, -1) {
 				for _, i := range strings.Fields(m[1]) {

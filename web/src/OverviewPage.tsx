@@ -5,7 +5,7 @@ import { Space, Steps, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { PanelStatus, RegionGroupView } from "./types";
 import * as api from "./api";
-import { ACTUAL_CODE, actualTag } from "./ExitsPage";
+import { ACTUAL_CODE, CarryingLine, actualTag } from "./ExitsPage";
 import { JOURNAL_STATE, checkSummary } from "./MeshDeploy";
 import { serverReadiness } from "./ServersPage";
 import { href, useStatus, useTopologyDoc } from "./state";
@@ -334,9 +334,21 @@ export default function OverviewPage() {
           <TileData state={groups}>
             {(d) =>
               d.groups.length === 0 ? (
-                <Typography.Text type="secondary">还没有地区组。</Typography.Text>
+                <>
+                  {d.carrying?.mode === "dual" ? (
+                    <Row label="承载枢纽">
+                      <CarryingLine c={d.carrying} />
+                    </Row>
+                  ) : null}
+                  <Typography.Text type="secondary">还没有地区组。</Typography.Text>
+                </>
               ) : (
                 <>
+                {d.carrying?.mode === "dual" ? (
+                  <Row label="承载枢纽">
+                    <CarryingLine c={d.carrying} />
+                  </Row>
+                ) : null}
                 <Row label="共">
                   <span data-testid="groups-tile-count">{d.groups.length} 个地区组</span>
                 </Row>

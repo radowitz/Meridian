@@ -604,7 +604,9 @@ func newNetnsLab(t *testing.T, topo model.Topology, v6 labV6) *netnsLab {
 	l.nftPath = filepath.Join(dir, "meridian.nft")
 	l.routesPath = filepath.Join(dir, "meridian-routes.sh")
 	mustWrite(t, l.nftPath, l.nftText)
-	mustWrite(t, l.routesPath, b.File("nodes/gw/usr/local/sbin/meridian-routes.sh"))
+	// State files the routes script writes (the dual-hub upstream record)
+	// go to the test directory, never to this host's /run/meridian.
+	mustWrite(t, l.routesPath, strings.ReplaceAll(b.File("nodes/gw/usr/local/sbin/meridian-routes.sh"), "/run/meridian", filepath.Join(dir, "gwrun")))
 	for path := range b.Files {
 		if strings.HasPrefix(path, "nodes/gw/etc/wireguard/") && filepath.Base(path) != "mra.conf" {
 			l.tunnels = append(l.tunnels, strings.TrimSuffix(filepath.Base(path), ".conf"))

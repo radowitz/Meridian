@@ -27,7 +27,7 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 	case model.RoleRelay:
 		renderRelayRoutes(&sb, t, tunnels)
 	case model.RoleHub:
-		renderHubRoutes(&sb, t, tunnels, exits, groups)
+		renderHubRoutes(&sb, t, n, tunnels, exits, groups)
 	case model.RoleExit:
 		renderExitRoutes(&sb, t, n, tunnels)
 		if len(meshDNSGroups(groups, n.ID)) > 0 {
@@ -89,14 +89,20 @@ func renderGatewayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel
 	// The blackhole default is what remains if the WireGuard device route
 	// disappears, so the lookup cannot fall through to ROS.
 	fmt.Fprintf(sb, "ip route replace %s dev %s table 102\n", lanNetQ, lanQ)
-	fmt.Fprintf(sb, "ip route replace default dev %s table 102\n", westQ)
-	sb.WriteString("ip route replace blackhole default metric 32767 table 102\n")
-	fmt.Fprintf(sb, "ip -6 route replace default dev %s table 102\n", westQ)
-	sb.WriteString("ip -6 route replace blackhole default metric 32767 table 102\n")
-	fmt.Fprintf(sb, "ip route replace 10.66.0.0/16 dev %s\n", westQ)
-	sb.WriteString("ip route replace blackhole 10.66.0.0/16 metric 32767\n")
-	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", westQ)
-	sb.WriteString("ip -6 route replace blackhole fd66::/48 metric 32767\n")
+	if t.DualHub() {
+		// Main path or backup hub: decided in one place (planUpstream),
+		// applied by the same shell the failover loop uses.
+		renderUpstreamRoutes(sb, planUpstream(t, tunnels))
+	} else {
+		fmt.Fprintf(sb, "ip route replace default dev %s table 102\n", westQ)
+		sb.WriteString("ip route replace blackhole default metric 32767 table 102\n")
+		fmt.Fprintf(sb, "ip -6 route replace default dev %s table 102\n", westQ)
+		sb.WriteString("ip -6 route replace blackhole default metric 32767 table 102\n")
+		fmt.Fprintf(sb, "ip route replace 10.66.0.0/16 dev %s\n", westQ)
+		sb.WriteString("ip route replace blackhole 10.66.0.0/16 metric 32767\n")
+		fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", westQ)
+		sb.WriteString("ip -6 route replace blackhole fd66::/48 metric 32767\n")
+	}
 
 	// Selectors only. This does not delete another program's rules, but it
 	// does drop marks for exits and region groups that were removed from
@@ -219,12 +225,15 @@ func renderRelayRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel) 
 		ifaceOrDash(westUDP), ifaceOrDash(westWSS), ifaceOrDash(eastIX), ifaceOrDash(eastWSS))
 }
 
-func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) {
-	westTun := hubWestTunnel(tunnels, t.Settings.IXReplacementMode)
+func renderHubRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) {
+	westTun := hubWestTunnel(tunnels, n.ID, t.Settings.IXReplacementMode)
 	west := westTun.Iface()
 	kind := "ix"
 	if t.Settings.IXReplacementMode {
 		kind = "ix-replacement"
+	}
+	if t.EffectiveHubTier(n) == model.HubBackup {
+		kind = "backup-wss"
 	}
 	fmt.Fprintf(sb, "# meridian-west-preferred: %s %s\n", kind, west)
 	fmt.Fprintf(sb, "ip route replace %s dev %s\n", lanNet(t), west)
@@ -271,6 +280,13 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 			fmt.Fprintf(sb, "fi\n")
 		}
 		fmt.Fprintf(sb, "# exit %s mark %#x transit %s dev %s\n", e.Node.ID, e.Mark, e.TransitV4, e.HubIface)
+		if t.DualHub() && !e.Mesh && e.ViaRelay == "" {
+			// The exit's hub-independent resolver address: the gateway asks
+			// it through whichever hub carries the traffic; this hub hands it
+			// to its own tunnel to the exit (which DNATs it to its resolver).
+			fmt.Fprintf(sb, "ip -6 route replace %s/128 dev %s\n", e.Resolver, e.HubIface)
+			fmt.Fprintf(sb, "ip -6 route replace blackhole %s/128 metric 32767\n", e.Resolver)
+		}
 		if e.Mesh {
 			fmt.Fprintf(sb, "# default via the mmesh next-hop is installed above when the sidecar is sealed\n")
 		} else {
@@ -296,7 +312,7 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, tunnels []Tunnel, ex
 }
 
 func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel) {
-	tun := exitIngress(n, tunnels)
+	tun := exitIngress(n, tunnels, primaryHubID(t))
 	if tun.Iface() == "" {
 		if !n.PathV4 && n.PathV6 && n.V6Workaround == model.WorkaroundMesh {
 			sb.WriteString("# reached via the Mesh sidecar after the hub. No direct WireGuard from the hub.\n")
@@ -315,6 +331,9 @@ func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunne
 	fmt.Fprintf(sb, "ip -6 route replace %s dev %s\n", transitV6Net(), tun.Iface())
 	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", tun.Iface())
 	writePrefixBlackholes(sb, t)
+	if rets := exitHubReturns(t, n, tunnels); rets != nil {
+		renderExitHubReturnRoutes(sb, t, rets)
+	}
 	if n.NatDialOut {
 		sb.WriteString("# NAT dial-out: keep the mapping warm. Updates must use wg syncconf, not wg-quick down.\n")
 	}
@@ -363,13 +382,16 @@ func renderFailover(t model.Topology, n model.Node, tunnels []Tunnel, exits []Ex
 	case model.RoleGateway:
 		return renderGatewayFailover(t, tunnels)
 	case model.RoleHub:
-		return renderHubFailover(t, tunnels, exits, groups)
+		return renderHubFailover(t, n, tunnels, exits, groups)
 	default:
 		return renderRelayFailover(t, tunnels)
 	}
 }
 
 func renderGatewayFailover(t model.Topology, tunnels []Tunnel) string {
+	if t.DualHub() {
+		return renderGatewayFailoverDual(planUpstream(t, tunnels))
+	}
 	udp, wss, direct := gatewayIfaces(tunnels)
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
@@ -584,17 +606,22 @@ func relayIfaces(tunnels []Tunnel) (westUDP, westWSS, eastIX, eastWSS Tunnel) {
 	return westUDP, westWSS, eastIX, eastWSS
 }
 
-func hubWestTunnel(tunnels []Tunnel, replacement bool) Tunnel {
-	var ix, wss Tunnel
+// hubWestTunnel is hub's tunnel toward home: the relay's direct WireGuard
+// (on the IX line), the relay's WSS replacement, or, for a backup hub that
+// only the gateway dials, the gateway's WSS.
+func hubWestTunnel(tunnels []Tunnel, hub string, replacement bool) Tunnel {
+	var ix, wss, home Tunnel
 	for _, tun := range tunnels {
-		if tun.East.Role != model.RoleHub || tun.West.Role != model.RoleRelay {
+		if tun.East.Role != model.RoleHub || tun.East.ID != hub {
 			continue
 		}
-		if tun.Transport == model.TransportDirectWG {
+		switch {
+		case tun.West.Role == model.RoleRelay && tun.Transport == model.TransportDirectWG:
 			ix = tun
-		}
-		if tun.Transport == model.TransportIXReplacementWSS {
+		case tun.West.Role == model.RoleRelay && tun.Transport == model.TransportIXReplacementWSS:
 			wss = tun
+		case tun.West.Role == model.RoleGateway && tun.Transport == model.TransportIXReplacementWSS:
+			home = tun
 		}
 	}
 	if replacement && wss.LinkID != "" {
@@ -603,7 +630,10 @@ func hubWestTunnel(tunnels []Tunnel, replacement bool) Tunnel {
 	if ix.LinkID != "" {
 		return ix
 	}
-	return wss
+	if wss.LinkID != "" {
+		return wss
+	}
+	return home
 }
 
 func renderDualstackForward(sb *strings.Builder, t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan) {
@@ -624,7 +654,7 @@ func renderDualstackForward(sb *strings.Builder, t model.Topology, n model.Node,
 		if e.ViaRelay != n.ID {
 			continue
 		}
-		down := exitIngress(e.Node, tunnels)
+		down := exitIngress(e.Node, tunnels, primaryHubID(t))
 		if down.Iface() == "" {
 			fmt.Fprintf(sb, "# pure-v6 %s has no relay tunnel\n", e.Node.ID)
 			continue
@@ -644,10 +674,10 @@ func renderDualstackForward(sb *strings.Builder, t model.Topology, n model.Node,
 	_ = t
 }
 
-func renderHubFailover(t model.Topology, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
+func renderHubFailover(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
 	var ix, aliWSS, home Tunnel
 	for _, tun := range tunnels {
-		if tun.East.Role != model.RoleHub {
+		if tun.East.Role != model.RoleHub || tun.East.ID != n.ID {
 			continue
 		}
 		switch {

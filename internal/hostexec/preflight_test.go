@@ -42,6 +42,7 @@ func pfRoot(t *testing.T) string {
 		"etc/smartdns/smartdns.conf":      "bind :53\nserver 192.0.2.53\n",
 		"etc/iproute2/rt_tables.d/x.conf": "150 vpn\n",
 		"usr/sbin/nft":                    "#!/bin/sh\n",
+		"etc/ufw/ufw.conf":                "# /etc/ufw/ufw.conf\nENABLED=no\nLOGLEVEL=low\n",
 		"usr/bin/docker":                  "#!/bin/sh\n",
 	}
 	for p, body := range files {
@@ -91,6 +92,9 @@ func TestAgentPreflightReport(t *testing.T) {
 	}
 	if pi := r.Paths["/etc/meridian/forwarding.conf"]; pi.Exists {
 		t.Fatalf("forwarding %+v", pi)
+	}
+	if r.UFWConf != "no" {
+		t.Fatalf("ufw.conf ENABLED= not reported: %q", r.UFWConf)
 	}
 	if r.NFTStop != "flush" {
 		t.Fatalf("nftables.service ExecStop flush not reported: %q", r.NFTStop)

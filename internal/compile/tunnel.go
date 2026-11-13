@@ -56,6 +56,18 @@ func (t Tunnel) Dialer() model.Node {
 	return t.West
 }
 
+// DialV4 is the IPv4 address the dialer targets: the listener's
+// EndpointV4, except that a relay dials an IX hub at its domestic ingress
+// address (the only one that accepts the relays; EndpointV4 is the IX's
+// Hong Kong egress, which exits dial).
+func (t Tunnel) DialV4() string {
+	lis := t.Listener()
+	if model.IsIXHub(lis) && t.Dialer().Role == model.RoleRelay && lis.IngressV4 != "" {
+		return lis.IngressV4
+	}
+	return lis.EndpointV4
+}
+
 type side struct {
 	node model.Node
 	v4   string

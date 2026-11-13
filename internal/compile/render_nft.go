@@ -74,7 +74,7 @@ func renderGatewayNFT(t model.Topology, tunnels []Tunnel, exits []ExitPlan, grou
 	var underlay []string
 	seen := map[string]bool{}
 	for _, tun := range tunnels {
-		for _, ip := range []string{tun.West.EndpointV4, tun.East.EndpointV4} {
+		for _, ip := range []string{tun.West.EndpointV4, tun.East.EndpointV4, ixIngress(tun.West), ixIngress(tun.East)} {
 			if ip == "" || seen[ip] {
 				continue
 			}
@@ -288,6 +288,12 @@ func renderExitNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exi
 	writeAtomicReplace(&sb, tableMain)
 	sb.WriteString("table inet meridian {\n")
 	writeGroupResolverDNAT(&sb, n, tunnels, exits, groups)
+	if rets := exitHubReturns(t, n, tunnels); rets != nil {
+		writeExitHubReturnNFT(&sb, rets)
+		if e, ok := exitByID(exits, n.ID); ok {
+			writeExitResolverDNAT(&sb, e, rets)
+		}
+	}
 	sb.WriteString("  chain srcnat {\n    type nat hook postrouting priority srcnat; policy accept;\n")
 	if n.EgressV4 {
 		fmt.Fprintf(&sb, "    oifname \"%s\" ip saddr { %s, %s } masquerade\n", wan, lanNet(t), transitV4Net())
@@ -407,6 +413,14 @@ func writeGroupResolverDNAT(sb *strings.Builder, n model.Node, tunnels []Tunnel,
     ct direction reply ct mark %#[3]x meta mark set %#[3]x comment "every reply packet: table %[6]d, mmesh or blackhole"
   }
 `, mesh.HostIface, validate.GroupResolverNet, markMeshDNS, e.DNSULA, meshDNSAnchor, tableMeshDNS)
+}
+
+// ixIngress is an IX hub's domestic ingress address ("" otherwise).
+func ixIngress(n model.Node) string {
+	if model.IsIXHub(n) {
+		return n.IngressV4
+	}
+	return ""
 }
 
 func renderTransitNFT(n model.Node, tunnels []Tunnel) string {

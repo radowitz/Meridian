@@ -118,6 +118,13 @@ func underlayEndpoints(t model.Topology) []netip.Addr {
 		}
 		if n.Role != model.RoleIX {
 			add(n)
+			if model.IsIXHub(n) {
+				// Relays dial the IX hub's domestic ingress address.
+				if a, err := netip.ParseAddr(strings.TrimSpace(n.IngressV4)); err == nil && a.Is4() && !seen[a] {
+					seen[a] = true
+					out = append(out, a)
+				}
+			}
 			return
 		}
 		for _, l := range t.Links {

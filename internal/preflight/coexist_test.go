@@ -105,10 +105,14 @@ func TestDockerUserCoexistenceRefusals(t *testing.T) {
 	}{
 		"missing DOCKER-USER": {"", "没有 DOCKER-USER 链", func(r *Report) { r.IptChains["ipv4 DOCKER-USER"] = false }},
 		"not reported":        {"", "预检没有报告 DOCKER-USER", func(r *Report) { delete(r.IptChains, "ipv4 DOCKER-USER") }},
-		"ufw active":          {"unit ufw.service active enabled 1\n", "ufw 在运行", nil},
-		"firewalld active":    {"unit firewalld.service active enabled 1\n", "firewalld 在运行", nil},
-		"drop before jump":    {"", "跳到 DOCKER-USER 之前就有 DROP", func(r *Report) { r.IptForward["ipv4"] = []string{"DROP", "DOCKER-USER"} }},
-		"no jump":             {"", "FORWARD 链不跳到 DOCKER-USER", func(r *Report) { r.IptForward["ipv4"] = []string{"DOCKER-FORWARD"} }},
+		"ufw active, no ufw.conf line (older report)": {"unit ufw.service active enabled 1\n", "ufw 已启用", nil},
+		"ufw ENABLED=yes": {"unit ufw.service active enabled 1\nufw-conf yes\n", "ENABLED=yes", nil},
+		"ufw chains in FORWARD": {"unit ufw.service active enabled 1\nufw-conf no\n", "FORWARD 跳到 ufw-before-logging-forward", func(r *Report) {
+			r.IptForward["ipv4"] = []string{"DOCKER-USER", "ufw-before-logging-forward", "ufw-before-forward"}
+		}},
+		"firewalld active": {"unit firewalld.service active enabled 1\n", "firewalld 在运行", nil},
+		"drop before jump": {"", "跳到 DOCKER-USER 之前就有 DROP", func(r *Report) { r.IptForward["ipv4"] = []string{"DROP", "DOCKER-USER"} }},
+		"no jump":          {"", "FORWARD 链不跳到 DOCKER-USER", func(r *Report) { r.IptForward["ipv4"] = []string{"DOCKER-FORWARD"} }},
 		"other nft table": {"", "丢弃来自别的 nft 表", func(r *Report) {
 			r.Chains = append(r.Chains, Chain{Table: "inet filter", Name: "forward", Type: "filter", Hook: "forward", Priority: "0", Policy: "drop"})
 		}},
@@ -403,5 +407,71 @@ func TestWANInterfaceCheck(t *testing.T) {
 	gw := FootprintOf(nodeFiles(t, "gw"))
 	if gw.WAN != "" {
 		t.Fatalf("gateway WAN %q", gw.WAN)
+	}
+}
+
+// ufw.service active (exited) with ENABLED=no and no ufw chains is
+// Ubuntu's default with the firewall off: coexistence is allowed and it is
+// reported as information only. Enabled ufw blocks (above).
+func TestUFWInactiveDoesNotBlock(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	ev := Evaluate(dockerUserNft(t, fp, "unit ufw.service active enabled 1\nufw-conf no\n"), fp, remote("hk-resi"))
+	checkShape(t, ev)
+	if ev.Blocking || has(ev, "", CodeFirewallManager) {
+		t.Fatalf("disabled ufw: %v %v", codes(ev, Blocking), codes(ev, ""))
+	}
+	if f := find(ev, CodeFirewallInactive); len(f) != 1 || f[0].Severity != Info || !strings.Contains(f[0].Message, "ENABLED=no") {
+		t.Fatalf("info %+v", f)
+	}
+	if fd := find(ev, CodeForwardDrop); len(fd) != 1 || fd[0].Severity != Warning {
+		t.Fatalf("coexistence not planned: %+v", fd)
+	}
+	// Enabled ufw is still a warning on its own and blocks coexistence.
+	ev = Evaluate(dockerUserNft(t, fp, "unit ufw.service active enabled 1\nufw-conf yes\n"), fp, remote("hk-resi"))
+	if !has(ev, Warning, CodeFirewallManager) || !has(ev, Blocking, CodeForwardDrop) || has(ev, "", CodeFirewallInactive) {
+		t.Fatalf("enabled ufw: %v", codes(ev, ""))
+	}
+	// firewalld.service active is the running daemon: blocks.
+	ev = Evaluate(dockerUserNft(t, fp, "unit firewalld.service active enabled 1\n"), fp, remote("hk-resi"))
+	if !has(ev, Warning, CodeFirewallManager) || !has(ev, Blocking, CodeForwardDrop) {
+		t.Fatalf("firewalld: %v", codes(ev, ""))
+	}
+}
+
+// Debian / Ubuntu versions with "~", "+" and an epoch are candidates; a
+// value that is not a version is unreadable, never "no candidate".
+func TestPackageVersionsParse(t *testing.T) {
+	r := Parse(Header + "\npkg wireguard-tools - 1.0.20200513-1~20.04.2\npkg nftables 1:2.3-4+b1 1:2.3-4+b1\npkg iproute2 - $(id)\npkg smartdns - -\n" + EndMarker + "\n")
+	if r.Packages["wireguard-tools"].Candidate != "1.0.20200513-1~20.04.2" || r.Packages["nftables"].Installed != "1:2.3-4+b1" || r.Packages["nftables"].Candidate != "1:2.3-4+b1" {
+		t.Fatalf("versions %+v", r.Packages)
+	}
+	if p := r.Packages["iproute2"]; p.Candidate != "" || !p.Unreadable {
+		t.Fatalf("hostile version %+v", p)
+	}
+	if p := r.Packages["smartdns"]; p.Candidate != "" || p.Unreadable {
+		t.Fatalf("none %+v", p)
+	}
+	for _, bad := range []string{"", "~1", "a1", "1;id", "1 2", "1$x", "1`x`", "1/2", strings.Repeat("1", 65)} {
+		if ValidDebVersion(bad) {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	// The real Ubuntu 20.04 host: wireguard-tools missing, apt candidate
+	// with "~": planned as an apt install, not unavailable.
+	fp := FootprintOf(filesWAN(t, "hk-resi", "enp0s6"))
+	ev := Evaluate(fixture(t, "ubuntu2004-arm64.txt", fp, nil, ""), fp, remote("hk-resi"))
+	var wg PackageState
+	for _, p := range ev.Packages {
+		if p.Package == "wireguard-tools" {
+			wg = p
+		}
+	}
+	if wg.Action != "install" || wg.Candidate != "1.0.20200513-1~20.04.2" || has(ev, "", CodePackageUnavailable) {
+		t.Fatalf("wireguard-tools plan %+v %v", wg, codes(ev, ""))
+	}
+	// An unreadable candidate does not block as unavailable.
+	raw := strings.Replace(string(mustRead(t, "testdata/ubuntu2004-arm64.txt")), "pkg wireguard-tools - 1.0.20200513-1~20.04.2\n", "pkg wireguard-tools - <bad>\n", 1)
+	if ev := Evaluate(parseWithPaths(t, raw, fp, nil), fp, remote("hk-resi")); has(ev, "", CodePackageUnavailable) {
+		t.Fatalf("unreadable judged unavailable: %v", codes(ev, ""))
 	}
 }

@@ -110,6 +110,7 @@
       "ssh_host": "hk-hub.example.invalid",
       "ssh_port": 22,
       "ssh_user": "root",
+      "hub_tier": "primary",
       "wss_listen_port": 443,
       "wss_path_prefix": "example-wss-path-prefix",
       "tls_cert_path": "/etc/meridian/tls/fullchain.pem",

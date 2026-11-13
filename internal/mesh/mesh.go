@@ -342,13 +342,9 @@ func BuildPlan(t model.Topology, bundle map[string]string) Plan {
 	p.Issues = append(p.Issues, a.Validate()...)
 	p.Issues = append(p.Issues, linkConflicts(t, a)...)
 
-	var hub model.Node
-	for _, n := range t.Nodes {
-		if n.Role == model.RoleHub {
-			hub = n
-			break
-		}
-	}
+	// Mesh edges join the primary hub only (validation refuses one to the
+	// backup hub).
+	hub, _ := t.PrimaryHub()
 	var links []model.Link
 	for _, l := range t.Links {
 		if l.Transport == model.TransportCFMesh && l.Enabled {

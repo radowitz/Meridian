@@ -1,0 +1,80 @@
+=== RUN   TestNetnsGroupDNSFailover
+    netns_group_dns_linux_test.go:107: path: gw m02 ali m13 hub m11 us / m12 us-2; group us mark 0x113 transit fd66:0:0:ff::1c resolver fd66::53:13 table 219
+    netns_group_dns_linux_test.go:386: EVIDENCE before: UDP query via group us: 198.18.1.1
+    netns_group_dns_linux_test.go:387: EVIDENCE before: TCP query via group us: 198.18.1.1
+    netns_group_dns_linux_test.go:388: EVIDENCE before: LAN client connection via group us (source seen by the server): 100.64.1.2
+    netns_group_dns_linux_test.go:393: EVIDENCE before counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=6 snatted=6 at_us=6 at_us2=0
+    netns_group_dns_linux_test.go:400: EVIDENCE us down, hub not yet switched: UDP query via group us: TIMEOUT
+    netns_group_dns_linux_test.go:443: EVIDENCE failover: hub active member of group us: us-2
+    netns_group_dns_linux_test.go:444: EVIDENCE failover: hub report: hop in table us: us-2
+    netns_group_dns_linux_test.go:445: EVIDENCE failover: hub report: result: ok
+    netns_group_dns_linux_test.go:456: EVIDENCE after failover: UDP query via group us: 198.18.1.2
+    netns_group_dns_linux_test.go:457: EVIDENCE after failover: TCP query via group us: 198.18.1.2
+    netns_group_dns_linux_test.go:458: EVIDENCE after failover: LAN client connection via group us: 100.64.2.2
+    netns_group_dns_linux_test.go:463: EVIDENCE after failover counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=13 snatted=13 at_us=6 at_us2=6
+    netns_group_dns_linux_test.go:471: EVIDENCE all members down: hub active hop of group us: mmesh
+    netns_group_dns_linux_test.go:472: EVIDENCE all members down: hub report: hop in table us (Mesh unsealed): blackhole
+    netns_group_dns_linux_test.go:473: EVIDENCE all members down: UDP query via group us: TIMEOUT
+    netns_group_dns_linux_test.go:474: EVIDENCE all members down counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=14 snatted=14 at_us=6 at_us2=6
+    netns_group_dns_linux_test.go:483: EVIDENCE control: unmarked query: TIMEOUT
+    netns_group_dns_linux_test.go:635: EVIDENCE mesh setup: emulated Mesh hsc <-> esc forwards IPv4 and IPv6
+    netns_group_dns_linux_test.go:789: EVIDENCE hk-hub meridian-mesh-up.sh []: exit=0
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; exit tables may use them, IX tables may not
+    netns_group_dns_linux_test.go:790: EVIDENCE mesh setup: hk-hub sealed; hsc table 170:
+        unreachable default metric 32767 
+        100.96.0.0/12 dev cfw0 scope link 
+        169.254.66.0/30 dev mmesh-c scope link 
+        192.0.2.80 dev cfw0 scope link 
+        2001:db8:ff::1 dev cfw0 proto kernel metric 256 pref medium
+        2001:db8:ff::/64 dev cfw0 metric 1024 pref medium
+        fd66::53:13 dev cfw0 metric 1024 pref medium
+        fe80::/64 dev cfw0 proto kernel metric 256 pref medium
+        unreachable default dev lo metric 32767 pref medium
+    netns_group_dns_linux_test.go:791: EVIDENCE us meridian-mesh-up.sh []: exit=0
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; exit tables may use them, IX tables may not
+    netns_group_dns_linux_test.go:792: EVIDENCE mesh setup: us sealed; esc table 170:
+        unreachable default metric 32767 
+        100.96.0.0/12 dev cfw0 scope link 
+        169.254.66.0/30 dev mmesh-c scope link 
+        2001:db8:ff::2 dev cfw0 proto kernel metric 256 pref medium
+        2001:db8:ff::/64 dev cfw0 metric 1024 pref medium
+        fe80::/64 dev cfw0 proto kernel metric 256 pref medium
+        unreachable default dev lo metric 32767 pref medium
+    netns_group_dns_linux_test.go:801: EVIDENCE mesh: us table 171:
+        default via fe80::66:2 dev mmesh metric 1024 pref medium
+        blackhole default dev lo metric 32767 pref medium
+    netns_group_dns_linux_test.go:806: EVIDENCE mesh: hub active hop of group us: mmesh
+    netns_group_dns_linux_test.go:807: EVIDENCE mesh: hub report: hop in table us (Mesh sealed): mmesh
+    netns_group_dns_linux_test.go:808: EVIDENCE mesh: hub report: result: ok
+    netns_group_dns_linux_test.go:816: EVIDENCE mesh: UDP query via group us (answered by exit us over the Mesh): 198.18.1.1
+    netns_group_dns_linux_test.go:817: EVIDENCE mesh: TCP query via group us (answered by exit us over the Mesh): 198.18.1.1
+    netns_group_dns_linux_test.go:818: EVIDENCE mesh: LAN client connection via group us over the Mesh (source seen by the server): 100.64.1.2
+    netns_group_dns_linux_test.go:834: EVIDENCE mesh Mesh counters: map[hub sidecar docker bridge:0 us q_tun:0 us r_tun:0 us r_wan:0] q_mesh=6 r_mesh=6
+    netns_group_dns_linux_test.go:835: EVIDENCE mesh counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=20 snatted=20 at_us=12 at_us2=6
+    netns_group_dns_linux_test.go:844: EVIDENCE mesh down: hub report: hop in table us: mmesh
+    netns_group_dns_linux_test.go:845: EVIDENCE mesh down: UDP query via group us: TIMEOUT
+    netns_group_dns_linux_test.go:846: EVIDENCE mesh down: TCP query via group us: TIMEOUT
+    netns_group_dns_linux_test.go:847: EVIDENCE mesh down: LAN client connection via group us: TIMEOUT
+    netns_group_dns_linux_test.go:848: EVIDENCE mesh down Mesh counters: map[hub sidecar docker bridge:0 us q_tun:0 us r_tun:0 us r_wan:0] q_mesh=6 r_mesh=6
+    netns_group_dns_linux_test.go:849: EVIDENCE mesh down counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=24 snatted=24 at_us=12 at_us2=6
+    netns_group_dns_linux_test.go:855: EVIDENCE hk-hub meridian-mesh-up.sh [--seal-only]: exit=0
+        mesh sidecar skipped: MESH_NODE_TOKEN is empty
+    netns_group_dns_linux_test.go:856: EVIDENCE us meridian-mesh-up.sh [--seal-only]: exit=0
+        mesh sidecar skipped: MESH_NODE_TOKEN is empty
+    netns_group_dns_linux_test.go:858: EVIDENCE unsealed: hub active hop of group us: mmesh
+    netns_group_dns_linux_test.go:859: EVIDENCE unsealed: hub report: hop in table us: blackhole
+    netns_group_dns_linux_test.go:860: EVIDENCE unsealed: UDP query via group us: TIMEOUT
+    netns_group_dns_linux_test.go:866: EVIDENCE unsealed Mesh counters: map[hub sidecar docker bridge:0 us q_tun:0 us r_tun:0 us r_wan:0] q_mesh=6 r_mesh=6
+    netns_group_dns_linux_test.go:867: EVIDENCE unsealed counters: map[gw domestic:0 gw lan:0 gw unmarked:0 ros domestic:0 ros group:0] marked=25 snatted=25 at_us=12 at_us2=6
+    netns_group_dns_linux_test.go:313: DIAG us-resolver.py.log:
+        udp query from fd66::4d:1
+        tcp query from fd66::4d:1
+    netns_group_dns_linux_test.go:313: DIAG us2-resolver.py.log:
+        udp query from fd66:0:0:ff::1c
+        tcp query from fd66:0:0:ff::1c
+    netns_group_dns_linux_test.go:313: DIAG net-server.py.log:
+        connection from 100.64.1.2
+        connection from 100.64.2.2
+        connection from 100.64.1.2
+meridian-netns-group-dns-test-ok
+--- PASS: TestNetnsGroupDNSFailover (67.87s)

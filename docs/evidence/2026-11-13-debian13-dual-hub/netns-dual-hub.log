@@ -1,0 +1,31 @@
+=== RUN   TestNetnsDualHub
+    netns_dual_hub_linux_test.go:96: path: gw m01 ali m00 ix m05/m06; backup gw m02 hk5 m03/m04; hk mark 0x103 transit 10.66.200.12 resolver fd66::53:3; dc2 resolver fd66::54:2
+    netns_dual_hub_linux_test.go:407: EVIDENCE main: failover keeps the main path: udp
+    netns_dual_hub_linux_test.go:408: EVIDENCE main: upstream record: hub: ix
+    netns_dual_hub_linux_test.go:409: EVIDENCE main: upstream record: state: ok
+    netns_dual_hub_linux_test.go:400: EVIDENCE main: group hk connection (source seen by the server): 100.64.1.2
+    netns_dual_hub_linux_test.go:401: EVIDENCE main: connection pinned to dc2: 100.64.2.2
+    netns_dual_hub_linux_test.go:402: EVIDENCE main: group hk resolver (marked query): 198.18.1.1
+    netns_dual_hub_linux_test.go:403: EVIDENCE main: dc2's hub-independent resolver address: 198.18.1.2
+    netns_dual_hub_linux_test.go:428: EVIDENCE ix cut: two passes: still on the main path (FAILS_NEED is 3): udp
+    netns_dual_hub_linux_test.go:429: EVIDENCE ix cut: third pass: backup hub: backup
+    netns_dual_hub_linux_test.go:430: EVIDENCE ix cut: upstream record: hub: hk5
+    netns_dual_hub_linux_test.go:431: EVIDENCE ix cut: upstream record: tier: backup
+    netns_dual_hub_linux_test.go:400: EVIDENCE ix cut: group hk connection (source seen by the server): 100.64.1.2
+    netns_dual_hub_linux_test.go:401: EVIDENCE ix cut: connection pinned to dc2: 100.64.2.2
+    netns_dual_hub_linux_test.go:402: EVIDENCE ix cut: group hk resolver (marked query): 198.18.1.1
+    netns_dual_hub_linux_test.go:403: EVIDENCE ix cut: dc2's hub-independent resolver address: 198.18.1.2
+    netns_dual_hub_linux_test.go:456: EVIDENCE all down: failover stays on the backup path: backup
+    netns_dual_hub_linux_test.go:457: EVIDENCE all down: upstream record: state: down
+    netns_dual_hub_linux_test.go:458: EVIDENCE all down: group hk connection: TIMEOUT
+    netns_dual_hub_linux_test.go:459: EVIDENCE all down: pinned connection: TIMEOUT
+    netns_dual_hub_linux_test.go:460: EVIDENCE all down: group resolver: TIMEOUT
+    netns_dual_hub_linux_test.go:461: EVIDENCE all down: dc2 resolver address: TIMEOUT
+    netns_dual_hub_linux_test.go:468: EVIDENCE main back: four passes: still on the backup (RECOVERS_NEED is 5): backup
+    netns_dual_hub_linux_test.go:469: EVIDENCE main back: five passes: main path again: udp
+    netns_dual_hub_linux_test.go:470: EVIDENCE main back: upstream record: hub: ix
+    netns_dual_hub_linux_test.go:400: EVIDENCE main back: group hk connection (source seen by the server): 100.64.1.2
+    netns_dual_hub_linux_test.go:401: EVIDENCE main back: connection pinned to dc2: 100.64.2.2
+    netns_dual_hub_linux_test.go:402: EVIDENCE main back: group hk resolver (marked query): 198.18.1.1
+    netns_dual_hub_linux_test.go:403: EVIDENCE main back: dc2's hub-independent resolver address: 198.18.1.2
+--- PASS: TestNetnsDualHub (66.56s)

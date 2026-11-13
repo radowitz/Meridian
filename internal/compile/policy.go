@@ -56,3 +56,19 @@ func exitMark(index int) uint32 { return markExitBase + uint32(index) }
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// Per-hub return paths on an exit with a backup hub (render_dualhub.go).
+// Every original-direction packet arriving on the exit's tunnel from a hub
+// sets the connection's ct mark to that hub's mark; every reply packet of
+// the connection (forwarded from the WAN, or answered locally such as a
+// resolver query) carries it as fwmark and is routed by that hub's table,
+// which only holds the home prefixes on that hub's tunnel and a blackhole.
+// A connection's replies therefore leave through the hub it last arrived
+// from, never through the other hub, never out of the WAN.
+const (
+	markHubReturnPrimary  uint32 = 0x4d50
+	markHubReturnBackup   uint32 = 0x4d51
+	tableHubReturnPrimary        = 172
+	tableHubReturnBackup         = 173
+	prioHubReturn                = 17060 // primary; backup is 17061
+)

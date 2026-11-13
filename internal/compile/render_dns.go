@@ -111,7 +111,14 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 		}
 		// ULA only. The tunnel v4 address is not routed past the first hop,
 		// so a v4 query would follow the relay's public default route.
-		fmt.Fprintf(&sb, "server %s -group %s%s\n", e.DNSULA, e.Group, excl)
+		addr := e.DNSULA
+		if t.DualHub() {
+			// The exit's tunnel address is on the primary hub's tunnel; its
+			// hub-independent resolver address reaches it through whichever
+			// hub carries the traffic (ExitPlan.Resolver).
+			addr = e.Resolver
+		}
+		fmt.Fprintf(&sb, "server %s -group %s%s\n", addr, e.Group, excl)
 	}
 	sb.WriteString("\n")
 	writeGroupResolvers(&sb, groups, defT.Group)
@@ -244,8 +251,8 @@ func writeGroupResolvers(sb *strings.Builder, groups []GroupPlan, def *GroupPlan
 	}
 }
 
-func renderExitDNS(n model.Node, tunnels []Tunnel) string {
-	tun := exitIngress(n, tunnels)
+func renderExitDNS(t model.Topology, n model.Node, tunnels []Tunnel) string {
+	tun := exitIngress(n, tunnels, primaryHubID(t))
 	var sb strings.Builder
 	sb.WriteString("# Resolver bound to the tunnel. Upstream queries use this host's WAN, not the tunnel.\n")
 	sb.WriteString("speed-check-mode none\n")

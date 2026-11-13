@@ -113,6 +113,7 @@ func Run(t model.Topology) Result {
 	}
 
 	out.Issues = append(out.Issues, checkIXReplacement(t, nodes)...)
+	out.Issues = append(out.Issues, checkHubs(t, nodes)...)
 	out.Issues = append(out.Issues, checkSubnets(t)...)
 	out.Issues = append(out.Issues, checkPorts(t)...)
 	out.Issues = append(out.Issues, checkRules(t, nodes)...)
@@ -429,10 +430,7 @@ func checkAddrConflicts(t model.Topology, l model.Link) []Issue {
 
 func checkPathRoles(t model.Topology, nodes map[string]model.Node, path []string, exit model.Node) []Issue {
 	var out []Issue
-	var roles []model.Role
-	for _, id := range path {
-		roles = append(roles, nodes[id].Role)
-	}
+	roles := pathRoles(nodes, path)
 	want := []model.Role{model.RoleGateway, model.RoleRelay, model.RoleIX, model.RoleHub, model.RoleExit}
 	if !subsequence(roles, want) {
 		missing := "IX"
@@ -469,7 +467,7 @@ func checkPureV6(t model.Topology, nodes map[string]model.Node, exit model.Node)
 	if !pureV6(exit) {
 		return nil
 	}
-	hub := firstRole(t, model.RoleHub)
+	hub := primaryHub(t)
 	if exit.V6Workaround == model.WorkaroundNone {
 		return []Issue{{
 			Code: "pure_v6_unreachable", Severity: SeverityError, NodeID: exit.ID, ExitID: exit.ID,
@@ -519,7 +517,7 @@ func wiredDualstack(t model.Topology, exit model.Node) bool {
 	if ip, err := netip.ParseAddr(exit.EndpointV6); err != nil || !ip.Is6() {
 		return false
 	}
-	hub := firstRole(t, model.RoleHub)
+	hub := primaryHub(t)
 	var relay model.Node
 	found := false
 	for _, n := range t.Nodes {
@@ -535,7 +533,7 @@ func wiredDualstack(t model.Topology, exit model.Node) bool {
 }
 
 func wiredMesh(t model.Topology, exit model.Node) bool {
-	hub := firstRole(t, model.RoleHub)
+	hub := primaryHub(t)
 	for _, l := range t.Links {
 		if l.Transport != model.TransportCFMesh || !l.Enabled || !l.Standby {
 			continue
@@ -552,7 +550,7 @@ func wiredV4Front(t model.Topology, exit model.Node) bool {
 	if err != nil || !ip.Is4() {
 		return false
 	}
-	hub := firstRole(t, model.RoleHub)
+	hub := primaryHub(t)
 	return linkedPrimary(t, hub.ID, exit.ID)
 }
 
@@ -575,7 +573,7 @@ func linkedPrimary(t model.Topology, a, b string) bool {
 }
 
 func hasDirectHubWG(t model.Topology, exit model.Node) bool {
-	hub := firstRole(t, model.RoleHub)
+	hub := primaryHub(t)
 	for _, l := range t.Links {
 		if !l.Enabled || l.Transport != model.TransportDirectWG {
 			continue
@@ -602,15 +600,12 @@ func findExitPath(t model.Topology, nodes map[string]model.Node, gw string, exit
 }
 
 func meshPath(t model.Topology, nodes map[string]model.Node, gw, exit string) ([]string, []model.Link, bool) {
-	hub := firstRole(t, model.RoleHub)
+	hub := primaryHub(t)
 	path, links, ok := findAnyPath(t, gw, hub.ID)
 	if !ok {
 		return nil, nil, false
 	}
-	var roles []model.Role
-	for _, id := range path {
-		roles = append(roles, nodes[id].Role)
-	}
+	roles := pathRoles(nodes, path)
 	if !ordered(roles, model.RoleRelay, model.RoleIX) || !ordered(roles, model.RoleIX, model.RoleHub) {
 		return nil, nil, false
 	}
@@ -689,6 +684,10 @@ func pathHasRelay(t model.Topology, path []string) bool {
 }
 
 func checkIXReplacement(t model.Topology, nodes map[string]model.Node) []Issue {
+	if t.DualHub() {
+		// The backup path is checked by checkHubs: gateway → backup hub.
+		return nil
+	}
 	var ali, home bool
 	for _, l := range t.Links {
 		if l.Transport != model.TransportIXReplacementWSS || !l.Enabled {
@@ -1043,10 +1042,7 @@ func betterPath(nodes map[string]model.Node, path, best []string, requireIX bool
 }
 
 func pathSatisfies(nodes map[string]model.Node, path []string) bool {
-	var roles []model.Role
-	for _, id := range path {
-		roles = append(roles, nodes[id].Role)
-	}
+	roles := pathRoles(nodes, path)
 	return subsequence(roles, []model.Role{model.RoleGateway, model.RoleRelay, model.RoleIX, model.RoleHub, model.RoleExit}) &&
 		ordered(roles, model.RoleRelay, model.RoleIX) &&
 		ordered(roles, model.RoleIX, model.RoleHub)

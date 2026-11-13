@@ -122,6 +122,28 @@ type Node struct {
 	SSHPort int    `json:"ssh_port,omitempty"`
 	SSHUser string `json:"ssh_user,omitempty"`
 
+	// HubTier (hub nodes only) is "primary" or "backup". A topology has at
+	// most one of each; a lone hub without a tier is the primary (the
+	// migration writes it). The primary carries traffic on the main path
+	// (gateway → relay → IX → primary); the backup is reached from the
+	// gateway by WG over WSS when the whole main path is down. See hubs.go
+	// and docs/architecture.md「主枢纽与备用枢纽」.
+	HubTier HubTier `json:"hub_tier,omitempty"`
+	// IXLine marks the primary hub that IS the IX: a managed, loginable
+	// server on the dedicated line. Relays reach it with direct WireGuard
+	// at IngressV4 (its domestic-side address, which only accepts the
+	// relays); EndpointV4 is its Hong Kong egress address, the one exits
+	// that dial in target and the one its tunnels to exits leave from. Its
+	// management target is the server record (ServerID), which may be a
+	// TCP port-forward on another host. An unmanaged dedicated line keeps
+	// the ix role instead.
+	IXLine bool `json:"ix_line,omitempty"`
+	// IngressV4 (IX-line hub only) is the domestic ingress address relays
+	// dial. IngressInterface optionally names the interface that carries
+	// it (checked by the preflight, hardened like the WAN interface).
+	IngressV4        string `json:"ingress_v4,omitempty"`
+	IngressInterface string `json:"ingress_interface,omitempty"`
+
 	WSSListenPort int    `json:"wss_listen_port,omitempty"`
 	WSSPathPrefix string `json:"wss_path_prefix,omitempty"`
 	TLSCertPath   string `json:"tls_cert_path,omitempty"`

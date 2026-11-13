@@ -134,6 +134,9 @@ type MigrationReport struct {
 	CreatedGroups []string `json:"created_groups,omitempty"`
 	Rules         int      `json:"rules,omitempty"`
 	Nodes         int      `json:"nodes,omitempty"`
+	// HubTiers are the hubs whose tier the migration wrote (a lone hub
+	// becomes the primary; see hubs.go).
+	HubTiers []string `json:"hub_tiers,omitempty"`
 }
 
 // MigrateRegionGroups turns the legacy pool fields (Node.Pool,
@@ -298,6 +301,10 @@ func MigrateRegionGroups(t *Topology) MigrationReport {
 			t.Settings.DefaultGroup = id
 			rep.Changed = true
 		}
+	}
+	if ids := migrateHubs(t); len(ids) > 0 {
+		rep.HubTiers = ids
+		rep.Changed = true
 	}
 	return rep
 }

@@ -540,7 +540,7 @@ func TestGroupDNSExitDNAT(t *testing.T) {
 			if m[2] != validate.GroupResolverNet.String() || m[4] != e.DNSULA || m[3] != []string{"udp", "tcp"}[i%2] {
 				t.Fatalf("exit %s DNAT %s %s -> %s, want %s -> %s", e.Node.ID, m[3], m[2], m[4], validate.GroupResolverNet, e.DNSULA)
 			}
-			want := `"` + hubDirect(tunnels, e.Node.ID).Iface() + `"`
+			want := `"` + hubDirect(tunnels, e.Node.ID, "hk-hub").Iface() + `"`
 			if m[1] != want || strings.Contains(m[1], `"`+e.Node.WANInterface+`"`) {
 				t.Fatalf("exit %s DNAT ingress %s, want only the hub tunnel %s", e.Node.ID, m[1], want)
 			}
@@ -821,7 +821,7 @@ func TestGroupDNSMeshReturnPath(t *testing.T) {
 				default:
 					t.Fatalf("exit %s: unexpected table 171 line %q", e.Node.ID, l)
 				}
-				if strings.Contains(l, " dev "+hubDirect(mustTunnels(t, topo), e.Node.ID).Iface()) || strings.Contains(l, "eth0") {
+				if strings.Contains(l, " dev "+hubDirect(mustTunnels(t, topo), e.Node.ID, "hk-hub").Iface()) || strings.Contains(l, "eth0") {
 					t.Fatalf("exit %s: table 171 leaves through the tunnel or WAN: %q", e.Node.ID, l)
 				}
 			}

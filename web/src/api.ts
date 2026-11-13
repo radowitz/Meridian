@@ -13,6 +13,7 @@
 import type {
   ApiErrorBody,
   ApplyResult,
+  Carrying,
   CloudflareAccountInput,
   CloudflareAccountPatch,
   CloudflareAccountView,
@@ -367,6 +368,8 @@ export const deleteGroup = (id: string) =>
 export const setDefaultGroup = (group: string) =>
   request<{ default_group: string; group: RegionGroupView } & ApplyRequired>("PUT", "/api/region-groups/default", { group });
 /** Reads the hub's region-group state once over the managed-server SSH channel (fixed command). */
+/** Which hub carries the gateway's traffic now (cheap; overview page). */
+export const getUpstream = () => request<Carrying>("GET", "/api/upstream");
 export const refreshGroupRuntime = () => request<RegionGroupsView>("POST", "/api/region-groups/runtime/refresh");
 export const postGroupHealth = (observations: { id: string; up: boolean }[]) =>
   request<{ groups: RegionGroupView[]; flipped: string[] }>("POST", "/api/region-groups/health", { observations });

@@ -41,8 +41,11 @@ import * as api from "./api";
 import type { ApiError } from "./api";
 import { href, useRouter, useStatus, useTopologyDoc } from "./state";
 import type {
+  Carrying,
   GroupActualView,
+  GroupHubActual,
   GroupHubState,
+  HubTier,
   GroupMemberView,
   GroupThresholds,
   Node,
@@ -132,7 +135,78 @@ export const ACTUAL_CODE: Record<string, string> = {
   static_only: "枢纽不切换这个组",
   not_read: "还没有读取枢纽状态",
   hub_identity_changed: "上次读取的不是当前枢纽（枢纽节点、服务器、地址、SSH 端口或主机指纹已变更），需要重新读取",
+  carrying_unknown: "不知道现在由哪个枢纽承载",
 };
+
+// ------------------------------------------------------ carrying hub ---
+
+export const HUB_TIER: Record<HubTier, string> = { primary: "主枢纽", backup: "备用枢纽" };
+
+/** The gateway's path to the carrying hub (compile.planUpstream names). */
+const UPSTREAM_PATH: Record<string, string> = { udp: "主路径 UDP", wss: "主路径 WSS", backup: "经 WSS" };
+
+/** The gateway's failover state in words (carrying.state). */
+export const CARRYING_STATE: Record<string, { kind: StatusKind; label: string }> = {
+  static: { kind: "unverified", label: "安装时设定" },
+  ok: { kind: "ok", label: "已测量" },
+  switching: { kind: "running", label: "切换中" },
+  down: { kind: "failed", label: "全部路径不通" },
+};
+
+/** Why the carrying hub is unknown (carrying.code). */
+export const CARRYING_CODE: Record<string, string> = {
+  agent_unavailable: "读不到本机 host agent",
+  read_failed: "读取网关上游记录失败",
+  not_recorded: "网关还没有上游记录",
+  invalid_record: "网关的上游记录无法解析",
+  record_mismatch: "网关记录的枢纽与当前拓扑不一致",
+  stale: "网关的上游记录已过期",
+};
+
+/** "当前承载：备用枢纽 hk5（经 WSS，自 …）" or "承载枢纽未知：…". */
+export function CarryingLine({ c }: { c: Carrying }) {
+  if (!c.known) {
+    return (
+      <span data-testid="carrying" data-known="false">
+        <Typography.Text type="warning">承载枢纽未知：</Typography.Text>
+        <Typography.Text type="secondary">{c.message || CARRYING_CODE[c.code ?? ""] || c.code || "—"}</Typography.Text>
+      </span>
+    );
+  }
+  const st = c.state ? CARRYING_STATE[c.state] : undefined;
+  const path = c.path ? UPSTREAM_PATH[c.path] ?? c.path : "";
+  return (
+    <span data-testid="carrying" data-known="true" data-tier={c.tier}>
+      <Typography.Text type="secondary">当前承载：</Typography.Text>
+      <Typography.Text strong>
+        {c.tier ? HUB_TIER[c.tier] : "枢纽"} {c.hub_name || c.hub_node}
+      </Typography.Text>
+      {path || c.since ? (
+        <Typography.Text type="secondary">
+          （{path}
+          {path && c.since ? "，" : ""}
+          {c.since ? (
+            <>
+              自 <TimeText value={c.since} />
+            </>
+          ) : null}
+          ）
+        </Typography.Text>
+      ) : null}{" "}
+      {st ? (
+        <StatusTag kind={st.kind} title={c.message}>
+          {st.label}
+        </StatusTag>
+      ) : null}
+    </span>
+  );
+}
+
+/** Where a group's actual state was judged from (dual hub topologies). */
+function readFrom(a: { hub_tier?: HubTier; hub_name?: string; hub_node?: string; server_name?: string }): string {
+  if (!a.hub_tier && !a.hub_name && !a.hub_node) return "";
+  return `读自 ${a.hub_tier ? HUB_TIER[a.hub_tier] + " " : ""}${a.hub_name || a.hub_node || ""}${a.server_name ? `（服务器 ${a.server_name}）` : ""}`;
+}
 
 /** Tag for a group's actual state: never "ok"-coloured unless the hub reported it. */
 export function actualTag(a: GroupActualView): { kind: StatusKind; label: string } {
@@ -269,6 +343,7 @@ function GroupCard({
   onDeleted,
   onEdit,
   hub,
+  dual,
   onRefresh,
   refreshing,
   allGroups,
@@ -279,6 +354,8 @@ function GroupCard({
   names: Map<string, string>;
   thresholds: GroupThresholds | undefined;
   hub?: GroupHubState;
+  /** Backup hub topology: say which hub the actual state was read from. */
+  dual?: boolean;
   onRefresh?: () => void;
   refreshing?: boolean;
   highlighted: boolean;
@@ -335,6 +412,7 @@ function GroupCard({
   const a = g.actual;
   const aok = a.state === "ok";
   const tag = actualTag(a);
+  const source = dual ? readFrom(a) : "";
   const thresholdText = thresholds
     ? `连续 ${thresholds.fails_need} 次检测失败判定不可用；恢复后连续 ${thresholds.recovers_need} 次成功、并且距上次切换满 ${Math.round(thresholds.cooldown_sec / 60)} 分钟才切回。`
     : "";
@@ -415,6 +493,11 @@ function GroupCard({
               <StatusTag kind={tag.kind} title="枢纽切换服务记录的实际路由（从枢纽路由表读出），经 SSH 固定命令读回。">
                 {tag.label}
               </StatusTag>
+              {source ? (
+                <Typography.Text type="secondary" data-testid="group-actual-source">
+                  实测 · {source}
+                </Typography.Text>
+              ) : null}
             </>
           ) : (
             <>
@@ -427,6 +510,11 @@ function GroupCard({
                   <Typography.Text type="secondary">读取于</Typography.Text>
                   <TimeText value={a.read_at} />
                 </>
+              ) : null}
+              {source ? (
+                <Typography.Text type="secondary" data-testid="group-actual-source">
+                  {source}
+                </Typography.Text>
               ) : null}
             </>
           )}
@@ -448,6 +536,9 @@ function GroupCard({
                   </>
                 ) : null}
               </Typography.Paragraph>
+            ) : null}
+            {a.code === "carrying_unknown" && g.actual_by_hub && g.actual_by_hub.length > 0 ? (
+              <HubReports rows={g.actual_by_hub} name={name} />
             ) : null}
           </div>
         ) : null}
@@ -745,7 +836,135 @@ function GroupCard({
   );
 }
 
+/**
+ * Each hub's own judgement of a group while the carrying hub is unknown:
+ * shown for diagnosis only, never as the member in use.
+ */
+function HubReports({ rows, name }: { rows: GroupHubActual[]; name: (id: string) => string }) {
+  return (
+    <div className="group-hub-reports" data-testid="group-hub-reports" style={{ marginTop: 4, fontSize: 12 }}>
+      <Typography.Text type="secondary">各枢纽报告（未确认承载）：</Typography.Text>
+      {rows.map((r) => {
+        const t = actualTag({ ...r, alert: r.alert ?? false } as GroupActualView);
+        return (
+          <div key={`${r.tier}:${r.hub_node}`} data-testid={`hub-report-${r.tier}`}>
+            <Space size={[6, 2]} wrap>
+              <Typography.Text type="secondary">
+                {HUB_TIER[r.tier]} {r.hub_name || r.hub_node}
+              </Typography.Text>
+              {r.state === "ok" ? (
+                <Typography.Text>报告在用 {r.active ? name(r.active) : r.hop === "blackhole" ? "无（黑洞）" : "—"}</Typography.Text>
+              ) : (
+                <Typography.Text type="secondary">{ACTUAL_CODE[r.code ?? ""] ?? r.code ?? r.state}</Typography.Text>
+              )}
+              <StatusTag kind={r.state === "ok" ? "unverified" : t.kind} title={r.message}>
+                {r.state === "ok" ? "未确认承载" : t.label}
+              </StatusTag>
+            </Space>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ------------------------------------------------------------- hub bar ---
+
+/** One hub of a backup hub topology: tier, server, readability, last read, plan. */
+function HubRow({ hub }: { hub: GroupHubState }) {
+  const lr = hub.last_read;
+  const limited = !!lr && lr.ssh_code === "ssh_rate_limited";
+  useEffect(() => {
+    if (limited && lr) noteRateLimited(hub.server_id, lr.retry_after ?? 60, Date.parse(lr.read_at));
+  }, [limited, lr, hub.server_id]);
+  const cooldown = useServerCooldown(hub.server_id);
+  return (
+    <div className="hub-row" data-testid={`hub-row-${hub.tier ?? "primary"}`} data-carrying={hub.carrying ? "true" : "false"} style={{ marginTop: 4 }}>
+      <Space size={[6, 4]} wrap>
+        <Tag color={hub.carrying ? "processing" : undefined}>{HUB_TIER[hub.tier ?? "primary"]}</Tag>
+        <Typography.Text>{hub.hub_name || hub.hub_node || "—"}</Typography.Text>
+        {hub.server_name ? <Typography.Text type="secondary">· 服务器 {hub.server_name}</Typography.Text> : null}
+        {hub.carrying ? <Tag color="blue">承载中</Tag> : null}
+        {!hub.readable ? (
+          <StatusTag kind="attention" title={hub.not_readable_message}>
+            不能读取
+          </StatusTag>
+        ) : lr ? (
+          <>
+            <Typography.Text type="secondary">· 上次读取</Typography.Text>
+            <TimeText value={lr.read_at} />
+            {lr.current_hub === false ? (
+              <StatusTag kind="unverified" title={lr.identity_message}>
+                不是当前枢纽
+              </StatusTag>
+            ) : lr.ok ? (
+              <StatusTag kind="ok">读取成功</StatusTag>
+            ) : (
+              <StatusTag kind="failed" title={lr.error}>
+                读取失败
+              </StatusTag>
+            )}
+          </>
+        ) : (
+          <StatusTag kind="unverified">未读取</StatusTag>
+        )}
+        {hub.plan_id ? (
+          <Tooltip title="面板现在会下发给这个枢纽的地区组计划">
+            <Typography.Text type="secondary" className="mono-small">
+              计划 {hub.plan_id.slice(0, 12)}
+            </Typography.Text>
+          </Tooltip>
+        ) : null}
+      </Space>
+      {!hub.readable ? (
+        <Typography.Paragraph type="secondary" style={{ margin: "2px 0 0", fontSize: 12 }}>
+          {ACTUAL_CODE[hub.not_readable_code ?? ""] ?? hub.not_readable_code}
+          {hub.not_readable_message ? `：${hub.not_readable_message}` : ""}{" "}
+          <ActualFix a={{ state: "unavailable", code: hub.not_readable_code, active: "", alert: false, last_switch: null, read_at: null, hub_reported_at: null, deployed_matches: null }} hub={hub} />
+        </Typography.Paragraph>
+      ) : lr && lr.current_hub === false ? (
+        <Typography.Paragraph type="secondary" style={{ margin: "2px 0 0", fontSize: 12 }}>
+          {lr.identity_message || ACTUAL_CODE.hub_identity_changed}
+        </Typography.Paragraph>
+      ) : lr && !lr.ok && lr.error ? (
+        <Typography.Paragraph type="secondary" style={{ margin: "2px 0 0", fontSize: 12 }}>
+          {lr.error}
+          {limited ? <RateLimitNote seconds={cooldown} /> : null}
+        </Typography.Paragraph>
+      ) : null}
+    </div>
+  );
+}
+
+/** Backup hub topology: which hub carries, then every hub with its own read. */
+function DualHubStateBar({ hubs, carrying, onRefresh, refreshing }: { hubs: GroupHubState[]; carrying: Carrying; onRefresh: () => void; refreshing: boolean }) {
+  const readable = hubs.some((h) => h.readable);
+  const busy = refreshing || hubs.some((h) => h.refreshing);
+  const first = hubs[0];
+  return (
+    <div className="hub-state-bar" data-testid="hub-state-bar" data-mode="dual">
+      <Space size={[6, 4]} wrap>
+        <Typography.Text strong>枢纽运行状态</Typography.Text>
+        <CarryingLine c={carrying} />
+        <Tooltip
+          title={`读取全部枢纽：经服务器管理的 SSH 通道（已确认的主机指纹、保存的凭据）各执行一条固定的只读命令，并读取网关记录的上游路径。${
+            first ? `枢纽切换服务每 ${first.loop_interval_sec} 秒记录一次；心跳超过 ${first.stale_after_sec} 秒或读取超过 ${Math.round(first.read_max_age_sec / 60)} 分钟即视为过期。` : ""
+          }`}
+        >
+          <Button size="small" icon={<ReloadOutlined />} loading={busy} disabled={!readable} onClick={onRefresh}>
+            读取枢纽状态
+          </Button>
+        </Tooltip>
+      </Space>
+      {hubs.map((h) => (
+        <HubRow key={`${h.tier}:${h.hub_node}`} hub={h} />
+      ))}
+      <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0", fontSize: 12 }}>
+        只有承载中的枢纽的报告算作实际使用；承载枢纽由网关的上游记录决定，面板不自行推断。
+      </Typography.Paragraph>
+    </div>
+  );
+}
 
 /**
  * Where the 实际使用 lines come from: the hub's server, the last read and a
@@ -1030,6 +1249,12 @@ function GroupDrawer({
 
 // ------------------------------------------------------------------ page ---
 
+/** The hub state the actual lines were judged from: the carrying hub (single: the hub). */
+function carrierState(d: RegionGroupsView): GroupHubState | undefined {
+  if (d.carrying?.mode !== "dual") return d.hub_state;
+  return d.hub_states?.find((h) => h.carrying);
+}
+
 export default function ExitsPage() {
   const groups = useApi(() => api.listGroups(), []);
   const doc = useTopologyDoc();
@@ -1059,17 +1284,19 @@ export default function ExitsPage() {
   // and nothing recent is stored. No polling.
   const autoRead = useRef(false);
   useEffect(() => {
-    const h = groups.data?.hub_state;
-    if (!h || autoRead.current) return;
+    const d = groups.data;
+    const hubs = d?.carrying?.mode === "dual" && d.hub_states?.length ? d.hub_states : d?.hub_state ? [d.hub_state] : [];
+    if (hubs.length === 0 || autoRead.current) return;
     autoRead.current = true;
-    if (!h.readable || h.refreshing) return;
+    if (hubs.some((h) => h.refreshing)) return;
     // A read of another hub identity says nothing about this one.
-    const last = h.last_read && h.last_read.current_hub !== false ? Date.parse(h.last_read.read_at) : 0;
-    if (Date.now() - last < AUTO_REFRESH_AFTER_MS) return;
+    const last = (h: GroupHubState) => (h.last_read && h.last_read.current_hub !== false ? Date.parse(h.last_read.read_at) : 0);
+    if (!hubs.some((h) => h.readable && Date.now() - last(h) >= AUTO_REFRESH_AFTER_MS)) return;
     refreshHub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups.data]);
 
+  const dual = groups.data?.carrying?.mode === "dual" && (groups.data.hub_states?.length ?? 0) > 0;
   const exits = useMemo(() => (doc.topo?.nodes ?? []).filter((n) => n.role === "exit"), [doc.topo]);
   const names = useMemo(() => new Map((doc.topo?.nodes ?? []).map((n) => [n.id, n.name || n.id])), [doc.topo]);
 
@@ -1118,7 +1345,11 @@ export default function ExitsPage() {
       {changed ? <ApplyRequiredNotice what="地区组已修改" /> : null}
       <ApiErrorAlert error={act.error} onClose={act.clear} />
       <ApiErrorAlert error={hubAct.error} onClose={hubAct.clear} />
-      <HubStateBar hub={groups.data?.hub_state} onRefresh={refreshHub} refreshing={refreshing} />
+      {dual && groups.data?.carrying ? (
+        <DualHubStateBar hubs={groups.data.hub_states ?? []} carrying={groups.data.carrying} onRefresh={refreshHub} refreshing={refreshing} />
+      ) : (
+        <HubStateBar hub={groups.data?.hub_state} onRefresh={refreshHub} refreshing={refreshing} />
+      )}
       <DataView
         state={groups}
         rows={8}
@@ -1147,7 +1378,8 @@ export default function ExitsPage() {
                       allGroups={d.groups}
                       names={names}
                       thresholds={d.thresholds}
-                      hub={d.hub_state}
+                      hub={carrierState(d)}
+                      dual={dual}
                       onRefresh={refreshHub}
                       refreshing={refreshing}
                       highlighted={focus === g.id}

@@ -1084,10 +1084,10 @@ func (s *Server) getUnlockResults(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	plans := plansOf(t)
-	hub := s.groupHub(t)
+	hs := s.hubSet(r.Context(), t)
 	groupsOf := map[string][]exitGroupRef{}
 	for _, g := range sortedGroups(t) {
-		v := viewGroup(t, g, plans, runtime, hub)
+		v := viewGroup(t, g, plans, runtime, hs)
 		ref := exitGroupRef{ID: g.ID, Name: g.Name, Mode: string(g.Mode), ModelActive: v.Model.Active}
 		if v.Actual.State == hubstate.StateOK {
 			ref.ActualActive = v.Actual.Active

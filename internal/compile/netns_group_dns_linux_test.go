@@ -98,7 +98,7 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 			aliHub = tun
 		}
 	}
-	hubUS, hubUS2 := hubDirect(tunnels, "us"), hubDirect(tunnels, "us-2")
+	hubUS, hubUS2 := hubDirect(tunnels, "us", "hk-hub"), hubDirect(tunnels, "us-2", "hk-hub")
 	for _, tun := range []Tunnel{gwWest, aliHub, hubUS, hubUS2} {
 		if tun.LinkID == "" {
 			t.Fatal("example path tunnels not found")

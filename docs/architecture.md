@@ -8,6 +8,42 @@
 
 两条 IX 替换 WSS 在部署时就写进配置并拉起接口，但 `IXReplacementMode` 关闭时，阿里云向东的默认路由仍指向 IX 上的直连 WireGuard。健康脚本在 IX 连续失败后才切到待命 WSS，并带回滞，避免来回抖。家宽到枢纽的那条 WSS 只在阿里云本身也不可达时使用。Mesh 边如果不是「枢纽 → 出口」且待命，直接拒绝。
 
+IX 有两种画法：不可登录的专线仍是 `ix` 角色（中继 → IX 的 `dedicated_line` 加 IX → 枢纽的 `direct_wg` 合成一条中继 ↔ 枢纽的 WireGuard）；IX 本身是一台可登录的服务器并且承担枢纽工作时，把它画成**主枢纽**并打开「IX 即主枢纽」（`ix_line`），中继用 `direct_wg` 直接连它，见下一节。
+
+## 主枢纽与备用枢纽
+
+拓扑里最多两个枢纽：`hub_tier: primary`（主枢纽）和 `hub_tier: backup`（备用枢纽）。只有一个枢纽且没写层级时它就是主枢纽，迁移会把 `primary` 写进去（幂等，编译结果不变）。
+
+**IX 作为受管主枢纽**（`ix_line`，只能设在主枢纽上，必须是受管节点）：
+
+- 管理目标是它的服务器记录（`server_id`），可以是某台中继上的 TCP 端口转发，只接受密码登录也可以（经转发到达时 sshd 的来源限速按 `ssh_rate_limited` 处理，见「登录方式不被接受」）。
+- `ingress_v4` 是国内入口地址，只接受中继连入：中继到它的 WireGuard `Endpoint` 和 WSS 客户端都用这个地址（`Tunnel.DialV4`），网关的 `underlay4` 集合也收进它，局域网客户端不能直接连它。
+- `endpoint_v4` 是香港出口地址：以 NAT 方式拨入的出口拨这个地址；它到出口的隧道从香港一侧发出。源地址由主机路由决定，Meridian 不改主机的路由；预检核对两边（见「WAN 接口」）。
+- 可选的 `ingress_interface` 是带国内入口地址的网卡：预检要求地址确实在它上面，路由脚本像 WAN 一样给它设 `rp_filter=2`、关重定向。
+- 路径校验把 IX 枢纽同时当作 IX 和枢纽：网关 → 中继 → IX 枢纽 → 出口是一条完整的主路径。拓扑里再有 `ix` 节点、或者有 `dedicated_line` 连着 IX 枢纽时拒绝（`ix_role_with_ix_hub`、`ix_hub_dedicated_line`）。
+- 开机单元、DOCKER-USER 共存规则、端口规划、内核参数范围对它和对其他远端枢纽完全一样。
+
+**备用枢纽**（另一台公网机器，不能是 IX）：
+
+- 网关到它画一条 `ix_replacement_wss`、待命（`standby`）的链路：WG over WSS，WSS 端口是备用枢纽的 `wss_listen_port`（N1 的端口模型），wstunnel 客户端端口是链路的 `wss_local_port`。只能有一条（`backup_hub_not_wired`、`backup_hub_ambiguous`）；有备用枢纽时 WSS 备路不能再指向主枢纽（`replacement_to_primary`），网关到备用枢纽也不能用别的传输。
+- 每个出口都要和**两个**枢纽各有一条启用的、非待命的 WireGuard（`exit_missing_hub_tunnel`）。NAT 后面的出口两条都由它主动拨出。
+- 两个枢纽各自编译同一份地区组计划：同样的组、顺序、约束、mark、表号、中转地址和组解析地址（`compile.planGroupsHub`），只有通往成员的接口不同，所以两边的计划标识（`GROUP_PLAN`）不同，各自上报自己的。出口的表号、mark、中转地址同理（`planExitsHub`）。
+- 这一版有备用枢纽时**拒绝**（校验错误，不会半编译）：Mesh 边连备用枢纽（`mesh_backup_hub_unsupported`，Mesh 只用于主枢纽到出口）、中继与备用枢纽之间的链路（`backup_hub_relay_link_unsupported`）、多于一台中继（`dual_hub_multiple_relays`，多中继分担在后续版本）、经双栈中继 / Mesh / v4 前置到达的纯 IPv6 出口或自己是双栈中继的出口（`dual_hub_unsupported_exit`）、「IX 替换模式」开关（`ix_replacement_mode_dual_hub`：切换是自动的）、枢纽之间的链路（`hub_to_hub_link`）、多于两个枢纽（`too_many_hubs`）。
+
+**网关上选哪条路（一处决定）。** `compile.planUpstream` 列出网关出表 102 的所有路径：主链路的中继腿（UDP，再 WSS），然后备用枢纽。路由脚本和切换脚本带同一段 shell（`UP_*` 数组、`upstream_apply`、`upstream_record`，逐字节相同）：安装时用 `upstream_apply` 把表 102 指向第一条，切换循环用同一个函数移动它，别处不再改表 102（结构测试检查）。以后的多中继分担扩展的是 `planUpstream`，入口不变。
+
+- **主链路按端到端检查**：网关经每条中继腿（`ping -I <腿>`）去 ping 主枢纽在中继 ↔ 主枢纽隧道上的地址，源地址是专用的中转地址 `10.66.200.2`（在 `lo` 上，每条腿一条 `… dev <腿> src 10.66.200.2 metric 10+i` 的主机路由；主枢纽把中转 /24 送回家）。中继活着而它后面的 IX 不通，也算主链路不通。备用路径检查备用枢纽的隧道地址。
+- **接管**：没有任何主链路腿应答，连续 `FAILS_NEED`（3）轮后切到备用枢纽。**切回**：主链路腿重新应答连续 `RECOVERS_NEED`（5）轮、并且距上次切换满 `COOLDOWN`（120 秒）。离开一条不通的路不等冷却。
+- **全部不通**：表 102 留在原处。每条路径都是 WireGuard 接口加 metric 32767 的黑洞兜底，兜底表只允许出口 mark 从网关的隧道接口出去（备用枢纽的接口也在这个集合里），所以包被丢在隧道里，不会从局域网口出去。
+- **记录**：每一轮写 `/run/meridian/upstream`（`compile.UpstreamStateFile`，先写临时文件再 `mv`）：`meridian-upstream 1`、`beat`、`path`、`iface`、`hub`、`tier`、`since`、`state <static|ok|switching|down>`、`end`。安装时写 `static`（还没有测量）。面板经 meridian-host 固定的、不带参数的 `POST /v1/upstream/status` 读这个文件（`hostexec.UpstreamStatus`，限长、严格语法，不执行任何命令），`GET /api/upstream` 和地区组视图里的 `carrying` 显示当前承载的枢纽。记录 60 秒没更新、指向拓扑里不是那一层的节点、读不到时，承载枢纽一律算**未知**，不猜。
+- 网关上每个出口的解析器改成与枢纽无关的地址 `fd66::54:<i+1>`（`validate.ExitResolverNet`，在保留的 `fd66::/64` 里，不属于任何节点）：两个枢纽都把它路由到各自通往该出口的隧道，出口在两个枢纽的隧道入口上把它 DNAT 到自己的隧道解析器（`exit_dns` 链）。所以钉死到某个出口的规则在备用枢纽接管后照样能解析。单枢纽拓扑仍问出口的隧道地址，编译结果不变。
+
+**出口上的回程对称**（`render_dualhub.go`）：从某个枢纽隧道进来的每个原方向包把连接的 ct mark 设成那个枢纽的 mark（主 `0x4d50`、备 `0x4d51`）；连接的每个回包（从 WAN 进来转发的，或本机应答的，如解析器和枢纽的健康 ping）在 prerouting / output 路由钩子上带上同一个 fwmark，查那个枢纽自己的表（172 / 173，优先级 17060 / 17061）。表里只有家里的前缀（局域网、`10.66.0.0/16`、`fd66::/48`、局域网 IPv6）指向那个枢纽的隧道，再加黑洞默认路由：回包只会回到它来的那个枢纽，不会串到另一个枢纽，也不会从 WAN 出去。因为跟着的是最近一次进来的接口，网关换枢纽后，已有连接的回包随之换到新枢纽（公网 NAT 在出口，源地址不变）。原方向不打 fwmark，去公网的流量照常走主表的 WAN。已知限制：这个 ct mark 覆盖整个连接标记，主机上如果别的程序也给这些连接用 ct mark，会互相覆盖。
+
+**地区组、组解析与 Mesh。** 网关的组 mark、组解析地址、规则都只编译一份；组的查询经当前承载的枢纽（表 102 指向哪条路就到哪个枢纽），那个枢纽按中转源地址查自己的组表，指向它选中的成员，成员在两个枢纽的隧道入口上都把组解析地址 DNAT 到自己的解析器（`group_dns` 链列出两个枢纽的接口），回包按上面的回程对称回到那个枢纽。所以组的解析始终跟着「实际承载流量的枢纽上实际承载这个组的成员」，不会回落到国内解析器。Mesh 备路只在主枢纽上（`GroupPlan.Mesh` 在备用枢纽的计划里恒为假），R1 的 Mesh 解析路径和封装条件的回归测试不变。
+
+**实际状态。** 面板分别读两个枢纽（`POST /api/region-groups/runtime/refresh` 依次读每个枢纽，每次读取各自绑定那个枢纽的身份，分别存放：主枢纽用原来的存储键，备用枢纽用 `group_hub_state_backup`），各自按自己的计划标识判断（`hub_states`、每个组的 `actual_by_hub`）。组的 `actual` 只取网关记录的承载枢纽的判断，并写明读自哪个枢纽和服务器（`actual.hub_tier`、`hub_node`、`server_name`）；承载枢纽未知时 `actual` 是 `unavailable`、`code: carrying_unknown`，不把任何一个枢纽的报告显示成实际使用。身份（节点、服务器、地址、端口、固定指纹）任何一项变化都只让那个枢纽的读取立即失效；两个节点互换服务器时两边都失效。
+
 ## 为什么网关要做一次中转地址改写
 
 WireGuard 不携带 fwmark。家宽到阿里云只有一条逻辑隧道，枢纽却要根据目标选择不同出口。编译器让网关按策略把局域网源地址改写到每个出口独立的中转地址：
@@ -540,6 +576,9 @@ Docker 自己打开转发时把 iptables（开了 ip6tables 时也包括 ip6tabl
 - **预检**：只在上面「它检查什么」里 `forward_policy_drop` 为警告的条件下放行，规则逐条进「拟执行的变更」（种类 `firewall`），面板在预检结果里单独列出；ufw 或 firewalld 在运行、DOCKER-USER 不存在、FORWARD 在跳到 DOCKER-USER 之前就有 DROP/REJECT、别的 nft 表（例如 `inet filter`）有 policy drop 的转发链、网关：继续阻断并写明原因。
 - **记录与移除**：清单里有 `fw ipv4 DOCKER-USER`、`fw ipv6 DOCKER-USER`、`unit meridian-fwcompat.service` 和脚本文件；撤回先停用并停止 `meridian-fwcompat.service`（之后 Docker 重启不会再加回来），再按注释删除两个族里的 Meridian 规则，最后复核一条都不剩；装机失败的补偿删除这次运行新加的规则（与装机前记录的 `pre-fw4` / `pre-fw6` 对比），更新失败时恢复后的旧 `meridian-up.sh` 再加回旧规则。删不掉的规则记为没能移除。
 
+- **ufw 算不算在管理防火墙**：按它实际做的事判断，只读：`/etc/ufw/ufw.conf` 里 `ENABLED=yes`，或 FORWARD 跳到 `ufw-*` 链，才算启用（阻断共存，另有 `firewall_manager` 警告）；`ENABLED=no` 且 FORWARD 里没有 ufw 的链时不算——Ubuntu 上 ufw 关闭时 `ufw.service` 也是 active (exited)——只给信息 `firewall_manager_inactive`。旧报告没有 `ufw-conf` 行时仍按单元状态（保守）。网关的 `meridian-host` 直接读同一个文件。firewalld 不需要这样处理：`firewalld.service` 就是守护进程本身，active 即在运行并管理规则（等同 `firewall-cmd --state` 为 running）。
+- 软件包版本按 Debian 版本号的形状解析（字母数字和 `. + ~ : -`，以数字开头），`1.0.20200513-1~20.04.2`、`1:2.3-4+b1` 这样的候选版本不再被当成「没有候选」；形状不对的值记为读不懂，不据此判定 `package_unavailable`。
+
 限制：只看 FORWARD 的默认策略和跳转先后，不逐条判断 DOCKER-USER 或 FORWARD 里你自己的 DROP 规则会不会先命中别的流量；Docker 29 的 nftables 后端不用 DOCKER-USER（那种主机 iptables 的 FORWARD 不再是 Docker 设的 DROP，预检按实际报告判断）；`netfilter-persistent save` 会把这些规则存下来，撤回后要再保存一次；同一主机上 iptables-nft 和 legacy 两套表并存（两个后端都有规则）时，脚本只用默认的 `iptables` 命令。
 
 #### 远端节点的开机恢复
@@ -577,6 +616,7 @@ Docker 自己打开转发时把 iptables（开了 ip6tables 时也包括 ip6tabl
 - **预检**：接口不存在时 `wan_interface_missing`、没有带上节点需要的默认路由（出口按 IPv4 / IPv6 出口，枢纽和中转要任意一种）时 `wan_no_default_route`，都**阻断**，写出主机的默认路由实际在哪块网卡上，并带 `fix`（节点的 `wan_interface`），面板显示「去拓扑修改」。IPv4 和 IPv6 默认路由在两块网卡上而节点两种都要出时也阻断（出口只用一块 WAN 网卡）。通过时 `wan_interface`（信息）。
 - **没填时**：选择「阻断并让你填」，不把报告里的网卡收进计划。理由：节点的包在预检之前编译、预检结果绑定包的摘要；把主机事实收进包会让摘要依赖预检，而在拓扑里填上一次之后，NAT、规则、单元和预检看到的都是同一个名字。没填且主机正是 `eth0` 时通过，并建议填上。
 - **装机脚本复查**：动手之前再查一次接口存在、默认路由在它上面（`MERIDIAN_REFUSED wan_interface_missing` / `wan_no_default_route`）。
+- **IX 枢纽有两个地址**：WAN 检查管的是香港一侧（到出口经它出去，所以默认路由要在它上面）。另外 `meridian-up.sh` 带一行 `# meridian-ix-hub: ingress=<国内入口> iface=<接口|-> egress=<香港出口|->`，预检据此核对：拓扑写了 `ingress_interface` 而主机上没有这块网卡、或入口地址在别的网卡上时**阻断**（`ix_ingress_interface`，带 `fix`）；入口地址或出口地址不在任何网卡上时**警告**（`ix_ingress_not_local` / `ix_egress_not_local`：前面有 1:1 NAT 或转发时照样能用，WireGuard 监听所有地址，但面板看不到）；都在时 `ix_hub_addresses`（信息）。
 
 #### nftables.service 的整表清空
 

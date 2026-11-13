@@ -68,6 +68,10 @@ type Server struct {
 	// RemoteStatus reads the remote-access interface's peer status through
 	// the host agent (hostexec.Client in main). Nil: runtime unavailable.
 	RemoteStatus RemoteStatusRuntime
+	// Upstream reads which path and hub carry the gateway's traffic (the
+	// gateway's upstream record, through the host agent; hostexec.Client in
+	// main). Nil: with a backup hub the carrying hub is unknown.
+	Upstream UpstreamRuntime
 	// Prober is the host agent's read-only unlock probe (the same
 	// hostexec.Client as Host in main). Nil: the panel cannot probe and the
 	// scheduler records that, without inventing results.
@@ -133,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/rollback", s.postRollback)
 	mux.HandleFunc("GET /api/host", s.getHost)
 	mux.HandleFunc("GET /api/status", s.getStatus)
+	mux.HandleFunc("GET /api/upstream", s.getUpstream)
 	mux.HandleFunc("POST /api/host/recover", s.postHostRecover)
 	mux.HandleFunc("POST /api/provision", s.postProvision)
 	mux.HandleFunc("GET /api/pools", s.getPools)

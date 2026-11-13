@@ -143,7 +143,7 @@ Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧
 
 下发分三步：
 
-1. **校验路径**。缺 IX、Mesh 绕过、NAT 方向错误、Netflix 没走家宽、网关节点的 `lan_interface` 和 `settings.lan_interface` 不一致，都会报错并拒绝保存。
+1. **校验路径**。缺 IX（或缺「IX 即主枢纽」的主枢纽）、备用枢纽没接好、出口少了到某个枢纽的隧道、Mesh 绕过、NAT 方向错误、Netflix 没走家宽、网关节点的 `lan_interface` 和 `settings.lan_interface` 不一致，都会报错并拒绝保存。
 2. **演练**。只产生差分，不写文件。
 3. **写入数据目录**，确认后再 **安装到本机**。安装只会覆盖和删除受管清单里属于 Meridian 的 WireGuard、nftables、sysctl、SmartDNS、unit 和脚本，nft 以单个事务替换；随后经 `meridian-host` 启动服务并做健康检查，任一步失败即停止并补偿回安装前。**回滚（含宿主网络）** 把宿主和数据目录一起恢复到上一份，删除新版本引入的文件、接口和服务。实机验收：`sudo bash deploy/verify-host-exec.sh`。
 
@@ -197,6 +197,17 @@ Debian 13 上请用 `docker compose`（来自 `docker-compose-v2`）。只有旧
 10. **名单 → 立即更新** 一次，再在网关上跑 `meridian-verify.sh`，然后按 [验收清单](verification.md) 做人工签收项。
 
 撤回和恢复见第 9 节。
+
+### IX 作为主枢纽、另加备用枢纽
+
+IX 本身是一台能登录的服务器、并且由它连各出口时，不再画不可管的 `ix` 节点：
+
+1. 「服务器」里为 IX 建一台服务器，地址和端口填**能到达它 SSH 的地方**（例如某台中继上转发到 IX 22 端口的那个端口），只接受密码时用密码凭据。经转发到达时 sshd 会按转发器地址限速，面板识别为 `ssh_rate_limited` 并给出稍后重试的时间。
+2. 「拓扑」里把枢纽节点设为「主枢纽」，打开「IX 即主枢纽」，填「国内入口地址」（中继拨入的地址，`ingress_v4`）、可选的「国内入口接口」，`endpoint_v4` 填香港出口地址，`wan_interface` 填香港一侧带默认路由的网卡，并为它选择上一步的服务器。中继 → IX 用 `direct_wg`（不是 `dedicated_line`）。
+3. 备用枢纽：再加一个枢纽节点，设为「备用枢纽」，`endpoint_v4` 是它的公网地址，`wss_listen_port` 选一个没被占用的端口；画一条家宽网关 → 备用枢纽的 `ix_replacement_wss`（待命）链路。每个出口都要和两个枢纽各连一条 WireGuard。
+4. 下发顺序不变：先出口，再两个枢纽，再中继，最后网关（`APPLY_ORDER.txt`）。IX 的预检会核对国内入口地址在不在主机上、在不在写的网卡上（见[架构](architecture.md)「WAN 接口」）。
+
+网关在主链路（网关 → 中继 → IX）端到端不通时自动改走备用枢纽，恢复后自动切回；概览和「出口与地区组」页显示当前由哪个枢纽承载，地区组的实际状态读自那个枢纽。完整规则和这一版**拒绝**的组合（多中继、备用枢纽上的 Mesh 等）见[架构](architecture.md)「主枢纽与备用枢纽」。拓扑写法的完整例子是 `internal/defaults/dualhub.go`（`DualHubExample`）。以上都只有自动化测试和没执行过的命名空间测试，**没有在真实主机上走过**。
 
 ### 预检发现冲突时怎么办
 

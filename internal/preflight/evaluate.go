@@ -71,6 +71,9 @@ const (
 	// CodeFWCompat (info): what the Docker FORWARD DROP coexistence does
 	// per address family on this host.
 	CodeFWCompat = "forward_coexistence"
+	// CodeFirewallInactive (info): ufw.service is active but ufw is not
+	// enabled (ENABLED=no, no ufw chains): it manages no rules.
+	CodeFirewallInactive = "firewall_manager_inactive"
 	// CodeWARPSidecar: the bundle carries the Mesh sidecar while a
 	// host-level WARP client runs; the Mesh deployment refuses this host
 	// until the old client is retired (a separate, confirmed step).
@@ -86,6 +89,16 @@ const (
 	CodeWANMissing = "wan_interface_missing"
 	CodeWANRoute   = "wan_no_default_route"
 	CodeWAN        = "wan_interface"
+	// CodeIXIngressIface (blocking): the IX hub's ingress interface named
+	// in the topology is missing or does not carry the ingress address.
+	// CodeIXIngressNotLocal / CodeIXEgressNotLocal (warning): the address is
+	// on no interface of the host (a NAT or forward in front of it is fine:
+	// WireGuard listens on every address, but the panel cannot see it).
+	// CodeIXHub (info): both were checked.
+	CodeIXIngressIface    = "ix_ingress_interface"
+	CodeIXIngressNotLocal = "ix_ingress_not_local"
+	CodeIXEgressNotLocal  = "ix_egress_not_local"
+	CodeIXHub             = "ix_hub_addresses"
 	// CodeRAKept (info): interfaces whose IPv6 comes from router
 	// advertisements get accept_ra=2 before IPv6 forwarding is turned on.
 	// CodeRAUnmanaged (blocking): RA-learned routes on an interface with
@@ -361,6 +374,7 @@ func Evaluate(r Report, fp Footprint, ctx Context) Evaluation {
 	e.paths()
 	e.interfaces()
 	e.wan()
+	e.ixHub()
 	e.listens()
 	e.routes()
 	e.rules()
@@ -542,7 +556,8 @@ func (e *eval) system() {
 				ps.Action = "install"
 				// Only a report that lists packages (pkg lines) can say that
 				// apt has no candidate; an older report is not judged.
-				if _, listed := r.Packages[p.Package]; listed && ps.Candidate == "" && r.Commands["apt-get"] {
+				// A value that is not a Debian version is not "no candidate".
+				if st, listed := r.Packages[p.Package]; listed && !st.Unreadable && ps.Candidate == "" && r.Commands["apt-get"] {
 					ps.Action = "unavailable"
 					e.add(Blocking, CodePackageUnavailable, p.Package,
 						fmt.Sprintf("这个节点需要 %s（命令 %s），主机上没有，apt 也查不到可安装的版本（apt-cache policy 没有 Candidate）。", p.Package, p.Command),
@@ -1470,10 +1485,11 @@ func (e *eval) fwCompatBlockers(fam string, iptDrop bool, other []string) []stri
 	if len(other) > 0 {
 		why = append(why, "丢弃来自别的 nft 表（"+strings.Join(other, "、")+"），DOCKER-USER 里的放行救不回它")
 	}
-	for _, u := range []string{"ufw.service", "firewalld.service"} {
-		if e.r.Units[u].Active == "active" {
-			why = append(why, strings.TrimSuffix(u, ".service")+" 在运行：它自己管理 FORWARD（重载时会重排或清掉规则），面板不与它共存")
-		}
+	if on, how := e.ufwEnforcing(); on {
+		why = append(why, "ufw 已启用（"+how+"）：它自己管理 FORWARD（重载时会重排或清掉规则），面板不与它共存")
+	}
+	if e.r.Units["firewalld.service"].Active == "active" {
+		why = append(why, "firewalld 在运行：它自己管理 FORWARD（重载时会重排或清掉规则），面板不与它共存")
 	}
 	if !iptDrop {
 		return why
@@ -1576,11 +1592,17 @@ func (e *eval) environment() {
 			"注意：有人执行 netfilter-persistent save 时，Meridian 在 DOCKER-USER 里带注释的放行规则也会被存下来；撤回只删运行中的规则，撤回后请再保存一次。", "")
 	}
 	e.nftFlush()
-	for _, u := range []string{"ufw.service", "firewalld.service"} {
-		if r.Units[u].Active == "active" {
-			e.add(Warning, CodeFirewallManager, u, fmt.Sprintf("%s 在运行：它管理主机防火墙，可能拦截隧道端口或转发，也可能在重载时改动规则。", strings.TrimSuffix(u, ".service")),
-				"确认它放行了 Meridian 要监听的端口和隧道接口的转发。")
-		}
+	if on, how := e.ufwEnforcing(); on {
+		e.add(Warning, CodeFirewallManager, "ufw.service", "ufw 已启用（"+how+"）：它管理主机防火墙，可能拦截隧道端口或转发，也可能在重载时改动规则。",
+			"确认它放行了 Meridian 要监听的端口和隧道接口的转发。")
+	} else if r.Units["ufw.service"].Active == "active" {
+		e.add(Info, CodeFirewallInactive, "ufw.service", "ufw.service 处于 active，但 ufw 没有启用（"+how+"）：Ubuntu 上这个单元在防火墙关闭时也显示 active，它不管理任何规则，不算防火墙管理器。以后执行 ufw enable 会让它接管 FORWARD，届时需重新预检。", "")
+	}
+	// firewalld.service is the daemon itself (Type=dbus): active means it is
+	// running and managing the rules (firewall-cmd --state = running).
+	if r.Units["firewalld.service"].Active == "active" {
+		e.add(Warning, CodeFirewallManager, "firewalld.service", "firewalld 在运行：它管理主机防火墙，可能拦截隧道端口或转发，也可能在重载时改动规则。",
+			"确认它放行了 Meridian 要监听的端口和隧道接口的转发。")
 	}
 	if strings.Contains(r.Iptables, "legacy") {
 		e.add(Info, CodeIptablesLegacy, "iptables",
@@ -1976,4 +1998,86 @@ func (e *eval) plannedIface(n string) bool {
 		}
 	}
 	return n == "mmesh" || n == "mmesh-c"
+}
+
+// ixHub checks the IX hub's two addresses against the host. The WAN check
+// (wan) covers the egress side: the interface the exits are reached
+// through carries the default route. Here: the domestic ingress address
+// the relays dial must be on the named ingress interface (blocking when the
+// topology names one and the host disagrees), and both addresses should be
+// local; one that is not is a warning, because a 1:1 NAT or a forward in
+// front of the host also works (WireGuard listens on every address) but
+// the panel cannot verify it.
+func (e *eval) ixHub() {
+	fp := e.fp
+	if e.ctx.Gateway || fp.IXIngress == "" {
+		return
+	}
+	where := func(addr string) []string {
+		var out []string
+		for _, a := range e.r.Addrs {
+			if a.Prefix.Addr().String() == addr && !containsStr(out, a.Iface) {
+				out = append(out, a.Iface)
+			}
+		}
+		return out
+	}
+	fix := &Fix{Kind: "node", ID: e.ctx.NodeID, Field: "ingress_interface", Label: "节点 " + e.ctx.NodeID + " 的「国内入口接口」"}
+	in := where(fp.IXIngress)
+	if fp.IXIngressIface != "" {
+		if !containsStr(e.r.Links, fp.IXIngressIface) {
+			e.addFix(Blocking, CodeIXIngressIface, fp.IXIngressIface,
+				fmt.Sprintf("拓扑里 IX 枢纽的国内入口接口 %s 在这台主机上不存在。", fp.IXIngressIface),
+				"在拓扑里改成主机上带国内入口地址的网卡，或清空这一项。", fix)
+			return
+		}
+		if len(in) > 0 && !containsStr(in, fp.IXIngressIface) {
+			e.addFix(Blocking, CodeIXIngressIface, fp.IXIngressIface,
+				fmt.Sprintf("国内入口地址 %s 在 %s 上，不在拓扑写的 %s 上。", fp.IXIngress, strings.Join(in, "、"), fp.IXIngressIface),
+				"在拓扑里把「国内入口接口」改成实际带这个地址的网卡。", fix)
+			return
+		}
+	}
+	if len(in) == 0 {
+		e.add(Warning, CodeIXIngressNotLocal, fp.IXIngress,
+			fmt.Sprintf("国内入口地址 %s 不在这台主机的任何接口上。若它是前面设备做的 1:1 NAT 或转发，中继仍能连上（WireGuard 监听所有地址），但面板看不到；否则中继连不上 IX。", fp.IXIngress),
+			"确认国内入口地址（ingress_v4）填的是中继实际拨的地址。")
+	}
+	if fp.IXEgress != "" && len(where(fp.IXEgress)) == 0 {
+		e.add(Warning, CodeIXEgressNotLocal, fp.IXEgress,
+			fmt.Sprintf("香港出口地址 %s 不在这台主机的任何接口上。到出口的隧道从默认路由（%s）的地址发出；若前面有 1:1 NAT，出口看到的是 NAT 后的地址。", fp.IXEgress, fp.WAN),
+			"确认 endpoint_v4 填的是这台主机的香港出口地址。")
+	}
+	if len(in) > 0 {
+		e.add(Info, CodeIXHub, fp.IXIngress, fmt.Sprintf("国内入口地址 %s 在 %s 上；香港一侧经 WAN 接口 %s。", fp.IXIngress, strings.Join(in, "、"), fp.WAN), "")
+	}
+}
+
+// ufwEnforcing decides from what ufw actually does, read-only: enabled
+// when /etc/ufw/ufw.conf says ENABLED=yes or FORWARD jumps to ufw's own
+// chains (ufw-before-forward and the like); disabled when the config says
+// ENABLED=no and FORWARD has no ufw chain. ufw.service being active is not
+// evidence: Ubuntu keeps the unit active (exited) while the firewall is
+// off. Without the config line (older report) the unit state decides, as
+// before (conservative).
+func (e *eval) ufwEnforcing() (bool, string) {
+	for _, fam := range []string{"ipv4", "ipv6"} {
+		for _, t := range e.r.IptForward[fam] {
+			if strings.HasPrefix(t, "ufw-") {
+				return true, "FORWARD 跳到 " + t
+			}
+		}
+	}
+	switch e.r.UFWConf {
+	case "yes":
+		return true, "/etc/ufw/ufw.conf 里 ENABLED=yes"
+	case "no":
+		return false, "/etc/ufw/ufw.conf 里 ENABLED=no，FORWARD 里没有 ufw 的链"
+	case "absent":
+		return false, "没有 /etc/ufw/ufw.conf"
+	}
+	if e.r.Units["ufw.service"].Active == "active" {
+		return true, "ufw.service 在运行，预检没有读到 ufw.conf"
+	}
+	return false, "ufw.service 没有运行"
 }

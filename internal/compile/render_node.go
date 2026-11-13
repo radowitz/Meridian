@@ -153,6 +153,10 @@ func renderRTTables(t model.Topology, n model.Node, exits []ExitPlan, groups []G
 	if n.Role == model.RoleExit && len(meshDNSGroups(groups, n.ID)) > 0 {
 		fmt.Fprintf(&sb, "%d\tmeridian_mesh_dns\n", tableMeshDNS)
 	}
+	if n.Role == model.RoleExit && t.DualHub() {
+		fmt.Fprintf(&sb, "%d\tmeridian_return_primary\n", tableHubReturnPrimary)
+		fmt.Fprintf(&sb, "%d\tmeridian_return_backup\n", tableHubReturnBackup)
+	}
 	if n.Role == model.RoleHub {
 		for _, e := range exits {
 			fmt.Fprintf(&sb, "%d\tmeridian_%s\n", e.Table, strings.ReplaceAll(e.Node.ID, "-", "_"))
@@ -242,10 +246,10 @@ func peerEndpoint(tun Tunnel, self model.Node) string {
 		}
 		return fmt.Sprintf("[%s]:%d", srv.EndpointV6, tun.WGPort)
 	}
-	if srv.EndpointV4 == "" {
+	if tun.DialV4() == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s:%d", srv.EndpointV4, tun.WGPort)
+	return fmt.Sprintf("%s:%d", tun.DialV4(), tun.WGPort)
 }
 
 func allowedIPs(t model.Topology, tun Tunnel, west bool) string {
@@ -275,6 +279,7 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool) st
 	sb.WriteString("set -euo pipefail\n")
 	if n.Role != model.RoleGateway {
 		sb.WriteString(wanMarker(n))
+		sb.WriteString(ixHubMarker(n))
 	}
 	sb.WriteString(nftLoadCommands(n.Role == model.RoleGateway))
 	if n.Role == model.RoleGateway {
@@ -704,7 +709,7 @@ func renderWstunnelClient(tun Tunnel) string {
 	if prefix == "" {
 		prefix = "example-wss-path-prefix"
 	}
-	host := srv.EndpointV4
+	host := tun.DialV4()
 	if host == "" {
 		host = "203.0.113.10"
 	}

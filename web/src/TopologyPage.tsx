@@ -79,7 +79,7 @@ const TRANSPORT_HELP: Record<Transport, string> = {
   direct_wg: "普通 WireGuard（UDP）。",
   wg_over_wss: "WireGuard 套在 WebSocket over TLS 里，用于 UDP 被限制的线路。",
   udp_wss_failover: "平时 UDP，UDP 不通时改走 WSS。",
-  ix_replacement_wss: "IX 故障时的替代路线，平时待命，不进默认路由。",
+  ix_replacement_wss: "IX 故障时的替代路线，平时待命，不进默认路由；网关到备用枢纽也用它（端口是备用枢纽的 WSS 监听端口）。",
   dedicated_line: "IX 专线本身（不是 WireGuard 隧道）。",
   cf_mesh: "Cloudflare Mesh 备路：组内成员都不可用时的最后一跳，平时待命（数据面未验证）。",
 };
@@ -95,7 +95,15 @@ type Selection = { kind: "node" | "link"; id: string } | null;
 // ----------------------------------------------------------------- canvas ---
 
 function nodeLabel(n: Node, server: ServerView | undefined) {
-  const flags = [n.residential ? "住宅" : null, n.ix_bound ? "IX 绑定" : null, n.nat_dial_out ? "拨出" : null].filter(Boolean).join(" · ");
+  const flags = [
+    n.role === "hub" && n.hub_tier === "backup" ? "备用" : null,
+    n.role === "hub" && n.ix_line && n.hub_tier !== "backup" ? "IX 即主枢纽" : null,
+    n.residential ? "住宅" : null,
+    n.ix_bound ? "IX 绑定" : null,
+    n.nat_dial_out ? "拨出" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const needsServer = n.managed && n.role !== "gateway";
   return (
     <div className="node-card">
@@ -226,6 +234,65 @@ function Flag({ label, help, checked, onChange, disabled }: { label: string; hel
   );
 }
 
+// ------------------------------------------------------------- hub roles ---
+
+/** A hub's tier as the backend reads it: empty on a lone hub means primary. */
+export function hubTierOf(n: Node, topo: Topology): "primary" | "backup" | "" {
+  if (n.hub_tier) return n.hub_tier;
+  return topo.nodes.filter((x) => x.role === "hub").length === 1 ? "primary" : "";
+}
+
+function isIXHub(n: Node): boolean {
+  return n.role === "hub" && !!n.ix_line && n.hub_tier !== "backup";
+}
+
+/** Old single-hub topology with an unmanaged ix node: the IX can now be the managed primary hub. */
+export function needsIXHubMigrationNotice(t: Topology): boolean {
+  return t.nodes.some((n) => n.role === "ix") && t.nodes.filter((n) => n.role === "hub").length === 1;
+}
+
+function HubRoleFields({ node, topo, patch }: { node: Node; topo: Topology; patch: (p: Partial<Node>) => void }) {
+  const tier = hubTierOf(node, topo);
+  const hubs = topo.nodes.filter((n) => n.role === "hub");
+  return (
+    <div data-testid="hub-role">
+      <Row
+        label="枢纽角色"
+        help={
+          tier === ""
+            ? "有多个枢纽时每个都要指定角色：最多一个主枢纽、一个备用枢纽。"
+            : tier === "backup"
+              ? "备用枢纽：只有主路径整条不通时，网关才经 WSS 上的 WireGuard 拨它（链路传输方式选「IX 替换 WSS」、待命，端口是备用枢纽的 WSS 监听端口）。每个出口都要同时有到两个枢纽的隧道（非待命）。"
+              : hubs.length > 1
+                ? "主枢纽：平时承载流量（网关 → 中继 → IX → 主枢纽）。每个出口都要同时有到两个枢纽的隧道（非待命）。"
+                : "主枢纽：平时承载流量（网关 → 中继 → IX → 主枢纽）。可以再加一个备用枢纽，主路径整条不通时由它承载。"
+        }
+      >
+        <Select
+          value={tier || undefined}
+          placeholder="选择角色"
+          aria-label="枢纽角色"
+          options={[
+            { value: "primary", label: "主枢纽" },
+            { value: "backup", label: "备用枢纽" },
+          ]}
+          onChange={(v: "primary" | "backup") =>
+            patch(v === "backup" ? { hub_tier: v, ix_line: undefined, ingress_v4: undefined, ingress_interface: undefined } : { hub_tier: v })
+          }
+        />
+      </Row>
+      {tier !== "backup" ? (
+        <Flag
+          label="IX 即主枢纽"
+          help="这台主枢纽就是 IX：专线上一台能登录、受管的服务器。它通过所选的服务器记录装机和下发（可以是中继上的端口转发，只用密码登录也可以）。中继用普通 WireGuard 拨它的国内入口地址，出口拨它的香港出口地址。"
+          checked={!!node.ix_line}
+          onChange={(v) => patch(v ? { ix_line: true, hub_tier: node.hub_tier ?? (hubs.length > 1 ? "primary" : undefined) } : { ix_line: undefined, ingress_v4: undefined, ingress_interface: undefined })}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function NodeDetail({
   node,
   topo,
@@ -281,6 +348,7 @@ function NodeDetail({
           aria-label="角色"
         />
       </Row>
+      {node.role === "hub" ? <HubRoleFields node={node} topo={topo} patch={patch} /> : null}
       <Row label="国家或地区" help="出口按它在出口页分区；解锁探测用它确认实际出口地区。">
         <AutoComplete value={node.region ?? ""} options={regionOptions} onChange={(v) => patch({ region: v.trim().toLowerCase() || undefined })} placeholder="例如 hk" />
       </Row>
@@ -378,9 +446,41 @@ function NodeDetail({
           />
         </Row>
       ) : null}
-      <Row label="公网 IPv4" help={node.nat_dial_out ? "NAT 拨出的节点必须留空：对端不应知道它的公网地址。" : "对端拨这个地址；没有公网地址的节点留空。"}>
-        <Input className="mono" value={node.endpoint_v4 ?? ""} onChange={(e) => patch({ endpoint_v4: e.target.value.trim() || undefined })} disabled={node.nat_dial_out && !node.endpoint_v4} />
-      </Row>
+      {isIXHub(node) ? (
+        <>
+          <Row label="香港出口地址（出口拨入）" help="IX 枢纽在香港一侧的地址：拨入的出口连它，它到出口的隧道也从这里出去。">
+            <Input
+              className="mono"
+              value={node.endpoint_v4 ?? ""}
+              onChange={(e) => patch({ endpoint_v4: e.target.value.trim() || undefined })}
+              aria-label="香港出口地址（出口拨入）"
+            />
+          </Row>
+          <Row label="国内入口地址（中继拨入）" help="IX 国内一侧的 IPv4，中继用普通 WireGuard 拨它；必填，只接受中继。">
+            <Input
+              className="mono"
+              value={node.ingress_v4 ?? ""}
+              status={node.ingress_v4 ? undefined : "warning"}
+              placeholder="例如 198.51.100.10"
+              onChange={(e) => patch({ ingress_v4: e.target.value.trim() || undefined })}
+              aria-label="国内入口地址（中继拨入）"
+            />
+          </Row>
+          <Row label="国内入口接口（可选）" help="承载国内入口地址的网卡；填了会在预检里核对，并像外网网卡一样加固。">
+            <Input
+              className="mono"
+              value={node.ingress_interface ?? ""}
+              placeholder="例如 eth1"
+              onChange={(e) => patch({ ingress_interface: e.target.value.trim() || undefined })}
+              aria-label="国内入口接口（可选）"
+            />
+          </Row>
+        </>
+      ) : (
+        <Row label="公网 IPv4" help={node.nat_dial_out ? "NAT 拨出的节点必须留空：对端不应知道它的公网地址。" : "对端拨这个地址；没有公网地址的节点留空。"}>
+          <Input className="mono" value={node.endpoint_v4 ?? ""} onChange={(e) => patch({ endpoint_v4: e.target.value.trim() || undefined })} disabled={node.nat_dial_out && !node.endpoint_v4} />
+        </Row>
+      )}
       <Row label="公网 IPv6" help="双栈中继或纯 IPv6 出口的公网地址。">
         <Input className="mono" value={node.endpoint_v6 ?? ""} onChange={(e) => patch({ endpoint_v6: e.target.value.trim() || undefined })} />
       </Row>
@@ -929,6 +1029,7 @@ export default function TopologyPage() {
   const servers = useApi(() => api.listServers(), []);
   const [deleting, setDeleting] = useState<Node | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [migrationDismissed, setMigrationDismissed] = useState(false);
   const topo = doc.topo;
 
   const selected: Selection = useMemo(() => {
@@ -999,6 +1100,23 @@ export default function TopologyPage() {
       }
     >
       <TopologyDocBar />
+      {needsIXHubMigrationNotice(topo) && !migrationDismissed ? (
+        <Alert
+          type="info"
+          showIcon
+          closable
+          onClose={() => setMigrationDismissed(true)}
+          style={{ marginBottom: 12 }}
+          data-testid="ix-hub-migration"
+          message="IX 现在可以作为受管的主枢纽建模"
+          description={
+            <>
+              如果 IX 本身是一台能登录的服务器：在枢纽节点上选这台 IX 服务器、打开「IX 即主枢纽」并填国内入口地址，删除不受管的 IX 节点，再把中继 → 枢纽的链路设为普通 WireGuard。之后还可以加一个备用枢纽，主路径整条不通时由网关经 WSS 拨它。
+              面板不会自动转换：现在的拓扑保持原样，照旧编译。
+            </>
+          }
+        />
+      ) : null}
       {managedWithout.length > 0 ? (
         <Alert
           type="warning"

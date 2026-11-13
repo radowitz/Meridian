@@ -247,6 +247,17 @@ func (a *Agent) Preflight(ctx context.Context, req PreflightRequest) PreflightRe
 			w("nftables-stop", "noflush")
 		}
 	}
+	// ufw: ENABLED= of /etc/ufw/ufw.conf, read directly (ufw.service is
+	// active on Ubuntu even when the firewall is disabled).
+	ufw := "absent"
+	for _, l := range strings.Split(readFile("/etc/ufw/ufw.conf", 64<<10), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(l), "="); ok && strings.TrimSpace(k) == "ENABLED" {
+			if v = strings.Trim(strings.TrimSpace(v), `"'`); v == "yes" || v == "no" {
+				ufw = v
+			}
+		}
+	}
+	w("ufw-conf", ufw)
 	if conf := readFile("/etc/nftables.conf", 256<<10); conf != "" {
 		state := "noflush"
 		for _, l := range strings.Split(conf, "\n") {
