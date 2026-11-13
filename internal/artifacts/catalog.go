@@ -36,6 +36,9 @@ var lockFile string
 const (
 	Wstunnel = "wstunnel"
 	SmartDNS = "smartdns"
+	// Gost is the transparent TCP redirector of external SOCKS exits on
+	// their carrier (go-gost/gost v3, MIT).
+	Gost = "gost"
 )
 
 // Architectures, as uname -m prints them on the target host.
@@ -76,7 +79,7 @@ func (p Pin) File() string { return p.Name + "-" + p.Arch }
 func (p Pin) HostPath() string { return HostPath(p.Name) }
 
 var (
-	nameRe    = regexp.MustCompile(`^(wstunnel|smartdns)$`)
+	nameRe    = regexp.MustCompile(`^(wstunnel|smartdns|gost)$`)
 	archRe    = regexp.MustCompile(`^(x86_64|aarch64)$`)
 	versionRe = regexp.MustCompile(`^[0-9][0-9A-Za-z.+-]{0,40}$`)
 	hexRe     = regexp.MustCompile(`^[0-9a-f]{64}$`)

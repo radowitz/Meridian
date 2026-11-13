@@ -105,16 +105,25 @@ func InjectSecrets(rel, body string, secrets map[string]string) (string, error) 
 	if len(ms) == 0 {
 		return body, nil
 	}
-	wg, wss := isWireGuardConf(rel), isWSSFile(rel)
-	if !wg && !wss {
+	wg, wss, ext := isWireGuardConf(rel), isWSSFile(rel), isExtFile(rel)
+	if !wg && !wss && !ext {
 		return "", fmt.Errorf("拒绝安装：%s 含有密钥占位符", strings.TrimPrefix(rel, "/"))
 	}
 	for _, m := range ms {
+		// A SOCKS credential half belongs in the carrier's external-exit
+		// files and nowhere else; those files name nothing else.
+		if ext != credentials.IsSOCKSSecretID(m[1]) {
+			return "", fmt.Errorf("拒绝安装：%s 引用的密钥 %s 不属于这个文件", strings.TrimPrefix(rel, "/"), m[1])
+		}
 		v, ok := secrets[m[1]]
 		if !ok || v == "" {
 			return "", fmt.Errorf("%w（%s 引用 %s）", ErrMissingSecret, strings.TrimPrefix(rel, "/"), m[1])
 		}
 		switch {
+		case ext:
+			if !credentials.ValidSOCKSValue(v) {
+				return "", fmt.Errorf("SOCKS 凭据 %s 格式不正确", m[1])
+			}
 		case wg:
 			if IsWSSSecretID(m[1]) || !ValidPrivateKey(v) {
 				return "", fmt.Errorf("WireGuard 密钥 %s 格式不正确（应为 32 字节 base64）", m[1])
@@ -139,6 +148,11 @@ func InjectSecrets(rel, body string, secrets map[string]string) (string, error) 
 // panel had no WSS material for it (credential store unavailable or not
 // generated). Nothing is written.
 var ErrWSSUnresolved = errors.New("WSS 承载的路径和证书还没有生成（或凭据存储不可用），已在写入任何主机配置前中止")
+
+// isExtFile: the carrier's external-exit files (compile.ExtDir).
+func isExtFile(rel string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(rel, "/"), strings.TrimPrefix(compile.ExtDir, "/")+"/")
+}
 
 func isWSSFile(rel string) bool {
 	return strings.HasPrefix(strings.TrimPrefix(rel, "/"), strings.TrimPrefix(compile.WSSDir, "/")+"/")

@@ -103,6 +103,20 @@ type Node struct {
 	// hub has no IPv6 and must not be given this address as an Endpoint.
 	// Examples use 2001:db8::/32.
 	EndpointV6 string `json:"endpoint_v6,omitempty"`
+	// EndpointHost (exits only) is a DNS name (dynamic DNS) a dialing hub or
+	// nested exit uses instead of EndpointV4. The dialer re-applies it, and
+	// so re-resolves it, whenever its handshake with this node is older than
+	// a bound (meridian-endpoint-refresh.timer). The gateway and relays never
+	// dial exits, so no route or nft set needs the address.
+	EndpointHost string `json:"endpoint_host,omitempty"`
+	// ViaExit (exits only) names the managed relay exit this exit's single
+	// tunnel goes to instead of a hub (nested.go). The exit must dial out
+	// (nat_dial_out); the relay exit listens for it at its endpoint.
+	ViaExit string `json:"via_exit,omitempty"`
+	// External (exits only, unmanaged) makes this an external SOCKS exit
+	// reached through a managed carrier exit (nested.go). It has no links,
+	// no server and no bundle.
+	External *ExternalExit `json:"external,omitempty"`
 	// ListenPort is the WireGuard UDP port of the one link this node
 	// listens on when that link has no wg_port of its own (a node that
 	// listens on several links needs wg_port on each; validation refuses

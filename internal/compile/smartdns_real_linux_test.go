@@ -345,7 +345,8 @@ func startSmartDNS(t *testing.T, bin, conf string) *smartDNSRun {
 	var addr string
 	for _, l := range strings.Split(conf, "\n") {
 		if strings.HasPrefix(l, "bind ") {
-			addr = strings.TrimPrefix(l, "bind ")
+			// The address, without the listener's options (-group …).
+			addr = strings.Fields(strings.TrimPrefix(l, "bind "))[0]
 		}
 	}
 	cmd := exec.Command(bin, "-f", "-x", "-p", "-", "-c", p)

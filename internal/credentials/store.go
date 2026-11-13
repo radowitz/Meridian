@@ -179,6 +179,9 @@ type index struct {
 	// per-listener state (certificates, fingerprints, rotation stages).
 	WSSSecrets []WSSSecretMeta `json:"wss_secrets,omitempty"`
 	WSS        model.WSSState  `json:"wss,omitempty"`
+	// SOCKSCredentials are the usernames and passwords of external SOCKS
+	// exits' proxies (socks.go). Metadata only here.
+	SOCKSCredentials []socksRecord `json:"socks_credentials,omitempty"`
 }
 
 // secret is the content of one secret file.
@@ -190,6 +193,8 @@ type secret struct {
 	APIToken   string `json:"api_token,omitempty"`
 	WGKey      string `json:"wg_key,omitempty"`
 	WSSValue   string `json:"wss_value,omitempty"`
+	SOCKSUser  string `json:"socks_user,omitempty"`
+	SOCKSPass  string `json:"socks_pass,omitempty"`
 }
 
 // Store is the credential store. Methods are safe for concurrent use.
@@ -415,6 +420,9 @@ func (s *Store) cleanOrphans() {
 	for _, w := range s.idx.WSSSecrets {
 		want[filepath.Base(s.secretPath(w.ID, 1))] = true
 	}
+	for _, c := range s.idx.SOCKSCredentials {
+		want[filepath.Base(s.secretPath(c.ID, c.Gen))] = true
+	}
 	for _, d := range []string{s.dir, filepath.Join(s.dir, "secrets")} {
 		entries, err := os.ReadDir(d)
 		if err != nil {
@@ -503,6 +511,9 @@ func (s *Store) commit(next index, secrets map[string]secret) error {
 	for _, w := range next.WSSSecrets {
 		keep[s.secretPath(w.ID, 1)] = true
 	}
+	for _, c := range next.SOCKSCredentials {
+		keep[s.secretPath(c.ID, c.Gen)] = true
+	}
 	for _, c := range old.Credentials {
 		if p := s.secretPath(c.ID, c.Gen); !keep[p] {
 			_ = os.Remove(p)
@@ -520,6 +531,11 @@ func (s *Store) commit(next index, secrets map[string]secret) error {
 	}
 	for _, w := range old.WSSSecrets {
 		if p := s.secretPath(w.ID, 1); !keep[p] {
+			_ = os.Remove(p)
+		}
+	}
+	for _, c := range old.SOCKSCredentials {
+		if p := s.secretPath(c.ID, c.Gen); !keep[p] {
 			_ = os.Remove(p)
 		}
 	}
@@ -577,6 +593,11 @@ func (i *index) idTaken(id string) bool {
 		}
 	}
 	for _, x := range i.WSSSecrets {
+		if x.ID == id {
+			return true
+		}
+	}
+	for _, x := range i.SOCKSCredentials {
 		if x.ID == id {
 			return true
 		}

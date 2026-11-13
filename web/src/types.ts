@@ -57,6 +57,48 @@ export interface Node {
   ingress_v4?: string;
   /** IX hub only: optional interface carrying ingress_v4. */
   ingress_interface?: string;
+  /**
+   * Exits only: a DNS name (dynamic DNS) that dialing hubs and nested exits
+   * use instead of endpoint_v4; re-resolved on the dialing node when the
+   * WireGuard handshake is older than 150 s.
+   */
+  endpoint_host?: string;
+  /**
+   * Exits only: the managed relay exit this exit's single tunnel goes to
+   * instead of a hub (nat_dial_out, path_v4, exactly one enabled
+   * non-standby direct_wg link from this exit to the relay exit).
+   */
+  via_exit?: string;
+  /** Exits only, unmanaged: an external SOCKS exit reached through a managed carrier exit. */
+  external?: ExternalExit;
+}
+
+/**
+ * An external SOCKS exit (model.ExternalExit): an existing SOCKS5 proxy the
+ * panel does not manage, reached from the carrier exit over a tunnel the
+ * panel does not manage either. Username and password live in a SOCKS
+ * credential (write-only); the topology only names its ID.
+ */
+export interface ExternalExit {
+  /** Managed exit that is neither nested nor external. */
+  carrier: string;
+  /** IPv4 of the proxy as seen from the carrier. */
+  socks_address: string;
+  socks_port: number;
+  /** The carrier's (unmanaged) interface that routes socks_address, e.g. wg9. */
+  interface: string;
+  /** ID of a SOCKS credential (GET /api/socks-credentials). */
+  credential_id: string;
+}
+
+/** An exit behind a relay exit. */
+export function isNestedExit(n: Pick<Node, "role" | "via_exit">): boolean {
+  return n.role === "exit" && !!n.via_exit;
+}
+
+/** An external SOCKS exit. */
+export function isExternalExit(n: Pick<Node, "role" | "external">): boolean {
+  return n.role === "exit" && !!n.external;
 }
 
 export type HubTier = "primary" | "backup";
@@ -813,6 +855,41 @@ export interface SSHCredentialPatch {
   notes?: string;
   comment?: string;
 }
+
+// ---- SOCKS credentials ------------------------------------------------------
+
+/** Username and password of an external SOCKS exit's proxy: metadata only, the material is never returned. */
+export interface SOCKSCredentialView {
+  id: string;
+  name: string;
+  notes?: string;
+  secret_set: boolean;
+  created_at: string;
+  updated_at: string;
+  rotated_at?: string;
+  /** The external exits that name this credential. */
+  used_by: Ref[];
+}
+
+/** Write-only material of a create or rotate request. Never stored in the browser. */
+export interface SOCKSSecretInput {
+  username: string;
+  password: string;
+}
+
+export type SOCKSCredentialCreate = SOCKSSecretInput & { name: string; notes: string };
+
+export interface SOCKSCredentialPatch {
+  name?: string;
+  notes?: string;
+}
+
+/**
+ * What a SOCKS username or password may contain (credentials.socksValueRe):
+ * 1–255 printable ASCII characters without whitespace, quotes, backslash and
+ * any of @ : / # ? % &.
+ */
+export const SOCKS_VALUE_RE = /^[A-Za-z0-9._~!$*+,;=^\-[\]{}()|<>]{1,255}$/;
 
 // ---- Cloudflare -------------------------------------------------------------
 
@@ -1573,6 +1650,10 @@ export interface ProbeJobItem {
   group_mode?: string;
   in_group?: boolean;
   active_exit?: string;
+  /** "tcp_only" for an external SOCKS exit: the probe went through its proxy over TCP only. */
+  transport?: "tcp_only";
+  /** What such an exit cannot carry and so was not tested (anything that needs UDP). */
+  untested?: string[];
 }
 
 export interface ProbeJob {

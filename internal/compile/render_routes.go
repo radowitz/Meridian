@@ -30,6 +30,8 @@ func renderRoutes(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exit
 		renderHubRoutes(&sb, t, n, tunnels, exits, groups)
 	case model.RoleExit:
 		renderExitRoutes(&sb, t, n, tunnels)
+		renderRelayExitRoutes(&sb, t, n, tunnels, exits)
+		renderCarrierRoutes(&sb, n, exits)
 		if len(meshDNSGroups(groups, n.ID)) > 0 {
 			renderExitMeshDNSRoutes(&sb, n, groups)
 		}
@@ -290,6 +292,21 @@ func renderHubRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunnel
 				fmt.Fprintf(sb, "ip -6 route replace blackhole %s/128 metric 32767\n", e.PeerULA)
 			}
 		}
+		if e.sharedHop() {
+			if e.External {
+				fmt.Fprintf(sb, "# external exit %s on carrier %s dev %s: health %s, resolver %s (both on the carrier)\n", e.Node.ID, model.HubSideOf(e.Node), e.HubIface, e.PeerV4, e.PeerULA)
+			} else {
+				fmt.Fprintf(sb, "# nested exit %s behind relay exit %s dev %s\n", e.Node.ID, e.Nested, e.HubIface)
+			}
+			if e.PeerV4 != "" {
+				fmt.Fprintf(sb, "ip route replace %s/32 dev %s\n", e.PeerV4, e.HubIface)
+				fmt.Fprintf(sb, "ip route replace blackhole %s/32 metric 32767\n", e.PeerV4)
+			}
+			if e.PeerULA != "" {
+				fmt.Fprintf(sb, "ip -6 route replace %s/128 dev %s\n", e.PeerULA, e.HubIface)
+				fmt.Fprintf(sb, "ip -6 route replace blackhole %s/128 metric 32767\n", e.PeerULA)
+			}
+		}
 		if e.Mesh {
 			fmt.Fprintf(sb, "# pure-v6 %s mesh hop only; never the IX west path\n", e.Node.ID)
 			fmt.Fprintf(sb, "# mmesh is used only after meridian-mesh-up.sh has sealed the sidecar.\n")
@@ -361,6 +378,12 @@ func renderExitRoutes(sb *strings.Builder, t model.Topology, n model.Node, tunne
 	}
 	fmt.Fprintf(sb, "ip -6 route replace %s dev %s\n", transitV6Net(), tun.Iface())
 	fmt.Fprintf(sb, "ip -6 route replace fd66::/48 dev %s\n", tun.Iface())
+	if model.IsNested(n) {
+		// The hubs' tunnel addresses (their health probes) are behind the
+		// relay exit too: this exit's one tunnel is its only way home.
+		fmt.Fprintf(sb, "# nested exit behind relay exit %s: everything toward home goes into its one tunnel\n", n.ViaExit)
+		fmt.Fprintf(sb, "ip route replace 10.66.0.0/16 dev %s\n", tun.Iface())
+	}
 	writePrefixBlackholes(sb, t)
 	if rets := exitHubReturns(t, n, tunnels); rets != nil {
 		renderExitHubReturnRoutes(sb, t, rets)
@@ -778,12 +801,9 @@ func groupHopPrelude(groups []GroupPlan) string {
 		tables = append(tables, fmt.Sprintf("%d", g.Table))
 	}
 	fmt.Fprintf(&sb, "GROUP_TABLES=%q\n", strings.Join(tables, " "))
-	sb.WriteString(groupHopShell)
+	sb.WriteString(hopShell(sharedHops(groups)))
 	return sb.String()
 }
-
-// hopDev is the group_hop argument for a member: its hub interface.
-func hopDev(e ExitPlan) string { return e.HubIface }
 
 // renderHubGroupRoutes installs every region group's table on the hub. A
 // dynamic group's default goes to its compiled target through group_hop;
@@ -835,8 +855,8 @@ func renderHubGroupRoutes(sb *strings.Builder, t model.Topology, west string, gr
 func renderGroupChecks(groups []GroupPlan) string {
 	var sb strings.Builder
 	sb.WriteString(groupHopPrelude(groups))
-	sb.WriteString(groupStepShell)
-	sb.WriteString(groupReportShell)
+	sb.WriteString(stepShell(sharedHops(groups)))
+	sb.WriteString(reportShell(sharedHops(groups)))
 	sb.WriteString("reset_groups() {\n")
 	for _, g := range groups {
 		if !g.Dynamic {
@@ -856,7 +876,7 @@ func renderGroupChecks(groups []GroupPlan) string {
 		fmt.Fprintf(&sb, "  group_step %s %d %s %d %d %d %s", shQuote(g.Group.ID), g.Table, shQuote(g.Target.Node.ID),
 			boolNum(p.Mesh), boolNum(p.Hold), boolNum(p.Manual), shQuote(p.TargetReason))
 		for _, e := range g.Try {
-			fmt.Fprintf(&sb, " %s %s %s", shQuote(e.Node.ID), shQuote(e.HubIface), shQuote(e.PeerV4))
+			fmt.Fprintf(&sb, " %s %s %s", shQuote(e.Node.ID), shQuote(hopDev(e)), shQuote(e.PeerV4))
 		}
 		sb.WriteString("\n")
 	}

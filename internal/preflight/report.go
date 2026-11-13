@@ -255,6 +255,9 @@ type Report struct {
 	Manifest   *NodeManifest        `json:"manifest,omitempty"`
 	Journal    *NodeJournal         `json:"journal,omitempty"`
 	Source     string               `json:"source,omitempty"`
+	// TCPConnect: result of each TCP connect probe ("ip:port" → ok), the
+	// proxies of the external SOCKS exits this node carries.
+	TCPConnect map[string]bool `json:"tcp_connect,omitempty"`
 }
 
 func newReport() Report {
@@ -550,6 +553,14 @@ func Parse(text string) Report {
 		case "proc":
 			if len(f) == 2 && validName(f[0]) && len(r.Procs) < 32 {
 				r.Procs[f[0]] = f[1] == "yes"
+			}
+		case "tcpconnect":
+			// "tcpconnect <ipv4> <port> ok|fail"
+			if len(f) == 3 && ValidProbe("tcp4:"+f[0]+":"+f[1]) && (f[2] == "ok" || f[2] == "fail") && len(r.TCPConnect) < MaxProbes {
+				if r.TCPConnect == nil {
+					r.TCPConnect = map[string]bool{}
+				}
+				r.TCPConnect[f[0]+":"+f[1]] = f[2] == "ok"
 			}
 		case "path":
 			// "path <p> absent" | "path <p> <type> <size> <marker yes|no> <sha256|->"

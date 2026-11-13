@@ -26,7 +26,7 @@ sha() { sha256sum "$1" | cut -c1-64; }
 
 grep -v '^[[:space:]]*#' "$lock" | grep -v '^[[:space:]]*$' | while read -r name version arch bin_sha size src_sha kind member url; do
   case "$name/$arch/$kind" in
-    wstunnel/x86_64/tar.gz|wstunnel/aarch64/tar.gz|smartdns/x86_64/raw|smartdns/aarch64/raw) ;;
+    wstunnel/x86_64/tar.gz|wstunnel/aarch64/tar.gz|smartdns/x86_64/raw|smartdns/aarch64/raw|gost/x86_64/tar.gz|gost/aarch64/tar.gz) ;;
     *) echo "fetch-artifacts: unexpected lock entry $name $arch $kind" >&2; exit 1 ;;
   esac
   file=${url##*/}

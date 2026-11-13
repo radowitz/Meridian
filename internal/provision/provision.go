@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"path"
 	"regexp"
 	"sort"
@@ -18,6 +19,7 @@ import (
 	"github.com/radowitz/meridian/internal/apply"
 	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/compile"
+	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/preflight"
 )
@@ -265,6 +267,16 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		shellQuote(strings.Join(tables, " ")), shellQuote(strings.Join(prios, " ")), shellQuote(strings.Join(dsts, " ")))
 	fmt.Fprintf(&sb, "M_STAGE=%s\nM_ARTPATHS=%s\nM_ARTLINES=%s\n", shellQuote(artifacts.StageDir), shellQuote(strings.Join(artPaths, " ")), shellQuote(strings.Join(artLines, "\n")))
 	fmt.Fprintf(&sb, "M_SYSCTL=%s\nM_FW=%s\n", shellQuote(strings.Join(sysPaths, " ")), fw)
+	// Meridian's own address ranges on lo (a carrier's external-exit
+	// service, resolver and health addresses): compensation removes the
+	// addresses a failed run added in them, a withdraw every address in them.
+	var lonets []string
+	for _, n := range fp.LoNets {
+		if loNetOK(n) {
+			lonets = append(lonets, n.String())
+		}
+	}
+	fmt.Fprintf(&sb, "M_LONETS=%s\n", shellQuote(strings.Join(lonets, " ")))
 	// The WAN interface the scripts name and the default routes it must
 	// carry: re-checked on the host before anything changes.
 	wan, need := "", ""
@@ -325,6 +337,13 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		switch {
 		case strings.HasPrefix(clean, "/etc/wireguard/"):
 			mode, dirMode = "600", "700"
+		case strings.HasPrefix(clean, compile.ExtDir+"/"):
+			// The external exits' redirector configuration names the
+			// proxies' credentials: 0700 directory, 0600 file.
+			dirMode = "700"
+			if compile.ExtSecretFile(clean) {
+				mode = "600"
+			}
 		case strings.HasPrefix(clean, compile.WSSDir+"/"):
 			// The WSS directory holds the path prefixes and the private
 			// key: 0700, secret files 0600, certificates 0644.
@@ -430,6 +449,9 @@ fi
 	}
 	if hasDNS {
 		sb.WriteString(smartDNSStart)
+	}
+	if _, ok := files["/etc/systemd/system/"+compile.ExtProxyUnit]; ok {
+		sb.WriteString(extStart)
 	}
 	sb.WriteString("m_commit\n")
 	sb.WriteString("echo MERIDIAN_PROVISION_OK\n")
@@ -599,6 +621,14 @@ m_compensate() {
       ip -"$fam" route del $line >/dev/null 2>&1 || m_left route "IPv$fam $line"
     done
   done
+  # Addresses this run put on lo inside Meridian's own lo ranges.
+  for d in $M_LONETS; do
+    fam=4; case "$d" in *:*) fam=6 ;; esac
+    ip -o -"$fam" addr show dev lo to "$d" 2>/dev/null | awk '{print $4}' | while read -r v; do
+      grep -qxF -- "$v" "$M_WORK/pre-lo" 2>/dev/null && continue
+      ip -"$fam" addr del "$v" dev lo >/dev/null 2>&1 || m_left address "$v on lo"
+    done
+  done
   # Coexistence rules this run added (tagged, not there before it). An
   # update's previous rules are re-asserted by the restored meridian-up.sh.
   for fam in 4 6; do
@@ -668,6 +698,7 @@ const provisionTxn = `m_begin() {
     if [ -r "$f" ]; then printf '%s %s\n' "$f" "$(head -c 32 "$f")"; fi
   done > "$M_WORK/pre-sysctl"
   for fam in 4 6; do m_fw_tagged "$fam" > "$M_WORK/pre-fw$fam"; done
+  { ip -o addr show dev lo 2>/dev/null || true; } | awk '{print $4}' > "$M_WORK/pre-lo"
   # accept_ra of every interface meridian-up.sh may switch to 2 (RA-learned
   # routes now, or recorded by an earlier run).
   { ip -6 route show table main proto ra 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="dev") print $(i+1)}'; cat "$M_STATE/ra-accept" 2>/dev/null || true; } | sort -u | while read -r d; do
@@ -681,7 +712,7 @@ const provisionTxn = `m_begin() {
   # Written last: its presence means the pre-* state above is complete, so
   # a panel-driven recovery (withdraw script, journal mode) can compensate.
   # Without it, nothing of this run changed the host yet.
-  printf 'ifaces %s\nunits %s\nnft %s\ntables %s\nprios %s\ndsts %s\nexpect %s\n' "$M_IFACES" "$M_UNITS" "$M_NFT" "$M_TABLES" "$M_PRIOS" "$M_DSTS" "$M_EXPECT" > "$M_WORK/params.next"
+  printf 'ifaces %s\nunits %s\nnft %s\ntables %s\nprios %s\ndsts %s\nexpect %s\nlonets %s\n' "$M_IFACES" "$M_UNITS" "$M_NFT" "$M_TABLES" "$M_PRIOS" "$M_DSTS" "$M_EXPECT" "$M_LONETS" > "$M_WORK/params.next"
   mv -f "$M_WORK/params.next" "$M_WORK/params"
   trap m_compensate EXIT
   trap 'exit 129' HUP
@@ -752,6 +783,7 @@ m_commit() {
     for p in $M_TABLES; do echo "table $p"; done
     for p in $M_PRIOS; do echo "prio $p"; done
     for p in $M_DSTS; do echo "route $p"; done
+    for p in $M_LONETS; do echo "lonet $p"; done
     if [ "$M_FW" = 1 ]; then echo 'fw ipv4 DOCKER-USER'; echo 'fw ipv6 DOCKER-USER'; fi
     awk '$1=="pkg" {print "pkg " $2}' "$M_WORK/actions"
   } > "$next"
@@ -875,6 +907,34 @@ else
 fi
 `
 
+// extStart runs after meridian-up.sh on a carrier of external SOCKS exits:
+// the redirector and the health probe must be running (a configuration the
+// redirector rejects fails the run, which is compensated).
+const extStart = `if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+  sleep 2
+  for m_u in ` + compile.ExtProxyUnit + ` ` + compile.ExtHealthUnit + `; do
+    if ! systemctl is-active --quiet "$m_u"; then
+      echo "meridian: $m_u is not active after provision" >&2
+      systemctl status --no-pager "$m_u" >&2 || true
+      exit 1
+    fi
+  done
+  echo MERIDIAN_EXT_ACTIVE
+else
+  echo 'no systemd: the external exits cannot run' >&2
+  exit 1
+fi
+`
+
+// loNetOK: a prefix the provision may treat as Meridian's own on lo (inside
+// 10.66.0.0/16 or fd66::/48, never wider than /16 or /48).
+func loNetOK(p netip.Prefix) bool {
+	if p.Addr().Is4() {
+		return p.Bits() >= 16 && netip.MustParsePrefix("10.66.0.0/16").Contains(p.Addr())
+	}
+	return p.Bits() >= 48 && netip.MustParsePrefix("fd66::/48").Contains(p.Addr())
+}
+
 // artifactUnits are the units of files whose ExecStart runs name.
 func artifactUnits(files map[string]string, name string) []string {
 	var out []string
@@ -958,7 +1018,9 @@ func InjectPrivateWSS(files map[string]string, private string, wss map[string]st
 	}
 	only := map[string]string{}
 	for id, v := range wss {
-		if apply.IsWSSSecretID(id) {
+		// WSS secrets and, on a carrier, the external exits' SOCKS
+		// credentials; never any other credential-store secret.
+		if apply.IsWSSSecretID(id) || credentials.IsSOCKSSecretID(id) {
 			only[id] = v
 		}
 	}

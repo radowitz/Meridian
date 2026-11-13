@@ -1280,6 +1280,74 @@ Mesh 的 Compose 只生成在枢纽和对应出口上。镜像默认是官方的
 
 结构测试在 `internal/compile/remote_access_test.go`（守卫按包逐条求值、分类、DNS、入站端口、地址改写、路由、启动顺序、关闭时逐字节相同）、`internal/apply/txn_test.go`（peer 随事务增删、失败补偿回到上一份 peer 集合、关闭功能删除接口、缺密钥在写文件前失败）和 API 测试里。`internal/compile/ula_lan_test.go` 对 ULA 局域网前缀按包求值分类链和守卫（设备 ↔ 家里主机双向放行，`fd66::/48`、中转 /64、相邻的 ULA 和其他 ULA 仍丢弃，规则恰好等于配置的前缀；GUA 前缀时分类链不变）。`TestNetnsULALANHomeAccess`（Linux、root、`MERIDIAN_NETNS_TEST=1`，与 `TestNetnsReloadNoLeak` 共用同一套命名空间搭建）在真实内核上检查同一件事，2026-11-13 跑通过一次（见 `docs/evidence/2026-11-13-debian13/`）。`TestNetnsReloadNoLeak` 加了远程设备命名空间（`mra` 用 veth 代替 WireGuard），还加了地区组切换阶段（G），只能在 Linux 上以 root 运行；这一版的运行日志已于 2026-11-13 归档在 `docs/evidence/2026-11-13-debian13/`（`netns-reload.log`、`netns-ula-lan.log`）；`docs/evidence/2026-11-12-debian13/netns-reload.log` 是加入远程接入之前的版本，不覆盖它。命名空间里的通过记录不等于真实设备拨入的证据，那仍是待人工签收。网关上的 `meridian-verify.sh` 打开时核对 `mra`、对端公钥、守卫入口、DNS、端口、规则、路由和地址改写，关闭时确认没有 `mra` 接口；手机实测和路由器转发是人工签收项，步骤见 [remote-access.md](remote-access.md)。
 
+## 挂在中继出口后面的出口
+
+只能主动拨出、又连不上枢纽（或没有可用入站端口）的出口，可以挂在一台受管的「中继出口」后面（节点字段 `via_exit`）。真实场景：台湾的 NAT 机器经香港机房出口中继。
+
+### 模型与校验
+
+- 挂靠出口 N：`role: exit`、`nat_dial_out: true`、`path_v4: true`、`via_exit: <R>`，**只有一条**启用、非待命的 `direct_wg` 链路，方向 N → R（由 N 拨 R）。不能再有到枢纽的隧道、Mesh 边、WSS、v6 绕行，也不能自己是双栈中继或中继出口。
+- 中继出口 R：受管出口，不能是挂靠出口或外部出口（**只支持一层**：更深的嵌套被 `via_exit_depth` 拒绝），要有可拨的端点（`endpoint_v4`，或动态域名 `endpoint_host`）。R 照常连两个枢纽、照常做地区组成员；R 自己也可以是主动拨出的（拨两个枢纽），这时它仍保留给 N 拨的端点（枢纽那边依然没有它的 Endpoint）。
+- 校验代码：`via_exit_not_found`、`via_exit_not_exit`、`via_exit_loop`、`via_exit_depth`、`via_exit_external`、`via_exit_unmanaged`、`via_exit_not_dial_out`、`via_exit_family`、`via_exit_workaround`、`via_exit_no_endpoint`、`via_exit_link`、`via_exit_relay_unreachable`，以及沿用的 `nat_endpoint_forbidden` / `nat_keepalive_required`。有备用枢纽时，R 要和两个枢纽各有隧道（`exit_missing_hub_tunnel` 对 R 照常检查，N 豁免）。
+- 编号：N 和 N→R 链路照常经 `ReconcileAllocations` 拿槽位，不重排任何已有对象（`TestNestedExternalAllocationStability`）。
+
+### 数据面
+
+- **隧道**：N→R 这条链路 R 在西、N 在东；R 监听，N 带 PersistentKeepalive 拨 R。N 那端的 AllowedIPs 用 `10.66.0.0/16` 代替对端 /32（枢纽的健康探测源地址在 R 后面）；N 的路由把 `10.66.0.0/16` 也指向这条隧道（它唯一的回家路）。
+- **出口自己的标记**：枢纽的出口表 `default dev <枢纽→R 的隧道>`；中继出口上 `from <N 的中转地址> lookup <N 的表>`，表里只有 `default dev <R→N 的隧道>` 加兜底黑洞。nft `nested_guard` 再兜一层：N 的中转源只能从 R→N 隧道出去，其余（包括 R 的 WAN）一律丢弃。
+- **地区组切到 N**：N 和 R 共用枢纽上的同一块隧道设备，枢纽用下一跳区分：`group_hop` 装 `default via <N 的隧道地址> dev <枢纽→R> onlink`（下一跳不离开枢纽，WireGuard 只看目的地址），枢纽的 `nested_snat` 链对「从这块设备、以这个下一跳离开、源是组中转地址」的包做 SNAT，换成 N 自己的中转地址；R 于是按源把它送进 N。组切回 R 时是普通的设备路由，源不变，从 R 的 WAN 出去。只有拓扑里有这类成员时才渲染这种变体脚本，其它拓扑的脚本逐字节不变（`TestNoNestedNoExternalArtifacts`、单枢纽黄金文件）。
+- **回程**：N 的回包回到 R，R 的 `hub_return_in` 已按入口枢纽隧道给连接打了标记，回包按标记从来时的那个枢纽回去（`TestNetnsNestedExit` 的主/备两阶段核对了 R 只在对应枢纽隧道上回包）。
+- **健康与切换**：枢纽按 N 的隧道地址经 R 去 ping（`group_step` 用 hop 的设备部分）；R 下线时 N 也 ping 不通，组按原有的滞回切到别的成员，枢纽的实际状态报告写成员名（报告解析下一跳）。
+- **解析**：组解析地址的查询被枢纽改成 N 的中转源，R 的 `group_dns` 先放行这些源（不在 R 应答），由 N 自己的解析器回答；有备用枢纽时 N 的独立解析地址（`fd66::54:<i>`）两个枢纽都路由到 R，R 路由到 N，N 在 R→N 隧道上 DNAT 到自己的解析器。解析发生在 N，不在 R。
+- **DOCKER-USER**：R 上自动生成枢纽隧道 ↔ R→N 隧道的放行规则。R 开 IPv6 转发（N 的解析查询）。
+
+### 已知边界
+
+- 只有一层；纯 IPv6 的挂靠出口不支持（用双栈中继）；N 不能有 Mesh 备路。
+- **部署顺序**：先装 R（新的转发规则），再装 N，再装两个枢纽，最后网关。在 R 装上新配置之前就让枢纽把 N 的流量交给 R，R 的旧配置会把它从 R 的 WAN 伪装出去——这是唯一的顺序依赖，面板的部署说明写明了。
+- 没有在真实主机上执行过；真实的台湾 NAT 机器和香港中继出口都没用过。
+
+## 外部 SOCKS 出口
+
+不能安装节点包的设备（真实场景：一台闪存很小的 OpenWrt 路由器，自己用 WireGuard 拨入受管的香港出口，在隧道地址上提供带用户名密码的 SOCKS5，只有 TCP）。用户的决定是沿用它的 SOCKS（「沿用tcp就行」）。面板**不登录**这台设备、**不生成**安装包、**不改**它。
+
+### 模型
+
+```json
+{"id": "my1", "name": "马来西亚路由器", "role": "exit", "region": "my", "managed": false,
+ "path_v4": true, "egress_v4": true, "egress_v6": false,
+ "external": {"carrier": "dc2", "socks_address": "192.0.2.66", "socks_port": 1080,
+              "interface": "wg9", "credential_id": "socks-xxxxxxxxxxxx"}}
+```
+
+- `carrier`：能到达 SOCKS 的受管出口（不能是挂靠出口或外部出口）；`socks_address:socks_port`：承载节点看到的 SOCKS 地址；`interface`：承载节点上路由这个地址的、**不由面板管理**的接口（那条隧道）；`credential_id`：受限凭据存储里的 SOCKS 凭据（用户名和密码都是秘密，只写不读，不进编译产物、预览、日志、快照、导出；只在承载节点的安装边界注入；被引用时拒绝删除）。
+- 它照常有标记槽位，可以进地区组、被规则选中、做解锁探测。校验代码：`external_*`（`external_managed`、`external_has_server`、`external_flags`、`external_endpoint`、`external_v6`、`external_v4`、`external_link`、`external_carrier_missing`、`external_carrier_not_exit`、`external_carrier_nested`、`external_carrier_unmanaged`、`external_socks_address`、`external_socks_port`、`external_interface`、`external_credential_missing`、`external_nested`）。保存拓扑时还核对凭据存在（API 返回 `external_credential_missing`）。
+- 承载节点上的地址（都在 lo 上，只经枢纽到承载节点的隧道可达）：服务地址 `10.66.201.<10+i>`（重定向器和 DNS 转发器监听）、健康地址 `10.66.202.<10+i>`（探测成功时才存在）、解析地址 `fd66::55:<i+1>`（这个出口的解析组）。三个网段都保留，不能手工分配给链路。
+
+### 重定向器的选择：gost 3.2.6
+
+固定版本的 wstunnel 11.1.0 有透明代理入口（`tproxy+tcp://`），但它只能把流量送进 wstunnel 自己的服务端，上游代理只支持 HTTP CONNECT，不能当「透明代理 → 带认证的 SOCKS5」客户端。ipt2socks 只能在命令行上传用户名密码（任何本地用户都能从 /proc 读到），redsocks 没有官方静态二进制。选用 **gost 3.2.6**（go-gost/gost，MIT，Go 静态二进制，x86_64 / aarch64 都有官方发布）：`red` 监听/处理器读取 DNAT 前的原目的地址（SO_ORIGINAL_DST），经一条只有一跳（这个出口的 SOCKS5，用户名密码）的链连出去；凭据只在配置文件里（0600，目录 0700）。固定在 `artifacts.lock`（两种架构的二进制摘要和发布包摘要，发布包摘要与官方 checksums.txt 一致），由面板随镜像下发、按架构校验，主机路径 `/usr/local/sbin/meridian-gost`。不写自研代理。
+
+### 数据面（全部在承载节点上）
+
+- 枢纽侧与挂靠出口相同：外部出口的标记表指向枢纽到承载节点的隧道；组切到它时用 `via <健康地址> onlink` 加 `nested_snat` 换成它的中转源。
+- 承载节点 nft `ext_dnat`（优先级 -101，先于其它 dstnat 链）：它的 IPv4 TCP → 服务地址上的重定向器；它的组解析查询和独立解析地址 → 它的解析组；**其余 UDP（含 QUIC）和它的全部 IPv6 → 服务/解析地址上没人监听的端口 9**，内核当场回 ICMP 端口不可达（UDP）或 RST（TCP），源地址是原目的地址，客户端立刻回落。没有任何一个包被转发。`ext_reject`（forward）是第二道；它的中转源选中的策略路由表只有黑洞。`ext_local` 让服务地址只能经这条 DNAT 到达。`ext_proxy_out`：承载节点连 SOCKS 只能走配置的接口，接口或路由没了就 RST，不会走默认路由出 WAN。
+- 回程：重定向器的回包按承载节点 `hub_return_*` 的连接标记从来的枢纽回去。
+- **解析**：发往这个出口的域名在**承载节点**上解析——SmartDNS 里一个单独的监听（解析地址）绑定到组 `ext_<id>`，这个组只有两个上游：经重定向器的 DNS 转发器、**经 SOCKS 用 TCP** 去问 1.1.1.1:53 和 8.8.8.8:53；不在默认组里、不回落承载节点自己的上游、不问国内解析器；SOCKS 不通时名字解析失败。不返回 AAAA。拿到的地址是从 SOCKS 那台设备的方向看到的「海外公共解析器」的答案，不是那台设备自己的解析器的答案——这是 TCP SOCKS 能做到的上限。
+- **健康**：承载节点的 `meridian-ext-health.service` 每 10 秒经重定向器做一次 DNS over TCP 查询（根 NS，经 SOCKS 到 1.1.1.1 / 8.8.8.8），8 秒内任一个答了就把健康地址放到 lo 上，否则删掉；变化写进 journal。枢纽 ping 健康地址决定成员上下线（不对 SOCKS 设备发 ICMP）。
+- **解锁探测**：照常经真实路径（标记 → 枢纽 → 承载节点 → SOCKS）、经它的解析地址解析；结果标为 `transport: tcp_only`，并列出没测的东西（需要 UDP 的功能）；IPv6 记为「无法测试」而不是通过。结果照常经 `unlock.Ingest`。
+
+### 安装、预检、撤回
+
+- 全部属于承载节点的包：gost 二进制、`meridian-ext-proxy.service`、`meridian-ext-health.service`、`/etc/meridian/ext/gost.yaml`（含秘密，0600）、nft 链、lo 上的三个网段（清单记 `lonet`，失败补偿删本次加的，撤回删网段内全部地址）。装机最后核对两个单元在运行，否则失败并补偿。
+- 预检（只读）：清单标记行 `# meridian-ext:` 给出 SOCKS 地址和接口；预检核对接口存在、主路由表把 SOCKS 地址路由到这个接口（`external_interface_missing`），并对 SOCKS 端口做一次 TCP 连接（`external_proxy_unreachable`，不发送任何数据和凭据；凭据是否正确装机后由健康探测确认）。
+- 部署顺序：先装承载节点，再装两个枢纽，最后网关（同样的顺序依赖：承载节点的旧配置会把这个出口的流量从它的 WAN 伪装出去）。
+- 没有在真实主机上执行过；真实的路由器和它的 SOCKS 没用过。
+
+## 动态域名端点
+
+出口可以填 `endpoint_host`（动态域名），拨它的枢纽或挂靠出口用这个名字作 WireGuard Endpoint。WireGuard 只在配置接口时解析一次名字，所以拨号节点装一个 `meridian-endpoint-refresh.timer`（每分钟），对每个按名字拨的对端：最近一次握手超过 150 秒（或从没握手）就 `wg set … endpoint <名字:端口>` 重新应用（即重新解析），每次一条 journal 记录；解析失败保留原端点。只对按名字拨的链路渲染；网关和中继不拨出口，路由和 nft 里不会出现名字。
+
 ## 面板信息架构
 
 面板是一个单页应用（`web/src/App.tsx`，hash 路由），侧边栏按用途分组。每一页只用上面各节描述的 API，不在浏览器里做数据面判断；顶栏按 `GET /api/status` 显示 host agent、安装状态和正在运行的任务。

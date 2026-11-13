@@ -168,6 +168,8 @@ w_nft() { [[ $1 =~ $W_RE_NFT ]]; }
 w_table() { [[ $1 =~ $W_RE_TABLE ]] && [ "$1" -ge 100 ] && [ "$1" -le 252 ]; }
 w_prio() { [[ $1 =~ $W_RE_PRIO ]]; }
 w_dst() { [[ $1 =~ $W_RE_DST ]]; }
+W_RE_LONET='^(10[.]66[.][0-9]{1,3}[.]0/(1[6-9]|2[0-4])|fd66::[0-9a-f]{1,4}:0/(4[89]|[5-9][0-9]|1[01][0-9]|12[0-8]))$'
+w_lonet() { [[ $1 =~ $W_RE_LONET ]]; }
 w_pkg() { [[ $1 =~ $W_RE_PKG ]]; }
 w_hash() { [[ $1 =~ $W_RE_HASH ]]; }
 w_path() { [[ $1 =~ $W_RE_PATH ]] && [[ $1 != *..* ]] && [[ $1 != */ ]]; }
@@ -192,7 +194,7 @@ w_fam() { case "$1" in *:*) echo 6 ;; *) echo 4 ;; esac; }
 
 # w_load_manifest reads and validates every manifest entry. An entry this
 # script does not recognise refuses the whole withdraw.
-W_FILES=(); W_HASHES=(); W_ORPHANS=(); W_IFACES=(); W_UNITS=(); W_NFTS=(); W_TABLES=(); W_DSTS=(); W_PKGS=(); W_FW=()
+W_FILES=(); W_HASHES=(); W_ORPHANS=(); W_IFACES=(); W_UNITS=(); W_NFTS=(); W_TABLES=(); W_DSTS=(); W_PKGS=(); W_FW=(); W_LONETS=()
 w_load_manifest() {
   local kind a b rest bad=""
   while read -r kind a b rest; do
@@ -206,6 +208,9 @@ w_load_manifest() {
       table) if w_table "$a"; then W_TABLES+=("$a"); else bad="$bad table:$a"; fi ;;
       prio) w_prio "$a" || bad="$bad prio:$a" ;;
       route) if w_dst "$a"; then W_DSTS+=("$a"); else bad="$bad route:$a"; fi ;;
+      # A Meridian address range on lo (a carrier's external exits): every
+      # address in it is Meridian's.
+      lonet) if w_lonet "$a"; then W_LONETS+=("$a"); else bad="$bad lonet:$a"; fi ;;
       pkg) if w_pkg "$a"; then W_PKGS+=("$a"); else bad="$bad pkg:$a"; fi ;;
       # Docker FORWARD DROP coexistence rules: Meridian-tagged rules of
       # DOCKER-USER in that family (removed by tag, nothing else).
@@ -213,7 +218,7 @@ w_load_manifest() {
       # A panel-delivered binary: also listed as a "file" line (removed
       # there, with the same hash check); here only validated.
       artifact) case "$a $rest" in
-          "wstunnel /usr/local/sbin/meridian-wstunnel "*|"smartdns /usr/local/sbin/meridian-smartdns "*)
+          "wstunnel /usr/local/sbin/meridian-wstunnel "*|"smartdns /usr/local/sbin/meridian-smartdns "*|"gost /usr/local/sbin/meridian-gost "*)
             if ! w_hash "${rest##* }" || ! [[ $b =~ ^[0-9][0-9A-Za-z.+-]{0,40}$ ]]; then bad="$bad artifact:$a"; fi ;;
           *) bad="$bad artifact:$a" ;;
         esac ;;
@@ -297,6 +302,7 @@ w_plan_items() {
   for p in "${W_IFACES[@]}"; do st=absent; w_has_link "$p" && st=present; echo "MERIDIAN_PLAN iface $p $st"; done
   for p in "${W_TABLES[@]}"; do echo "MERIDIAN_PLAN table $p flush"; done
   for p in "${W_DSTS[@]}"; do echo "MERIDIAN_PLAN route $p blackhole"; done
+  for p in "${W_LONETS[@]}"; do echo "MERIDIAN_PLAN lonet $p $(ip -o -"$(w_fam "$p")" addr show dev lo to "$p" 2>/dev/null | grep -c . || true) addresses"; done
   for p in "${W_NFTS[@]}"; do st=absent; w_has_nft "$p" && st=present; echo "MERIDIAN_PLAN nft inet $p $st"; done
   for i in "${!W_FILES[@]}"; do
     p=${W_FILES[$i]}; f=$M_ROOT$p
@@ -362,6 +368,13 @@ w_remove_all() {
       if nft delete table inet "$t" >/dev/null 2>&1; then w_removed nft "inet $t"; else w_left nft "inet $t"; fi
     fi
   done
+  for d in "${W_LONETS[@]}"; do
+    fam=$(w_fam "$d")
+    while read -r n; do
+      [ -n "$n" ] || continue
+      if ip -"$fam" addr del "$n" dev lo >/dev/null 2>&1; then w_removed address "$n on lo"; else w_left address "$n on lo"; fi
+    done < <(ip -o -"$fam" addr show dev lo to "$d" 2>/dev/null | awk '{print $4}')
+  done
   # The coexistence rules: only rules whose comment is a Meridian tag. The
   # re-assert unit (meridian-fwcompat.service) was disabled and stopped
   # with the other units above, so a Docker restart cannot bring them back.
@@ -397,6 +410,8 @@ w_remove_all() {
   done
   # The WSS directory (path prefixes, private key) goes when it is empty.
   if [ -d "$M_ROOT/etc/meridian/wss" ] && [ ! -L "$M_ROOT/etc/meridian/wss" ]; then rmdir -- "$M_ROOT/etc/meridian/wss" 2>/dev/null || true; fi
+  # So does the external exits' directory (the redirector configuration).
+  if [ -d "$M_ROOT/etc/meridian/ext" ] && [ ! -L "$M_ROOT/etc/meridian/ext" ]; then rmdir -- "$M_ROOT/etc/meridian/ext" 2>/dev/null || true; fi
   if [ "$reload" = 1 ]; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
   # The list of interfaces meridian-up.sh switched to accept_ra=2. Their
   # runtime value stays 2 (forwarding stays on; 1 would drop their IPv6).
@@ -411,6 +426,9 @@ w_remove_all() {
   done
   for p in "${W_IFACES[@]}"; do if w_has_link "$p"; then w_left iface "$p"; fi; done
   for t in "${W_NFTS[@]}"; do if w_has_nft "$t"; then w_left nft "inet $t"; fi; done
+  for d in "${W_LONETS[@]}"; do
+    if [ -n "$(ip -o -"$(w_fam "$d")" addr show dev lo to "$d" 2>/dev/null)" ]; then w_left address "lo still has addresses in $d"; fi
+  done
   for fam in "${W_FW[@]}"; do
     if [ -n "$(m_fw_tagged "$fam")" ]; then w_left fwrule "IPv$fam DOCKER-USER still has Meridian-tagged rules"; fi
   done
@@ -535,7 +553,7 @@ w_mode_journal() {
   for f in actions pre-links pre-nft pre-rule4 pre-rule6 pre-route4 pre-route6 pre-sysctl pre-units; do
     [ -f "$work/$f" ] || w_refuse journal_unrecoverable "the run's work directory lacks $f; check $work by hand"
   done
-  M_IFACES=""; M_UNITS=""; M_NFT=""; M_TABLES=""; M_PRIOS=""; M_DSTS=""; M_EXPECT=""
+  M_IFACES=""; M_UNITS=""; M_NFT=""; M_TABLES=""; M_PRIOS=""; M_DSTS=""; M_EXPECT=""; M_LONETS=""
   local v bad=""
   while read -r kind rest; do
     for v in $rest; do
@@ -547,12 +565,13 @@ w_mode_journal() {
         prios) w_prio "$v" || bad="$bad prio:$v" ;;
         dsts) w_dst "$v" || bad="$bad route:$v" ;;
         expect) [ "$v" = none ] || [ "$v" = same ] || bad="$bad expect:$v" ;;
+        lonets) w_lonet "$v" || bad="$bad lonet:$v" ;;
         *) bad="$bad $kind" ;;
       esac
     done
     case "$kind" in
       ifaces) M_IFACES=$rest ;; units) M_UNITS=$rest ;; nft) M_NFT=$rest ;; tables) M_TABLES=$rest ;;
-      prios) M_PRIOS=$rest ;; dsts) M_DSTS=$rest ;; expect) M_EXPECT=$rest ;;
+      prios) M_PRIOS=$rest ;; dsts) M_DSTS=$rest ;; expect) M_EXPECT=$rest ;; lonets) M_LONETS=$rest ;;
     esac
   done < "$work/params"
   [ -z "$bad" ] || w_refuse journal_unrecoverable "the run's params are not acceptable ($(printf '%s' "$bad" | tr -cd 'A-Za-z0-9_:./ -' | head -c 200))"

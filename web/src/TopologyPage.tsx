@@ -116,6 +116,8 @@ function nodeLabel(n: Node, server: ServerView | undefined) {
     n.residential ? "住宅" : null,
     n.ix_bound ? "IX 绑定" : null,
     n.nat_dial_out ? "拨出" : null,
+    n.role === "exit" && n.via_exit ? `经 ${n.via_exit} 中继` : null,
+    n.role === "exit" && n.external ? "外部 SOCKS · 仅 TCP" : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -144,7 +146,7 @@ function toFlow(topo: Topology, servers: Map<string, ServerView>, issues: Issue[
       id: n.id,
       position: { x: n.x ?? 0, y: n.y ?? 0 },
       data: { label: nodeLabel(n, n.server_id ? servers.get(n.server_id) : undefined) },
-      className: `topo-node role-${n.role}${n.residential ? " residential" : ""}${bad.has(n.id) ? " has-error" : ""}`,
+      className: `topo-node role-${n.role}${n.residential ? " residential" : ""}${n.role === "exit" && n.external ? " external" : ""}${n.role === "exit" && n.via_exit ? " nested" : ""}${bad.has(n.id) ? " has-error" : ""}`,
     })),
     edges: topo.links.map((l) => ({
       id: l.id,
@@ -308,6 +310,45 @@ function HubRoleFields({ node, topo, patch }: { node: Node; topo: Topology; patc
   );
 }
 
+/** How an exit is reached (nested, external SOCKS, dynamic DNS endpoint); edited on the exits page. */
+function ExitReachFacts({ node, topo }: { node: Node; topo: Topology }) {
+  const nm = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
+  const ext = node.external;
+  return (
+    <Alert
+      type={ext ? "warning" : "info"}
+      showIcon
+      style={{ marginBottom: 12 }}
+      data-testid="exit-reach"
+      message={ext ? "外部 SOCKS 出口 · 仅 TCP · 仅 IPv4" : node.via_exit ? `嵌套出口：经 ${nm(node.via_exit)} 中继` : "动态域名端点"}
+      description={
+        <>
+          {ext ? (
+            <Facts
+              items={[
+                ["承载出口", nm(ext.carrier)],
+                ["SOCKS 代理", <Mono key="s">{`${ext.socks_address}:${ext.socks_port}`}</Mono>],
+                ["承载出口上的接口", <Mono key="i">{ext.interface}</Mono>],
+                ["SOCKS 凭据", <Mono key="c">{ext.credential_id}</Mono>],
+              ]}
+            />
+          ) : null}
+          {ext ? <div>没有链路：它经承载出口上的 SOCKS 代理到达。只承载 IPv4 上的 TCP，UDP 在承载出口上被拒绝。</div> : null}
+          {node.via_exit ? <div>唯一的隧道是到 {nm(node.via_exit)} 的直连 WG 链路，不直接连枢纽。</div> : null}
+          {node.endpoint_host ? (
+            <div>
+              动态域名端点 <Mono>{node.endpoint_host}</Mono>：拨它的节点按域名解析。
+            </div>
+          ) : null}
+          <div>
+            在 <Link to={href("exits")}>出口</Link> 页的「出口节点」里修改（未在真实设备上验证）。
+          </div>
+        </>
+      }
+    />
+  );
+}
+
 function NodeDetail({
   node,
   topo,
@@ -364,6 +405,7 @@ function NodeDetail({
         />
       </Row>
       {node.role === "hub" ? <HubRoleFields node={node} topo={topo} patch={patch} /> : null}
+      {node.role === "exit" && (node.external || node.via_exit || node.endpoint_host) ? <ExitReachFacts node={node} topo={topo} /> : null}
       <Row label="国家或地区" help="出口按它在出口页分区；解锁探测用它确认实际出口地区。">
         <AutoComplete value={node.region ?? ""} options={regionOptions} onChange={(v) => patch({ region: v.trim().toLowerCase() || undefined })} placeholder="例如 hk" />
       </Row>
@@ -373,6 +415,8 @@ function NodeDetail({
       </Divider>
       {node.role === "gateway" ? (
         <Typography.Paragraph type="secondary">网关是运行面板的这台机器，不关联远端服务器；在「部署」页安装到本机。</Typography.Paragraph>
+      ) : node.role === "exit" && node.external ? (
+        <Typography.Paragraph type="secondary">外部 SOCKS 出口不装机，没有服务器：面板从不登录那台代理设备。</Typography.Paragraph>
       ) : !node.managed ? (
         <Typography.Paragraph type="secondary">这个节点不需要装机（例如 IX 专线），没有服务器。</Typography.Paragraph>
       ) : (
@@ -1362,6 +1406,7 @@ export default function TopologyPage() {
           </span>
         ))}
         <span className="legend-dot residential">住宅出口</span>
+        {topo.nodes.some((n) => n.role === "exit" && n.external) ? <span className="legend-dot external">外部 SOCKS 出口（无链路）</span> : null}
         <span className="legend-line standby">待命链路</span>
         <span className="legend-line error">有错误</span>
       </div>

@@ -84,7 +84,7 @@ func renderForwarding(t model.Topology, n model.Node) string {
 	sb.WriteString("# Meridian forwarding. Applied by meridian-up.sh after the nft batch (and\n")
 	sb.WriteString("# on the gateway the LAN guard) is loaded. Not in /etc/sysctl.d on purpose.\n")
 	sb.WriteString("net.ipv4.ip_forward=1\n")
-	if forwards6(n) {
+	if forwards6In(t, n) {
 		sb.WriteString("net.ipv6.conf.all.forwarding=1\n")
 	} else {
 		// An exit without IPv6 egress and without IPv6 transit forwards no
@@ -121,6 +121,12 @@ func forwards6(n model.Node) bool {
 		return true
 	}
 	return n.EgressV6 || n.DualstackRelay
+}
+
+// forwards6In is forwards6 with the topology: a relay exit also forwards
+// IPv6 (the ULA resolver queries of the exits behind it).
+func forwards6In(t model.Topology, n model.Node) bool {
+	return forwards6(n) || model.IsRelayExit(t, n)
 }
 
 // renderGuardNFT is the gateway LAN guard alone, loaded at early boot by
@@ -162,6 +168,14 @@ func renderRTTables(t model.Topology, n model.Node, exits []ExitPlan, groups []G
 	}
 	for _, r := range ingressReturnsFor(t, n) {
 		fmt.Fprintf(&sb, "%d\tmeridian_in_%s\n", r.Table, r.Iface)
+	}
+	if n.Role == model.RoleExit {
+		// Tables of the exits behind this node (relay exit, carrier).
+		for _, e := range exits {
+			if e.Nested == n.ID || e.External && model.HubSideOf(e.Node) == n.ID {
+				fmt.Fprintf(&sb, "%d\tmeridian_%s\n", e.Table, strings.ReplaceAll(e.Node.ID, "-", "_"))
+			}
+		}
 	}
 	if n.Role == model.RoleHub {
 		for _, e := range exits {
@@ -246,6 +260,11 @@ func peerEndpoint(tun Tunnel, self model.Node) string {
 		return ""
 	}
 	srv := tun.Listener()
+	if host := dialHost(tun); host != "" && !tun.OuterV6 {
+		// A dynamic-DNS name (exits only): re-resolved by the endpoint
+		// refresh when the handshake goes stale.
+		return fmt.Sprintf("%s:%d", host, tun.WGPort)
+	}
 	if tun.OuterV6 {
 		if srv.EndpointV6 == "" {
 			return ""
@@ -264,10 +283,16 @@ func allowedIPs(t model.Topology, tun Tunnel, west bool) string {
 	if west {
 		return "0.0.0.0/0, ::/0"
 	}
+	hubs := tun.WestV4 + "/32"
+	if model.IsNested(tun.East) && tun.West.ID == tun.East.ViaExit {
+		// A nested exit answers the hubs' health probes, whose sources are
+		// the hubs' tunnel addresses behind its relay exit.
+		hubs = "10.66.0.0/16"
+	}
 	parts := []string{
 		lanNet(t),
 		transitV4Net(),
-		tun.WestV4 + "/32",
+		hubs,
 		"fd66::/48",
 	}
 	if t.Settings.LANIPv6Prefix != "" {
@@ -276,7 +301,7 @@ func allowedIPs(t model.Topology, tun Tunnel, west bool) string {
 	return strings.Join(parts, ", ")
 }
 
-func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool) string {
+func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool, exits []ExitPlan) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("# Bring up Meridian on this host without flushing the rest of nftables.\n")
@@ -286,6 +311,9 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool) st
 	if n.Role != model.RoleGateway {
 		sb.WriteString(wanMarker(n))
 		sb.WriteString(ixHubMarker(n))
+		for _, e := range externalPlans(exits, n.ID) {
+			sb.WriteString(extMarker(e))
+		}
 	}
 	sb.WriteString(nftLoadCommands(n.Role == model.RoleGateway))
 	if n.Role == model.RoleGateway {
@@ -317,7 +345,7 @@ func renderUp(t model.Topology, n model.Node, tunnels []Tunnel, meshDNS bool) st
 		// interfaces still down (the preflight refuses such a host before
 		// the first install).
 		sb.WriteString(fwCompatCommands)
-		if forwards6(n) {
+		if forwards6In(t, n) {
 			// Before the IPv6 forwarding switch: interfaces whose IPv6
 			// comes from router advertisements keep accepting them.
 			sb.WriteString(raKeepCommands)
@@ -431,6 +459,18 @@ fi
   fi
 fi
 `)
+	}
+	if n.Role == model.RoleExit && len(externalPlans(exits, n.ID)) > 0 {
+		// External SOCKS exits: the redirector binds the service addresses
+		// the routes script just put on lo, and reads a configuration that
+		// may have changed; the health service re-evaluates at once.
+		sb.WriteString("enable_unit " + ExtProxyUnit + "\n")
+		sb.WriteString("systemctl restart " + ExtProxyUnit + "\n")
+		sb.WriteString("enable_unit " + ExtHealthUnit + "\n")
+		sb.WriteString("systemctl restart " + ExtHealthUnit + "\n")
+	}
+	if len(refreshTunnels(n, tunnels)) > 0 {
+		sb.WriteString("enable_unit " + EndpointRefreshTimer + "\n")
 	}
 	sb.WriteString("echo meridian-up-complete\n")
 	return sb.String()

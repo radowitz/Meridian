@@ -1,6 +1,7 @@
-// 密钥: reusable SSH credentials (passwords and private keys). Secrets are
-// write-only: the public key and fingerprint are always viewable, the
-// password / private key / passphrase never are.
+// 密钥: reusable SSH credentials (passwords and private keys) and the SOCKS
+// credentials of external SOCKS exits. Secrets are write-only: the public
+// key and fingerprint are always viewable, the password / private key /
+// passphrase and the SOCKS username / password never are.
 
 import { PlusOutlined } from "@ant-design/icons";
 import {
@@ -17,10 +18,10 @@ import {
   Tag,
   Typography,
 } from "antd";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { href, useRouter } from "./state";
-import type { SSHCredentialCreate, SSHCredentialView, SSHSecretInput } from "./types";
+import { SOCKS_VALUE_RE, type SOCKSCredentialView, type SSHCredentialCreate, type SSHCredentialView, type SSHSecretInput } from "./types";
 import {
   RowActions,
   TABLE_SCROLL,
@@ -33,6 +34,7 @@ import {
   Page,
   RefList,
   RefusedDialog,
+  Section,
   SecretField,
   StatusTag,
   TimeText,
@@ -514,7 +516,7 @@ export default function CredentialsPage() {
   return (
     <Page
       title="密钥"
-      description="登录服务器用的 SSH 密码和私钥。可以被多台服务器复用；保存后只能替换，不能再查看。"
+      description="登录服务器用的 SSH 密码和私钥，以及外部 SOCKS 出口的用户名和密码。可以被复用；保存后只能替换，不能再查看。"
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
           新建密钥
@@ -636,9 +638,379 @@ export default function CredentialsPage() {
       />
       <EditDrawer cred={editing} onClose={() => setEditing(null)} onDone={(c) => upsert(c)} />
       <RefusedDialog error={refused} title="不能删除这把密钥" onClose={() => setRefused(null)} />
+      <SocksSection focus={route.query.get("section") === "socks"} openCreate={route.query.get("socks") === "new"} />
       {selectedId && state.data && !selected && !state.loading && reread === selectedId ? (
         <Alert type="warning" showIcon style={{ marginTop: 16 }} message={`没有 ID 为 ${selectedId} 的密钥，它可能已被删除。`} />
       ) : null}
     </Page>
+  );
+}
+
+// ---------------------------------------------------- SOCKS credentials ---
+//
+// Username and password of the SOCKS5 proxy behind an external SOCKS exit.
+// Both halves are secret: sent once (create or rotate), never returned,
+// never kept in component state beyond the form, cleared after every
+// request whatever its outcome.
+
+const SOCKS_SECRET_FIELDS = ["username", "password"] as const;
+const SOCKS_VALUE_HELP = "1–255 个可打印 ASCII 字符，不能有空白、引号、反斜杠和 @ : / # ? % &。";
+
+function SocksSecretInputs() {
+  const rule = (what: string) => [
+    { required: true, message: `请填写${what}` },
+    { pattern: SOCKS_VALUE_RE, message: `${what}必须是${SOCKS_VALUE_HELP}` },
+  ];
+  return (
+    <>
+      <Form.Item name="username" label="SOCKS 用户名" rules={rule("用户名")} extra={SOCKS_VALUE_HELP}>
+        <SecretField aria-label="SOCKS 用户名" />
+      </Form.Item>
+      <Form.Item name="password" label="SOCKS 密码" rules={rule("密码")} extra="提交后两个输入框立即清空，之后不能再查看，只能轮换。">
+        <SecretField aria-label="SOCKS 密码" />
+      </Form.Item>
+    </>
+  );
+}
+
+function SocksCreateDrawer({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (c: SOCKSCredentialView) => void }) {
+  const [form] = Form.useForm();
+  const [fieldHandled, setFieldHandled] = useState(false);
+  const act = useAction();
+  const close = () => {
+    form.resetFields();
+    act.clear();
+    onClose();
+  };
+  async function submit() {
+    let v: Record<string, string | undefined>;
+    try {
+      v = await form.validateFields();
+    } catch {
+      // Invalid input: the secrets leave the form all the same.
+      form.setFieldsValue(Object.fromEntries(SOCKS_SECRET_FIELDS.map((f) => [f, undefined])));
+      return;
+    }
+    let failed: ApiError | null = null;
+    const res = await act.run(
+      () => api.createSocksCredential({ name: (v.name ?? "").trim(), notes: v.notes ?? "", username: v.username ?? "", password: v.password ?? "" }),
+      "create",
+      (e) => (failed = e),
+    );
+    form.setFieldsValue(Object.fromEntries(SOCKS_SECRET_FIELDS.map((f) => [f, undefined])));
+    setFieldHandled(showFieldError(form, failed, ["name", "notes", "username", "password"]));
+    if (!res) return;
+    onCreated(res.credential);
+    close();
+  }
+  return (
+    <Drawer
+      title="新建 SOCKS 凭据"
+      open={open}
+      onClose={close}
+      width={520}
+      destroyOnHidden
+      footer={
+        <Space>
+          <Button onClick={close}>取消</Button>
+          <Button type="primary" loading={!!act.busy} onClick={() => void submit()}>
+            创建
+          </Button>
+        </Space>
+      }
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="外部 SOCKS 出口所用代理的用户名和密码。"
+        description="只在装机时写进承载节点的转发配置；面板从不登录那台代理设备，也不会再显示这两个值。"
+      />
+      {act.error && !fieldHandled ? <ApiErrorAlert error={act.error} /> : null}
+      <Form form={form} layout="vertical" autoComplete="off" requiredMark="optional">
+        <Form.Item name="name" label="名称" rules={[{ required: true, message: "请填写名称" }]}>
+          <Input autoComplete="off" placeholder="例如 马来西亚住宅代理" />
+        </Form.Item>
+        <SocksSecretInputs />
+        <Form.Item name="notes" label="备注">
+          <Input.TextArea rows={2} />
+        </Form.Item>
+      </Form>
+    </Drawer>
+  );
+}
+
+function SocksRotateDrawer({ cred, onClose, onDone }: { cred: SOCKSCredentialView | null; onClose: () => void; onDone: (c: SOCKSCredentialView) => void }) {
+  const [form] = Form.useForm();
+  const [fieldHandled, setFieldHandled] = useState(false);
+  const act = useAction();
+  const close = () => {
+    form.resetFields();
+    act.clear();
+    onClose();
+  };
+  async function submit() {
+    if (!cred) return;
+    let v: Record<string, string | undefined>;
+    try {
+      v = await form.validateFields();
+    } catch {
+      form.setFieldsValue(Object.fromEntries(SOCKS_SECRET_FIELDS.map((f) => [f, undefined])));
+      return;
+    }
+    let failed: ApiError | null = null;
+    const res = await act.run(() => api.rotateSocksCredential(cred.id, { username: v.username ?? "", password: v.password ?? "" }), "rotate", (e) => (failed = e));
+    form.setFieldsValue(Object.fromEntries(SOCKS_SECRET_FIELDS.map((f) => [f, undefined])));
+    setFieldHandled(showFieldError(form, failed, ["username", "password"]));
+    if (!res) return;
+    onDone(res.credential);
+    close();
+  }
+  return (
+    <Drawer
+      title={`轮换 ${cred?.name ?? ""}`}
+      open={!!cred}
+      onClose={close}
+      width={520}
+      destroyOnHidden
+      footer={
+        <Space>
+          <Button onClick={close}>取消</Button>
+          <Button type="primary" danger loading={!!act.busy} onClick={() => void submit()}>
+            轮换
+          </Button>
+        </Space>
+      }
+    >
+      <Alert
+        type="warning"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="轮换保留同一个 ID，引用它的外部出口改用新的用户名和密码。"
+        description="新值要在承载节点重新装机后才生效；先在代理上改好，再轮换，再到「部署」页重新下发承载节点。"
+      />
+      {act.error && !fieldHandled ? <ApiErrorAlert error={act.error} /> : null}
+      <Form form={form} layout="vertical" autoComplete="off">
+        <SocksSecretInputs />
+      </Form>
+      {cred && cred.used_by.length > 0 ? (
+        <>
+          <Typography.Text type="secondary">受影响的外部出口：</Typography.Text>
+          <RefList refs={cred.used_by} />
+        </>
+      ) : null}
+    </Drawer>
+  );
+}
+
+function SocksEditDrawer({ cred, onClose, onDone }: { cred: SOCKSCredentialView | null; onClose: () => void; onDone: (c: SOCKSCredentialView) => void }) {
+  const [form] = Form.useForm();
+  const act = useAction();
+  const close = () => {
+    act.clear();
+    onClose();
+  };
+  return (
+    <Drawer
+      title={`编辑 ${cred?.name ?? ""}`}
+      open={!!cred}
+      onClose={close}
+      width={480}
+      destroyOnHidden
+      footer={
+        <Space>
+          <Button onClick={close}>取消</Button>
+          <Button
+            type="primary"
+            loading={!!act.busy}
+            onClick={async () => {
+              if (!cred) return;
+              let v: { name: string; notes?: string };
+              try {
+                v = await form.validateFields();
+              } catch {
+                return;
+              }
+              const res = await act.run(() => api.updateSocksCredential(cred.id, { name: v.name.trim(), notes: v.notes ?? "" }));
+              if (res) {
+                onDone(res.credential);
+                close();
+              }
+            }}
+          >
+            保存
+          </Button>
+        </Space>
+      }
+    >
+      {cred ? (
+        <>
+          <ApiErrorAlert error={act.error} />
+          <Form form={form} layout="vertical" initialValues={{ name: cred.name, notes: cred.notes }}>
+            <Form.Item name="name" label="名称" rules={[{ required: true, message: "请填写名称" }]}>
+              <Input autoComplete="off" />
+            </Form.Item>
+            <Form.Item name="notes" label="备注">
+              <Input.TextArea rows={3} />
+            </Form.Item>
+          </Form>
+          <Typography.Text type="secondary">要换用户名或密码，用「轮换」。</Typography.Text>
+        </>
+      ) : null}
+    </Drawer>
+  );
+}
+
+/** The SOCKS credentials of external SOCKS exits (section of the 密钥 page). */
+function SocksSection({ focus, openCreate }: { focus: boolean; openCreate: boolean }) {
+  const { message } = AntApp.useApp();
+  const state = useApi(() => api.listSocksCredentials(), []);
+  const [creating, setCreating] = useState(openCreate);
+  const [rotating, setRotating] = useState<SOCKSCredentialView | null>(null);
+  const [editing, setEditing] = useState<SOCKSCredentialView | null>(null);
+  const [refused, setRefused] = useState<ApiError | null>(null);
+  const confirm = useConfirmDanger();
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focus) ref.current?.scrollIntoView?.({ block: "start" });
+  }, [focus]);
+
+  const upsert = (c: SOCKSCredentialView) =>
+    state.setData((d) => {
+      if (!d) return d;
+      const rest = d.credentials.filter((x) => x.id !== c.id);
+      return { credentials: [...rest, c].sort((a, b) => a.name.localeCompare(b.name)) };
+    });
+
+  const askDelete = (c: SOCKSCredentialView) =>
+    confirm({
+      title: `删除 SOCKS 凭据「${c.name}」？`,
+      consequence:
+        c.used_by.length > 0
+          ? "它仍被外部出口使用，面板会拒绝删除并列出这些出口。"
+          : "删除后无法恢复，面板里存的用户名和密码一并清除；代理设备本身不受影响。",
+      okText: "删除",
+      onOk: async () => {
+        try {
+          await api.deleteSocksCredential(c.id);
+          message.success("已删除");
+          await state.reload();
+        } catch (e) {
+          setRefused(e as ApiError);
+          void state.reload();
+        }
+      },
+    });
+
+  return (
+    <div ref={ref} data-testid="socks-credentials">
+      <Section
+        id="socks"
+        title="SOCKS 凭据"
+        extra={
+          <Button icon={<PlusOutlined />} onClick={() => setCreating(true)}>
+            新建 SOCKS 凭据
+          </Button>
+        }
+      >
+        <Typography.Paragraph type="secondary">
+          外部 SOCKS 出口所用代理的用户名和密码。只写不读：保存后不能再查看，只能轮换；只在承载节点装机时使用。
+        </Typography.Paragraph>
+        <DataView
+          state={state}
+          rows={3}
+          isEmpty={(d) => d.credentials.length === 0}
+          empty={<EmptyState title="还没有 SOCKS 凭据" description="添加外部 SOCKS 出口之前，先在这里保存代理的用户名和密码。" />}
+        >
+          {(d) => (
+            <Table
+              rowKey="id"
+              dataSource={d.credentials}
+              pagination={false}
+              scroll={TABLE_SCROLL}
+              onRow={(c) => ({ "data-testid": `socks-row-${c.id}` }) as React.HTMLAttributes<HTMLElement>}
+              columns={[
+                {
+                  title: "名称",
+                  dataIndex: "name",
+                  className: "cell-name",
+                  render: (_, c) => (
+                    <span>
+                      {c.name} <Typography.Text type="secondary" className="mono-small">{c.id}</Typography.Text>
+                    </span>
+                  ),
+                },
+                { title: "备注", width: 200, className: "cell-text", render: (_, c) => c.notes || <Typography.Text type="secondary">—</Typography.Text> },
+                {
+                  title: "用户名和密码",
+                  className: "nowrap",
+                  render: (_, c) => (
+                    <Space size={4}>
+                      <StatusTag kind={c.secret_set ? "ok" : "attention"}>{c.secret_set ? "已设置" : "未设置"}</StatusTag>
+                      <Typography.Text type="secondary">不可查看</Typography.Text>
+                    </Space>
+                  ),
+                },
+                { title: "创建", render: (_, c) => <TimeText value={c.created_at} /> },
+                { title: "最近轮换", render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
+                {
+                  title: "使用者",
+                  className: "nowrap",
+                  render: (_, c) =>
+                    c.used_by.length === 0 ? (
+                      <Typography.Text type="secondary">未使用</Typography.Text>
+                    ) : (
+                      <Space size={[4, 0]}>
+                        {c.used_by.slice(0, 3).map((r) => (
+                          <Link key={r.kind + r.id} to={href("exits")}>
+                            {r.name || r.id}
+                          </Link>
+                        ))}
+                        {c.used_by.length > 3 ? <Typography.Text type="secondary">等 {c.used_by.length} 个</Typography.Text> : null}
+                      </Space>
+                    ),
+                },
+                {
+                  title: "操作",
+                  fixed: "right",
+                  className: "cell-actions",
+                  render: (_, c) => (
+                    <RowActions
+                      label={c.name}
+                      more={[
+                        { key: "rotate", label: "轮换", onClick: () => setRotating(c) },
+                        { key: "delete", label: "删除", danger: true, onClick: () => askDelete(c) },
+                      ]}
+                    >
+                      <Button type="link" size="small" onClick={() => setEditing(c)}>
+                        编辑
+                      </Button>
+                    </RowActions>
+                  ),
+                },
+              ]}
+            />
+          )}
+        </DataView>
+      </Section>
+      <SocksCreateDrawer
+        open={creating}
+        onClose={() => setCreating(false)}
+        onCreated={(c) => {
+          upsert(c);
+          message.success(`已创建「${c.name}」`);
+        }}
+      />
+      <SocksRotateDrawer
+        cred={rotating}
+        onClose={() => setRotating(null)}
+        onDone={(c) => {
+          upsert(c);
+          message.success("已轮换；承载节点重新装机后生效");
+        }}
+      />
+      <SocksEditDrawer cred={editing} onClose={() => setEditing(null)} onDone={(c) => upsert(c)} />
+      <RefusedDialog error={refused} title="不能删除这个 SOCKS 凭据" onClose={() => setRefused(null)} />
+    </div>
   );
 }

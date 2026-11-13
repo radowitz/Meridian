@@ -22,3 +22,11 @@ wstunnel 11.1.0 aarch64 a2e4e02bf63a7608ae82625b1a0a16dc00d562e0a0326c26f22b26e8
 # asset digests GitHub publishes for the release.
 smartdns 1.2026.08.05-0921 x86_64 8adb80ce14d3a90a852d1dcc14d6a485ff0b65622d7ef294c4b8f1d0f51eb645 6030712 8adb80ce14d3a90a852d1dcc14d6a485ff0b65622d7ef294c4b8f1d0f51eb645 raw - https://github.com/pymumu/smartdns/releases/download/Release48.4/smartdns-x86_64
 smartdns 1.2026.08.05-0921 aarch64 1208c5562046c71913c3df88ad4e3ed0a3410161ff77ce4a60cdd63936bf1b27 5301472 1208c5562046c71913c3df88ad4e3ed0a3410161ff77ce4a60cdd63936bf1b27 raw - https://github.com/pymumu/smartdns/releases/download/Release48.4/smartdns-aarch64
+# gost 3.2.6 (go-gost/gost, MIT): static Linux builds (Go, no cgo). The
+# transparent TCP redirector of external SOCKS exits on their carrier (red
+# listener/handler, SOCKS5 connector with username/password, configuration
+# file only: the credential never appears on a command line). The archive
+# digests are the ones in the release's checksums.txt; the binary digests
+# were computed from the extracted member.
+gost 3.2.6 x86_64 a2aea24efb4597b5f57b35b8e1bbcc59f439b80723854d4371f6828b46682ffb 9673064 b39037b0380ea001fb3c0c28441c2e10bfc694f90682739a65b53e55dce5238b tar.gz gost https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_amd64.tar.gz
+gost 3.2.6 aarch64 343c3e003996ca0437b9cc47dd1500cd0475ba09f5a5f17e50851854e06a1ca7 7804608 f674c8f4a033dc1dfd4f0d5e9602fbe5b0d0f81307bf3794f44b5b5d6d622eae tar.gz gost https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_arm64.tar.gz

@@ -3154,3 +3154,305 @@ describe("domestic relays sharing the main path", () => {
     expect(saved!.settings.path_quality).toEqual({ evict_after_sec: 45, probe_daily_budget_mb: 16, probe_off: true });
   });
 });
+
+// ------------------------------------------- nested and external exits ---
+
+describe("nested and external SOCKS exits", () => {
+  const SOCKS_CRED = {
+    id: "socks-1",
+    name: "马来西亚代理",
+    notes: "住宅",
+    secret_set: true,
+    created_at: NOW,
+    updated_at: NOW,
+    used_by: [{ kind: "node", id: "ext-1", name: "马来西亚住宅" }],
+  };
+  const withKinds = () =>
+    topology({
+      nodes: [
+        ...topology().nodes,
+        exitNode("my-nested", "嵌套出口", { region: "my", nat_dial_out: true, path_v6: false, via_exit: "hk-2" }),
+        exitNode("ext-1", "马来西亚住宅", {
+          region: "my",
+          managed: false,
+          path_v6: false,
+          egress_v6: false,
+          residential: true,
+          external: { carrier: "hk-2", socks_address: "192.0.2.10", socks_port: 1080, interface: "wg9", credential_id: "socks-1" },
+        }),
+      ],
+    });
+
+  it("adds an external exit with the backend's shape and never puts a username or password into the topology", async () => {
+    let saved: Topology | null = null;
+    const api = fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+      "GET /api/socks-credentials": () => ({ credentials: [{ ...SOCKS_CRED, used_by: [] }] }),
+      "PUT /api/topology": (req) => {
+        saved = req.body as Topology;
+        return { topology: saved, issues: [], paths: [], draft: false };
+      },
+    });
+    renderAt("#/exits");
+    await userEvent.click(await screen.findByRole("button", { name: /添加外部 SOCKS 出口/ }));
+    const drawer = await screen.findByRole("dialog");
+    // The limitations and the deployment order are stated before anything is saved.
+    const limits = within(drawer).getByTestId("external-limits");
+    expect(limits).toHaveTextContent("只承载 IPv4 上的 TCP");
+    expect(limits).toHaveTextContent("UDP（包括 QUIC / HTTP/3）在承载节点上直接拒绝");
+    expect(limits).toHaveTextContent("1.1.1.1 / 8.8.8.8；没有回退");
+    expect(limits).toHaveTextContent("不返回 AAAA");
+    expect(limits).toHaveTextContent("每 10 秒经代理发一次 DNS over TCP 查询");
+    expect(limits).toHaveTextContent("面板从不登录那台代理设备，也不为它生成安装包");
+    expect(limits).toHaveTextContent("尚未在真实设备上验证");
+    expect(within(drawer).getByRole("link", { name: /SOCKS 凭据/ })).toHaveAttribute("href", "#/keys?section=socks&socks=new");
+
+    fireEvent.change(within(drawer).getByLabelText("ID"), { target: { value: "my-socks" } });
+    fireEvent.change(within(drawer).getByLabelText("显示名称"), { target: { value: "马来西亚住宅" } });
+    fireEvent.change(within(drawer).getByRole("combobox", { name: "国家或地区" }), { target: { value: "my" } });
+    await userEvent.click(within(drawer).getByRole("checkbox", { name: /住宅（家宽）/ }));
+    await pick("承载出口", "香港二号", drawer);
+    fireEvent.change(within(drawer).getByLabelText("SOCKS 地址"), { target: { value: "192.0.2.10" } });
+    fireEvent.change(within(drawer).getByLabelText("承载出口上的接口"), { target: { value: "wg9" } });
+    await pick("SOCKS 凭据", "马来西亚代理", drawer);
+    expect(within(drawer).getByTestId("deploy-order")).toHaveTextContent("先在「部署」页重新下发承载出口 香港二号，再下发两个枢纽");
+    await userEvent.click(within(drawer).getByRole("button", { name: btn("保存到拓扑") }));
+
+    await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
+    const node = saved!.nodes.find((n: Node) => n.id === "my-socks")!;
+    expect(node).toMatchObject({
+      id: "my-socks",
+      name: "马来西亚住宅",
+      role: "exit",
+      region: "my",
+      managed: false,
+      path_v4: true,
+      path_v6: false,
+      egress_v4: true,
+      egress_v6: false,
+      nat_dial_out: false,
+      residential: true,
+      ix_bound: false,
+      external: { carrier: "hk-2", socks_address: "192.0.2.10", socks_port: 1080, interface: "wg9", credential_id: "socks-1" },
+    });
+    for (const k of ["server_id", "endpoint_v4", "endpoint_v6", "endpoint_host", "via_exit", "listen_port", "public_key"]) expect(node).not.toHaveProperty(k);
+    expect(saved!.links).toEqual([]);
+    // Only the credential's ID reaches the topology.
+    const raw = api.find("PUT /api/topology")[0].raw!;
+    expect(raw).not.toMatch(/username|password/);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(within(await screen.findByTestId("exit-node-my-socks")).getByTestId("external-tag-my-socks")).toHaveTextContent("外部 SOCKS · 仅 TCP · 仅 IPv4");
+  });
+
+  it("shows the badges and limitations, offers only plain managed exits as relay exits and adds the relay link", async () => {
+    let saved: Topology | null = null;
+    const api = fakeApi({
+      "GET /api/topology": withKinds,
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+      "GET /api/socks-credentials": () => ({ credentials: [SOCKS_CRED] }),
+      "PUT /api/topology": (req) => {
+        saved = req.body as Topology;
+        return { topology: saved, issues: [], paths: [], draft: false };
+      },
+    });
+    renderAt("#/exits");
+    const nested = await screen.findByTestId("exit-node-my-nested");
+    expect(within(nested).getByTestId("nested-tag-my-nested")).toHaveTextContent("经 香港二号 中继");
+    const ext = screen.getByTestId("exit-node-ext-1");
+    expect(within(ext).getByTestId("external-tag-ext-1")).toHaveTextContent("外部 SOCKS · 仅 TCP · 仅 IPv4");
+    expect(ext).toHaveTextContent("192.0.2.10:1080");
+    expect(ext).toHaveTextContent("马来西亚代理");
+    expect(screen.getAllByTestId("external-limits")[0]).toHaveTextContent("只承载 IPv4 上的 TCP");
+
+    await userEvent.click(screen.getByRole("button", { name: "设置出口 香港 IX" }));
+    const drawer = await screen.findByRole("dialog");
+    expect(drawer).toHaveTextContent("WireGuard 握手超过 150 秒没有更新时重新解析");
+    fireEvent.mouseDown(within(drawer).getByRole("combobox", { name: "经中继出口到达" }));
+    const options = await waitFor(() => {
+      const els = [...document.querySelectorAll<HTMLElement>(".ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option")];
+      if (els.length === 0) throw new Error("no options");
+      return els.map((e) => e.textContent ?? "");
+    });
+    expect(options.some((t) => t.includes("香港二号"))).toBe(true);
+    expect(options.some((t) => t.includes("美国"))).toBe(true);
+    expect(options.some((t) => t.includes("嵌套出口"))).toBe(false);
+    expect(options.some((t) => t.includes("马来西亚住宅"))).toBe(false);
+    expect(options.some((t) => t.includes("香港 IX"))).toBe(false);
+    const hk2 = [...document.querySelectorAll<HTMLElement>(".ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option")].find((e) =>
+      e.textContent?.includes("香港二号"),
+    )!;
+    fireEvent.click(hk2);
+    const req = await within(drawer).findByTestId("via-exit-requirements");
+    expect(req).toHaveTextContent("必须是 NAT 拨出：未满足");
+    expect(req).toHaveTextContent("现在有 0 条");
+    expect(within(drawer).getByTestId("deploy-order")).toHaveTextContent("先在「部署」页重新下发中继出口 香港二号，再下发这个出口，然后两个枢纽");
+    expect(within(drawer).getByRole("checkbox", { name: /补上一条直连 WG 链路 hk-ix → hk-2/ })).toBeChecked();
+    await userEvent.click(within(drawer).getByRole("button", { name: btn("保存到拓扑") }));
+    await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
+    expect(saved!.nodes.find((n: Node) => n.id === "hk-ix")!.via_exit).toBe("hk-2");
+    expect(saved!.links).toEqual([{ id: "hk-ix-hk-2", from: "hk-ix", to: "hk-2", transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25 }]);
+    // The external exit went back unchanged, still without any secret.
+    expect(saved!.nodes.find((n: Node) => n.id === "ext-1")!.external).toEqual(withKinds().nodes.find((n) => n.id === "ext-1")!.external);
+    expect(api.find("PUT /api/topology")[0].raw).not.toMatch(/username|password/);
+  });
+
+  it("disables the relay choice on an exit that relays a nested exit", async () => {
+    fakeApi({
+      "GET /api/topology": withKinds,
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+      "GET /api/socks-credentials": () => ({ credentials: [SOCKS_CRED] }),
+    });
+    renderAt("#/exits");
+    await userEvent.click(await screen.findByRole("button", { name: "设置出口 香港二号" }));
+    const drawer = await screen.findByRole("dialog");
+    expect(drawer).toHaveTextContent("嵌套出口 经这个出口中继，所以它自己不能再经别的出口到达");
+    expect(drawer).toHaveTextContent("它是外部 SOCKS 出口 马来西亚住宅 的承载出口");
+    expect(within(drawer).getByRole("combobox", { name: "经中继出口到达" })).toBeDisabled();
+  });
+});
+
+describe("SOCKS credentials", () => {
+  const cred = (over: Record<string, unknown> = {}) => ({
+    id: "socks-1",
+    name: "马来西亚代理",
+    notes: "住宅",
+    secret_set: true,
+    created_at: NOW,
+    updated_at: NOW,
+    used_by: [] as { kind: string; id: string; name: string }[],
+    ...over,
+  });
+
+  it("creates a credential write-only: clears both fields after every attempt and never shows them again", async () => {
+    const USER = "proxyuser-4711";
+    const PASS = "S3cret_pass-0815";
+    let list: ReturnType<typeof cred>[] = [];
+    let attempts = 0;
+    const api = fakeApi({
+      "GET /api/socks-credentials": () => ({ credentials: list }),
+      "POST /api/socks-credentials": () => {
+        attempts++;
+        if (attempts === 1) return reply(422, { error: "SOCKS 凭据名称已存在", code: "invalid_field", field: "name" });
+        list = [cred({ id: "socks-9", name: "新代理", notes: "" })];
+        return reply(201, { credential: list[0] });
+      },
+    });
+    renderAt("#/keys");
+    const section = await screen.findByTestId("socks-credentials");
+    await within(section).findByText("还没有 SOCKS 凭据");
+    await userEvent.click(within(section).getByRole("button", { name: /新建 SOCKS 凭据/ }));
+    const drawer = await screen.findByRole("dialog");
+    await userEvent.type(within(drawer).getByLabelText("名称"), "新代理");
+    await userEvent.type(within(drawer).getByLabelText("SOCKS 用户名"), USER);
+    await userEvent.type(within(drawer).getByLabelText("SOCKS 密码"), PASS);
+    await userEvent.click(within(drawer).getByRole("button", { name: btn("创建") }));
+    await within(drawer).findByText("SOCKS 凭据名称已存在");
+    expect(within(drawer).getByLabelText("SOCKS 用户名")).toHaveValue("");
+    expect(within(drawer).getByLabelText("SOCKS 密码")).toHaveValue("");
+
+    await userEvent.type(within(drawer).getByLabelText("SOCKS 用户名"), USER);
+    await userEvent.type(within(drawer).getByLabelText("SOCKS 密码"), PASS);
+    await userEvent.click(within(drawer).getByRole("button", { name: btn("创建") }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const posts = api.find("POST /api/socks-credentials");
+    expect(posts).toHaveLength(2);
+    expect(posts[1].body).toEqual({ name: "新代理", notes: "", username: USER, password: PASS });
+    const row = await within(section).findByTestId("socks-row-socks-9");
+    expect(row).toHaveTextContent("已设置");
+    expect(row).toHaveTextContent("不可查看");
+    expect(document.body.textContent).not.toContain(USER);
+    expect(document.body.textContent).not.toContain(PASS);
+    const stored = webStorageDump();
+    expect(stored).not.toContain(USER);
+    expect(stored).not.toContain(PASS);
+    expect(window.location.href).not.toContain(PASS);
+  });
+
+  it("rotates with a new username and password, cleared afterwards", async () => {
+    const api = fakeApi({
+      "GET /api/socks-credentials": () => ({ credentials: [cred()] }),
+      "PUT /api/socks-credentials/:id/secret": () => ({ credential: cred({ rotated_at: NOW }) }),
+    });
+    renderAt("#/keys");
+    const row = await screen.findByTestId("socks-row-socks-1");
+    await menuItem(within(row).getByRole("button", { name: "马来西亚代理 的更多操作" }), "轮换");
+    const drawer = await screen.findByRole("dialog");
+    expect(drawer).toHaveTextContent("承载节点重新装机后才生效");
+    await userEvent.type(within(drawer).getByLabelText("SOCKS 用户名"), "rotated-user");
+    await userEvent.type(within(drawer).getByLabelText("SOCKS 密码"), "rotated-pass");
+    await userEvent.click(within(drawer).getByRole("button", { name: btn("轮换") }));
+    await waitFor(() => expect(api.find("PUT /api/socks-credentials/socks-1/secret")).toHaveLength(1));
+    expect(api.find("PUT /api/socks-credentials/socks-1/secret")[0].body).toEqual({ username: "rotated-user", password: "rotated-pass" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.body.textContent).not.toContain("rotated-pass");
+  });
+
+  it("refuses a delete while an external exit uses it, naming that exit", async () => {
+    fakeApi({
+      "GET /api/socks-credentials": () => ({ credentials: [cred({ used_by: [{ kind: "node", id: "ext-1", name: "马来西亚住宅" }] })] }),
+      "DELETE /api/socks-credentials/:id": () =>
+        reply(409, {
+          error: "SOCKS 凭据 马来西亚代理 仍被外部出口 马来西亚住宅 使用：先让它们改用别的凭据或删除它们（可以原地轮换）",
+          code: "in_use",
+          in_use_by: [{ kind: "node", id: "ext-1", name: "马来西亚住宅" }],
+        }),
+    });
+    renderAt("#/keys");
+    const row = await screen.findByTestId("socks-row-socks-1");
+    expect(row).toHaveTextContent("马来西亚住宅");
+    await menuItem(within(row).getByRole("button", { name: "马来西亚代理 的更多操作" }), "删除");
+    await confirmModal("删除");
+    const refused = await screen.findByTestId("refused-dialog");
+    expect(refused).toHaveTextContent("仍被外部出口 马来西亚住宅 使用");
+    expect(within(refused).getByRole("link", { name: "马来西亚住宅" })).toHaveAttribute("href", "#/topology/ext-1");
+  });
+});
+
+describe("unlock: TCP-only external exits", () => {
+  const UNTESTED = "UDP（QUIC / HTTP/3、DNS over UDP 直连、语音视频通话、部分游戏）：外部 SOCKS 出口只承载 TCP，UDP 在承载节点上被拒绝，无法测试也无法使用";
+
+  it("tags a result of an external exit 仅 TCP and lists what was not tested", async () => {
+    const tcp = { transport: "tcp_only" as const, untested: [UNTESTED] };
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/status": () => panelStatus({ ...OK_AGENT, probe_available: true }),
+      "GET /api/unlock/catalog": () => ({ catalog: CATALOG, available: true, validation: "synthetic_only", validation_text: "x", grades: [], ingest_rule: "" }),
+      "GET /api/unlock/jobs": () => ({
+        jobs: [
+          {
+            id: "job-1",
+            kind: "manual",
+            state: "done",
+            created_at: NOW,
+            items: [{ service: "auto-netflix", service_name: "Netflix", exit_id: "ext-1", family: "ipv4", state: "done", category: "unlocked", ...tcp }],
+          },
+        ],
+        running: "",
+        catalog: CATALOG,
+        available: true,
+      }),
+      "GET /api/unlock": () => ({ services: [], states: {}, history: [], next_run: NOW, interval_sec: 21600, pending_apply: false, decisions: {} }),
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+      "GET /api/unlock/results": () => ({
+        results: [
+          result({ exit_id: "ext-1", exit_name: "马来西亚住宅", category: "unlocked", grade: "platform_signal", signal: "ok", is_active: false, ...tcp }),
+          result({ category: "unlocked", grade: "platform_signal", signal: "ok" }),
+        ],
+        validation: "synthetic_only",
+        validation_text: "x",
+      }),
+    });
+    renderAt("#/unlock");
+    const matrix = await screen.findByTestId("unlock-matrix");
+    const cell = within(matrix).getByTestId("cell-auto-netflix-ext-1-ipv4");
+    expect(within(cell).getByTestId("tcp-only-tag")).toHaveTextContent("仅 TCP");
+    // A managed exit's result carries no such tag.
+    expect(within(within(matrix).getByTestId("cell-auto-netflix-hk-ix-ipv4")).queryByTestId("tcp-only-tag")).toBeNull();
+    expect(await screen.findByTestId("job-tcp-only")).toHaveTextContent("通过不覆盖 UDP");
+    await userEvent.click(cell);
+    const detail = await screen.findByTestId("result-detail");
+    expect(within(detail).getByTestId("tcp-only-notice")).toHaveTextContent("结论只覆盖 IPv4 上的 TCP");
+    expect(within(detail).getByTestId("tcp-only-untested")).toHaveTextContent(UNTESTED);
+  });
+});

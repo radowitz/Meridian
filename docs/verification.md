@@ -682,6 +682,15 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 - [ ] 实机人工签收：真实出口与地区组切换（`real_exit_switch`）；平台解锁结果按 unlock-methods.md 核对（`unlock_platform_verdicts`）；启用远程接入时手机两种模式、路由器转发、IPv6（`remote_phone_full`、`remote_phone_home`、`remote_router_forward`、`remote_ipv6`）。
 - [ ] 已知限制：凭据库只靠文件权限保护、没有静态加密（`secrets_at_rest`）；远程接入「仅回家」模式不保护设备的上网流量（`remote_home_mode`）。
 
+## 挂在中继出口后面的出口与外部 SOCKS 出口
+
+- [x] 自动化回归：`internal/compile/external_exit_test.go`（隧道方向和端口、枢纽的下一跳形式和 `nested_snat`、中继出口的转发表和 `nested_guard`、挂靠出口的路由 / AllowedIPs / 解析 DNAT、承载节点的 nft / 路由 / gost 配置 / 解析组 / 健康脚本、足迹、凭据只以占位符出现、`bash -n`、没有这两类出口时什么都不渲染、动态域名端点刷新）；`internal/validate/nested_test.go`（环路、深度、缺承载节点、凭据、链路形状，新增出口不重排已有编号）；`internal/credentials/socks_test.go`；`internal/api/secrets_seams_test.go` `TestSOCKSCredentialSeams`（只写、被引用时拒绝删除、未知凭据拒绝保存、视图 / 编译 / 差异 / 数据目录 / 日志里没有凭据）；`internal/provision/nested_test.go`（承载节点和中继出口的沙箱装机、补偿和撤回，含 lo 地址段）。没有这两类出口的拓扑（单枢纽示例、双枢纽、多中继）编译结果与上一版逐字节相同。
+- [x] 隔离 Linux 集成证据（Docker Desktop 的 Linux 虚拟机里以 `--privileged` 运行，arm64，**不是**真实主机，没有存档执行记录）：
+  - `MERIDIAN_NETNS_TEST=1 … -test.run 'TestNetnsNestedExit$'`：主枢纽、备用枢纽接管（回包只走来路）、中继出口下线后组切走、挂靠隧道没了时失败关闭。通过时打印 `EVIDENCE primary: …` / `EVIDENCE backup: …` / `EVIDENCE relay down: …` / `EVIDENCE nested gone: …` 并以 `PASS` 结束。
+  - `MERIDIAN_NETNS_TEST=1 MERIDIAN_GOST_BIN=… MERIDIAN_SMARTDNS_BIN=… … -test.run 'TestNetnsExternalExit$'`：TCP 经 SOCKS 出去、UDP 当场拒绝、解析经 SOCKS、SOCKS 下线和隧道消失时失败关闭、承载节点 WAN 上零包。通过时打印 `EVIDENCE proxy up / proxy down / tunnel gone: …`。
+  - `MERIDIAN_GOST_BIN=… MERIDIAN_SMARTDNS_BIN=… … -test.run TestExternalExitRealBinaries`（root、nft）：固定版本 gost 的透明转发、认证失败、SOCKS 下线、重定向器下线、没有 UDP 套接字；固定版本 SmartDNS 的解析组经 SOCKS 回答、SOCKS 不通时失败、从不用承载节点自己的上游。
+- [ ] 实机人工签收：真实的 NAT 挂靠出口和中继出口、真实的路由器和它的 SOCKS、真实双枢纽切换下的回程、动态域名端点的重新解析——都没有做过。
+
 ## 跨模块契约在哪里测试
 
 都是本地测试（假宿主、进程内 SSH 服务器、假 Cloudflare，不连接任何远端），属于「自动化回归」。

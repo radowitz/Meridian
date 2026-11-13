@@ -25,7 +25,7 @@ func renderNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPla
 	case model.RoleExit:
 		return renderExitNFT(t, n, tunnels, exits, groups)
 	default:
-		return renderTransitNFT(t, n, tunnels)
+		return renderTransitNFT(t, n, tunnels, groups)
 	}
 }
 
@@ -305,6 +305,9 @@ func renderExitNFT(t model.Topology, n model.Node, tunnels []Tunnel, exits []Exi
 			writeExitResolverDNAT(&sb, e, rets)
 		}
 	}
+	writeNestedExitResolverDNAT(&sb, t, n, tunnels, exits)
+	writeRelayExitNFT(&sb, n, tunnels, exits)
+	writeCarrierNFT(&sb, t, n, tunnels, exits)
 	sb.WriteString("  chain srcnat {\n    type nat hook postrouting priority srcnat; policy accept;\n")
 	if n.EgressV4 {
 		fmt.Fprintf(&sb, "    oifname \"%s\" ip saddr { %s, %s } masquerade\n", wan, lanNet(t), transitV4Net())
@@ -373,7 +376,9 @@ func writeGroupResolverDNAT(sb *strings.Builder, n model.Node, tunnels []Tunnel,
 	seen := map[string]bool{}
 	if switchable(e) {
 		for _, tun := range tunnels {
-			if tun.East.ID != n.ID || tun.West.Role != model.RoleHub || tun.Standby || seen[tun.Iface()] {
+			// A nested exit's group queries arrive from its relay exit.
+			fromHub := tun.West.Role == model.RoleHub || model.IsNested(n) && tun.West.ID == n.ViaExit
+			if tun.East.ID != n.ID || !fromHub || tun.Standby || seen[tun.Iface()] {
 				continue
 			}
 			seen[tun.Iface()] = true
@@ -389,6 +394,12 @@ func writeGroupResolverDNAT(sb *strings.Builder, n model.Node, tunnels []Tunnel,
 	// "meta l4proto { tcp, udp } th dport 53": exits run on Ubuntu 20.04
 	// too, whose nft 0.9.3 is older than the transport-header expression
 	// is known to be accepted; the two rules match exactly the same packets.
+	if behind := behindSources(exits, n.ID); len(behind) > 0 && len(ifs) > 0 {
+		// Queries of the exits behind this node (the hub rewrote the
+		// group's source to theirs) are forwarded to them, never answered
+		// here.
+		fmt.Fprintf(sb, "    iifname { %s } ip6 saddr { %s } accept comment \"region-group queries of the exits behind this node: not answered here\"\n", strings.Join(ifs, ", "), strings.Join(behind, ", "))
+	}
 	if len(ifs) > 0 {
 		for _, proto := range []string{"udp", "tcp"} {
 			fmt.Fprintf(sb, "    iifname { %s } ip6 daddr %s %s dport 53 dnat ip6 to %s comment \"region-group resolver addresses: this exit's tunnel resolver\"\n",
@@ -434,7 +445,7 @@ func ixIngress(n model.Node) string {
 	return ""
 }
 
-func renderTransitNFT(t model.Topology, n model.Node, tunnels []Tunnel) string {
+func renderTransitNFT(t model.Topology, n model.Node, tunnels []Tunnel, groups []GroupPlan) string {
 	wan := n.WANInterface
 	if wan == "" {
 		wan = "eth0"
@@ -452,6 +463,9 @@ func renderTransitNFT(t model.Topology, n model.Node, tunnels []Tunnel) string {
 	sb.WriteString("table inet meridian {\n")
 	if rets := ingressReturns(t, n, tunnels); rets != nil {
 		writeIngressReturnNFT(&sb, rets)
+	}
+	if n.Role == model.RoleHub {
+		writeHubNestedSNAT(&sb, groups)
 	}
 	if len(ports) > 0 {
 		parts := make([]string, len(ports))

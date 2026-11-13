@@ -159,7 +159,7 @@ func TestArtifactsEndpoint(t *testing.T) {
 			Available bool   `json:"available"`
 		}
 	}
-	if rr.Code != 200 || json.Unmarshal(rr.Body.Bytes(), &out) != nil || len(out.Artifacts) != 4 {
+	if rr.Code != 200 || json.Unmarshal(rr.Body.Bytes(), &out) != nil || len(out.Artifacts) != 6 {
 		t.Fatalf("%d %s", rr.Code, rr.Body.String())
 	}
 	if strings.Contains(rr.Body.String(), "exit 0") {

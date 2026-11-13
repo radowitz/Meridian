@@ -46,6 +46,35 @@ import {
 
 // ------------------------------------------------------------ vocabulary ---
 
+const TCP_ONLY_DEFAULT_UNTESTED = ["UDP（QUIC / HTTP/3 等）：外部 SOCKS 出口只承载 TCP，没有测试"];
+
+/**
+ * 「仅 TCP」: the probe of an external SOCKS exit went through its proxy over
+ * TCP only, so a pass says nothing about UDP (QUIC / HTTP/3, calls …).
+ */
+export function TcpOnlyTag({ item, small }: { item: { transport?: string; untested?: string[] }; small?: boolean }) {
+  if (item.transport !== "tcp_only") return null;
+  const untested = item.untested && item.untested.length > 0 ? item.untested : TCP_ONLY_DEFAULT_UNTESTED;
+  return (
+    <Tooltip
+      title={
+        <span>
+          经外部 SOCKS 出口的代理只走了 TCP；通过不代表下面这些可用：
+          {untested.map((u) => (
+            <span key={u} style={{ display: "block" }}>
+              · 未测试：{u}
+            </span>
+          ))}
+        </span>
+      }
+    >
+      <Tag color="orange" data-testid="tcp-only-tag" style={small ? { marginInlineEnd: 0, fontSize: 11, lineHeight: "16px", paddingInline: 3 } : undefined}>
+        仅 TCP
+      </Tag>
+    </Tooltip>
+  );
+}
+
 /** Result categories. Deliberately not the panel status colours: these are platform answers. */
 export const CATEGORY: Record<ProbeCategory, { label: string; cls: string; desc: string }> = {
   unlocked: { label: "解锁", cls: "cat-unlocked", desc: "平台的应答里有可用的信号" },
@@ -451,8 +480,28 @@ function ResultDetail({ row }: { row: ProbeResultRow }) {
       <Space size={6} wrap style={{ marginBottom: 12 }}>
         <CategoryChip cat={cat} grade={grade} />
         <Tag>{row.family === "ipv6" ? "IPv6" : "IPv4"}</Tag>
+        <TcpOnlyTag item={row} />
         {row.is_active ? <Tag color="success">这个出口正在承载该服务</Tag> : null}
       </Space>
+      {row.transport === "tcp_only" ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          data-testid="tcp-only-notice"
+          message="仅 TCP：这是外部 SOCKS 出口，探测只经代理走了 TCP（HTTPS）"
+          description={
+            <>
+              结论只覆盖 IPv4 上的 TCP；外部 SOCKS 出口不承载 UDP 和 IPv6，下列各项没有测试，也不能用：
+              <ul style={{ margin: "4px 0 0", paddingInlineStart: 18 }} data-testid="tcp-only-untested">
+                {(row.untested && row.untested.length > 0 ? row.untested : TCP_ONLY_DEFAULT_UNTESTED).map((u) => (
+                  <li key={u}>{u}</li>
+                ))}
+              </ul>
+            </>
+          }
+        />
+      ) : null}
       {row.category === "network_ok" ? (
         <Alert type="info" showIcon style={{ marginBottom: 12 }} message="「仅可达」不是解锁：只说明连得上平台，这个检测方法给不出解锁结论。" />
       ) : null}
@@ -624,6 +673,7 @@ function ResultsMatrix({
                           aria-label={`${svcName(s)} · ${c.name} · ${f === "ipv6" ? "IPv6" : "IPv4"}：${shownCategory(r) ? CATEGORY[shownCategory(r)!].label : r.state}`}
                         >
                           <span className="fam">{f === "ipv6" ? "v6" : "v4"}</span>
+                          <TcpOnlyTag item={r} small />
                           {r.state === "queued" || r.state === "running" ? (
                             <span className="cat-chip cat-none">{r.state === "running" ? "探测中" : "排队"}</span>
                           ) : (
@@ -729,7 +779,8 @@ export default function UnlockPage() {
       const c = shownCategory(i);
       if (c && (i.state === "done" || i.state === "skipped")) by[c] = (by[c] ?? 0) + 1;
     }
-    return { total, done, by };
+    const tcpOnly = [...new Set(job.items.filter((i) => i.transport === "tcp_only").map((i) => i.exit_id))];
+    return { total, done, by, tcpOnly };
   }, [job]);
 
   const validationText = catalog.data?.validation_text || results.data?.validation_text || jobs.data?.validation_text;
@@ -818,6 +869,11 @@ export default function UnlockPage() {
               {job.error ? <Typography.Text type="danger">{job.error}</Typography.Text> : null}
             </Space>
             <Progress percent={progress.total ? Math.round((progress.done / progress.total) * 100) : 0} status={job.state === "running" ? "active" : "normal"} format={() => `${progress.done}/${progress.total}`} />
+            {progress.tcpOnly.length > 0 ? (
+              <Typography.Paragraph type="secondary" style={{ margin: "4px 0", fontSize: 12 }} data-testid="job-tcp-only">
+                <TcpOnlyTag item={job.items.find((i) => i.transport === "tcp_only")!} /> 外部 SOCKS 出口 {progress.tcpOnly.map(nm).join("、")} 只经代理测了 TCP；通过不覆盖 UDP（QUIC / HTTP/3 等），也不测 IPv6。
+              </Typography.Paragraph>
+            ) : null}
             <Space size={6} wrap>
               {(Object.keys(CATEGORY) as ProbeCategory[]).map((k) =>
                 progress.by[k] ? (

@@ -284,6 +284,8 @@ func checkLinkAddrReserved(t model.Topology) []Issue {
 	}
 	add(or(t.Settings.TransitV4Prefix, "10.66.200.0/24"), "中转前缀（各出口与地区组的中转地址、探测源地址 10.66.200.2）")
 	add(or(t.Settings.TransitV6Prefix, "fd66:0:0:ff::/64"), "IPv6 中转前缀")
+	add(ExternalServiceNet.String(), "外部 SOCKS 出口在承载节点上的服务地址段")
+	add(ExternalHealthNet.String(), "外部 SOCKS 出口的健康探测地址段")
 	add("169.254.0.0/16", "链路本地地址（Mesh veth 用 169.254.66.0/30）")
 	add("fe80::/10", "IPv6 链路本地地址（Mesh veth 用 fe80::66:1 / fe80::66:2）")
 	add("100.96.0.0/12", "Cloudflare Mesh 地址段")

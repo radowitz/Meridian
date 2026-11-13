@@ -17,6 +17,9 @@ type ProbeExit struct {
 	EgressV6   bool
 	EndpointV4 string
 	EndpointV6 string
+	// TCPOnly: an external SOCKS exit (only TCP over IPv4 reaches its
+	// proxy; UDP is refused on its carrier).
+	TCPOnly bool
 }
 
 // ProbeExits returns every exit's probe parameters, keyed by node id. The
@@ -33,6 +36,7 @@ func ProbeExits(t model.Topology) (map[string]ProbeExit, error) {
 			TransitV4: e.TransitV4, TransitV6: e.TransitV6, Resolver: e.DNSULA,
 			EgressV4: e.Node.EgressV4, EgressV6: e.Node.EgressV6,
 			EndpointV4: e.Node.EndpointV4, EndpointV6: e.Node.EndpointV6,
+			TCPOnly: e.External,
 		}
 	}
 	return out, nil

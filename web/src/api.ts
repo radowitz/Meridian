@@ -64,6 +64,10 @@ import type {
   SSHCredentialPatch,
   SSHCredentialView,
   SSHSecretInput,
+  SOCKSCredentialCreate,
+  SOCKSCredentialPatch,
+  SOCKSCredentialView,
+  SOCKSSecretInput,
   ServerInput,
   ServerPatch,
   ServerView,
@@ -316,6 +320,20 @@ export const updateCredential = (id: string, patch: SSHCredentialPatch) =>
 export const rotateCredential = (id: string, secret: SSHSecretInput) =>
   request<{ credential: SSHCredentialView }>("PUT", `/api/ssh-credentials/${enc(id)}/secret`, secret);
 export const deleteCredential = (id: string) => request<{ deleted: string }>("DELETE", `/api/ssh-credentials/${enc(id)}`);
+
+// ----------------------------------------------------- SOCKS credentials ---
+
+/** Username and password of external SOCKS exits' proxies: write-only, responses carry metadata only. */
+export const listSocksCredentials = () => request<{ credentials: SOCKSCredentialView[] }>("GET", "/api/socks-credentials");
+export const createSocksCredential = (input: SOCKSCredentialCreate) =>
+  request<{ credential: SOCKSCredentialView }>("POST", "/api/socks-credentials", input);
+export const updateSocksCredential = (id: string, patch: SOCKSCredentialPatch) =>
+  request<{ credential: SOCKSCredentialView }>("PATCH", `/api/socks-credentials/${enc(id)}`, patch);
+/** Same ID, new username and password; the carrier must be re-provisioned to use them. */
+export const rotateSocksCredential = (id: string, secret: SOCKSSecretInput) =>
+  request<{ credential: SOCKSCredentialView }>("PUT", `/api/socks-credentials/${enc(id)}/secret`, secret);
+/** 409 in_use (in_use_by: the external exits) while an external exit names it. */
+export const deleteSocksCredential = (id: string) => request<{ deleted: string }>("DELETE", `/api/socks-credentials/${enc(id)}`);
 
 // ------------------------------------------------------------ Cloudflare ---
 

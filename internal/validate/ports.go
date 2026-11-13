@@ -84,6 +84,16 @@ func TunnelEnds(t model.Topology, l model.Link) (west, east model.Node, ok bool)
 		}
 		to = p
 	}
+	// A nested exit's link: the relay exit is the west end (closer to
+	// home), the nested exit dials it.
+	if from.Role == model.RoleExit && to.Role == model.RoleExit {
+		if from.ViaExit == to.ID {
+			return to, from, true
+		}
+		if to.ViaExit == from.ID {
+			return from, to, true
+		}
+	}
 	if homeDistance(from) <= homeDistance(to) {
 		return from, to, true
 	}

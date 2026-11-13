@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -268,6 +269,24 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		writeResErr(w, err)
 		return
 	}
+	// A carrier of external SOCKS exits also gets their proxy credentials
+	// (only those its own files name), the same way: in memory, at this
+	// boundary only. A missing credential stops here, before anything runs.
+	if ids := carrierSOCKSCredentials(t, node.ID); len(ids) > 0 {
+		sec, err := cs.SOCKSSecrets(ids)
+		if err != nil {
+			writeCoded(w, http.StatusConflict, "external_credential_missing", "这个节点承载的外部 SOCKS 出口引用的凭据不存在或不可读："+err.Error()+"。在「凭据」里补上（或让出口改用别的凭据）后重新预检。", nil)
+			return
+		}
+		merged := make(map[string]string, len(wssSec)+len(sec))
+		for k, v := range wssSec {
+			merged[k] = v
+		}
+		for k, v := range sec {
+			merged[k] = v
+		}
+		wssSec = merged
+	}
 	injected, err := provision.InjectPrivateWSS(files, key, wssSec)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
@@ -413,4 +432,19 @@ func redactRemote(text, key string, wss map[string]string) string {
 		vals = append(vals, v)
 	}
 	return credentials.Scrub(text, vals...)
+}
+
+// carrierSOCKSCredentials lists the SOCKS credential ids of the external
+// exits carried by nodeID (sorted, unique).
+func carrierSOCKSCredentials(t model.Topology, nodeID string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, n := range model.ExternalExitsOf(t, nodeID) {
+		if id := n.External.CredentialID; id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

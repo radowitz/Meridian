@@ -193,6 +193,11 @@ func checkDualHub(t model.Topology, nodes map[string]model.Node) []Issue {
 	}
 	exits := exitsOf(t)
 	for _, e := range exits {
+		if model.IsNested(e) || model.IsExternal(e) {
+			// Reached through its relay exit or carrier, whose own hub
+			// tunnels are checked here like any exit's.
+			continue
+		}
 		if e.DualstackRelay || (pureV6(e) && e.V6Workaround != model.WorkaroundNone) {
 			add("dual_hub_unsupported_exit", e.ID, "", "v6_workaround", "出口 %s 经双栈中继、Mesh 或 v4 前置到达（或自己是双栈中继）。有备用枢纽时这一版不支持这类出口：两个枢纽要各有一条到它的 WireGuard。", e.Name)
 			continue

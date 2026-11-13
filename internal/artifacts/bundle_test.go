@@ -15,14 +15,14 @@ import (
 	"github.com/radowitz/meridian/internal/preflight"
 )
 
-// The embedded lock pins both binaries for both architectures, with one
-// version per binary, and only GitHub release URLs.
+// The embedded lock pins the three binaries for both architectures, with
+// one version per binary, and only GitHub release URLs.
 func TestEmbeddedLock(t *testing.T) {
 	ps := Pins()
-	if len(ps) != 4 {
+	if len(ps) != 6 {
 		t.Fatalf("pins %+v", ps)
 	}
-	for _, name := range []string{Wstunnel, SmartDNS} {
+	for _, name := range []string{Wstunnel, SmartDNS, Gost} {
 		for _, arch := range []string{ArchAMD64, ArchARM64} {
 			p, ok := PinFor(name, arch)
 			if !ok || p.Version != Version(name) || !ValidSHA256(p.SHA256) || p.Size <= 0 || !strings.HasPrefix(p.URL, "https://github.com/") {
@@ -30,8 +30,8 @@ func TestEmbeddedLock(t *testing.T) {
 			}
 		}
 	}
-	if Version(Wstunnel) != "11.1.0" || Version(SmartDNS) != "1.2026.08.05-0921" {
-		t.Fatalf("versions %s %s", Version(Wstunnel), Version(SmartDNS))
+	if Version(Wstunnel) != "11.1.0" || Version(SmartDNS) != "1.2026.08.05-0921" || Version(Gost) != "3.2.6" {
+		t.Fatalf("versions %s %s %s", Version(Wstunnel), Version(SmartDNS), Version(Gost))
 	}
 	a, _ := PinFor(Wstunnel, ArchAMD64)
 	b, _ := PinFor(Wstunnel, ArchARM64)

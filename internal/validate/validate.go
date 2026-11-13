@@ -63,6 +63,7 @@ func Run(t model.Topology) Result {
 	out.Issues = append(out.Issues, checkClientDNS(t)...)
 	out.Issues = append(out.Issues, checkGroupResolver(t)...)
 	out.Issues = append(out.Issues, checkLinks(t, nodes)...)
+	out.Issues = append(out.Issues, checkNestedExternal(t, nodes)...)
 
 	exits := exitsOf(t)
 	if len(exits) == 0 {
@@ -75,6 +76,29 @@ func Run(t model.Topology) Result {
 	for _, exit := range exits {
 		if gw.ID == "" {
 			break
+		}
+		if model.IsExternal(exit) {
+			// An external exit has no links: its path is its carrier's,
+			// reported with the exit appended (checkExternal refuses a
+			// missing or unsuitable carrier).
+			c, ok := nodes[exit.External.Carrier]
+			if !ok || c.Role != model.RoleExit || model.IsExternal(c) {
+				continue
+			}
+			path, links, ok := findExitPath(t, nodes, gw.ID, c)
+			if !ok {
+				continue
+			}
+			mtu := pathMTU(t, links)
+			if repl := replacementMTU(t); repl > 0 && repl < mtu {
+				mtu = repl
+			}
+			report := PathReport{ExitID: exit.ID, Nodes: append(append([]string(nil), path...), exit.ID), MTU: mtu, MSS4: mtu - 40, MSS6: mtu - 60}
+			for _, l := range links {
+				report.Links = append(report.Links, l.ID)
+			}
+			out.Paths = append(out.Paths, report)
+			continue
 		}
 		path, links, ok := findExitPath(t, nodes, gw.ID, exit)
 		if !ok {
@@ -380,7 +404,17 @@ func checkNATLink(t model.Topology, l model.Link, a, b model.Node) []Issue {
 		return nil
 	}
 	var out []Issue
-	if strings.TrimSpace(nat.EndpointV4) != "" {
+	// A nested exit's link to its relay exit is checked by checkNested.
+	if nat.ViaExit != "" && other.ID == nat.ViaExit {
+		return nil
+	}
+	if a.ViaExit == b.ID || b.ViaExit == a.ID {
+		return nil
+	}
+	// A dial-out relay exit dials the hubs but listens for its nested
+	// exits: it keeps an endpoint for them (the hubs still get none, as
+	// they are its listeners).
+	if strings.TrimSpace(nat.EndpointV4) != "" && !model.IsRelayExit(t, *nat) {
 		out = append(out, Issue{
 			Code: "nat_endpoint_forbidden", Severity: SeverityError, NodeID: nat.ID, LinkID: l.ID,
 			Message: fmt.Sprintf("%s 在 NAT 后面，不能把 Endpoint 写成它的公网地址。枢纽只保存对端公钥和 AllowedIPs。", nat.Name),

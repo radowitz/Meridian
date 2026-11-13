@@ -324,7 +324,7 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 	cs, cerr := s.credStore()
 	if cerr != nil {
 		for _, n := range t.Nodes {
-			if n.ServerID != "" {
+			if n.ServerID != "" || model.IsExternal(n) && !draft {
 				writeResErr(w, cerr)
 				return
 			}
@@ -336,6 +336,13 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 			s.resMu.Unlock()
 			writeResErr(w, err)
 			return
+		}
+		if !draft {
+			if err := checkExternalCredentials(cs, t); err != nil {
+				s.resMu.Unlock()
+				writeResErr(w, err)
+				return
+			}
 		}
 	}
 	save := s.Store.Save

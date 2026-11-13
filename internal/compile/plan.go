@@ -37,7 +37,30 @@ type ExitPlan struct {
 	// resolve through whichever hub carries the traffic. Unused (and not
 	// rendered) in a single-hub topology.
 	Resolver string
+	// Nested is the relay exit a nested exit is reached through (its one
+	// tunnel goes there, model.Node.ViaExit): HubIface is the hub's tunnel
+	// to that relay exit, PeerV4/PeerULA the nested exit's address on the
+	// relay exit's tunnel to it. External is set for an external SOCKS
+	// exit: HubIface is the hub's tunnel to its carrier, PeerV4 its health
+	// address and PeerULA its resolver address on the carrier
+	// (validate.ExternalHealthAddr / ExternalResolverAddr), ExtService the
+	// carrier-side service address its redirector listens on.
+	//
+	// Both share their hub interface with another exit (the relay exit, the
+	// carrier), so the hub tells them apart by next hop: a group table
+	// pointed at such a member routes "via PeerV4 / PeerULA onlink" (the
+	// next hop never leaves the hub: WireGuard routes by destination), and
+	// the hub's nested_snat chain rewrites the group's transit source to the
+	// member's own transit address for exactly that next hop, so the relay
+	// exit or the carrier selects by source as for the member's own mark.
+	Nested     string
+	External   bool
+	ExtService string
 }
+
+// sharedHop: the hub reaches this exit through another exit's tunnel, so a
+// group hop to it needs the next-hop form and the hub's source rewrite.
+func (e ExitPlan) sharedHop() bool { return e.Nested != "" || e.External }
 
 // primaryHubID is the primary hub's node ID ("" without a hub).
 func primaryHubID(t model.Topology) string {
@@ -85,6 +108,17 @@ func planExitsHub(t model.Topology, tunnels []Tunnel, hub string) []ExitPlan {
 			Resolver:  validate.ExitResolverAddr(i).String(),
 		}
 		p.HubIface, p.ViaRelay, p.Mesh, p.PeerV4, p.PeerULA = locateExit(t, n, tunnels, hub)
+		switch {
+		case model.IsNested(n):
+			p.Nested = n.ViaExit
+		case model.IsExternal(n):
+			p.External = true
+			p.HubIface = hubDirect(tunnels, n.External.Carrier, hub).Iface()
+			p.PeerV4 = validate.ExternalHealthAddr(i).String()
+			p.PeerULA = validate.ExternalResolverAddr(i).String()
+			p.DNSULA = p.PeerULA
+			p.ExtService = validate.ExternalServiceAddr(i).String()
+		}
 		if tun := exitIngress(n, tunnels, hub); tun.LinkID != "" {
 			p.DNSV4 = tun.EastV4
 			p.DNSULA = tun.EastULA
@@ -464,6 +498,19 @@ func locateExit(t model.Topology, n model.Node, tunnels []Tunnel, hub string) (i
 	if pure && n.V6Workaround == model.WorkaroundMesh {
 		return "mmesh", "", true, "", ""
 	}
+	if model.IsNested(n) {
+		// The hub's own tunnel to the relay exit carries it; its address
+		// is on the relay exit's tunnel to it.
+		up := hubDirect(tunnels, n.ViaExit, hub)
+		down := nestedTunnel(n, tunnels)
+		if up.LinkID == "" || down.LinkID == "" {
+			return "", "", false, "", ""
+		}
+		return up.Iface(), "", false, down.EastV4, down.EastULA
+	}
+	if model.IsExternal(n) {
+		return "", "", false, "", ""
+	}
 	if pure && n.V6Workaround == model.WorkaroundDualstackRelay {
 		relay, down := relayTunnel(t, n, tunnels)
 		if relay.ID != "" {
@@ -491,6 +538,18 @@ func hubDirect(tunnels []Tunnel, exitID, hub string) Tunnel {
 		}
 	}
 	return found
+}
+
+// nestedTunnel is the relay exit's tunnel to nested exit n (west: the relay
+// exit, east: n).
+func nestedTunnel(n model.Node, tunnels []Tunnel) Tunnel {
+	for _, tun := range tunnels {
+		if tun.Standby || tun.Mode == "wss" || tun.East.ID != n.ID || tun.West.ID != n.ViaExit {
+			continue
+		}
+		return tun
+	}
+	return Tunnel{}
 }
 
 func relayTunnel(t model.Topology, exit model.Node, tunnels []Tunnel) (model.Node, Tunnel) {

@@ -245,7 +245,7 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 		return nil, err
 	}
 	fp := preflight.FootprintOf(files)
-	args, err := preflight.Args(fp.PreflightPaths())
+	args, err := preflight.ArgsWithProbes(fp.PreflightPaths(), fp.PreflightProbes())
 	if err != nil {
 		return nil, &credentials.Error{Code: codePreflightFailed, Msg: "节点的文件路径不能交给预检：" + err.Error()}
 	}

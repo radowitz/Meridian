@@ -209,8 +209,13 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, hubExits, hubGroups))
 		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, hubExits, hubGroups))
 		meshDNS := n.Role == model.RoleExit && len(meshDNSGroups(groups, n.ID)) > 0
-		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels, meshDNS))
-		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, exits, groups, mss4, mss6, decisions, clamps))
+		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels, meshDNS, exits))
+		nftExits, nftGroups := exits, groups
+		if n.Role == model.RoleHub {
+			// A hub's nested_snat chain names its own tunnels.
+			nftExits, nftGroups = hubExits, hubGroups
+		}
+		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, nftExits, nftGroups, mss4, mss6, decisions, clamps))
 		if n.Role != model.RoleGateway {
 			// Remote nodes: the boot unit (the gateway has
 			// deploy/debian/meridian.service) and the Docker FORWARD DROP
@@ -273,8 +278,20 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			add(prefix+"usr/local/sbin/meridian-update-chnroute.sh", renderChnrouteScript(t))
 			add(prefix+"usr/local/sbin/meridian-update-geosite.sh", renderGeositeScript(t))
 		case model.RoleExit:
-			add(prefix+"etc/smartdns/smartdns.conf", renderExitDNS(t, n, tunnels))
+			add(prefix+"etc/smartdns/smartdns.conf", renderExitDNS(t, n, tunnels, exits))
 			add(prefix+"etc/systemd/system/"+SmartDNSUnit, renderSmartDNSUnit())
+		}
+		if n.Role == model.RoleExit && len(externalPlans(exits, n.ID)) > 0 {
+			// Carrier of external SOCKS exits (render_nested.go).
+			add(prefix+strings.TrimPrefix(ExtProxyConfig, "/"), renderExtProxyConfig(exits, n.ID))
+			add(prefix+"etc/systemd/system/"+ExtProxyUnit, renderExtProxyUnit())
+			add(prefix+strings.TrimPrefix(ExtHealthScript, "/"), renderExtHealthScript(exits, n.ID))
+			add(prefix+"etc/systemd/system/"+ExtHealthUnit, renderExtHealthUnit())
+		}
+		if len(refreshTunnels(n, nodeTunnels)) > 0 {
+			add(prefix+strings.TrimPrefix(EndpointRefreshScript, "/"), renderEndpointRefresh(n, nodeTunnels))
+			add(prefix+"etc/systemd/system/"+EndpointRefreshUnit, renderEndpointRefreshUnit())
+			add(prefix+"etc/systemd/system/"+EndpointRefreshTimer, renderEndpointRefreshTimer())
 		}
 	}
 	return b, nil

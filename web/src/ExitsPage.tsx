@@ -6,6 +6,13 @@
 // member in use.
 // Every change edits the stored topology only (apply_required): the top bar
 // and an inline notice say so until it is installed.
+// Below the groups, 出口节点 lists every exit with what kind it is: a nested
+// exit (reached through a relay exit, via_exit), an external SOCKS exit
+// (an unmanaged SOCKS5 proxy behind a managed carrier exit) or one with a
+// dynamic DNS endpoint (endpoint_host). Those settings are written into the
+// stored topology with one PUT /api/topology, like the topology editor's
+// save; the SOCKS username and password never pass through here (only the
+// credential's ID does).
 
 import {
   ArrowDownOutlined,
@@ -28,6 +35,7 @@ import {
   Dropdown,
   Form,
   Input,
+  InputNumber,
   Popover,
   Radio,
   Select,
@@ -41,8 +49,11 @@ import * as api from "./api";
 import type { ApiError } from "./api";
 import { href, useRouter, useStatus, useTopologyDoc } from "./state";
 import { RelaySharingView } from "./RelaySharing";
+import { isExternalExit, isNestedExit } from "./types";
 import type {
   Carrying,
+  Issue,
+  Link as TLink,
   GroupActualView,
   GroupHubActual,
   GroupHubState,
@@ -54,6 +65,7 @@ import type {
   RegionGroupInput,
   RegionGroupView,
   RegionGroupsView,
+  SOCKSCredentialView,
   Topology,
 } from "./types";
 import {
@@ -62,7 +74,9 @@ import {
   ApplyRequiredNotice,
   DataView,
   EmptyState,
+  IssueList,
   Link,
+  Mono,
   Page,
   RefList,
   RefusedDialog,
@@ -349,8 +363,11 @@ function GroupCard({
   onRefresh,
   refreshing,
   allGroups,
+  nodes,
 }: {
   g: RegionGroupView;
+  /** Topology nodes by ID: nested / external exits get their badges in the member list. */
+  nodes?: Map<string, Node>;
   /** Every group: decides whether this one's name needs region + ID to be unambiguous. */
   allGroups: readonly RegionGroupView[];
   names: Map<string, string>;
@@ -693,6 +710,7 @@ function GroupCard({
                   <Space size={[4, 2]} wrap>
                     <Link to={href("topology", id)}>{m?.name || id}</Link>
                     {m ? <MemberAttrs m={m} /> : null}
+                    {nodes?.get(id) ? <ExitKindTags node={nodes.get(id)!} name={name} /> : null}
                     {m?.actual_active ? (
                       <Tooltip title="枢纽报告这个组的路由表正在使用它">
                         <Tag color="success">使用中</Tag>
@@ -1249,6 +1267,551 @@ function GroupDrawer({
   );
 }
 
+// ---------------------------------------------------- exit kinds ---
+
+/** What an external SOCKS exit carries and how, stated wherever one is configured. */
+export const EXTERNAL_LIMITS: string[] = [
+  "只承载 IPv4 上的 TCP。",
+  "UDP（包括 QUIC / HTTP/3）在承载节点上直接拒绝，绝不改从别的出口发出。",
+  "路由到它的域名在承载节点上由一个专用解析组解析：上游查询经这个 SOCKS 代理以 TCP 发往 1.1.1.1 / 8.8.8.8；没有回退，代理不给应答时这个域名就解析失败。",
+  "不返回 AAAA（这些域名没有 IPv6 地址）。",
+  "健康检测：每 10 秒经代理发一次 DNS over TCP 查询。",
+  "面板从不登录那台代理设备，也不为它生成安装包；它所在的隧道和接口也不归面板管理。",
+];
+
+/** The limitations block of external SOCKS exits. */
+export function ExternalLimits({ style }: { style?: React.CSSProperties }) {
+  return (
+    <Alert
+      type="warning"
+      showIcon
+      style={{ marginBottom: 12, ...style }}
+      data-testid="external-limits"
+      message="外部 SOCKS 出口的限制"
+      description={
+        <>
+          <ul style={{ margin: 0, paddingInlineStart: 18 }}>
+            {EXTERNAL_LIMITS.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            以上是面板生成的配置的设计行为，尚未在真实设备上验证。
+          </Typography.Text>
+        </>
+      }
+    />
+  );
+}
+
+/** Badges of a nested exit (经 <relay> 中继), an external SOCKS exit and a dynamic DNS endpoint. */
+export function ExitKindTags({ node, name }: { node: Node; name: (id: string) => string }) {
+  return (
+    <>
+      {isNestedExit(node) ? (
+        <Tooltip title="这个出口的唯一隧道连到中继出口，再由中继出口经枢纽到达；它不直接连枢纽。">
+          <Tag color="purple" data-testid={`nested-tag-${node.id}`}>
+            经 {name(node.via_exit!)} 中继
+          </Tag>
+        </Tooltip>
+      ) : null}
+      {isExternalExit(node) ? (
+        <Tooltip title={`承载出口 ${name(node.external!.carrier)} 上经 SOCKS5 代理出去；只承载 IPv4 上的 TCP，UDP 被拒绝。`}>
+          <Tag color="orange" data-testid={`external-tag-${node.id}`}>
+            外部 SOCKS · 仅 TCP · 仅 IPv4
+          </Tag>
+        </Tooltip>
+      ) : null}
+      {node.role === "exit" && node.endpoint_host ? (
+        <Tooltip title={`动态域名端点 ${node.endpoint_host}：拨它的节点按域名解析，握手超过 150 秒未更新时重新解析。`}>
+          <Tag>动态域名</Tag>
+        </Tooltip>
+      ) : null}
+    </>
+  );
+}
+
+/** Which order a change to a nested or external exit must be provisioned in. */
+export function DeployOrder({ node, name }: { node: Pick<Node, "via_exit" | "external">; name: (id: string) => string }) {
+  if (node.external?.carrier) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        data-testid="deploy-order"
+        message="部署顺序"
+        description={`安装或修改这个外部 SOCKS 出口：先在「部署」页重新下发承载出口 ${name(node.external.carrier)}，再下发两个枢纽（主、备；只有一个枢纽时就是它），最后安装网关。外部出口本身不装机。这个顺序未在真实设备上验证。`}
+      />
+    );
+  }
+  if (node.via_exit) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        data-testid="deploy-order"
+        message="部署顺序"
+        description={`安装或修改这个嵌套出口：先在「部署」页重新下发中继出口 ${name(node.via_exit)}，再下发这个出口，然后两个枢纽（主、备；只有一个枢纽时就是它），最后安装网关。这个顺序未在真实设备上验证。`}
+      />
+    );
+  }
+  return null;
+}
+
+/** Managed exits that may carry an external exit or relay a nested one: neither nested nor external. */
+function plainManagedExits(t: Topology): Node[] {
+  return t.nodes.filter((n) => n.role === "exit" && n.managed && !isNestedExit(n) && !isExternalExit(n));
+}
+
+const NODE_ID_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/** The direct_wg links from an exit to its relay exit (enabled, not standby). */
+function relayLinks(t: Topology, from: string, to: string): TLink[] {
+  return t.links.filter((l) => l.from === from && l.to === to && l.transport === "direct_wg" && l.enabled && !l.standby);
+}
+
+function newLinkId(t: Topology, from: string, to: string): string {
+  let id = `${from}-${to}`;
+  for (let i = 2; t.links.some((l) => l.id === id); i++) id = `${from}-${to}-${i}`;
+  return id;
+}
+
+interface ExternalValues {
+  id?: string;
+  name: string;
+  region?: string;
+  residential: boolean;
+  carrier?: string;
+  socks_address?: string;
+  socks_port?: number;
+  interface?: string;
+  credential_id?: string;
+}
+
+/** The topology with this external exit written in (shape the backend validates: managed:false, IPv4 TCP only). */
+export function withExternalExit(t: Topology, v: ExternalValues, existing: Node | null): Topology {
+  const id = existing ? existing.id : (v.id ?? "").trim();
+  const base: Node = existing ? { ...existing } : ({ id, x: 80 + (t.nodes.length % 6) * 40, y: 80 + (t.nodes.length % 6) * 30 } as Node);
+  for (const k of [
+    "server_id",
+    "ssh_host",
+    "ssh_port",
+    "ssh_user",
+    "endpoint_v4",
+    "endpoint_v6",
+    "endpoint_host",
+    "listen_port",
+    "public_key",
+    "private_key",
+    "via_exit",
+    "v6_workaround",
+    "dualstack_relay",
+    "wss_listen_port",
+    "pool",
+    "pool_priority",
+  ] as const)
+    delete base[k];
+  const node: Node = {
+    ...base,
+    id,
+    name: v.name.trim(),
+    role: "exit",
+    managed: false,
+    path_v4: true,
+    path_v6: false,
+    egress_v4: true,
+    egress_v6: false,
+    nat_dial_out: false,
+    residential: !!v.residential,
+    ix_bound: false,
+    external: {
+      carrier: v.carrier ?? "",
+      socks_address: (v.socks_address ?? "").trim(),
+      socks_port: v.socks_port ?? 0,
+      interface: (v.interface ?? "").trim(),
+      credential_id: v.credential_id ?? "",
+    },
+  };
+  const region = (v.region ?? "").trim().toLowerCase();
+  if (region) node.region = region;
+  else delete node.region;
+  return { ...t, nodes: existing ? t.nodes.map((n) => (n.id === existing.id ? node : n)) : [...t.nodes, node] };
+}
+
+interface ManagedValues {
+  endpoint_host?: string;
+  via_exit?: string;
+  add_link: boolean;
+}
+
+/** The topology with this managed exit's endpoint_host / via_exit (and optionally the relay link) written in. */
+export function withManagedExit(t: Topology, node: Node, v: ManagedValues): Topology {
+  const next: Node = { ...node };
+  const host = (v.endpoint_host ?? "").trim().toLowerCase();
+  if (host) next.endpoint_host = host;
+  else delete next.endpoint_host;
+  if (v.via_exit) next.via_exit = v.via_exit;
+  else delete next.via_exit;
+  let links = t.links;
+  if (v.via_exit && v.add_link && relayLinks(t, node.id, v.via_exit).length === 0) {
+    links = [
+      ...links,
+      { id: newLinkId(t, node.id, v.via_exit), from: node.id, to: v.via_exit, transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25 },
+    ];
+  }
+  return { ...t, nodes: t.nodes.map((n) => (n.id === node.id ? next : n)), links };
+}
+
+function ExitDrawer({
+  open,
+  mode,
+  topo,
+  socks,
+  socksError,
+  blocked,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  /** external: create (node null) or edit an external SOCKS exit; managed: endpoint_host and via_exit of a managed exit. */
+  mode: { kind: "external"; node: Node | null } | { kind: "managed"; node: Node };
+  topo: Topology;
+  socks: SOCKSCredentialView[] | undefined;
+  socksError: ApiError | null;
+  /** Why saving is not possible now (unsaved topology edits elsewhere). */
+  blocked?: string;
+  onClose: () => void;
+  onSave: (next: Topology, what: string) => Promise<ApiError | null>;
+}) {
+  const [form] = Form.useForm();
+  const [error, setError] = useState<ApiError | null>(null);
+  const [saving, setSaving] = useState(false);
+  const node = mode.node;
+  const external = mode.kind === "external";
+  const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
+  const regions = useMemo(() => REGION_CODES.map((c) => ({ value: c, label: regionLabel(c) })), []);
+
+  const watchedCarrier = Form.useWatch("carrier", form) as string | undefined;
+  const [via, setVia] = useState<string | undefined>(mode.kind === "managed" ? mode.node.via_exit : undefined);
+
+  const carriers = plainManagedExits(topo);
+  const relayCandidates = mode.kind === "managed" ? plainManagedExits(topo).filter((n) => n.id !== mode.node.id) : [];
+  const nestedBehind = mode.kind === "managed" ? topo.nodes.filter((n) => n.via_exit === mode.node.id) : [];
+  const carriedBy = node ? topo.nodes.filter((n) => n.external?.carrier === node.id) : [];
+
+  const initial =
+    mode.kind === "external"
+      ? {
+          name: node?.name ?? "",
+          region: node?.region,
+          residential: !!node?.residential,
+          carrier: node?.external?.carrier,
+          socks_address: node?.external?.socks_address,
+          socks_port: node?.external?.socks_port || 1080,
+          interface: node?.external?.interface,
+          credential_id: node?.external?.credential_id || undefined,
+        }
+      : { endpoint_host: mode.node.endpoint_host ?? "", via_exit: mode.node.via_exit, add_link: true };
+
+  async function save() {
+    let v: Record<string, unknown>;
+    try {
+      v = await form.validateFields();
+    } catch {
+      return;
+    }
+    let next: Topology;
+    let what: string;
+    if (mode.kind === "external") {
+      const ev = v as unknown as ExternalValues;
+      next = withExternalExit(topo, ev, mode.node);
+      what = mode.node ? `外部 SOCKS 出口 ${ev.name} 已保存` : `外部 SOCKS 出口 ${ev.name} 已添加`;
+    } else {
+      next = withManagedExit(topo, mode.node, v as unknown as ManagedValues);
+      what = `出口 ${mode.node.name || mode.node.id} 已保存`;
+    }
+    setSaving(true);
+    const err = await onSave(next, what);
+    setSaving(false);
+    setError(err);
+    if (err?.field) {
+      const map: Record<string, string> = { endpoint_host: "endpoint_host", via_exit: "via_exit" };
+      if (map[err.field]) form.setFields([{ name: map[err.field], errors: [err.message] }]);
+    }
+  }
+
+  const relayLinkCount = mode.kind === "managed" && via ? relayLinks(topo, mode.node.id, via).length : 0;
+  const relay = via ? topo.nodes.find((n) => n.id === via) : undefined;
+
+  return (
+    <Drawer
+      title={external ? (node ? `外部 SOCKS 出口「${node.name || node.id}」` : "添加外部 SOCKS 出口") : `出口「${node?.name || node?.id}」的到达方式`}
+      open={open}
+      onClose={onClose}
+      width={600}
+      destroyOnHidden
+      footer={
+        <Space>
+          <Button onClick={onClose}>取消</Button>
+          <Button type="primary" loading={saving} disabled={!!blocked} onClick={() => void save()}>
+            保存到拓扑
+          </Button>
+        </Space>
+      }
+    >
+      {blocked ? <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={blocked} /> : null}
+      {error ? <ApiErrorAlert error={error} onClose={() => setError(null)} /> : null}
+      {error?.issues && error.issues.length > 0 ? <IssueList issues={error.issues} /> : null}
+      {external ? (
+        <>
+          <Typography.Paragraph type="secondary">
+            外部 SOCKS 出口是一台已有的 SOCKS5 代理：承载出口（一台受管出口）经一条面板不管理的隧道到达它，把发往这个出口的流量转给代理。它没有服务器、没有链路，面板不为它装机。
+          </Typography.Paragraph>
+          <ExternalLimits />
+        </>
+      ) : null}
+      <Form form={form} layout="vertical" initialValues={initial} requiredMark="optional" autoComplete="off">
+        {external ? (
+          <>
+            {!node ? (
+              <Form.Item
+                name="id"
+                label="ID"
+                extra="小写字母、数字和短横线；规则和地区组用它引用这个出口，创建后不能改。"
+                rules={[
+                  { required: true, message: "请填写 ID" },
+                  { pattern: NODE_ID_RE, message: "ID 只能是小写字母、数字和短横线" },
+                  { validator: (_, val: string) => (val && topo.nodes.some((n) => n.id === val.trim()) ? Promise.reject(new Error("已有这个 ID 的节点")) : Promise.resolve()) },
+                ]}
+              >
+                <Input className="mono" placeholder="例如 my-socks" aria-label="ID" />
+              </Form.Item>
+            ) : null}
+            <Form.Item name="name" label="显示名称" rules={[{ required: true, message: "请填写名称" }]}>
+              <Input placeholder="例如 马来西亚住宅" aria-label="显示名称" />
+            </Form.Item>
+            <Form.Item name="region" label="国家或地区" extra="出口页按它分区；解锁探测用它确认实际出口地区。">
+              <AutoComplete options={regions} placeholder="例如 my" aria-label="国家或地区" filterOption={(i, o) => !!o && (o.value + o.label).toLowerCase().includes(i.toLowerCase())} />
+            </Form.Item>
+            <Form.Item name="residential" valuePropName="checked" extra="代理的出口是家宽时勾选；要求住宅的地区组和规则才能用它。">
+              <Checkbox>住宅（家宽）</Checkbox>
+            </Form.Item>
+            <Form.Item
+              name="carrier"
+              label="承载出口"
+              rules={[{ required: true, message: "请选择承载出口" }]}
+              extra="一台受管出口（不能是嵌套出口或外部出口）。它经下面的接口到达代理，装机时写入转发配置。"
+            >
+              <Select
+                aria-label="承载出口"
+                placeholder={carriers.length ? "选择受管出口" : "还没有可用的受管出口"}
+                options={carriers.map((n) => ({ value: n.id, label: `${n.name || n.id}（${n.id}）${n.region ? ` · ${regionLabel(n.region)}` : ""}` }))}
+              />
+            </Form.Item>
+            <Space.Compact block>
+              <Form.Item
+                name="socks_address"
+                label="SOCKS 地址（IPv4）"
+                style={{ flex: 2 }}
+                rules={[
+                  { required: true, message: "请填写代理的 IPv4 地址" },
+                  { pattern: IPV4_RE, message: "必须是 IPv4 地址" },
+                ]}
+                extra="从承载出口看到的代理地址，通常是那条隧道上的地址。"
+              >
+                <Input className="mono" placeholder="例如 192.0.2.10" aria-label="SOCKS 地址" />
+              </Form.Item>
+              <Form.Item name="socks_port" label="端口" style={{ flex: 1 }} rules={[{ required: true, message: "请填写端口" }]}>
+                <InputNumber min={1} max={65535} style={{ width: "100%" }} aria-label="SOCKS 端口" />
+              </Form.Item>
+            </Space.Compact>
+            <Form.Item
+              name="interface"
+              label="承载出口上的接口"
+              rules={[
+                { required: true, message: "请填写接口名" },
+                { pattern: /^[A-Za-z0-9_.-]{1,15}$/, message: "接口名最多 15 个字符：字母、数字、_ . -" },
+              ]}
+              extra={`承载出口${watchedCarrier ? ` ${name(watchedCarrier)} ` : ""}上那条面板不管理的隧道接口（例如 wg9）。代理只经这个接口访问；接口不在时直接失败，不会改走默认路由。`}
+            >
+              <Input className="mono" placeholder="例如 wg9" aria-label="承载出口上的接口" />
+            </Form.Item>
+            <Form.Item
+              name="credential_id"
+              label="SOCKS 凭据"
+              rules={[{ required: true, message: "请选择 SOCKS 凭据" }]}
+              extra={
+                <span>
+                  代理的用户名和密码保存在 <Link to={href("keys") + "?section=socks&socks=new"}>密钥页的「SOCKS 凭据」</Link> 里（只写不读）；拓扑里只记它的 ID。还没有就先去新建一个。
+                </span>
+              }
+            >
+              <Select
+                aria-label="SOCKS 凭据"
+                loading={!socks && !socksError}
+                placeholder={socks && socks.length === 0 ? "还没有 SOCKS 凭据，先到密钥页新建" : "选择凭据"}
+                options={(socks ?? []).map((c) => ({ value: c.id, label: `${c.name}（${c.id}）${c.secret_set ? "" : " · 未设置"}` }))}
+              />
+            </Form.Item>
+            {socksError ? <ApiErrorAlert error={socksError} /> : null}
+            <DeployOrder node={{ external: { carrier: watchedCarrier ?? node?.external?.carrier ?? "", socks_address: "", socks_port: 0, interface: "", credential_id: "" } }} name={name} />
+            {node ? (
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+                要删除这个出口，在 <Link to={href("topology", node.id)}>拓扑</Link> 页删除节点。
+              </Typography.Paragraph>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <Form.Item
+              name="endpoint_host"
+              label="动态域名端点"
+              rules={[{ validator: (_, val: string) => (!val || HOST_RE.test(val.trim().toLowerCase()) ? Promise.resolve() : Promise.reject(new Error("不是合法的域名（小写字母、数字、短横线，至少两段，不带结尾的点）"))) }]}
+              extra="公网地址会变的出口（例如家宽）填一个 DDNS 域名：拨它的枢纽和嵌套出口用这个域名代替公网 IPv4，并在 WireGuard 握手超过 150 秒没有更新时重新解析。网关和中继从不拨出口，用不到它。未在真实设备上验证。"
+            >
+              <Input className="mono" placeholder="例如 exit.example.net" aria-label="动态域名端点" />
+            </Form.Item>
+            <Form.Item
+              name="via_exit"
+              label="经中继出口到达"
+              extra="留空：这个出口照常直接连枢纽。选一个中继出口：这个出口不再直接连枢纽，而是拨到中继出口，由中继出口经枢纽到达它（只能嵌套一层）。"
+            >
+              <Select
+                allowClear
+                aria-label="经中继出口到达"
+                placeholder="不经中继（直接连枢纽）"
+                disabled={nestedBehind.length > 0 || carriedBy.length > 0}
+                onChange={(v?: string) => setVia(v || undefined)}
+                options={relayCandidates.map((n) => ({
+                  value: n.id,
+                  label: `${n.name || n.id}（${n.id}）${n.endpoint_v4 || n.endpoint_host ? "" : " · 缺少端点"}`,
+                }))}
+              />
+            </Form.Item>
+            {nestedBehind.length > 0 ? (
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+                {nestedBehind.map((n) => n.name || n.id).join("、")} 经这个出口中继，所以它自己不能再经别的出口到达（只能嵌套一层）。
+              </Typography.Paragraph>
+            ) : null}
+            {carriedBy.length > 0 ? (
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+                它是外部 SOCKS 出口 {carriedBy.map((n) => n.name || n.id).join("、")} 的承载出口，承载出口不能是嵌套出口。
+              </Typography.Paragraph>
+            ) : null}
+            {via ? (
+              <Alert
+                type={mode.node.nat_dial_out && mode.node.path_v4 && relayLinkCount === 1 && relay && (relay.endpoint_v4 || relay.endpoint_host) ? "info" : "warning"}
+                showIcon
+                style={{ marginBottom: 12 }}
+                data-testid="via-exit-requirements"
+                message="嵌套出口的条件（保存时由后端校验）"
+                description={
+                  <ul style={{ margin: 0, paddingInlineStart: 18 }}>
+                    <li>
+                      这个出口必须是 NAT 拨出：{mode.node.nat_dial_out ? "已满足" : "未满足，请在拓扑页打开「NAT 拨出」"}
+                    </li>
+                    <li>必须承载 IPv4 路径：{mode.node.path_v4 ? "已满足" : "未满足"}</li>
+                    <li>
+                      必须恰好有一条从这个出口到 {name(via)} 的直连 WG 链路（启用、非待命）：现在有 {relayLinkCount} 条
+                    </li>
+                    <li>
+                      中继出口 {name(via)} 需要公网 IPv4 或动态域名端点：{relay && (relay.endpoint_v4 || relay.endpoint_host) ? "已满足" : "未满足"}
+                    </li>
+                    <li>中继出口照常留在它的地区组里，承载它自己的流量。</li>
+                  </ul>
+                }
+              />
+            ) : null}
+            {via && relayLinkCount === 0 ? (
+              <Form.Item name="add_link" valuePropName="checked">
+                <Checkbox>
+                  保存时补上一条直连 WG 链路 {mode.node.id} → {via}
+                </Checkbox>
+              </Form.Item>
+            ) : null}
+            {via ? <DeployOrder node={{ via_exit: via }} name={name} /> : null}
+          </>
+        )}
+      </Form>
+    </Drawer>
+  );
+}
+
+/** Every exit with its kind, reachability and the drawer to change it. */
+function ExitNodes({
+  topo,
+  socks,
+  onEdit,
+  onAddExternal,
+}: {
+  topo: Topology;
+  socks: SOCKSCredentialView[] | undefined;
+  onEdit: (n: Node) => void;
+  onAddExternal: () => void;
+}) {
+  const exits = topo.nodes.filter((n) => n.role === "exit");
+  const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
+  const hasExternal = exits.some(isExternalExit);
+  return (
+    <Section
+      title="出口节点"
+      id="exit-nodes"
+      extra={
+        <Button icon={<PlusOutlined />} onClick={onAddExternal}>
+          添加外部 SOCKS 出口
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary">
+        受管出口可以填动态域名端点，或者经另一台中继出口到达（嵌套出口）；外部 SOCKS 出口经一台受管的承载出口转给已有的 SOCKS5 代理。保存直接写入拓扑，安装后生效；这些方式都还没有在真实设备上验证。
+      </Typography.Paragraph>
+      {hasExternal ? <ExternalLimits /> : null}
+      {exits.length === 0 ? (
+        <Typography.Paragraph type="secondary">拓扑里还没有出口。</Typography.Paragraph>
+      ) : (
+        <div className="ungrouped" data-testid="exit-nodes">
+          {exits.map((n) => {
+            const cred = n.external ? socks?.find((c) => c.id === n.external!.credential_id) : undefined;
+            return (
+              <div key={n.id} className="ungrouped-item" data-testid={`exit-node-${n.id}`}>
+                <div>
+                  <Space size={[4, 2]} wrap>
+                    <Link to={href("topology", n.id)}>{n.name || n.id}</Link>
+                    <Typography.Text type="secondary" className="mono-small">
+                      {n.id} · {regionLabel(n.region)}
+                    </Typography.Text>
+                    <ExitKindTags node={n} name={name} />
+                    {n.residential ? <Tag color="green">住宅（家宽）</Tag> : null}
+                  </Space>
+                  {n.external ? (
+                    <Typography.Paragraph type="secondary" style={{ margin: "2px 0 0", fontSize: 12 }}>
+                      承载 {name(n.external.carrier)} · 接口 <Mono>{n.external.interface}</Mono> · 代理 <Mono>{`${n.external.socks_address}:${n.external.socks_port}`}</Mono> · 凭据{" "}
+                      {cred ? cred.name : n.external.credential_id || "—"}
+                    </Typography.Paragraph>
+                  ) : n.endpoint_host ? (
+                    <Typography.Paragraph type="secondary" style={{ margin: "2px 0 0", fontSize: 12 }}>
+                      动态域名端点 <Mono>{n.endpoint_host}</Mono>
+                    </Typography.Paragraph>
+                  ) : null}
+                </div>
+                {n.managed || n.external ? (
+                  <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(n)} aria-label={`设置出口 ${n.name || n.id}`}>
+                    设置
+                  </Button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 // ------------------------------------------------------------------ page ---
 
 /** The hub state the actual lines were judged from: the carrying hub (single: the hub). */
@@ -1301,6 +1864,32 @@ export default function ExitsPage() {
   const dual = groups.data?.carrying?.mode === "dual" && (groups.data.hub_states?.length ?? 0) > 0;
   const exits = useMemo(() => (doc.topo?.nodes ?? []).filter((n) => n.role === "exit"), [doc.topo]);
   const names = useMemo(() => new Map((doc.topo?.nodes ?? []).map((n) => [n.id, n.name || n.id])), [doc.topo]);
+  const nodeMap = useMemo(() => new Map((doc.topo?.nodes ?? []).map((n) => [n.id, n])), [doc.topo]);
+  const socks = useApi(() => api.listSocksCredentials(), []);
+  const [exitEdit, setExitEdit] = useState<{ kind: "external"; node: Node | null } | { kind: "managed"; node: Node } | null>(null);
+  const [savedIssues, setSavedIssues] = useState<Issue[]>([]);
+
+  /**
+   * Writes a node change into the stored topology with one PUT (the same
+   * request the topology editor's save sends). Refused while the shared
+   * working copy has other unsaved edits, so they are never saved by accident.
+   */
+  const saveExit = async (next: Topology, what: string, id: string): Promise<ApiError | null> => {
+    try {
+      const res = await api.putTopology(next, !!next.settings.draft);
+      doc.applyServerChange(() => res.topology);
+      markApplyRequired();
+      setChanged(true);
+      setSavedIssues((res.issues ?? []).filter((i) => i.node_id === id || i.exit_id === id));
+      setExitEdit(null);
+      message.success(`${what}；按部署顺序重新下发后生效`);
+      void groups.reload();
+      void socks.reload();
+      return null;
+    } catch (e) {
+      return e instanceof api.ApiError ? e : new api.ApiError(0, {});
+    }
+  };
 
   const afterChange = (fn: (t: Topology) => Topology, what: string) => {
     doc.applyServerChange(fn);
@@ -1384,6 +1973,7 @@ export default function ExitsPage() {
                       g={g}
                       allGroups={d.groups}
                       names={names}
+                      nodes={nodeMap}
                       thresholds={d.thresholds}
                       hub={carrierState(d)}
                       dual={dual}
@@ -1403,6 +1993,19 @@ export default function ExitsPage() {
           </>
         )}
       </DataView>
+      {doc.topo ? (
+        <ExitNodes
+          topo={doc.topo}
+          socks={socks.data?.credentials}
+          onEdit={(n) => setExitEdit(n.external ? { kind: "external", node: n } : { kind: "managed", node: n })}
+          onAddExternal={() => setExitEdit({ kind: "external", node: null })}
+        />
+      ) : null}
+      {savedIssues.length > 0 ? (
+        <div data-testid="exit-saved-issues">
+          <IssueList issues={savedIssues} />
+        </div>
+      ) : null}
       {ungrouped.length > 0 && groups.data ? (
         <Section title="不在任何组里的出口" extra={<Typography.Text type="secondary">规则不能经组用到它们；可以被规则直接固定</Typography.Text>}>
           <div className="ungrouped" data-testid="ungrouped">
@@ -1414,6 +2017,7 @@ export default function ExitsPage() {
                     {regionLabel(n.region)}
                   </Typography.Text>
                   <MemberAttrs m={n} />
+                  <ExitKindTags node={n} name={(id) => names.get(id) ?? id} />
                 </Space>
                 <Dropdown
                   trigger={["click"]}
@@ -1436,6 +2040,18 @@ export default function ExitsPage() {
             ))}
           </div>
         </Section>
+      ) : null}
+      {exitEdit && doc.topo ? (
+        <ExitDrawer
+          open
+          mode={exitEdit}
+          topo={doc.topo}
+          socks={socks.data?.credentials}
+          socksError={socks.error}
+          blocked={doc.dirty ? "拓扑有未保存的修改（拓扑、规则或泄漏页）：先在那里保存或放弃，再在这里保存，免得把它们一起写进去。" : undefined}
+          onClose={() => setExitEdit(null)}
+          onSave={(next, what) => saveExit(next, what, exitEdit.node?.id ?? next.nodes[next.nodes.length - 1]?.id ?? "")}
+        />
       ) : null}
       <GroupDrawer
         open={editing !== null}

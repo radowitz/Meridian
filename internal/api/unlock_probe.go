@@ -137,7 +137,16 @@ type probeJobItem struct {
 	// Ingest is what unlock.Ingest did: accepted, accepted:inconclusive,
 	// rejected:<reason>, note:<text>, or not_ingested:<why>.
 	Ingest string `json:"ingest,omitempty"`
+	// Transport is "tcp_only" for an external SOCKS exit: the probe went
+	// through its proxy over TCP (HTTPS); Untested names what such an exit
+	// cannot carry and so was not tested (anything that needs UDP). A pass
+	// says nothing about those.
+	Transport string   `json:"transport,omitempty"`
+	Untested  []string `json:"untested,omitempty"`
 }
+
+// tcpOnlyUntested is what an external (TCP-only SOCKS) exit cannot carry.
+var tcpOnlyUntested = []string{"UDP（QUIC / HTTP/3、DNS over UDP 直连、语音视频通话、部分游戏）：外部 SOCKS 出口只承载 TCP，UDP 在承载节点上被拒绝，无法测试也无法使用"}
 
 type probeJob struct {
 	ID         string         `json:"id"`
@@ -188,6 +197,9 @@ func newItem(svc unlock.Service, ex compile.ProbeExit, fam unlock.Family, state 
 	it.GroupMode = string(model.GroupAuto)
 	if svc.Pin {
 		it.GroupMode = string(model.GroupManual)
+	}
+	if ex.TCPOnly {
+		it.Transport, it.Untested = "tcp_only", tcpOnlyUntested
 	}
 	return it
 }
@@ -381,6 +393,8 @@ func planProbe(t model.Topology, sel probeSelection) ([]probeGroup, []probeJobIt
 			switch {
 			case fam == unlock.FamilyIPv4 && !ex.EgressV4:
 				reason = "出口没有 IPv4 出口能力（egress_v4=false），未探测"
+			case fam == unlock.FamilyIPv6 && ex.TCPOnly:
+				reason = "外部 SOCKS 出口只承载 IPv4 的 TCP：IPv6 无法测试（不是通过）"
 			case fam == unlock.FamilyIPv6 && !ex.EgressV6:
 				reason = "出口没有 IPv6 出口能力（egress_v6=false），未探测"
 			case ex.Resolver == "":

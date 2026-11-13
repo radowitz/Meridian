@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
 	"log"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/radowitz/meridian/internal/defaults"
 )
 
 // Seams between modules that the per-package secret tests do not cross
@@ -180,4 +183,97 @@ func TestRegeneratedDeviceKeysAreNeverStored(t *testing.T) {
 		t.Fatalf("installed mra.conf does not carry the regenerated peer: %v", err)
 	}
 	noSecretIn(t, "logs", logs.String(), oldPriv, newPriv, oldPSK, newPSK)
+}
+
+// SOCKS credentials of external exits: write-only through the API; a
+// topology naming an unknown credential is not saved; a referenced one is
+// not deleted; the material reaches no view, compile output, diff or file
+// outside secrets/ (it is injected only into a carrier's provision script).
+func TestSOCKSCredentialSeams(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	s := newTest(t)
+	user, pass := "su-"+rnd(t, 6), "sp-"+rnd(t, 8)
+	secrets := []string{user, pass}
+	rr := do(s, http.MethodPost, "/api/socks-credentials", mustJSON(map[string]any{"name": "路由器", "username": user, "password": pass}))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create %d %s", rr.Code, rr.Body.String())
+	}
+	noSecretIn(t, "socks credential create", rr.Body.String(), secrets...)
+	var c struct {
+		Credential struct {
+			ID        string `json:"id"`
+			SecretSet bool   `json:"secret_set"`
+		}
+	}
+	decode(t, rr, &c)
+	if c.Credential.ID == "" || !c.Credential.SecretSet {
+		t.Fatalf("credential %+v", c)
+	}
+	// A bad password is refused without being echoed.
+	bad := "bad pass@" + rnd(t, 4)
+	rr = do(s, http.MethodPost, "/api/socks-credentials", mustJSON(map[string]any{"name": "x", "username": "u", "password": bad}))
+	if rr.Code < 400 || strings.Contains(rr.Body.String(), bad) {
+		t.Fatalf("bad password: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// The external example with an unknown credential is refused; with the
+	// stored one it is saved.
+	topo := defaults.ExternalExample()
+	for i := range topo.Nodes {
+		if topo.Nodes[i].External != nil {
+			topo.Nodes[i].External.CredentialID = "socks-000000000000"
+		}
+	}
+	raw, _ := json.Marshal(topo)
+	rr = do(s, http.MethodPut, "/api/topology", raw)
+	if rr.Code < 400 || !strings.Contains(rr.Body.String(), "external_credential_missing") {
+		t.Fatalf("unknown credential saved: %d %s", rr.Code, rr.Body.String())
+	}
+	for i := range topo.Nodes {
+		if topo.Nodes[i].External != nil {
+			topo.Nodes[i].External.CredentialID = c.Credential.ID
+		}
+	}
+	raw, _ = json.Marshal(topo)
+	if rr = do(s, http.MethodPut, "/api/topology", raw); rr.Code != 200 {
+		t.Fatalf("save: %d %s", rr.Code, rr.Body.String())
+	}
+	// Deleting it now is refused, naming the exit.
+	rr = do(s, http.MethodDelete, "/api/socks-credentials/"+c.Credential.ID, nil)
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "my1") {
+		t.Fatalf("delete in use: %d %s", rr.Code, rr.Body.String())
+	}
+	views := append([]string{"/api/socks-credentials"}, readOnlyViews...)
+	for _, p := range views {
+		noSecretIn(t, p, do(s, http.MethodGet, p, nil).Body.String(), secrets...)
+	}
+	for _, p := range []string{"/api/compile", "/api/diff"} {
+		rr := do(s, http.MethodPost, p, []byte(`{}`))
+		noSecretIn(t, p, rr.Body.String(), secrets...)
+	}
+	if rr := do(s, http.MethodPost, "/api/compile", []byte(`{}`)); !strings.Contains(rr.Body.String(), "__MERIDIAN_SECRET_"+c.Credential.ID+"-pass__") {
+		t.Fatalf("compile output lacks the placeholder: %.300s", rr.Body.String())
+	}
+	_ = filepath.Walk(s.DataDir, func(p string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() || strings.Contains(p, string(filepath.Separator)+"secrets"+string(filepath.Separator)) {
+			return nil
+		}
+		b, _ := os.ReadFile(p)
+		noSecretIn(t, p, string(b), secrets...)
+		return nil
+	})
+	noSecretIn(t, "logs", logs.String(), secrets...)
+	// With no exit using it, it can be deleted.
+	topo.Nodes = topo.Nodes[:len(topo.Nodes)-1]
+	topo.Groups = topo.Groups[:1]
+	topo.Rules = topo.Rules[:1]
+	raw, _ = json.Marshal(topo)
+	if rr = do(s, http.MethodPut, "/api/topology", raw); rr.Code != 200 {
+		t.Fatalf("save without the exit: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr = do(s, http.MethodDelete, "/api/socks-credentials/"+c.Credential.ID, nil); rr.Code != 200 {
+		t.Fatalf("delete: %d %s", rr.Code, rr.Body.String())
+	}
 }

@@ -3,7 +3,9 @@ package preflight
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -84,12 +86,56 @@ func Args(paths []string) ([]string, error) {
 	return out, nil
 }
 
+// MaxProbes bounds the TCP connect probes of one preflight.
+const MaxProbes = 16
+
+// ValidProbe reports whether p is a TCP connect probe argument
+// ("tcp4:<IPv4>:<port>"): the address of an external SOCKS exit's proxy,
+// which the carrier's preflight connects to once (no data, no credential).
+func ValidProbe(p string) bool {
+	rest, ok := strings.CutPrefix(p, "tcp4:")
+	if !ok {
+		return false
+	}
+	i := strings.LastIndex(rest, ":")
+	if i < 0 {
+		return false
+	}
+	a, err := netip.ParseAddr(rest[:i])
+	if err != nil || !a.Is4() || a.String() != rest[:i] {
+		return false
+	}
+	port, err := strconv.Atoi(rest[i+1:])
+	return err == nil && port > 0 && port < 65536 && strconv.Itoa(port) == rest[i+1:]
+}
+
+// ArgsWithProbes is Args plus TCP connect probes (ValidProbe), after the
+// paths.
+func ArgsWithProbes(paths, probes []string) ([]string, error) {
+	out, err := Args(paths)
+	if err != nil {
+		return nil, err
+	}
+	if len(probes) > MaxProbes {
+		return nil, fmt.Errorf("%w：探测数 %d 超过上限 %d", ErrBadArgs, len(probes), MaxProbes)
+	}
+	for _, p := range probes {
+		if !ValidProbe(p) {
+			return nil, fmt.Errorf("%w：%q 不是允许的探测", ErrBadArgs, Clean(p))
+		}
+		out = append(out, "'"+p+"'")
+	}
+	return out, nil
+}
+
 // Script returns the fixed preflight script. It is sent on stdin to
 // "bash -s -- <paths>" and is the same text for every node: nothing of the
 // topology, the target or a request is interpolated into it.
 func Script() string { return script }
 
-// The script is read-only. It runs only commands that print state (id,
+// The script is read-only. Besides at most MaxProbes TCP connects (an
+// external SOCKS exit's proxy, ValidProbe: a connection opened and closed,
+// no data sent), it runs only commands that print state (id,
 // uname, ip … show, ss -l / ss state established, nft list, iptables -S,
 // systemctl is-*/show,
 // dpkg-query, apt-cache policy, nft/wg/wstunnel --version, sha256sum,
@@ -242,6 +288,16 @@ meridian_preflight() {
     [ -n "$v" ] && echo "candidate smartdns $v"
   fi
   for p in "$@"; do
+    # TCP connect probe (an external SOCKS exit's proxy, seen from its
+    # carrier): one connection opened and closed, nothing sent.
+    case "$p" in
+      tcp4:*)
+        h=${p#tcp4:}; pt=${h##*:}; h=${h%:*}
+        case "$h" in ''|*[!0-9.]*) echo 'note probe argument refused'; continue ;; esac
+        case "$pt" in ''|*[!0-9]*) echo 'note probe argument refused'; continue ;; esac
+        if timeout 5 bash -c ': < "/dev/tcp/$0/$1"' "$h" "$pt" </dev/null >/dev/null 2>&1; then echo "tcpconnect $h $pt ok"; else echo "tcpconnect $h $pt fail"; fi
+        continue ;;
+    esac
     case "$p" in
       /etc/wireguard/?*|/etc/nftables.d/?*|/etc/sysctl.d/?*|/etc/smartdns/?*|/etc/meridian/?*|/etc/systemd/system/?*|/etc/iproute2/rt_tables.d/?*|/usr/local/sbin/?*|/var/lib/meridian/?*) ;;
       *) echo 'note path argument refused'; continue ;;
@@ -259,7 +315,7 @@ meridian_preflight() {
       # Panel-delivered binaries are hashed up to 64 MiB (the delivery
       # bound), every other file up to 4 MiB.
       lim=4194304
-      case "$p" in /usr/local/sbin/meridian-wstunnel|/usr/local/sbin/meridian-smartdns) lim=67108864 ;; esac
+      case "$p" in /usr/local/sbin/meridian-wstunnel|/usr/local/sbin/meridian-smartdns|/usr/local/sbin/meridian-gost) lim=67108864 ;; esac
       if [ -n "$size" ] && [ "$size" -le "$lim" ]; then sum=$(sha256sum -- "$p" 2>/dev/null | cut -c1-64); fi
       echo "path $p file ${size:-0} $marker ${sum:--}"
     elif [ -d "$p" ]; then

@@ -397,7 +397,7 @@ func writeUnlistedDomestic(sb *strings.Builder, dots []string) {
 	sb.WriteString("\n")
 }
 
-func renderExitDNS(t model.Topology, n model.Node, tunnels []Tunnel) string {
+func renderExitDNS(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan) string {
 	tun := exitIngress(n, tunnels, primaryHubID(t))
 	var sb strings.Builder
 	sb.WriteString("# Resolver bound to the tunnel. Upstream queries use this host's WAN, not the tunnel.\n")
@@ -411,6 +411,7 @@ func renderExitDNS(t model.Topology, n model.Node, tunnels []Tunnel) string {
 	}
 	sb.WriteString("server 1.1.1.1\n")
 	sb.WriteString("server 8.8.8.8\n")
+	renderCarrierDNS(&sb, exits, n.ID)
 	return sb.String()
 }
 

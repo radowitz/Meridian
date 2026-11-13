@@ -230,6 +230,16 @@ func materialize(t model.Topology, l model.Link) (west, east side, err error) {
 		}
 		to.node = peer
 	}
+	// A nested exit's link: the relay exit is west (closer to home) and
+	// listens; the nested exit dials it (validate.TunnelEnds agrees).
+	if from.node.Role == model.RoleExit && to.node.Role == model.RoleExit {
+		if from.node.ViaExit == to.node.ID {
+			return to, from, nil
+		}
+		if to.node.ViaExit == from.node.ID {
+			return from, to, nil
+		}
+	}
 	if distance(from.node) <= distance(to.node) {
 		return from, to, nil
 	}

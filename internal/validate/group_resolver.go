@@ -41,6 +41,47 @@ func ExitResolverAddr(index int) netip.Addr {
 	return netip.AddrFrom16(b)
 }
 
+// External SOCKS exits (model.ExternalExit) get three addresses from their
+// mark slot i, all owned by the carrier (on its lo) and reached only
+// through the hubs' tunnels to the carrier:
+//
+//   - ExternalResolverAddr(i) = fd66::55:<i+1>: the resolver group for the
+//     exit on the carrier (its "tunnel resolver": the gateway's SmartDNS
+//     asks it like any exit's DNSULA);
+//   - ExternalServiceAddr(i) = 10.66.201.<10+i>: where the carrier's TCP
+//     redirector and DNS forwarders for the exit listen (only reached
+//     through the exit's own DNAT, never directly);
+//   - ExternalHealthAddr(i) = 10.66.202.<10+i>: present on the carrier only
+//     while the TCP probe through the proxy succeeds; the hubs ping it to
+//     decide whether the exit is up.
+var (
+	ExternalResolverNet = netip.MustParsePrefix("fd66::55:0/112")
+	ExternalServiceNet  = netip.MustParsePrefix("10.66.201.0/24")
+	ExternalHealthNet   = netip.MustParsePrefix("10.66.202.0/24")
+)
+
+// ExternalResolverAddr is the external exit's resolver address (slot i).
+func ExternalResolverAddr(index int) netip.Addr {
+	b := ExternalResolverNet.Addr().As16()
+	v := uint16(index + 1)
+	b[14], b[15] = byte(v>>8), byte(v)
+	return netip.AddrFrom16(b)
+}
+
+// ExternalServiceAddr is the external exit's service address (slot i).
+func ExternalServiceAddr(index int) netip.Addr {
+	b := ExternalServiceNet.Addr().As4()
+	b[3] = byte(10 + index)
+	return netip.AddrFrom4(b)
+}
+
+// ExternalHealthAddr is the external exit's health address (slot i).
+func ExternalHealthAddr(index int) netip.Addr {
+	b := ExternalHealthNet.Addr().As4()
+	b[3] = byte(10 + index)
+	return netip.AddrFrom4(b)
+}
+
 // GroupResolverAddr is the resolver address of the region group with plan
 // index i (the index that also numbers its mark, transit address and hub
 // table): fd66::53:<i+1>. One address per group, so that no two SmartDNS

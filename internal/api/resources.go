@@ -330,6 +330,12 @@ func (s *Server) registerResources(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/ssh-credentials/{id}/secret", s.rotateCred)
 	mux.HandleFunc("DELETE /api/ssh-credentials/{id}", s.deleteCred)
 
+	mux.HandleFunc("GET /api/socks-credentials", s.listSOCKSCreds)
+	mux.HandleFunc("POST /api/socks-credentials", s.createSOCKSCred)
+	mux.HandleFunc("PATCH /api/socks-credentials/{id}", s.patchSOCKSCred)
+	mux.HandleFunc("PUT /api/socks-credentials/{id}/secret", s.rotateSOCKSCred)
+	mux.HandleFunc("DELETE /api/socks-credentials/{id}", s.deleteSOCKSCred)
+
 	mux.HandleFunc("GET /api/cloudflare/accounts", s.listAccounts)
 	mux.HandleFunc("POST /api/cloudflare/accounts", s.createAccount)
 	mux.HandleFunc("GET /api/cloudflare/accounts/{id}", s.getAccount)
@@ -898,4 +904,136 @@ func sshTarget(cs *credentials.Store, n model.Node) (host string, port int, user
 		}
 	}
 	return n.SSHHost, n.SSHPort, n.SSHUser
+}
+
+// ------------------------------------------------- SOCKS credentials ---
+//
+// The username and password of external SOCKS exits' proxies
+// (credentials/socks.go): write-only. Every response carries metadata and
+// the external exits that use the credential, never the material.
+
+type socksCredView struct {
+	credentials.SOCKSCredential
+	UsedBy []credentials.Ref `json:"used_by"`
+}
+
+type socksCredBody struct {
+	Name  string `json:"name"`
+	Notes string `json:"notes"`
+	credentials.SOCKSSecretInput
+}
+
+// socksRefs are the external exits of t that use credential id.
+func socksRefs(t model.Topology, id string) []credentials.Ref {
+	refs := []credentials.Ref{}
+	for _, n := range t.Nodes {
+		if model.IsExternal(n) && n.External.CredentialID == id {
+			refs = append(refs, credentials.Ref{Kind: "node", ID: n.ID, Name: n.Name})
+		}
+	}
+	return refs
+}
+
+func (s *Server) listSOCKSCreds(w http.ResponseWriter, r *http.Request) {
+	cs, t, ok := s.resCtx(w)
+	if !ok {
+		return
+	}
+	out := []socksCredView{}
+	for _, c := range cs.SOCKSCredentials() {
+		out = append(out, socksCredView{c, socksRefs(t, c.ID)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"credentials": out})
+}
+
+func (s *Server) createSOCKSCred(w http.ResponseWriter, r *http.Request) {
+	cs, t, ok := s.resCtx(w)
+	if !ok {
+		return
+	}
+	var body socksCredBody
+	if err := decodeBody(w, r, &body); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	c, err := cs.CreateSOCKSCredential(body.Name, body.Notes, body.SOCKSSecretInput)
+	if err != nil {
+		writeResErr(w, err, body.Secrets()...)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"credential": socksCredView{c, socksRefs(t, c.ID)}})
+}
+
+func (s *Server) patchSOCKSCred(w http.ResponseWriter, r *http.Request) {
+	cs, t, ok := s.resCtx(w)
+	if !ok {
+		return
+	}
+	var p credentials.CredentialPatch
+	if err := decodeBody(w, r, &p); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	c, err := cs.UpdateSOCKSCredential(r.PathValue("id"), p)
+	if err != nil {
+		writeResErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"credential": socksCredView{c, socksRefs(t, c.ID)}})
+}
+
+func (s *Server) rotateSOCKSCred(w http.ResponseWriter, r *http.Request) {
+	cs, t, ok := s.resCtx(w)
+	if !ok {
+		return
+	}
+	var in credentials.SOCKSSecretInput
+	if err := decodeBody(w, r, &in); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	c, err := cs.RotateSOCKSCredential(r.PathValue("id"), in)
+	if err != nil {
+		writeResErr(w, err, in.Secrets()...)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"credential": socksCredView{c, socksRefs(t, c.ID)}})
+}
+
+// deleteSOCKSCred refuses while an external exit of the stored topology
+// still names the credential.
+func (s *Server) deleteSOCKSCred(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.raMu.Lock()
+	defer s.raMu.Unlock()
+	cs, t, ok := s.resCtx(w)
+	if !ok {
+		return
+	}
+	s.resMu.Lock()
+	defer s.resMu.Unlock()
+	if err := cs.DeleteSOCKSCredential(id, socksRefs(t, id)); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
+// checkExternalCredentials: every external exit names a SOCKS credential
+// that exists in the store.
+func checkExternalCredentials(cs *credentials.Store, t model.Topology) error {
+	for _, n := range t.Nodes {
+		if !model.IsExternal(n) {
+			continue
+		}
+		id := n.External.CredentialID
+		if id == "" {
+			continue // validation reports external_credential_missing
+		}
+		if _, err := cs.SOCKSCredential(id); err != nil {
+			return &credentials.Error{Code: "external_credential_missing", Field: "nodes." + n.ID + ".external.credential_id",
+				Msg: fmt.Sprintf("外部 SOCKS 出口 %s 引用的 SOCKS 凭据 %s 不存在：先在「凭据」里新建", n.ID, id)}
+		}
+	}
+	return nil
 }

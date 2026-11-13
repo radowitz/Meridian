@@ -288,6 +288,9 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .topo-node.role-hub { border-left-color: var(--m-role-hub); }
 .topo-node.role-exit { border-left-color: var(--m-role-exit); }
 .topo-node.residential { background: var(--m-ok-bg); }
+/* External SOCKS exit: no links, reached through its carrier's proxy. */
+.topo-node.external { border-style: dashed; border-left-style: dashed; }
+.topo-node.nested { border-left-style: double; }
 .topo-node.has-error { border-color: var(--m-bad); }
 .node-card { line-height: 1.35; }
 .node-card strong { display: block; font-size: 13px; }
@@ -307,6 +310,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .legend-dot.role-hub::before { background: var(--m-role-hub); }
 .legend-dot.role-exit::before { background: var(--m-role-exit); }
 .legend-dot.residential::before { background: var(--m-ok-bg); border: 1px solid var(--m-ok); }
+.legend-dot.external::before { background: transparent; border: 1px dashed var(--m-role-exit); }
 .legend-line::before { content: ""; display: inline-block; width: 22px; height: 0; border-top: 2px dashed var(--m-role-ix); margin-right: 5px; vertical-align: middle; }
 .legend-line.error::before { border-top: 2px solid var(--m-bad); }
 .flag-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px dashed var(--m-border); }

@@ -17,14 +17,23 @@ const (
 
 // Finding codes (stable; the panel keys on them, never on the text).
 const (
-	CodeReportIncomplete   = "report_incomplete"
-	CodeNotRoot            = "not_root"
-	CodeOSUnsupported      = "os_unsupported"
-	CodeArchUnsupported    = "arch_unsupported"
-	CodeKernelTooOld       = "kernel_too_old"
-	CodeNoSystemd          = "no_systemd"
-	CodeNoApt              = "no_apt"
-	CodeWstunnelMissing    = "wstunnel_missing"
+	CodeReportIncomplete = "report_incomplete"
+	CodeNotRoot          = "not_root"
+	CodeOSUnsupported    = "os_unsupported"
+	CodeArchUnsupported  = "arch_unsupported"
+	CodeKernelTooOld     = "kernel_too_old"
+	CodeNoSystemd        = "no_systemd"
+	CodeNoApt            = "no_apt"
+	CodeWstunnelMissing  = "wstunnel_missing"
+	// CodeExternalIface (blocking): the unmanaged interface an external
+	// SOCKS exit's proxy must be reached through does not exist on its
+	// carrier, or does not route the proxy address. CodeExternalProxy
+	// (blocking): the proxy port does not accept a TCP connection from the
+	// carrier. CodeExternal (info): both checked.
+	CodeExternalIface = "external_interface_missing"
+	CodeExternalProxy = "external_proxy_unreachable"
+	CodeExternal      = "external_proxy"
+
 	CodeSmartDNSMissing    = "smartdns_unavailable"
 	CodeForwardDrop        = "forward_policy_drop"
 	CodeInterfaceExists    = "interface_exists"
@@ -375,6 +384,7 @@ func Evaluate(r Report, fp Footprint, ctx Context) Evaluation {
 	e.interfaces()
 	e.wan()
 	e.ixHub()
+	e.external()
 	e.listens()
 	e.routes()
 	e.rules()
@@ -2114,4 +2124,53 @@ func (e *eval) ufwEnforcing() (bool, string) {
 		return true, "ufw.service 在运行，预检没有读到 ufw.conf"
 	}
 	return false, "ufw.service 没有运行"
+}
+
+// external checks, read-only, what each external SOCKS exit carried by
+// this node needs from the host: its interface exists (the unmanaged
+// tunnel; never touched), the main table routes the proxy address through
+// it (longest match), and the proxy port accepted the preflight's one TCP
+// connection (no data, no credential sent: whether the credential is right
+// shows only after the install, in the health state).
+func (e *eval) external() {
+	for _, x := range e.fp.External {
+		res := x.ID
+		if !containsStr(e.r.Links, x.Iface) {
+			e.add(Blocking, CodeExternalIface, res,
+				fmt.Sprintf("外部 SOCKS 出口 %s 要经接口 %s 连 SOCKS %s:%d，但这台主机上没有这个接口。", x.ID, x.Iface, x.SOCKS, x.Port),
+				"确认承载节点上那条不由面板管理的隧道已经建立、接口名填对（拓扑里外部出口的「承载接口」），然后重新预检。面板不会去建立或修改这条隧道。")
+			continue
+		}
+		dev, via := "", -1
+		for _, rt := range e.r.Routes {
+			if rt.Family != 4 || rt.Type != "" || !rt.Dst.Contains(x.SOCKS) || rt.Dst.Bits() <= via {
+				continue
+			}
+			dev, via = rt.Dev, rt.Dst.Bits()
+		}
+		if dev != x.Iface {
+			where := "没有任何路由覆盖它"
+			if dev != "" {
+				where = "它的路由在 " + dev + " 上"
+			}
+			e.add(Blocking, CodeExternalIface, res,
+				fmt.Sprintf("外部 SOCKS 出口 %s 的 SOCKS 地址 %s 不经接口 %s 路由（%s）。装机后承载节点只经 %s 连它，连不上就失败关闭。", x.ID, x.SOCKS, x.Iface, where, x.Iface),
+				"检查那条隧道的地址和路由，或把拓扑里外部出口的「承载接口」改成真正路由这个地址的接口，然后重新预检。")
+			continue
+		}
+		ok, probed := e.r.TCPConnect[fmt.Sprintf("%s:%d", x.SOCKS, x.Port)]
+		switch {
+		case !probed:
+			e.add(Warning, CodeExternalProxy, res,
+				fmt.Sprintf("预检没有报告到 SOCKS %s:%d 的 TCP 连接结果（较旧的预检或报告被截断）。", x.SOCKS, x.Port),
+				"重新预检；装机后在出口状态里看健康探测。")
+		case !ok:
+			e.add(Blocking, CodeExternalProxy, res,
+				fmt.Sprintf("从这台主机连不上外部 SOCKS 出口 %s 的 SOCKS %s:%d（5 秒内没有建立 TCP 连接）。", x.ID, x.SOCKS, x.Port),
+				"确认那台设备在线、隧道通、SOCKS 在这个地址和端口上监听，然后重新预检。")
+		default:
+			e.add(Info, CodeExternal, res,
+				fmt.Sprintf("外部 SOCKS 出口 %s：接口 %s 存在并路由 %s，SOCKS 端口 %d 接受 TCP 连接（预检没有发送凭据；凭据是否正确装机后由健康探测确认）。", x.ID, x.Iface, x.SOCKS, x.Port), "")
+		}
+	}
 }

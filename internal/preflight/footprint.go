@@ -91,6 +91,20 @@ type Footprint struct {
 	// an address on lo inside them is a previous install's transit address;
 	// the routes script removes the ones the new plan no longer uses.
 	LoNets []netip.Prefix `json:"lo_nets,omitempty"`
+	// External are the external SOCKS exits this node carries ("#
+	// meridian-ext:" lines of meridian-up.sh): the proxy address and port
+	// and the unmanaged interface that must route it. The preflight checks
+	// the interface and the route read-only and connects to the port once
+	// (no credential is sent).
+	External []ExternalPlan `json:"external,omitempty"`
+}
+
+// ExternalPlan is one external SOCKS exit on its carrier.
+type ExternalPlan struct {
+	ID    string     `json:"id"`
+	SOCKS netip.Addr `json:"socks"`
+	Port  int        `json:"port"`
+	Iface string     `json:"iface"`
 }
 
 // IfacePlan is a WireGuard interface the bundle brings up.
@@ -148,7 +162,9 @@ var (
 	reLoAddr     = regexp.MustCompile(`(?m)^\s*ip (?:-6 )?addr (?:replace|add) '?([0-9a-fA-F:./]+)'? dev '?lo'?\s*$`)
 	reForward4   = regexp.MustCompile(`(?m)^\s*net\.ipv4\.ip_forward\s*=\s*1`)
 	reForward6   = regexp.MustCompile(`(?m)^\s*net\.ipv6\.conf\.all\.forwarding\s*=\s*1`)
-	reArtifact   = regexp.MustCompile(`(?m)^\s*ExecStart=/usr/local/sbin/meridian-(wstunnel|smartdns)(\s|$)`)
+	reExtMarker  = regexp.MustCompile(`(?m)^# meridian-ext: ([a-z0-9-]+) socks=([0-9.]+):([0-9]+) iface=([A-Za-z0-9_.@-]+)$`)
+	reGostAddr   = regexp.MustCompile(`(?m)^  addr: "([0-9.]+):([0-9]+)"$`)
+	reArtifact   = regexp.MustCompile(`(?m)^\s*ExecStart=/usr/local/sbin/meridian-(wstunnel|smartdns|gost)(\s|$)`)
 	reHarden     = regexp.MustCompile(`(?m)^harden_sysctl((?: [A-Za-z0-9_.@-]{1,15})*)\s*$`)
 	reFWTag      = regexp.MustCompile(`(?m)^FW_TAG=(meridian-fw-[0-9a-f]{8})$`)
 	reFWChain    = regexp.MustCompile(`(?m)^FW_CHAIN=([A-Za-z0-9_-]{1,28})$`)
@@ -166,6 +182,11 @@ func SecretFile(p string) bool {
 	if strings.HasPrefix(p, "/etc/wireguard/") && strings.HasSuffix(p, ".conf") {
 		return true
 	}
+	if strings.HasPrefix(p, "/etc/meridian/ext/") {
+		// The external exits' redirector configuration names the proxy
+		// credentials (internal/compile.ExtSecretFile).
+		return strings.HasSuffix(p, ".yaml")
+	}
 	if !strings.HasPrefix(p, "/etc/meridian/wss/") {
 		return false
 	}
@@ -179,7 +200,7 @@ const FWCompatPath = "/usr/local/sbin/meridian-fwcompat.sh"
 var hardenKeys = []string{"net.ipv4.conf.%s.rp_filter", "net.ipv4.conf.%s.send_redirects", "net.ipv4.conf.%s.accept_redirects", "net.ipv6.conf.%s.accept_redirects"}
 
 // ArtifactNames are the panel-delivered binaries (internal/artifacts).
-var ArtifactNames = []string{"smartdns", "wstunnel"}
+var ArtifactNames = []string{"gost", "smartdns", "wstunnel"}
 
 // ArtifactPath is the Meridian-owned host path of a panel-delivered binary
 // (internal/artifacts.HostPath; this package imports no other Meridian
@@ -202,6 +223,19 @@ func (fp Footprint) ArtifactPaths() []string {
 	out := make([]string, 0, len(fp.Binaries))
 	for _, b := range fp.Binaries {
 		out = append(out, ArtifactPath(b))
+	}
+	return out
+}
+
+// PreflightProbes are the TCP connect probes the preflight runs for fp:
+// each external SOCKS exit's proxy (ValidProbe).
+func (fp Footprint) PreflightProbes() []string {
+	var out []string
+	for _, x := range fp.External {
+		p := fmt.Sprintf("tcp4:%s:%d", x.SOCKS, x.Port)
+		if !containsStr(out, p) {
+			out = append(out, p)
+		}
 	}
 	return out
 }
@@ -299,6 +333,12 @@ func FootprintOf(files map[string]string) Footprint {
 					fp.Listens = append(fp.Listens, l)
 				}
 			}
+		case p == "/etc/meridian/ext/gost.yaml":
+			for _, m := range reGostAddr.FindAllStringSubmatch(body, -1) {
+				if l, ok := listenOf("tcp", m[1], m[2], "meridian-ext-proxy.service"); ok {
+					fp.Listens = append(fp.Listens, l)
+				}
+			}
 		case p == "/etc/iproute2/rt_tables.d/meridian.conf":
 			for _, m := range reRTLine.FindAllStringSubmatch(body, -1) {
 				n, _ := strconv.Atoi(m[1])
@@ -363,6 +403,13 @@ func FootprintOf(files map[string]string) Footprint {
 					fp.WAN, fp.WANSet, fp.WANNeed = m[1], m[2] == "set", strings.Split(m[3], ",")
 				}
 				fp.RAKeep = strings.Contains(body, "MERIDIAN_RA_STATE=")
+				for _, m := range reExtMarker.FindAllStringSubmatch(body, -1) {
+					a, err := netip.ParseAddr(m[2])
+					port, _ := strconv.Atoi(m[3])
+					if err == nil && a.Is4() && port > 0 && port < 65536 {
+						fp.External = append(fp.External, ExternalPlan{ID: m[1], SOCKS: a, Port: port, Iface: m[4]})
+					}
+				}
 				if m := reIXHub.FindStringSubmatch(body); m != nil {
 					fp.IXIngress, fp.IXIngressIface, fp.IXEgress = m[1], strings.TrimPrefix(m[2], "-"), strings.TrimPrefix(m[3], "-")
 				}
