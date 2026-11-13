@@ -134,6 +134,19 @@ func ValidateLists(req ListsRequest) error {
 	return nil
 }
 
+// smartDNSReadsChinaLists: the installed gateway resolver config loads the
+// saved China lists (ip-set, setting unlisted_domestic_dns). SmartDNS reads
+// them only at start, so a chnroute update must restart it then; with the
+// setting off a chnroute update leaves the resolver (and its cache) alone.
+func (a *Agent) smartDNSReadsChinaLists() bool {
+	p := a.SmartDNSConf
+	if p == "" {
+		p = "/etc/smartdns/smartdns.conf"
+	}
+	b, err := os.ReadFile(p)
+	return err == nil && ReadsChinaLists(string(b))
+}
+
 func (a *Agent) listsDir() string {
 	if a.ListsDir != "" {
 		return a.ListsDir
@@ -201,7 +214,7 @@ func (a *Agent) UpdateLists(ctx context.Context, req ListsRequest) (lists.Report
 			}
 		},
 		AfterPublish: func(ctx context.Context, rep *lists.Report) {
-			if !rep.DNSChanged {
+			if !rep.DNSChanged && !(rep.ChnrouteChanged && a.smartDNSReadsChinaLists()) {
 				return
 			}
 			x := &run{a: a, ctx: ctx}
@@ -330,4 +343,30 @@ func (c *Client) post(ctx context.Context, path string, body any, timeout time.D
 		return resp.StatusCode, fmt.Errorf("host agent 应答格式不正确（%s）", resp.Status)
 	}
 	return resp.StatusCode, nil
+}
+
+// The China IP lists the gateway's resolver may load (compile renders the
+// same two paths; a test in the compile package keeps the two in step).
+// This package cannot import compile: compile's tests import hostexec.
+const (
+	chinaListFile4 = "/var/lib/meridian/lists/china.txt"
+	chinaListFile6 = "/var/lib/meridian/lists/china6.txt"
+)
+
+// ReadsChinaLists reports whether a SmartDNS config loads the China IP
+// lists: an "ip-set … -file <list>" line that is not commented out.
+func ReadsChinaLists(conf string) bool {
+	for _, line := range strings.Split(conf, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "ip-set ") {
+			continue
+		}
+		f := strings.Fields(line)
+		for i := 0; i+1 < len(f); i++ {
+			if f[i] == "-file" && (f[i+1] == chinaListFile4 || f[i+1] == chinaListFile6) {
+				return true
+			}
+		}
+	}
+	return false
 }

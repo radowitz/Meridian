@@ -894,6 +894,29 @@ function SettingsDrawer({ open, topo, onClose, onChange }: { open: boolean; topo
           <Select mode="tags" tokenSeparators={[",", " "]} value={s.domestic_dot ?? []} onChange={(v: string[]) => set({ domestic_dot: v })} />
         </Row>
         <Divider orientation="left" plain>
+          解析（DNS）
+        </Divider>
+        <Flag
+          label="客户端 IPv6 经本网关"
+          help={
+            s.clients_ipv6_via_gateway
+              ? "已打开：出口（或地区组）能端到端承载 IPv6 时，走隧道的域名也返回 AAAA。前提是每台客户端的 IPv6 默认路由都指向本网关（见 docs/test-device.md）；手机只能手填 IPv4 网关和 DNS、IPv6 仍走家里路由器时不要打开，否则这些 IPv6 地址会从家宽直接出去、绕过隧道。"
+              : "关闭（默认）：除国内域名外，所有域名都不返回 AAAA。手机等客户端的 IPv6 来自家里路由器，拿不到国外域名的 IPv6 地址，只用 IPv4 经本网关进隧道，不会从家宽 IPv6 绕过隧道；国内域名照常返回 AAAA，经家里路由器直连。"
+          }
+          checked={!!s.clients_ipv6_via_gateway}
+          onChange={(v) => set({ clients_ipv6_via_gateway: v })}
+        />
+        <Flag
+          label="未列名单的域名也问国内 DNS"
+          help={
+            s.unlisted_domestic_dns
+              ? "已打开：不在任何名单、也没有命中规则的域名同时发给国内解析器，只有它返回的全是中国地址时才采用并直连，否则（包括被污染的结果）用出口解析器的结果走隧道。代价：国内解析器能看到这些域名（包括国外的），查询经家宽直接发出；DNS 泄漏测试里会出现国内解析器。出口解析器不通时这类域名得到空结果，网关会缓存约一分钟。"
+              : "关闭（默认，严格）：不在名单里的域名只经隧道由出口解析器解析，国外域名的查询不经家宽发出。名单外的国内网站可能拿到面向海外的节点（走隧道或绕远）。打开后国内解析器会看到所有名单外的域名。"
+          }
+          checked={!!s.unlisted_domestic_dns}
+          onChange={(v) => set({ unlisted_domestic_dns: v })}
+        />
+        <Divider orientation="left" plain>
           隧道
         </Divider>
         {text("transit_v4_prefix", "IPv4 转运前缀", "网关把局域网源地址换成每个出口一个的转运地址，跨跳保持出口选择。", "10.66.200.0/24")}

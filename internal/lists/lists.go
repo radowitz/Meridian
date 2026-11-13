@@ -834,6 +834,11 @@ type Report struct {
 	// DNSChanged: a geosite or keyword file was replaced; SmartDNS reads
 	// them only at start and must be restarted.
 	DNSChanged bool `json:"dns_changed"`
+	// ChnrouteChanged: a saved China IP list (lists/china.txt, china6.txt)
+	// was replaced. SmartDNS reads them only when the gateway config loads
+	// them as ip-sets (unlisted_domestic_dns); the host agent restarts it
+	// then.
+	ChnrouteChanged bool `json:"chnroute_changed,omitempty"`
 	// Set by the host agent after the update.
 	DNSRestart string   `json:"dns_restart,omitempty"`
 	Warnings   []string `json:"warnings,omitempty"`
@@ -1082,7 +1087,9 @@ func (u *Updater) Run(ctx context.Context, req Request) Report {
 			rep.Lists = append(rep.Lists, u.keywords(req.Keywords, &st, &rep)...)
 		}
 		if len(chns) > 0 {
-			u.publishChnroute(ctx, chns, &st)
+			if u.publishChnroute(ctx, chns, &st) {
+				rep.ChnrouteChanged = true
+			}
 		}
 		if u.AfterPublish != nil && rep.Error == "" {
 			u.AfterPublish(ctx, &rep)
@@ -1199,8 +1206,9 @@ func (u *Updater) keywords(kws []Keyword, st *Status, rep *Report) []ListResult 
 
 // publishChnroute loads every validated family in ONE nft transaction
 // (flush + add per family); the saved lists and the saved batch are only
-// replaced after nft accepted it.
-func (u *Updater) publishChnroute(ctx context.Context, chns []*chnCandidate, st *Status) {
+// replaced after nft accepted it. It reports whether a saved list file
+// now has other contents than before.
+func (u *Updater) publishChnroute(ctx context.Context, chns []*chnCandidate, st *Status) (changed bool) {
 	fail := func(msg string) {
 		for _, c := range chns {
 			c.res.Error = msg
@@ -1226,9 +1234,13 @@ func (u *Updater) publishChnroute(ctx context.Context, chns []*chnCandidate, st 
 		return
 	}
 	for _, c := range chns {
-		file := fileOf(c.res.List)
-		if err := writeAtomic(filepath.Join(u.stateDir(), file), c.raw, 0o644); err != nil {
-			c.res.Error = "loaded, but saving the list failed: " + err.Error()
+		file := filepath.Join(u.stateDir(), fileOf(c.res.List))
+		if old, err := os.ReadFile(file); err != nil || !bytes.Equal(old, c.raw) {
+			if err := writeAtomic(file, c.raw, 0o644); err != nil {
+				c.res.Error = "loaded, but saving the list failed: " + err.Error()
+			} else {
+				changed = true
+			}
 		}
 		c.res.Updated, c.res.Source, c.res.URL, c.res.Count = true, c.src.Name, c.url, len(c.ps)
 		st.Published[c.res.List] = Published{Source: c.src.Name, URL: c.url, UpdatedAt: u.now(), Count: len(c.ps)}
@@ -1254,6 +1266,7 @@ func (u *Updater) publishChnroute(ctx context.Context, chns []*chnCandidate, st 
 			}
 		}
 	}
+	return changed
 }
 
 func setOf(list string) string {

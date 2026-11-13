@@ -60,6 +60,7 @@ func Run(t model.Topology) Result {
 	nodes := indexNodes(t)
 	out.Issues = append(out.Issues, checkIDs(t)...)
 	out.Issues = append(out.Issues, checkSettings(t)...)
+	out.Issues = append(out.Issues, checkClientDNS(t)...)
 	out.Issues = append(out.Issues, checkGroupResolver(t)...)
 	out.Issues = append(out.Issues, checkLinks(t, nodes)...)
 
@@ -773,7 +774,9 @@ func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {
 				})
 			}
 		}
-		if exit != nil && !exit.EgressV6 {
+		// With clients_ipv6_via_gateway off every tunnelled rule is
+		// IPv4-only; checkClientDNS reports that once for the topology.
+		if t.Settings.ClientsIPv6ViaGateway && exit != nil && !exit.EgressV6 {
 			out = append(out, Issue{
 				Code: "aaaa_filtered", Severity: SeverityWarning, RuleID: r.ID, ExitID: exit.ID,
 				Message: fmt.Sprintf("规则「%s」的出口 %s 没有 egress_v6。不返回 AAAA，在同一出口回落 v4，不会改送到别的国家。", r.Name, exit.Name),
@@ -1410,4 +1413,58 @@ func checkLANIPv6(t model.Topology, lan netip.Prefix) []Issue {
 		return bad("局域网 IPv6 前缀 %s 与中转前缀 %s 重叠。", lan, tp.Masked())
 	}
 	return nil
+}
+
+// checkClientDNS describes what the two resolver settings do to clients
+// (docs/architecture.md「客户端 IPv6 与 AAAA」「未列名单域名的国内解析」).
+func checkClientDNS(t model.Topology) []Issue {
+	var out []Issue
+	st := t.Settings
+	if !st.ClientsIPv6ViaGateway {
+		out = append(out, Issue{
+			Code: "aaaa_filtered", Severity: SeverityWarning, Field: "clients_ipv6_via_gateway",
+			Message: "网关设置「客户端 IPv6 经本网关」关闭（默认）：除国内域名外，所有域名——没有命中规则的、每条规则的、地区组和钉死出口的——都不返回 AAAA。" +
+				"客户端只拿到 IPv4 地址，经本网关进隧道，在同一出口回落 v4，不会改送到别的国家，也不会从家里路由器下发的 IPv6 绕过隧道。国内域名照常返回 AAAA，经家里路由器直连。" +
+				"只有客户端的 IPv6 默认路由确实指向本网关（docs/test-device.md）时才打开它。",
+		})
+	} else {
+		if st.LANIPv6Prefix == "" {
+			out = append(out, Issue{
+				Code: "clients_ipv6_no_prefix", Severity: SeverityWarning, Field: "clients_ipv6_via_gateway",
+				Message: "声明了客户端 IPv6 经本网关，但没有填局域网 IPv6 前缀：国内 IPv6 的直连分流（chnroute6）按前缀判断，先填好 lan_ipv6_prefix。",
+			})
+		}
+		if g, ok := t.GroupByID(st.DefaultGroup); ok {
+			if gv6, known := groupCarriesV6(t, g); known && !gv6 {
+				out = append(out, Issue{
+					Code: "aaaa_filtered", Severity: SeverityWarning, GroupID: g.ID,
+					Message: fmt.Sprintf("默认地区组 %s 里有成员没有 egress_v6：组选中（或枢纽可能切到）的出口不能端到端承载 IPv6 时，没有命中规则的域名一律不返回 AAAA，在同一出口回落 v4，不会改送到别的国家。", g.Name),
+				})
+			}
+		}
+	}
+	if st.UnlistedDomesticDNS {
+		out = append(out, Issue{
+			Code: "unlisted_domestic_dns", Severity: SeverityWarning, Field: "unlisted_domestic_dns",
+			Message: "「未列名单域名也问国内 DNS」已打开：不在任何名单、也没有命中规则的域名会同时发给国内解析器（经家宽直接发出），它们能看到这些域名，包括国外的。" +
+				"只有国内解析器返回的全是中国地址时才采用并直连，否则用出口解析器的结果。DNS 泄漏测试里会出现国内解析器，这是预期的。",
+		})
+	}
+	return out
+}
+
+// groupCarriesV6: every member of g is an exit with egress_v6 (the
+// compiler's rule for a switchable group); known is false for an empty
+// group (reported elsewhere).
+func groupCarriesV6(t model.Topology, g model.RegionGroup) (v6, known bool) {
+	if len(g.Members) == 0 {
+		return false, false
+	}
+	for _, id := range g.Members {
+		n, ok := t.NodeByID(id)
+		if !ok || !n.EgressV6 {
+			return false, true
+		}
+	}
+	return true, true
 }

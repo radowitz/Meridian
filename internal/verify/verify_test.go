@@ -317,3 +317,47 @@ func TestNoIPv6SendRedirectsClaim(t *testing.T) {
 		}
 	}
 }
+
+// The resolver settings: the generated config is checked against them, and
+// the DNS leak sign-off describes the guarantee that actually holds.
+func TestResolverItemsFollowSettings(t *testing.T) {
+	byID := func(items []Item) map[string]Item {
+		m := map[string]Item{}
+		for _, it := range items {
+			m[it.ID] = it
+		}
+		return m
+	}
+	for _, c := range []struct{ v6, split bool }{{false, false}, {true, true}} {
+		topo := defaults.Example()
+		topo.Settings.ClientsIPv6ViaGateway = c.v6
+		topo.Settings.UnlistedDomesticDNS = c.split
+		b, err := compile.Compile(topo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := byID(CheckBundle(topo, b.Files))
+		for _, id := range []string{"dns_aaaa_policy", "unlisted_domestic_dns"} {
+			if m[id].Status != Pass || m[id].Scope != ScopeAutomated {
+				t.Fatalf("%v: %s = %+v", c, id, m[id])
+			}
+		}
+		leak := m["dnsleak_client"]
+		if leak.Status != PendingSignoff {
+			t.Fatalf("dnsleak_client %+v", leak)
+		}
+		if c.split != strings.Contains(leak.Detail, "会同时出现国内解析器") {
+			t.Fatalf("split=%v: dnsleak_client does not describe the guarantee: %s", c.split, leak.Detail)
+		}
+		// A config that contradicts the setting fails.
+		files := map[string]string{}
+		for k, v := range b.Files {
+			files[k] = v
+		}
+		conf := "nodes/gw/etc/smartdns/smartdns.conf"
+		files[conf] = strings.Replace(files[conf], "\nforce-AAAA-SOA yes\n", "\n", 1)
+		if !c.v6 && byID(CheckBundle(topo, files))["dns_aaaa_policy"].Status != Fail {
+			t.Fatal("a config without force-AAAA-SOA passed while clients' IPv6 is not through the gateway")
+		}
+	}
+}

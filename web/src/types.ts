@@ -119,6 +119,17 @@ export interface Settings {
   ula_prefix: string;
   panel_bind: string;
   domestic_dot: string[];
+  /**
+   * The operator states that LAN clients use this gateway as their IPv6
+   * router. Absent/false (default): the resolver returns no AAAA for any
+   * name that is not domestic.
+   */
+  clients_ipv6_via_gateway?: boolean;
+  /**
+   * Unlisted names are also asked from the domestic resolvers; their answer
+   * is used only when it is a China address. Absent/false (default): strict.
+   */
+  unlisted_domestic_dns?: boolean;
   transit_v4_prefix: string;
   transit_v6_prefix: string;
   unlock_interval_sec?: number;

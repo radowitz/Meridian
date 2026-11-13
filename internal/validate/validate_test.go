@@ -956,3 +956,65 @@ func TestPortsFollowSlots(t *testing.T) {
 		t.Fatalf("allocator gave a conflicting slot: %+v", Run(topo).Issues)
 	}
 }
+
+// The resolver settings are described accurately: with clients'
+// IPv6 outside the gateway (the default) one topology-level warning says
+// every non-domestic name is IPv4-only, and no rule is singled out; with it
+// on, rules (and the default group) on exits without egress_v6 are.
+func TestClientDNSSettingsIssues(t *testing.T) {
+	count := func(res Result, code string) (topo, rules int, msg string) {
+		for _, iss := range res.Issues {
+			if iss.Code != code {
+				continue
+			}
+			if iss.Severity != SeverityWarning {
+				t.Fatalf("%s is not a warning: %+v", code, iss)
+			}
+			if iss.RuleID == "" {
+				topo++
+				msg = iss.Message
+			} else {
+				rules++
+			}
+		}
+		return
+	}
+	off := defaults.Example()
+	tp, rl, msg := count(Run(off), "aaaa_filtered")
+	if tp != 1 || rl != 0 {
+		t.Fatalf("default: %d topology-level and %d rule aaaa_filtered, want 1 and 0", tp, rl)
+	}
+	for _, w := range []string{"客户端 IPv6 经本网关", "不返回 AAAA", "国内域名照常返回 AAAA", "docs/test-device.md", "不会改送到别的国家"} {
+		if !strings.Contains(msg, w) {
+			t.Fatalf("message lacks %q: %s", w, msg)
+		}
+	}
+	if n, _, _ := count(Run(off), "unlisted_domestic_dns"); n != 0 {
+		t.Fatal("unlisted_domestic_dns warning while the setting is off")
+	}
+
+	on := defaults.Example()
+	on.Settings.ClientsIPv6ViaGateway = true
+	on.Settings.UnlistedDomesticDNS = true
+	res := Run(on)
+	if res.HasErrors() {
+		t.Fatalf("settings on made the example invalid: %+v", res.Issues)
+	}
+	tp, rl, _ = count(res, "aaaa_filtered")
+	if rl == 0 {
+		t.Fatal("no aaaa_filtered for the v4-only TW/SG rules with clients' IPv6 through the gateway")
+	}
+	for _, iss := range res.Issues {
+		if iss.Code == "aaaa_filtered" && iss.Field == "clients_ipv6_via_gateway" {
+			t.Fatalf("setting-off warning while it is on: %+v", iss)
+		}
+	}
+	n, _, msg := count(res, "unlisted_domestic_dns")
+	if n != 1 || !strings.Contains(msg, "国内解析器") || !strings.Contains(msg, "中国地址") {
+		t.Fatalf("unlisted_domestic_dns warning %d: %s", n, msg)
+	}
+	on.Settings.LANIPv6Prefix = ""
+	if n, _, _ := count(Run(on), "clients_ipv6_no_prefix"); n != 1 {
+		t.Fatal("no warning for clients' IPv6 through the gateway without a LAN IPv6 prefix")
+	}
+}

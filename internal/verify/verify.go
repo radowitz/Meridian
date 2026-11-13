@@ -71,13 +71,14 @@ func CheckBundle(t model.Topology, files map[string]string) []Item {
 	auto = append(auto, chnrouteReaddItem(files, gwp))
 	auto = append(auto, keyPlaceholderItem(files))
 	auto = append(auto, remoteAccessItem(t, files, gwp))
+	auto = append(auto, resolverItems(t, files, gwp)...)
 	items := make([]Item, 0, len(auto)+24)
 	for _, it := range auto {
 		it.Scope = ScopeAutomated
 		items = append(items, it)
 	}
 	items = append(items, integrationItems()...)
-	items = append(items, humanItems()...)
+	items = append(items, humanItems(t)...)
 	if t.RemoteAccess.Active() {
 		items = append(items, remoteHumanItems(t)...)
 	}
@@ -197,6 +198,38 @@ func chnrouteReaddItem(files map[string]string, gwp string) Item {
 		return Item{ID: id, Status: Pass, Title: title, Detail: "生成的启动脚本在 nft -c / nft -f 之前把上次名单更新保存的 chnroute 批次接到规则后面。集合是否非空由 meridian-verify.sh 的 chnroute_loaded 在网关上检查；从没更新过名单时它会失败。"}
 	}
 	return Item{ID: id, Status: Fail, Title: title, Detail: "启动脚本没有重新加入已保存的 chnroute：每次重载后国内地址集合都会是空的，直到下一次名单更新。"}
+}
+
+// resolverItems: the gateway resolver config matches the two resolver
+// settings (docs/architecture.md「客户端 IPv6 与 AAAA」「未列名单域名的国内解析」).
+// Generated text only; meridian-verify.sh's dns_aaaa_tunnelled queries the
+// running resolver.
+func resolverItems(t model.Topology, files map[string]string, gwp string) []Item {
+	conf := files[gwp+"etc/smartdns/smartdns.conf"]
+	force := strings.Contains(conf, "\nforce-AAAA-SOA yes\n")
+	var out []Item
+	const aid, atitle = "dns_aaaa_policy", "走隧道的域名按设置返回 AAAA"
+	switch {
+	case !t.Settings.ClientsIPv6ViaGateway && force:
+		out = append(out, Item{ID: aid, Status: Pass, Title: atitle, Detail: "「客户端 IPv6 经本网关」关闭：生成的解析器配置对国内名单以外的所有域名不返回 AAAA（force-AAAA-SOA，国内名单 -address -6 例外），手机等从家里路由器拿 IPv6 的客户端不会经家宽 IPv6 绕过隧道。运行中的解析器由 meridian-verify.sh 的 dns_aaaa_tunnelled 实际查询。"})
+	case !t.Settings.ClientsIPv6ViaGateway:
+		out = append(out, Item{ID: aid, Status: Fail, Title: atitle, Detail: "「客户端 IPv6 经本网关」关闭，但生成的解析器配置没有 force-AAAA-SOA：走隧道的域名会返回 AAAA。"})
+	default:
+		out = append(out, Item{ID: aid, Status: Pass, Title: atitle, Detail: "「客户端 IPv6 经本网关」打开：出口或地区组能承载 IPv6 时返回 AAAA。只有每台客户端的 IPv6 默认路由都指向本网关时这才不泄漏，那要在客户端上核对（docs/test-device.md）。"})
+	}
+	const uid, utitle = "unlisted_domestic_dns", "未列名单域名的国内解析"
+	has := strings.Contains(conf, "-whitelist-ip") && strings.Contains(conf, " -fallback")
+	switch {
+	case t.Settings.UnlistedDomesticDNS && has:
+		out = append(out, Item{ID: uid, Status: Pass, Title: utitle, Detail: "已打开：名单外的域名先问国内解析器，只接受中国地址（whitelist-ip，chnroute 名单），否则用出口解析器的回答。代价：国内解析器能看到所有名单外的域名，包括国外的，这些查询经家宽发出。名单为空时一个国内回答都不采用，由 meridian-verify.sh 的 unlisted_domestic_lists 检查。"})
+	case t.Settings.UnlistedDomesticDNS:
+		out = append(out, Item{ID: uid, Status: Fail, Title: utitle, Detail: "设置已打开，但生成的解析器配置里没有国内检查（-whitelist-ip / -fallback）。"})
+	case has:
+		out = append(out, Item{ID: uid, Status: Fail, Title: utitle, Detail: "设置是关闭的，但生成的解析器配置把名单外的域名也发给国内解析器。"})
+	default:
+		out = append(out, Item{ID: uid, Status: Pass, Title: utitle, Detail: "关闭（严格）：名单外的域名只经隧道由出口解析器解析，国外域名的查询不经家宽发出。"})
+	}
+	return out
 }
 
 var reKeyLine = regexp.MustCompile(`(?m)^(PrivateKey|PresharedKey) = (.*)$`)
@@ -328,7 +361,11 @@ func integrationItems() []Item {
 
 // humanItems need a real client, ROS or a capture. The panel cannot run
 // them and never marks them passed.
-func humanItems() []Item {
+func humanItems(t model.Topology) []Item {
+	dnsleak := "待人工签收。需要一台已经把网关、DNS 和 IPv6 默认路由指到本机的测试设备；v4/v6 的 DNS 与出口都属于当前出口地区，家庭 WAN 抓包里没有这台设备的境外 53/853。截图和抓包存档。"
+	if t.Settings.UnlistedDomesticDNS {
+		dnsleak = "待人工签收。「未列名单的域名也问国内 DNS」已打开，保证与严格模式不同：出口 IP 属于当前出口地区；DNS 一栏会同时出现国内解析器和出口的解析器（测试用的名字不在名单里，网关也问国内解析器），这是预期结果；家庭 WAN 抓包里没有这台设备自己发出的 53/853，网关会向国内解析器发出名单外域名的查询。签收时写明这个设置是打开的。截图和抓包存档。"
+	}
 	return []Item{
 		{
 			ID: "real_exit_switch", Status: PendingSignoff, Scope: ScopeHuman,
@@ -343,7 +380,7 @@ func humanItems() []Item {
 		{
 			ID: "dnsleak_client", Status: PendingSignoff, Scope: ScopeHuman,
 			Title:  "测试机 dnsleaktest / ipleak",
-			Detail: "待人工签收。需要一台已经把网关、DNS 和 IPv6 默认路由指到本机的测试设备；v4/v6 的 DNS 与出口都属于当前出口地区，家庭 WAN 抓包里没有这台设备的境外 53/853。截图和抓包存档。",
+			Detail: dnsleak,
 		},
 		{
 			ID: "webrtc_srflx", Status: PendingSignoff, Scope: ScopeHuman,

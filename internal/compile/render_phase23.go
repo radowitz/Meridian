@@ -450,6 +450,13 @@ func renderVerifyScript(t model.Topology, tunnels []Tunnel, exits []ExitPlan, gr
 	if len(gatewayTunnelIfaces(tunnels)) > 0 {
 		guardExit = "1"
 	}
+	clientsV6, unlistedDNS := "0", "0"
+	if t.Settings.ClientsIPv6ViaGateway {
+		clientsV6 = "1"
+	}
+	if t.Settings.UnlistedDomesticDNS {
+		unlistedDNS = "1"
+	}
 	rp := planRemote(t)
 	chn6 := "0"
 	if t.Settings.LANIPv6Prefix != "" || rp != nil {
@@ -506,6 +513,8 @@ func renderVerifyScript(t model.Topology, tunnels []Tunnel, exits []ExitPlan, gr
 		"@GUARDHI@", fmt.Sprintf("%#x", guardLastExitMark(exits, groups...)),
 		"@GUARDEXIT@", guardExit,
 		"@CHN6@", chn6,
+		"@CLIENTSV6@", clientsV6,
+		"@UNLISTEDDNS@", unlistedDNS,
 		"@RA@", ra,
 		"@RAPORT@", shQuote(raPort),
 		"@RAPOOL4@", shQuote(raPool4),
@@ -573,7 +582,9 @@ const verifyScriptBody = `#!/bin/bash
 # behind it, that the guard's mark range is the compiled one, that the
 # foreign and domestic tables end in a blackhole, that the early-boot guard
 # file is the guard of the main ruleset, that the domestic lists the split
-# needs are not empty, that something listens on port 53, and — with
+# needs are not empty, that something listens on port 53, that the resolver
+# returns no AAAA for a tunnelled name while clients_ipv6_via_gateway is off
+# (a real query to 127.0.0.1), and — with
 # remote access on — that mra, its peers (public keys only), its guard
 # ingress, DNS, port, rules, routes and NAT are what was compiled; with it
 # off, that no mra exists. Every command's raw output is saved under the
@@ -610,6 +621,9 @@ guard_lo=@GUARDLO@
 guard_hi=@GUARDHI@
 guard_has_exit=@GUARDEXIT@
 need_chn6=@CHN6@
+# Resolver settings: clients_ipv6_via_gateway, unlisted_domestic_dns.
+clients_v6=@CLIENTSV6@
+unlisted_dns=@UNLISTEDDNS@
 ra_enabled=@RA@
 ra_if=@RAIF@
 ra_port=@RAPORT@
@@ -1171,6 +1185,63 @@ else
   fail dns_listener "ss failed (evidence ss-udp.txt ss-tcp.txt)"
 fi
 
+# --- DNS: no AAAA for tunnelled names (docs/architecture.md「客户端 IPv6 与 AAAA」)
+# With clients_ipv6_via_gateway off the resolver answers AAAA for every name
+# that is not domestic with an empty NOERROR (force-AAAA-SOA): a phone that
+# takes IPv6 from the home router must not get an IPv6 address it would
+# reach over the home line, bypassing the tunnel. One real query for a
+# foreign name (MERIDIAN_VERIFY_AAAA_NAME, default www.google.com; it must
+# not be in a domestic list) to the resolver on 127.0.0.1.
+aaaa_name=${MERIDIAN_VERIFY_AAAA_NAME:-www.google.com}
+if [ "$clients_v6" = 1 ]; then
+  info dns_aaaa_tunnelled "clients_ipv6_via_gateway is on: AAAA is returned for exits and groups with egress_v6 (not checked here); it is only right if every client's IPv6 default route points at this gateway"
+elif [[ ! $aaaa_name =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]]; then
+  fail dns_aaaa_tunnelled "MERIDIAN_VERIFY_AAAA_NAME refused: only a host name"
+else
+  listed="" n=$aaaa_name
+  while [ -n "$n" ]; do
+    for f in "$listsdir/geosite/cn.txt" "$listsdir/geosite/apple.txt"; do
+      [ -f "$f" ] && grep -qixF -- "$n" "$f" && listed="$n in $f"
+    done
+    case "$n" in *.*) n=${n#*.} ;; *) n="" ;; esac
+  done
+  if [ -n "$listed" ]; then
+    unknown dns_aaaa_tunnelled "the test name $aaaa_name is a domestic name ($listed); set MERIDIAN_VERIFY_AAAA_NAME to a foreign name"
+  elif ! command -v dig >/dev/null 2>&1; then
+    unknown dns_aaaa_tunnelled "dig not found (apt-get install bind9-dnsutils); the AAAA answer for a tunnelled name was not checked"
+  elif run dns-aaaa dig +time=3 +tries=1 @127.0.0.1 AAAA "$aaaa_name"; then
+    if grep -qE '^[^;].*[[:space:]]IN[[:space:]]+AAAA[[:space:]]' "$evdir/dns-aaaa.txt"; then
+      fail dns_aaaa_tunnelled "the resolver returned AAAA for $aaaa_name although clients_ipv6_via_gateway is off: clients would reach it over the home line's IPv6, bypassing the tunnel (evidence dns-aaaa.txt)"
+    elif grep -q 'status: NOERROR' "$evdir/dns-aaaa.txt"; then
+      pass dns_aaaa_tunnelled "AAAA for $aaaa_name is empty (NOERROR, no address): tunnelled names are IPv4-only while clients take IPv6 from the home router (evidence dns-aaaa.txt)"
+    else
+      unknown dns_aaaa_tunnelled "the resolver did not answer AAAA $aaaa_name with NOERROR (evidence dns-aaaa.txt)"
+    fi
+  else
+    unknown dns_aaaa_tunnelled "dig @127.0.0.1 AAAA $aaaa_name got no answer (evidence dns-aaaa.txt)"
+  fi
+fi
+
+# --- DNS: domestic answers for unlisted names (unlisted_domestic_dns) -------
+# The resolver accepts a domestic resolver's answer for an unlisted name only
+# when its addresses are in the China lists it loads as ip-sets; empty lists
+# accept nothing (every unlisted name then goes to the exit, as with the
+# setting off).
+if [ "$unlisted_dns" = 1 ]; then
+  bad=""
+  for f in "$listsdir/lists/china.txt" "$listsdir/lists/china6.txt"; do
+    if [ ! -f "$f" ] || ! grep -qvE '^[[:space:]]*(#|$)' "$f"; then
+      bad="$bad $f"
+    fi
+  done
+  if [ -z "$bad" ]; then
+    pass unlisted_domestic_lists "the China lists the resolver checks domestic answers against are present (unlisted names may be answered by the domestic resolvers when their answer is a China address)"
+  else
+    fail unlisted_domestic_lists "missing or empty:$bad — no domestic answer is accepted for unlisted names; run the list update (panel 名单 → 更新, or meridian-update-chnroute.sh)"
+  fi
+  info unlisted_domestic_dns "on: the domestic resolvers see every unlisted name, foreign ones included; those queries leave this gateway directly over the home line"
+fi
+
 # --- region-group DNS (docs/architecture.md「地区组的解析」) -----------------
 # Each group the hub switches is resolved at its own resolver address with
 # its own mark. What this host can show: the SNAT of its own marked queries
@@ -1296,7 +1367,11 @@ else
 fi
 
 # --- not executable from this script ---------------------------------------
-pending dns_leak_client "dnsleaktest.com and ipleak.net on the test device (v4 and v6), plus a WAN capture with no 53/853 from it; this script runs no browser"
+if [ "$unlisted_dns" = 1 ]; then
+  pending dns_leak_client "dnsleaktest.com and ipleak.net on the test device (v4 and v6), plus a WAN capture with no 53/853 from the device itself; this script runs no browser. unlisted_domestic_dns is on: the leak sites list the domestic resolvers next to the exit's (their test names are unlisted, so this gateway asks the domestic resolvers too), and this gateway sends unlisted names, foreign ones included, to them over the home line; that is the expected result with the setting on, not a leak of the device"
+else
+  pending dns_leak_client "dnsleaktest.com and ipleak.net on the test device (v4 and v6), plus a WAN capture with no 53/853 from it; this script runs no browser"
+fi
 pending webrtc_srflx "browserleaks/ipleak WebRTC on the test device: srflx must be the exit address; a host GUA is a known limitation"
 pending redirect_on_wire "capture on the test device while browsing: no ICMP redirect from $gw_addr pointing at $ros4, and no ICMPv6 redirect from the gateway (Linux has no sysctl that stops IPv6 redirects)"
 pending tunnel_cut "take the exit tunnel down while the test device keeps browsing; capture on $iface: nothing foreign leaves towards $ros4, and the device gets no answer instead of a home-WAN answer"

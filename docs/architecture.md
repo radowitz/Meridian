@@ -211,10 +211,69 @@ SmartDNS 只绑在网关的局域网地址上。
 
 - `223.5.5.5` 和 `1.12.12.12` 的 DoT 解析国内名单，结果写入 `direct4` / `direct6`，走 ROS。
 - 各服务名单经对应出口隧道上的解析器查询，再写入该规则的 nftset。规则指向枢纽可切换的地区组时，问的是组自己的解析地址，跟着枢纽当前选中的成员走，见「地区组的解析」。
-- 没命中的名字走默认组（示例里是香港机房组），写入默认集合；默认组可切换时同样经组的解析地址。
-- 出口没有 `egress_v6` 时，该规则加 `-address #6`，不返回 AAAA，也不改到别的国家。
+- 没命中的名字走默认组（示例里是香港机房组），写入默认集合；默认组可切换时同样经组的解析地址。打开「未列名单域名的国内解析」时先问国内解析器，见下文。
+- AAAA 由「客户端 IPv6 经本网关」决定，见下文。打开它之后，出口没有 `egress_v6` 的规则仍加 `-address #6`，不返回 AAAA，也不改到别的国家。
 - nftables 把测试设备发往任意地址的 UDP/TCP 53 和 TCP 853 重定向到本机。
 - 已知 DoH 域名返回 SOA，已知 DoH 地址的 443 在转发链上被拒绝。这只覆盖清单，不能说绝对防住了 DoH。
+
+### 客户端 IPv6 与 AAAA
+
+网关设置 `clients_ipv6_via_gateway`（面板「网关设置 → 解析（DNS）→ 客户端 IPv6 经本网关」），默认**关闭**；在它出现之前保存的拓扑读进来就是关闭。
+
+为什么默认关：手机（iOS/Android）在 Wi-Fi 里只能手填 IPv4 网关和 DNS，IPv6 地址和 IPv6 默认路由仍来自家里路由器（ROS）的 RA。网关解析器只要给国外域名返回 AAAA，手机就优先用 IPv6，从家宽的 IPv6 直接出去，**不经过网关、也不进隧道**：被封的网站先卡住、等回落到 IPv4 才打开（“开头慢”），没被封的国外网站则静默地从家宽直连。以前只有规则级的 AAAA 过滤（出口没有 `egress_v6`），没命中规则的默认组不过滤，所以只配了一个纯 IPv4 出口时 google、youtube、netflix 之类仍拿得到 AAAA。
+
+| 设置 | 走隧道的域名（默认组、每条规则、地区组、钉死出口） | 国内域名（`cn` / `apple` 名单，及下文被采用的国内答案） |
+| --- | --- | --- |
+| 关闭（默认） | 一律不返回 AAAA（空的 NOERROR + SOA），HTTPS 记录里的 IPv6 提示也去掉；客户端只用 IPv4 经网关进隧道 | 照常返回 AAAA，经家里路由器直连 |
+| 打开 | 出口（地区组按全部可切换成员）能端到端承载 IPv6（`egress_v6`）时返回 AAAA，否则同上 | 同上 |
+
+打开的前提是客户端的 IPv6 默认路由确实指向网关的链路本地地址（[测试设备](test-device.md)「IPv6」），否则打开就等于把上面那个泄漏放回去。校验给 `aaaa_filtered` 警告：关闭时一条拓扑级警告说明所有非国内域名都只有 IPv4；打开时对出口没有 `egress_v6` 的规则和默认组各一条；打开但没填局域网 IPv6 前缀时 `clients_ipv6_no_prefix`。
+
+SmartDNS 里的写法（固定版本 Release48.4，源码 `src/dns_server/soa.c` 的 `_dns_server_is_return_soa_qtype`）：
+
+- 默认组不能有 AAAA（设置关闭，或默认组没有 IPv6）时全局 `force-AAAA-SOA yes`。它对每个 AAAA 回空的 NOERROR（SOA），不问上游；HTTPS 记录的 `ipv6hint` 因同一个判断被丢掉。
+- 例外按域名规则给：`cn`、`apple` 两个名单的 `domain-rules` 加 `-address -6`（`DOMAIN_FLAG_ADDR_IPV6_IGN`，在 force-AAAA-SOA 之前判断）；允许 IPv6 的规则同样加 `-address -6`，并照旧写 `#6:` 的 nftset。
+- 不允许 IPv6 的规则仍是 `-address #6`，它比上面两者都优先。默认组不能有 AAAA 时不再写 `nftset #6:…#default6`。
+- 打开且默认组有 IPv6 时不写 force-AAAA-SOA，生成结果和以前相同。
+
+真实二进制的测试（`TestSmartDNSRealBinary`，见[验收清单](verification.md#网关解析器的真实二进制测试)）证明：`force-AAAA-SOA` 下默认组的 AAAA 为空、`cn` 名单的 AAAA 照常返回（即使那个地址不在中国）、规则按各自的标志处理；去掉这一行（以前的配置）时默认组的 AAAA 会被返回。
+
+现有拓扑升级后网关解析器的生成结果会变（这就是修复）：加 `force-AAAA-SOA yes`，`cn`/`apple` 加 `-address -6`，每条规则都变成 `-address #6`，去掉 `default6` 的 nftset。nft、路由和其他节点不变。`meridian-verify.sh` 在设置关闭时真实地问一次本机解析器（`dig @127.0.0.1 AAAA www.google.com`，可用 `MERIDIAN_VERIFY_AAAA_NAME` 换成别的国外名字），回答里有 AAAA 就 FAIL（`dns_aaaa_tunnelled`）。
+
+### 未列名单域名的国内解析
+
+网关设置 `unlisted_domestic_dns`（面板「网关设置 → 解析（DNS）→ 未列名单的域名也问国内 DNS」），默认**关闭**（严格）。
+
+关闭时不在任何名单、也没有命中规则的名字只经隧道由默认出口的解析器解析：名单外的国内网站拿到的是面向海外的 CDN 节点，要么被送进隧道，要么直连到一个很差的节点（“国内网站开头慢、不像直连”）。
+
+打开时，这类名字先问国内解析器，**只有回答里的地址是中国地址（chnroute 名单）时才采用**，并因为地址在 `chnroute` / `chnroute6` 里而直连（分类链里 `chnroute` 在 `default4` 之前，即使这个地址也被写进了 `default4`）；回答里不是中国的地址（包括被污染的结果）一律丢弃，改用默认出口解析器的回答，走隧道。混合回答只保留其中的中国地址。
+
+SmartDNS 里的写法（同一固定版本；网关容器 `pymumu/smartdns:latest` 需要 **Release47 或更新**，`-fallback` 是 Release47 加的，`ip-set` 是 Release45）：
+
+```
+ip-set -name chnroute -file /var/lib/meridian/lists/china.txt
+ip-set -name chnroute6 -file /var/lib/meridian/lists/china6.txt
+whitelist-ip ip-set:chnroute
+whitelist-ip ip-set:chnroute6
+server-tls 223.5.5.5:853 -group domestic_check -whitelist-ip      # 不带 -exclude-default-group：在默认组里
+server 223.5.5.5 -group domestic_check -whitelist-ip
+server fd66::53:d -group rg_hk -exclude-default-group -set-mark 269   # 规则用的那一行，退出默认组
+server fd66::53:d -group unlisted_exit -fallback -set-mark 269        # 默认组：只在国内检查失败后才问
+```
+
+- `-whitelist-ip`：这个上游回答里不在 `whitelist-ip` 前缀里的地址被跳过（`src/dns_server/ip_rule.c` 的 `_dns_server_ip_rule_check`）；透传路径上只要有一个这样的地址整个回答就不转发（`src/dns_server/rules.c` 的 `_dns_server_passthrough_rule_check`）。`whitelist-ip` 只作用于带这个选项的上游，`domestic` 组（名单用的）和出口解析器不受影响。
+- `-fallback`：查询第一次发送时跳过 fallback 上游（`src/dns_client/dns_client.c` 的 `_dns_client_send_query`），在回答的地址全被跳过后的立即重试（`DNS_CLIENT_ACTION_RETRY`）、500 ms 上游超时后的重试，或国内上游一个都发不出去时才问它。所以不是“谁先回用谁”：国内解析器比出口慢也仍然先用国内的中国地址，出口的回答不会抢先。
+- 两个名单文件由名单更新保存在宿主 `/var/lib/meridian/lists/`（约 6000 条 IPv4、3400 条 IPv6，用 `ip-set` 文件引用而不是几千行内联）；SmartDNS 容器只读挂载这个目录（`deploy/docker-compose.yml`；目录里另有 `status.json` 和 `chnroute.nft`，都不是秘密）。SmartDNS 找不到 ip-set 文件就拒绝启动，所以打开时 `meridian-up.sh` 先建空文件；空名单不接受任何国内回答，效果等于关闭，直到第一次名单更新。名单更新替换了这两个文件、且安装的配置读它们时，host agent 重启 SmartDNS（`chnroute_changed`；设置关闭时 chnroute 更新不重启解析器）。
+- 规则和 `cn`/`apple` 名单不受影响；第 1 节的 AAAA 规则照旧：设置「客户端 IPv6 经本网关」关闭时，被采用的国内答案也只有 A——`force-AAAA-SOA` 在问任何上游之前按域名规则决定，名单外的名字没有域名规则可以豁免。按回答判断 AAAA 的唯一办法（`ignore-ip ::/0` 加中国 IPv6 白名单）实测让每个国外名字的 AAAA 等 0.5–1 秒的上游超时，所以没有采用；这些国内网站照样经 IPv4 直连。
+
+**代价，打开前要知道：**
+
+- 国内解析器能看到**所有名单外的域名，包括国外的**，这些查询从网关经家宽直接发出（UDP 53 明文和 DoT 都有，与 `domestic` 组相同）。这与“国外域名的 DNS 不经家宽发出”的严格保证相反：打开后它不再成立，`meridian-verify.sh` 和 [验收清单](verification.md) 里的 DNS 泄漏项按新的保证描述——泄漏测试网站会同时列出国内解析器和出口的解析器，这是预期结果；仍要求测试设备自己不向外发 53/853。
+- 出口解析器不通时，被污染或不是中国地址的名字得到空回答（NOERROR、没有地址）而不是 SERVFAIL，网关会缓存约一分钟（`rr-ttl-min 60`），出口恢复后这段时间里这些名字仍是空的；关闭时是 SERVFAIL，恢复后立即可用。
+- 国内解析器不回答时，名单外的名字要等 500 ms 超时才问出口。
+- 回答的 CNAME 链可能来自国内解析器而地址来自出口；被污染的 HTTPS 记录去掉地址提示后可能被采用（没有地址，客户端仍按 A/AAAA 连接）。
+
+真实二进制测试覆盖：国内回答是中国地址→采用（国内比出口慢 80 ms 也一样）；国内回答被污染→出口的回答，永远不是被污染的地址；国内超时→出口的回答；出口不通→没有地址；空名单→全部用出口；以上每种情况下 AAAA 的规则不变。**这些只在本机容器里用替身上游跑过，没有在真实网关上运行过。**
 
 chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly/domain-list-community（MIT）。GPL 的规则包只作为可选数据源，不放进仓库，也不链进面板。下载、展开和发布见下一节「名单源」。
 
@@ -246,7 +305,7 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 只有手动：面板「立即更新」（`POST /api/lists/update`）或宿主上 root 运行 `meridian-update-geosite.sh` / `meridian-update-chnroute.sh`。两个脚本只是 `exec meridian lists-update …`，走的是同一个 host agent 固定动作 `/v1/lists`。本轮不加定时任务。
 
 1. 下载与检查（不持锁、不改宿主）：每个名单按策略顺序逐个源尝试。geosite 分类在**同一个源**上把它的 include 闭包整个取齐（并发 6，每个文件连接 10 s、单次 60 s、5xx/网络错误重试 1 次、上限 8 MiB；每个名单在每个源上总共 5 min），展开、校验通过才算这个源成功；任何一个子文件失败，整个名单换下一个源重来，不会把两个源的文件拼在一起。China IP 两个地址族各自独立选源。
-2. 发布（持 host agent 的动作锁，最多等 `LockWait`，和安装/回滚互斥）：geosite / 关键词文件各自写临时文件后 `rename`，一个名单要么全新要么全旧；chnroute 把所有通过的地址族放进**一个** `nft -f` 事务（每族 `flush set` + `add element`），nft 接受后才替换 `/var/lib/meridian/lists/china*.txt` 和重载副本 `lists/chnroute.nft`。有 geosite/关键词文件变化时重启 SmartDNS（它只在启动时读 domain-set 文件），仍在锁内。
+2. 发布（持 host agent 的动作锁，最多等 `LockWait`，和安装/回滚互斥）：geosite / 关键词文件各自写临时文件后 `rename`，一个名单要么全新要么全旧；chnroute 把所有通过的地址族放进**一个** `nft -f` 事务（每族 `flush set` + `add element`），nft 接受后才替换 `/var/lib/meridian/lists/china*.txt` 和重载副本 `lists/chnroute.nft`。有 geosite/关键词文件变化时重启 SmartDNS（它只在启动时读 domain-set 文件），仍在锁内；China IP 文件内容变了（`chnroute_changed`）、且安装的 SmartDNS 配置把它们当 ip-set 读（`unlisted_domestic_dns` 打开）时同样重启。
 3. 结果写进宿主 `/var/lib/meridian/lists/status.json`：每个名单当前生效的版本（来源、URL、时间、条数）和最近一次更新的完整报告（每个源的尝试、耗时、错误、是否保留旧版）。
 
 失败的名单保留上一份完整版本；从未存在的 geosite 文件建成空文件，只为让 SmartDNS 能启动。只有一个更新能同时运行；第二个请求得到 503。
@@ -300,7 +359,7 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 
 网关是 SLAAC 客户端：`accept_ra=2`，因为开了转发之后只有 2 才会收下 RA。不要在这块网卡上跑 radvd，也不要再开一个 DHCP。
 
-测试设备必须自己把 IPv6 默认路由指到网关的链路本地地址，并关掉路由器发现。否则 ROS 的 RA（生存期 2700 秒）会把默认路由写回去，AAAA 和 WebRTC 都会从运营商前缀漏出去。
+测试设备必须自己把 IPv6 默认路由指到网关的链路本地地址，并关掉路由器发现。否则 ROS 的 RA（生存期 2700 秒）会把默认路由写回去，AAAA 和 WebRTC 都会从运营商前缀漏出去。做不到这一点的设备（手机）靠「客户端 IPv6 经本网关」保持关闭：解析器不给走隧道的域名 AAAA，它们的国外访问只走 IPv4 进隧道（见「客户端 IPv6 与 AAAA」）；WebRTC 和直接用 IPv6 地址的连接仍走家宽，这一点网关管不到。
 
 国内 IPv6 的下一跳是 ROS 在 bridge 上的链路本地地址。示例里写成 `fe80::1`，上线前改成真实地址。
 

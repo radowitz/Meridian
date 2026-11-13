@@ -548,6 +548,73 @@ describe("topology", () => {
   });
 });
 
+describe("gateway settings: resolver", () => {
+  it("shows both DNS settings off for an existing topology, explains each, and saves them as booleans", async () => {
+    let saved: string | undefined;
+    const t = topology(); // saved before the settings existed: neither field present
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [] }),
+      "PUT /api/topology": (req) => {
+        saved = req.raw;
+        return { topology: req.body, issues: [], paths: [], draft: false };
+      },
+    });
+    renderAt("#/topology");
+    await userEvent.click(await screen.findByRole("button", { name: /网关设置/ }));
+    const v6 = await screen.findByRole("switch", { name: "客户端 IPv6 经本网关" });
+    const split = screen.getByRole("switch", { name: "未列名单的域名也问国内 DNS" });
+    expect(v6).not.toBeChecked();
+    expect(split).not.toBeChecked();
+    const drawer = v6.closest(".ant-drawer-content") as HTMLElement;
+    // Off: what happens to clients' IPv6, and the strict DNS guarantee.
+    expect(drawer).toHaveTextContent("除国内域名外，所有域名都不返回 AAAA");
+    expect(drawer).toHaveTextContent("不会从家宽 IPv6 绕过隧道");
+    expect(drawer).toHaveTextContent("国外域名的查询不经家宽发出");
+
+    await userEvent.click(v6);
+    expect(v6).toBeChecked();
+    expect(drawer).toHaveTextContent("IPv6 默认路由都指向本网关（见 docs/test-device.md）");
+    expect(drawer).toHaveTextContent("绕过隧道");
+    await userEvent.click(split);
+    expect(split).toBeChecked();
+    expect(drawer).toHaveTextContent("只有它返回的全是中国地址时才采用并直连");
+    expect(drawer).toHaveTextContent("国内解析器能看到这些域名（包括国外的）");
+    expect(drawer).toHaveTextContent("DNS 泄漏测试里会出现国内解析器");
+
+    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
+    const body = JSON.parse(saved!) as Topology;
+    expect(body.settings.clients_ipv6_via_gateway).toBe(true);
+    expect(body.settings.unlisted_domestic_dns).toBe(true);
+  });
+
+  it("turns a setting back off", async () => {
+    let saved: string | undefined;
+    const t = topology();
+    t.settings = { ...t.settings, clients_ipv6_via_gateway: true, unlisted_domestic_dns: true };
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "GET /api/servers": () => ({ servers: [] }),
+      "PUT /api/topology": (req) => {
+        saved = req.raw;
+        return { topology: req.body, issues: [], paths: [], draft: false };
+      },
+    });
+    renderAt("#/topology");
+    await userEvent.click(await screen.findByRole("button", { name: /网关设置/ }));
+    const split = await screen.findByRole("switch", { name: "未列名单的域名也问国内 DNS" });
+    expect(split).toBeChecked();
+    expect(screen.getByRole("switch", { name: "客户端 IPv6 经本网关" })).toBeChecked();
+    await userEvent.click(split);
+    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
+    const body = JSON.parse(saved!) as Topology;
+    expect(body.settings.unlisted_domestic_dns).toBe(false);
+    expect(body.settings.clients_ipv6_via_gateway).toBe(true);
+  });
+});
+
 // -------------------------------------------------------- remote access ---
 
 const PRIVATE = "TESTPRIVATEKEYdoNotKeep0000000000000000000=";

@@ -106,8 +106,19 @@ func TestCompileExample(t *testing.T) {
 	if !strings.Contains(dns, "domain-rules /ani.gamer.com.tw/ -nameserver rg_tw -address #6") {
 		t.Fatalf("TW rule should filter AAAA:\n%s", dns)
 	}
-	if !strings.Contains(dns, "domain-rules /netflix.com/ -nameserver rg_hk_residential ") || strings.Contains(lineWith(dns, "netflix.com"), "-address #6") {
-		t.Fatalf("residential netflix should keep AAAA:\n%s", lineWith(dns, "netflix.com"))
+	// Clients take IPv6 from the home router by default: even the
+	// v6-capable residential group returns no AAAA.
+	if !strings.Contains(lineWith(dns, "/netflix.com/"), "-address #6") {
+		t.Fatalf("netflix must be IPv4-only while clients_ipv6_via_gateway is off:\n%s", lineWith(dns, "netflix.com"))
+	}
+	topo := defaults.Example()
+	topo.Settings.ClientsIPv6ViaGateway = true
+	dns = mustCompile(t, topo).File("nodes/gw/etc/smartdns/smartdns.conf")
+	if !strings.Contains(dns, "domain-rules /netflix.com/ -nameserver rg_hk_residential ") || strings.Contains(lineWith(dns, "/netflix.com/"), "-address #6") {
+		t.Fatalf("residential netflix should keep AAAA when clients route IPv6 through the gateway:\n%s", lineWith(dns, "netflix.com"))
+	}
+	if !strings.Contains(dns, "domain-rules /ani.gamer.com.tw/ -nameserver rg_tw -address #6") {
+		t.Fatalf("TW rule should still filter AAAA:\n%s", dns)
 	}
 }
 

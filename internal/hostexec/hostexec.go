@@ -340,6 +340,10 @@ type Agent struct {
 	ListsSources func(lists.Policy) ([]lists.Source, error)
 	// ListsTimeout bounds one whole update; default 15m.
 	ListsTimeout time.Duration
+	// SmartDNSConf is the gateway resolver config a list update reads to
+	// decide whether new China lists need a SmartDNS restart; default
+	// /etc/smartdns/smartdns.conf (tests only).
+	SmartDNSConf string
 	listsBusy    chan struct{}
 
 	// PreflightRoot replaces "/" for the files the install pre-check and

@@ -34,7 +34,6 @@
 1b5833a9fc356ddb29673594d0b37be65e3fe3c76ad38765a6e94b8fba6c8fdb nodes/hk-hub/usr/local/sbin/meridian-fwcompat.sh
 1df6d9eea59b41963e33a4f00548da4e1c7262c3540fc20d45b98964375ba4ab nodes/v6-v4out/usr/local/sbin/meridian-up.sh
 210460b9b4cd54dbf631d050990c89132ad399d987495a6514d310bcb349450f nodes/ali/etc/wireguard/m02.conf
-223acf8133ee693d19468c955cbeb0778422078045d0db2229292baa2ff9f821 nodes/gw/usr/local/sbin/meridian-verify.sh
 2242c8b20631cba600f96f983d1923bebd9ea109cacdc2e78ebe3c52d30d1057 nodes/us/usr/local/sbin/meridian-fwcompat.sh
 228b6451b8bde78e5d36d5ed45c144bc76d8ec767a435935db34f628aaf6ff16 nodes/hk-resi/usr/local/sbin/meridian-unlock-probe.sh
 22e982c8df17cba59fe009e8029fbffb6ee9b6639c362413ef1654f2abc78deb nodes/gw/etc/wireguard/m02.conf
@@ -44,12 +43,14 @@
 280ac32a444e1d3c027e1caa598b4443a3ed98561e43a5a13c72163581398ba8 nodes/hk-ix/etc/meridian/mesh-sidecar.compose.yml
 280ac32a444e1d3c027e1caa598b4443a3ed98561e43a5a13c72163581398ba8 nodes/us/etc/meridian/mesh-sidecar.compose.yml
 280ac32a444e1d3c027e1caa598b4443a3ed98561e43a5a13c72163581398ba8 nodes/v6-v4out/etc/meridian/mesh-sidecar.compose.yml
+2972a7f1a07edaba0fc1dafe97bcb4e9cc8dd1fc0c0ab7ed42564e33af8bff75 nodes/gw/usr/local/sbin/meridian-verify.sh
 2d712ec240f14c0a416b9a69ac492d11053ff752bfbca1d2d09a463f3cc2e855 nodes/hk-resi/etc/smartdns/smartdns.conf
 2dc51ddda87883b708e43392b09d1d4c80cddefb57bc3f7a81485280d755f25b nodes/ali/etc/meridian/wss/client-ali-hub-wss.trust.pem
 2f9f686747eaa6bfd0e655e42e2bcc344ca2c30452a780fa38870583d4977082 nodes/ali/usr/local/sbin/meridian-failover.sh
 30ad6350fd7613e271a08b05bcb81fea13d68edc7988bfe24682bd8c90ad3852 nodes/sg/usr/local/sbin/meridian-unlock-probe.sh
 30c3b3f393a6b89ed10fa15196d0c84c275e152f969a1afe4f1a64f18a694b80 nodes/hk-2/etc/smartdns/smartdns.conf
 333087a219edfe0b1d28a75ba57b57a795c9ca21eef6b854062c5f753a61e164 nodes/ali/etc/meridian/wss/client-ali-hub-wss.env
+3b6228d790d9227442b5a817fe8911e5fc14dd7c59604bc00a02097a4b17200d nodes/gw/etc/smartdns/smartdns.conf
 3badf8344a57330767a996cef5859911515b6ff46b2f8c813ec497261e59e025 nodes/us/etc/nftables.d/meridian.nft
 3c3bd2c9e5421ccd00557f2e31cf835da0fac1d33b7ace04300363e5845ef0d7 nodes/ds-relay/etc/nftables.d/meridian.nft
 3c4f8569f980717c7b10b80d906c37d9ac7d9e37e590ad79532cb45d66ae2bdb nodes/ali/etc/systemd/system/meridian-fwcompat.service
@@ -283,5 +284,4 @@ f74d0a6fc67c49e17912cc1d90c93c9a26689baf58d78cc2a4385bb06213e04d nodes/ali/etc/s
 f74d0a6fc67c49e17912cc1d90c93c9a26689baf58d78cc2a4385bb06213e04d nodes/hk-hub/etc/systemd/system/wstunnel-meridian.service
 f81c283f57947fc6a05b461f79de8c1a210b9ace87a4c7ad965777901616a7b8 nodes/hk-hub/etc/wireguard/m05.conf
 f9262258da095e8aa7e048cdda9c4c28bab49f3d7d58ead1fb30c994edd84bc2 nodes/hk-resi/etc/wireguard/m04.conf
-f9c1dd0ff5430159a866571fbad9fb2bd1eb3f1f738625b169763b5dc1dc1f24 nodes/gw/etc/smartdns/smartdns.conf
 fbd2b94748924e5bbec1a48b10e7edaa3ace52d2f6a66c8b48d563a2a1746800 nodes/hk-ix/etc/nftables.d/meridian.nft

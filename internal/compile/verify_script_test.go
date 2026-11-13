@@ -28,6 +28,7 @@ type verifyHost struct {
 	nft    map[string]string
 	wg     map[string]string
 	ss     map[string]string
+	dig    map[string]string
 	// systemctl is nil on most hosts here: the WARN check is then skipped.
 	systemctl map[string]string
 	ssh       string
@@ -125,6 +126,7 @@ func goodHost(t *testing.T, b *Bundle, topo model.Topology) verifyHost {
 			"list table inet meridian_guard": nftListing(guard),
 			"list table inet meridian":       nftListing(nftFile[mainAt:]),
 		},
+		dig: map[string]string{digAAAAArgs: digEmptyAAAA},
 		ss: map[string]string{
 			"-H -lnu": "UNCONN 0      0         0.0.0.0:53        0.0.0.0:*\nUNCONN 0      0            [::]:53           [::]:*\n",
 			"-H -lnt": "LISTEN 0      4096      0.0.0.0:53        0.0.0.0:*\n",
@@ -175,6 +177,39 @@ func goodHost(t *testing.T, b *Bundle, topo model.Topology) verifyHost {
 	}
 	return h
 }
+
+// The AAAA query meridian-verify.sh sends for a tunnelled name, and what dig
+// prints for the empty NOERROR (SOA) answer force-AAAA-SOA gives and for a
+// real AAAA answer.
+const (
+	digAAAAArgs  = "+time=3 +tries=1 @127.0.0.1 AAAA www.google.com"
+	digEmptyAAAA = `; <<>> DiG 9.20.11 <<>> +time=3 +tries=1 @127.0.0.1 AAAA www.google.com
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 4242
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 1
+
+;; QUESTION SECTION:
+;www.google.com.			IN	AAAA
+
+;; AUTHORITY SECTION:
+google.com.		30	IN	SOA	a.gtld-servers.net. nstld.verisign-grs.com. 1800 1800 900 604800 86400
+
+;; Query time: 0 msec
+;; SERVER: 127.0.0.1#53(127.0.0.1) (UDP)
+`
+	digRealAAAA = `; <<>> DiG 9.20.11 <<>> +time=3 +tries=1 @127.0.0.1 AAAA www.google.com
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 4243
+;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+
+;; QUESTION SECTION:
+;www.google.com.			IN	AAAA
+
+;; ANSWER SECTION:
+www.google.com.		60	IN	AAAA	2001:db8:e::1
+`
+)
 
 // Route-probe answers, the way iproute2 prints a resolved "route get … iif"
 // (the probe addresses are read from the compiled script).
@@ -308,7 +343,7 @@ while IFS='=' read -r k v; do [ "$k" = "$2" ] && { echo "$v"; exit 0; }; done < 
 exit 1
 `), 0o755)
 	}
-	for name, m := range map[string]map[string]string{"ip": h.ip, "nft": h.nft, "wg": h.wg, "ss": h.ss, "systemctl": h.systemctl} {
+	for name, m := range map[string]map[string]string{"ip": h.ip, "nft": h.nft, "wg": h.wg, "ss": h.ss, "systemctl": h.systemctl, "dig": h.dig} {
 		if m != nil {
 			stubCases(t, dir, bin, name, m)
 		}
@@ -423,6 +458,7 @@ func TestVerifyScriptExecutedChecks(t *testing.T) {
 				"PASS route_lan_domestic6", "PASS route_tunnel_reply6",
 				"PASS guard_mark_range", "PASS guard_ingress: the guard's ingress is eth0 only", "PASS chnroute_loaded", "PASS chnroute6_loaded",
 				"PASS guard_boot_file", "PASS geosite_cn", "PASS dns_listener",
+				"PASS dns_aaaa_tunnelled: AAAA for www.google.com is empty (NOERROR, no address)",
 				"PASS group_dns_snat", "PASS group_dns_upstream: ", "PASS group_dns_route: a lookup of each group resolver address with the group mark resolves into a tunnel (m02 m02w m03), not eth0",
 				"PENDING-HUMAN group_dns_failover", "NOT-RUN-HERE netns_group_dns",
 				"INFO list chnroute4: source=github count=8000 updated=2026-11-12T03:00:00Z", "INFO list geosite:cn: source=github count=2",
@@ -526,6 +562,25 @@ func TestVerifyScriptExecutedChecks(t *testing.T) {
 			want: []string{"FAIL guard_boot_file"}},
 		{name: "no resolver on 53", mutate: func(h *verifyHost) { h.ss["-H -lnt"] = "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n" }, wantCode: 1,
 			want: []string{"FAIL dns_listener"}},
+		{name: "AAAA returned for a tunnelled name", mutate: func(h *verifyHost) { h.dig[digAAAAArgs] = digRealAAAA }, wantCode: 1,
+			want: []string{"FAIL dns_aaaa_tunnelled: the resolver returned AAAA for www.google.com"}, forbidden: []string{"PASS dns_aaaa", "local-ok"}},
+		{name: "AAAA query not answered", mutate: func(h *verifyHost) {
+			h.dig[digAAAAArgs] = "ERR:;; communications error to 127.0.0.1#53: timed out\n"
+		}, wantCode: 2, want: []string{"UNKNOWN dns_aaaa_tunnelled: dig @127.0.0.1 AAAA www.google.com got no answer"}, forbidden: []string{"PASS dns_aaaa", "local-ok"}},
+		{name: "AAAA query SERVFAIL", mutate: func(h *verifyHost) {
+			h.dig[digAAAAArgs] = strings.Replace(digEmptyAAAA, "status: NOERROR", "status: SERVFAIL", 1)
+		}, wantCode: 2, want: []string{"UNKNOWN dns_aaaa_tunnelled: the resolver did not answer"}, forbidden: []string{"PASS dns_aaaa"}},
+		{name: "dig not installed", mutate: func(h *verifyHost) { h.dig = nil }, wantCode: 2,
+			want: []string{"UNKNOWN dns_aaaa_tunnelled: dig not found"}, forbidden: []string{"PASS dns_aaaa"}},
+		{name: "AAAA test name is domestic", mutate: func(h *verifyHost) {
+			h.files["var/lib/meridian/geosite/cn.txt"] += "google.com\n"
+		}, wantCode: 2, want: []string{"UNKNOWN dns_aaaa_tunnelled: the test name www.google.com is a domestic name (google.com in "}, forbidden: []string{"PASS dns_aaaa"}},
+		{name: "AAAA test name from the environment", mutate: func(h *verifyHost) {
+			h.env = []string{"MERIDIAN_VERIFY_AAAA_NAME=www.example.net"}
+			h.dig["+time=3 +tries=1 @127.0.0.1 AAAA www.example.net"] = strings.ReplaceAll(digEmptyAAAA, "www.google.com", "www.example.net")
+		}, wantCode: 0, want: []string{"PASS dns_aaaa_tunnelled: AAAA for www.example.net is empty", "local-ok"}},
+		{name: "AAAA test name refused", mutate: func(h *verifyHost) { h.env = []string{"MERIDIAN_VERIFY_AAAA_NAME=-x;rm"} }, wantCode: 1,
+			want: []string{"FAIL dns_aaaa_tunnelled: MERIDIAN_VERIFY_AAAA_NAME refused"}},
 		{name: "group resolver SNAT missing", mutate: func(h *verifyHost) {
 			h.nft["list table inet meridian"] = dropLines(h.nft["list table inet meridian"], "ip6 daddr fd66::53:13 ")
 		}, wantCode: 1, want: []string{"FAIL group_dns_snat: no resolver SNAT loaded for group(s): us (evidence nft-meridian.txt)", "PASS group_dns_upstream", "PASS group_dns_route"},
@@ -716,4 +771,40 @@ func TestVerifyScriptNamesBothNetnsTests(t *testing.T) {
 		}
 	}
 	t.Fatal("no notrun netns_reload_no_leak line")
+}
+
+// TestVerifyScriptResolverSettings: with clients_ipv6_via_gateway on the
+// AAAA check is information only (nothing is queried, nothing passes); with
+// unlisted_domestic_dns on the China lists the resolver loads must be
+// non-empty, and the DNS leak item states the changed guarantee instead of
+// the strict one.
+func TestVerifyScriptResolverSettings(t *testing.T) {
+	topo := defaults.Example()
+	topo.Settings.ClientsIPv6ViaGateway = true
+	topo.Settings.UnlistedDomesticDNS = true
+	b := mustCompile(t, topo)
+	script := b.File("nodes/gw/usr/local/sbin/meridian-verify.sh")
+	base := func() verifyHost {
+		h := goodHost(t, b, topo)
+		h.dig = nil
+		h.files["var/lib/meridian/lists/china.txt"] = "1.0.1.0/24\n1.0.2.0/23\n"
+		h.files["var/lib/meridian/lists/china6.txt"] = "2400:3200::/32\n"
+		return h
+	}
+	runVerifyCases(t, script, base, []verifyCase{
+		{name: "both on", wantCode: 0,
+			want: []string{"INFO dns_aaaa_tunnelled: clients_ipv6_via_gateway is on", "PASS unlisted_domestic_lists",
+				"INFO unlisted_domestic_dns: on: the domestic resolvers see every unlisted name",
+				"PENDING-HUMAN dns_leak_client", "the leak sites list the domestic resolvers next to the exit's", "local-ok"},
+			forbidden: []string{"PASS dns_aaaa", "UNKNOWN", "FAIL", "with no 53/853 from it;"}},
+		{name: "china6 list empty", mutate: func(h *verifyHost) { h.files["var/lib/meridian/lists/china6.txt"] = "" }, wantCode: 1,
+			want: []string{"FAIL unlisted_domestic_lists: missing or empty: ", "china6.txt"}, forbidden: []string{"PASS unlisted_domestic_lists", "local-ok"}},
+		{name: "china list missing", mutate: func(h *verifyHost) { delete(h.files, "var/lib/meridian/lists/china.txt") }, wantCode: 1,
+			want: []string{"FAIL unlisted_domestic_lists", "china.txt"}},
+	})
+	// Off (the default): no unlisted-domain check, the strict leak text.
+	off := mustCompile(t, defaults.Example()).File("nodes/gw/usr/local/sbin/meridian-verify.sh")
+	if !strings.Contains(off, "unlisted_dns=0\n") || !strings.Contains(off, "clients_v6=0\n") {
+		t.Fatal("defaults do not compile both settings off")
+	}
 }

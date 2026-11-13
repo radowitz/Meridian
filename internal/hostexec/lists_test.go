@@ -180,3 +180,49 @@ func TestListsUpdateWaitsForActionAndIsSingle(t *testing.T) {
 	// The download phase itself did not hold the lock: the test could
 	// take the semaphore while the download was still blocked.
 }
+
+// A chnroute update restarts SmartDNS only when its installed config loads
+// the saved China lists (unlisted_domestic_dns), and only when a list file
+// actually changed.
+func TestListsChnrouteRestartsDNSOnlyWhenItReadsTheLists(t *testing.T) {
+	var v4 strings.Builder
+	for i := 0; i < 1200; i++ {
+		fmt.Fprintf(&v4, "36.%d.%d.0/24\n", i/256, i%256)
+	}
+	for _, c := range []struct {
+		name    string
+		conf    string
+		restart bool
+	}{
+		{"config without China lists", "server 127.0.0.1\ndomain-set -name gs_cn -file /var/lib/meridian/geosite/cn.txt\n", false},
+		{"config loading China lists", "ip-set -name chnroute -file /var/lib/meridian/lists/china.txt\nwhitelist-ip ip-set:chnroute\n", true},
+		{"no config", "", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f, a := listsAgent(t, listsMux(v4.String()))
+			a.SmartDNSConf = filepath.Join(t.TempDir(), "smartdns.conf")
+			if c.conf != "" {
+				if err := os.WriteFile(a.SmartDNSConf, []byte(c.conf), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			req := ListsRequest{RequestID: "c1", Policy: "domestic", Lists: []string{"chnroute"}}
+			rep, code := a.UpdateLists(context.Background(), req)
+			if code != http.StatusOK || !rep.ChnrouteChanged || rep.DNSChanged {
+				t.Fatalf("%d %+v", code, rep)
+			}
+			if got := f.ran("systemctl restart smartdns.service"); got != map[bool]int{false: 0, true: 1}[c.restart] {
+				t.Fatalf("restarts %d, want restart=%v: %v", got, c.restart, f.commands())
+			}
+			// The same list again: nothing changed, no restart.
+			req.RequestID = "c2"
+			rep, _ = a.UpdateLists(context.Background(), req)
+			if rep.ChnrouteChanged {
+				t.Fatalf("unchanged list reported as changed: %+v", rep)
+			}
+			if got := f.ran("systemctl restart smartdns.service"); got != map[bool]int{false: 0, true: 1}[c.restart] {
+				t.Fatalf("restarted for an unchanged list: %v", f.commands())
+			}
+		})
+	}
+}

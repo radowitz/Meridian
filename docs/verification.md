@@ -84,7 +84,7 @@
 2. 网关：按 [安装](install-debian13.md)「升级」重跑 `install.sh`（全程转发不掉、`meridian-restore-ok`；它同时换掉宿主上的 `meridian` 二进制并重启 `meridian-host`——这一版的网关安装需要 agent 的 `/v1/preflight`，旧 agent 会让安装以 `host_unavailable` 拒绝），用新镜像重建面板容器；`docker compose logs meridian` 里应有凭据迁移和地区组迁移的日志（只有数量和 ID），以及一行 `allocation migration: stored the current interface, port, subnet and mark numbering`（只在第一次启动）。**分配表迁移不得改变任何东西**：升级前后各存一份 `GET /api/status` 的 `install`（`state` 应保持 `in_sync`，或保持升级前的值）和 `POST /api/diff`（请求体 `{}`）的 `diff` 与 `installed`（应为没有变化），以及「部署」页每个远端节点的待下发状态；升级后 `GET /api/topology` 里的 `allocations.links` 每条链路的 `slot` 对应的 `m%02d` 应与网关和各节点上 `wg show interfaces` 的接口名一致（`POST /api/topology/allocations` 请求体 `{}` 直接列出每条链路的接口、端口和地址，`changes` 应为空）。任何一项出现变化都先不要安装，存档后排查。
 3. 面板：密钥 → 服务器 → 发现并核对指纹 → 确认 → 连接测试（就绪）；Cloudflare 账户 → 检查权限（预期：令牌有效、可读节点和路由，写权限「未确认」）。
 4. 面板「部署」：差分、「安装前预检」（审阅报告，核对与 `ss -lntup`、`nft list tables`、`iptables -S FORWARD` 一致）、安装到网关。安装结果里「内核参数」一块：写入项应全部「已生效」，开机转发两行显示为「开机值」，旧 `install.sh` 写过、新文件不再写的键列为「旧文件遗留」（内核保留到重启）；把这块和 `journalctl -u meridian.service` 里的 `meridian-sysctl: applied N, skipped M` 一起存档。然后「名单 → 立即更新」一次（选网关上能到达的策略）。
-5. 网关：`sudo /usr/local/sbin/meridian-verify.sh`。通过的样子：退出码 0、最后一行 `meridian-verify-local-ok`；`PASS policy_marks`（数量等于出口数加地区组数）、`PASS guard_mark_range`、`PASS guard_ingress`、`PASS guard_boot_file`、`PASS fallback_blackholes`、`PASS no_stale_iif_rule`、`PASS route_lan_domestic4`、`PASS route_tunnel_reply4`（局域网有 IPv6 前缀时还有 `route_lan_domestic6`、`route_tunnel_reply6`）、`PASS chnroute_loaded`（和 `chnroute6_loaded`）、`PASS geosite_cn`、`PASS dns_listener`；有可切换地区组时还有 `PASS group_dns_snat`、`PASS group_dns_upstream`、`PASS group_dns_route`，以及 `PENDING-HUMAN group_dns_failover`、`NOT-RUN-HERE netns_group_dns`；`INFO list …` 行与面板「名单」页一致；远程接入关闭时 `PASS remote_absent`，打开时 `remote_*` 全部 PASS 且多四条 `PENDING-HUMAN remote_*`。旧版 17 项里任何一项变成 `FAIL` 都要查原因（真实 `nft list` 格式与本仓库桩不同只会导致 FAIL，不会误报 PASS）。
+5. 网关：`sudo /usr/local/sbin/meridian-verify.sh`。通过的样子：退出码 0、最后一行 `meridian-verify-local-ok`；`PASS policy_marks`（数量等于出口数加地区组数）、`PASS guard_mark_range`、`PASS guard_ingress`、`PASS guard_boot_file`、`PASS fallback_blackholes`、`PASS no_stale_iif_rule`、`PASS route_lan_domestic4`、`PASS route_tunnel_reply4`（局域网有 IPv6 前缀时还有 `route_lan_domestic6`、`route_tunnel_reply6`）、`PASS chnroute_loaded`（和 `chnroute6_loaded`）、`PASS geosite_cn`、`PASS dns_listener`、`PASS dns_aaaa_tunnelled`（`clients_ipv6_via_gateway` 关闭时；打开时是 `INFO`）；`unlisted_domestic_dns` 打开时还有 `PASS unlisted_domestic_lists`；有可切换地区组时还有 `PASS group_dns_snat`、`PASS group_dns_upstream`、`PASS group_dns_route`，以及 `PENDING-HUMAN group_dns_failover`、`NOT-RUN-HERE netns_group_dns`；`INFO list …` 行与面板「名单」页一致；远程接入关闭时 `PASS remote_absent`，打开时 `remote_*` 全部 PASS 且多四条 `PENDING-HUMAN remote_*`。旧版 17 项里任何一项变成 `FAIL` 都要查原因（真实 `nft list` 格式与本仓库桩不同只会导致 FAIL，不会误报 PASS）。
 6. 网关：`sudo bash deploy/verify-smartdns.sh`、`sudo bash deploy/verify-host-exec.sh`，重启后 `--boot`；重启后再跑一次 `meridian-verify.sh`，`chnroute_loaded` 仍为 PASS（证明重载时重新加入了保存的批次）。重启后还要存 `docker compose logs meridian`：局域网口用 DHCP 时应看到 `meridian-bind-waiting` 若干行和一行 `meridian-bind-ready`，`docker inspect -f '{{.RestartCount}}'` 为 0（以前这里是几次 `bind: cannot assign requested address` 崩溃重启）；租约一直不来时应在 `MERIDIAN_BIND_WAIT` 后看到 `meridian-bind-not-ready` 一次。
 7. 隔离 Linux 主机：`sudo bash deploy/verify-mesh-veth.sh`（它按固定命令搭这一跳，不运行编译出的 `meridian-mesh-up.sh`；后者这次有改动——表 170 复制路由时补上设备、Mesh 解析成员出口的表 171——由上面 `TestNetnsGroupDNSFailover` 的 Mesh 阶段运行）。
 8. 在可以随意重装的主机上（不是生产网关、不是在跑别的服务的出口）：远端节点「预检 → 第一次装机 → 撤回」，网关「撤回 → 重新预检 → 安装」，按下面「装机前预检」「撤回与恢复」的实机项核对并存档。
@@ -108,12 +108,40 @@
 - https://dnsleaktest.com
 - https://ipleak.net
 
-预期：
+预期按两个解析设置（[架构](architecture.md)「客户端 IPv6 与 AAAA」「未列名单域名的国内解析」）分开写；签收时记下当时两者的值。
+
+`unlisted_domestic_dns` 关闭（默认，严格）：
 
 - [ ] IPv4 和 IPv6 的 DNS 与出口 IP 都属于当前选中的出口地区。
 - [ ] 结果里没有家庭宽带的公网地址，也没有 ROS `192.168.100.1` 的出口。
 - [ ] 在 ROS 或家庭光猫的 WAN 上看，这台测试机没有发往境外的 53/853 查询。查询应停在 `192.168.100.88`。
-- [ ] 对一个没有 `egress_v6` 的出口（示例里的台湾、新加坡），对应域名没有 AAAA，页面仍从该出口的 IPv4 打开。
+
+`unlisted_domestic_dns` 打开（保证变了，不能再按上面签收）：
+
+- [ ] 出口 IP 属于当前选中的出口地区，结果里没有家庭宽带的公网地址。
+- [ ] DNS 一栏**会**同时出现国内解析器（`domestic_dot`，默认 AliDNS / 腾讯 DNSPod）和出口的解析器：泄漏测试的名字不在名单里，网关把它们也发给国内解析器。这是这个设置的预期结果，不是测试机泄漏；签收时写明设置是打开的。
+- [ ] 在 WAN 上看，**测试机自己**没有发出 53/853；网关（`192.168.100.88`）会向国内解析器发出名单外域名的查询（含国外域名），这正是打开时接受的代价。
+- [ ] 一个名单外的国内网站（自己挑一个不在 `geosite/cn.txt` 里的）解析到的地址在 `nft list set inet meridian chnroute` 里，访问不进隧道；一个被封的国外网站解析到的是出口给的地址，不是国内解析器的污染结果（对比 `dig @223.5.5.5` 的回答）。
+
+AAAA（`clients_ipv6_via_gateway`）：
+
+- [ ] 关闭（默认）时：在一台只手填了 IPv4 网关和 DNS、IPv6 仍由 ROS 通告的手机上，`google.com`、`youtube.com` 之类没有 AAAA（`dig @192.168.100.88 AAAA www.google.com` 是 NOERROR、没有回答），ipleak.net 的 IPv6 一栏不是家宽地址（检测不到 IPv6 或只有出口）；国内名单里的域名（如 `qq.com`）仍有 AAAA。网关上 `meridian-verify.sh` 的 `dns_aaaa_tunnelled` 为 PASS。
+- [ ] 打开时（测试机的 IPv6 默认路由指向网关）：对一个没有 `egress_v6` 的出口（示例里的台湾、新加坡），对应域名没有 AAAA，页面仍从该出口的 IPv4 打开；有 `egress_v6` 的出口返回 AAAA，经隧道走 IPv6。
+
+### 网关解析器的真实二进制测试
+
+等级：在固定版本 SmartDNS 上真实执行的本机测试（替身上游，只在回环上）；不是网关上的证据。`TestSmartDNSRealBinary` 用本仓库编译出的网关解析器配置（两个设置的四种组合）运行固定版本的 SmartDNS，两个替身上游分别扮演“国内解析器”和“出口解析器”，逐项检查：名单里的国内名字照常有 AAAA；名单外的名字在国内回答是中国地址时（打开 `unlisted_domestic_dns`）采用国内的回答，即使国内比出口慢；国内回答被污染时用出口的回答、永远不返回污染地址；国内不回答时用出口的；出口不回答时没有地址；空的 China 名单时全部用出口；AAAA 和 HTTPS 的 IPv6 提示只在 `clients_ipv6_via_gateway` 打开且目标有 IPv6 时出现；去掉 `force-AAAA-SOA`（以前的配置）时默认组的 AAAA 会被返回。China 名单用了与真实名单同量级的条目数（8193 条 IPv4、4097 条 IPv6）。
+
+```
+MERIDIAN_SMARTDNS_BIN=/usr/share/meridian/artifacts/smartdns-x86_64 go test ./internal/compile -run TestSmartDNSRealBinary -v
+# 没有这个二进制的机器（如 macOS）：在面板镜像里跑交叉编译的测试二进制
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/compile.test ./internal/compile
+docker run --rm --network none --platform linux/amd64 -v /tmp/compile.test:/compile.test:ro \
+  -e MERIDIAN_SMARTDNS_BIN=/usr/share/meridian/artifacts/smartdns-x86_64 \
+  --entrypoint /compile.test meridian:local -test.run TestSmartDNSRealBinary -test.v
+```
+
+没有 `MERIDIAN_SMARTDNS_BIN` 时跳过（`--- SKIP`，不是通过）。2026-11-13 在开发机上用 `meridian:local` 里的 Release48.4 跑通过；同一个测试二进制在本机的 `pymumu/smartdns:latest`（当时是 1.2026.11.09-1240）里也通过。测试改动了配置里与环境有关的部分（监听改到回环端口、上游地址指向替身、去掉 `-set-mark` 和 nftset、文件挪到临时目录），所以它不证明 mark、nftset 写入和真实上游的行为；**这两个设置都没有在真实网关上运行过。**
 
 ### SmartDNS 容器与 nftset（网关上做，需要 Linux + Docker）
 
@@ -267,6 +295,8 @@ sudo MERIDIAN_ROS_SSH=admin@192.168.100.1 /usr/local/sbin/meridian-verify.sh
 - **名单版本**（`INFO list <名单>`）：从 `/var/lib/meridian/lists/status.json` 读出每个名单当前生效的来源、条数和时间，只是信息，不算检查；没有这个文件时 `INFO lists`。
 - **开机兜底文件**（`guard_boot_file`）：已安装的 `/etc/nftables.d/meridian-guard.nft` 里的守卫与 `meridian.nft` 里的逐字相同；缺文件或不同都是 `FAIL`。
 - **DNS 有人接**（`dns_listener`）：`ss` 显示 UDP 和 TCP 53 都有监听；没有 `ss` 是 `UNKNOWN`。是否答得对是 `verify-smartdns.sh` 的事。
+- **走隧道的域名没有 AAAA**（`dns_aaaa_tunnelled`，本版新加，**还没有在网关上执行过**）：`clients_ipv6_via_gateway` 关闭时真实执行 `dig +time=3 +tries=1 @127.0.0.1 AAAA www.google.com`（名字可用 `MERIDIAN_VERIFY_AAAA_NAME` 换成别的国外主机名，只接受主机名），回答是 NOERROR 且没有 AAAA 才 `PASS`；有 AAAA 是 `FAIL`；没回答、不是 NOERROR、没有 `dig`、或测试名字在 `cn`/`apple` 名单里是 `UNKNOWN`。打开时只打印 `INFO`，不查询、不算通过。
+- **未列名单域名的国内解析**（`unlisted_domestic_lists`，本版新加，只在 `unlisted_domestic_dns` 打开时）：`/var/lib/meridian/lists/china.txt` 和 `china6.txt` 都有条目才 `PASS`，缺失或为空是 `FAIL`（那时国内回答一个都不会被采用）；另打印 `INFO unlisted_domestic_dns`，说明国内解析器会看到所有名单外的域名。打开时 `PENDING-HUMAN dns_leak_client` 的说明也换成新的保证（泄漏测试网站会列出国内解析器；只要求测试机自己不发 53/853）。
 - **远程接入打开时**：`remote_iface`（`mra` 存在且 up）、上面的 `route_remote_*` / `route_tunnel_reply_device*`、`remote_pool_routes`（设备池在 main 和表 100 路由到 `mra`）、`remote_dns`（`mra` 的 53/853 重定向，DNS 白名单含两个设备池）、`remote_port_lan_only`（监听端口只在局域网口接受）、`remote_nat`（设备池对每个标记都有中转 SNAT，另有局域网口 masquerade）、`remote_wg` / `remote_listen`（`wg show mra listen-port` 等于配置）、`remote_peers`（`wg show mra peers` 恰好是已启用设备的公钥：缺的按设备 ID 列出，多出来的只报数量；只比较公钥，从不运行 `wg show … dump`，不打印也不保存任何私钥或预共享密钥）。**关闭时**：`remote_absent`（没有 `mra` 接口）。旧版本遗留的 `iif mra unreachable` 由路由脚本删除，还在就是 `FAIL no_stale_iif_rule`（以前显示为 `INFO remote_leftover`，这一项已去掉）。
 - ROS `fd00::/8` 黑洞：只有设置了 `MERIDIAN_ROS_SSH` 时才执行一条只读的 `/ipv6 route print terse where blackhole`，输出里有 `dst-address=fd00::/8` 或 `fc00::/7` 才 `PASS`；ROS 回答了但没有这条是 `FAIL`；连不上是 `UNKNOWN`。没设置就是 `PENDING-HUMAN`。
 
@@ -274,7 +304,7 @@ sudo MERIDIAN_ROS_SSH=admin@192.168.100.1 /usr/local/sbin/meridian-verify.sh
 
 退出码：有 `FAIL` 为 1（最后一行 `meridian-verify-failed`）；没有 `FAIL` 但有 `UNKNOWN` 为 2（`meridian-verify-incomplete`，在没有 `/proc`、`sysctl` 或 `ip` 的容器里就是这样，不再退出 0）；全部本机检查通过才是 0，最后一行 `meridian-verify-local-ok`。这一行只代表本机检查，**不是**防泄露结论，也不是发布签收；脚本不再打印旧的 `meridian-verify-ok`。
 
-自动化回归（`go test ./...`，`internal/compile/verify_script_test.go`）：`TestVerifyScriptExecutedChecks`、`TestVerifyScriptRemoteAccess` 和 `TestVerifyScriptULALAN` 用桩程序（`sysctl`/`ip`/`nft`/`wg`/`ss`/`ssh`）和临时根目录（`MERIDIAN_VERIFY_ROOT`，只给测试用）在 bash 里真的执行生成的脚本。覆盖：全部通过、没有 nft、缺主表、缺兜底表、转发关闭、不在网关上（`UNKNOWN`、退出 2）、ULA 指向 ROS、ROS 有/没有黑洞、ROS 连不上、`MERIDIAN_ROS_SSH` 注入被拒；地区组标记的规则缺失、`ip rule` 读不出、表 102 缺黑洞、守卫范围比地区组标记窄、远程接入关闭时有残留 `mra`（失败）与残留 `iif mra unreachable`（`FAIL no_stale_iif_rule`）、旧版的 `iif eth0 unreachable` 加上内核随之给出的 `Invalid cross-device link`（`no_stale_iif_rule` 和 `route_lan_domestic4`、`route_tunnel_reply4` 都 FAIL，IPv6 两项仍 PASS）、某个隧道的回程从别的接口出去、路由探测落到黑洞、没有路由探测的结果（全部 FAIL，不出现任何 `PASS route_`）、`nftables.service` 启用且会清空规则集（`WARN`，退出码仍是 0）与启用但不清空 / 未启用（没有 `WARN`）、chnroute 为空（有保存的批次 / 从没更新过）、`cn.txt` 为空、开机兜底文件不同或缺失、53 没人监听；远程接入打开时全部通过、停用设备仍是 peer、启用设备缺 peer、`mra` 不在、端口不对、没有 `wg`、守卫不含 `mra`、主表缺远程规则、设备池路由缺失、残留 `iif mra unreachable`（`FAIL no_stale_iif_rule`，设备回程的探测 `Invalid cross-device link`）、设备到国内被源地址校验拒绝；局域网 IPv6 前缀是 ULA 时全部通过、前缀之外的 ULA 路由在局域网口上、包含前缀的更宽 ULA 路由、`fd66::/48` 在局域网口上、前缀路由指向 ROS、已加载的分类链缺这条前缀规则、前缀规则被换成更宽的、丢弃不在（都 FAIL），以及 GUA 前缀时丢弃之前多出一条 ULA 规则（FAIL）。每个用例都断言脚本不能执行的项从不出现 `PASS`。桩里的 nft 输出是编译文本加上真实 `nft list` 的两处格式（标记补零成 8 位、集合元素跨行），真实 `nft list` / `ip rule` / `ss` 的其他格式差异要在网关上跑一次确认（格式不同只会让对应项 `FAIL`，不会误报通过）。
+自动化回归（`go test ./...`，`internal/compile/verify_script_test.go`）：`TestVerifyScriptExecutedChecks`、`TestVerifyScriptRemoteAccess` 和 `TestVerifyScriptULALAN` 用桩程序（`sysctl`/`ip`/`nft`/`wg`/`ss`/`ssh`）和临时根目录（`MERIDIAN_VERIFY_ROOT`，只给测试用）在 bash 里真的执行生成的脚本。覆盖：全部通过、没有 nft、缺主表、AAAA 检查（解析器返回 AAAA 时 FAIL；不回答、SERVFAIL、没有 `dig`、测试名字在国内名单里时 UNKNOWN；环境变量换名字、注入被拒；`TestVerifyScriptResolverSettings`：两个设置打开时只打印 `INFO`、China 名单为空或缺失时 FAIL、泄漏项说明换成新的保证）、缺兜底表、转发关闭、不在网关上（`UNKNOWN`、退出 2）、ULA 指向 ROS、ROS 有/没有黑洞、ROS 连不上、`MERIDIAN_ROS_SSH` 注入被拒；地区组标记的规则缺失、`ip rule` 读不出、表 102 缺黑洞、守卫范围比地区组标记窄、远程接入关闭时有残留 `mra`（失败）与残留 `iif mra unreachable`（`FAIL no_stale_iif_rule`）、旧版的 `iif eth0 unreachable` 加上内核随之给出的 `Invalid cross-device link`（`no_stale_iif_rule` 和 `route_lan_domestic4`、`route_tunnel_reply4` 都 FAIL，IPv6 两项仍 PASS）、某个隧道的回程从别的接口出去、路由探测落到黑洞、没有路由探测的结果（全部 FAIL，不出现任何 `PASS route_`）、`nftables.service` 启用且会清空规则集（`WARN`，退出码仍是 0）与启用但不清空 / 未启用（没有 `WARN`）、chnroute 为空（有保存的批次 / 从没更新过）、`cn.txt` 为空、开机兜底文件不同或缺失、53 没人监听；远程接入打开时全部通过、停用设备仍是 peer、启用设备缺 peer、`mra` 不在、端口不对、没有 `wg`、守卫不含 `mra`、主表缺远程规则、设备池路由缺失、残留 `iif mra unreachable`（`FAIL no_stale_iif_rule`，设备回程的探测 `Invalid cross-device link`）、设备到国内被源地址校验拒绝；局域网 IPv6 前缀是 ULA 时全部通过、前缀之外的 ULA 路由在局域网口上、包含前缀的更宽 ULA 路由、`fd66::/48` 在局域网口上、前缀路由指向 ROS、已加载的分类链缺这条前缀规则、前缀规则被换成更宽的、丢弃不在（都 FAIL），以及 GUA 前缀时丢弃之前多出一条 ULA 规则（FAIL）。每个用例都断言脚本不能执行的项从不出现 `PASS`。桩里的 nft 输出是编译文本加上真实 `nft list` 的两处格式（标记补零成 8 位、集合元素跨行），真实 `nft list` / `ip rule` / `ss` 的其他格式差异要在网关上跑一次确认（格式不同只会让对应项 `FAIL`，不会误报通过）。
 
 这些测试找到过一个真实问题：打开远程接入后守卫最后一条是 `iifname { "eth0", "mra" } … drop`，旧版 `nft_guard` 的匹配只认 `iifname "eth0"`，会在每台打开远程接入的网关上误报 `FAIL`；已改为两种写法都认。
 
@@ -641,7 +671,8 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 - [ ] 已知 DoH 域名返回 SOA，已知地址的 443 被拒绝。这不是全部 DoH。
 - [ ] WebRTC：srflx / 中继候选是出口地址（实机人工签收，ipleak 或 browserleaks）。
 - [ ] WebRTC host 候选里可能出现 ROS 通告的 GUA。这是单条运营商 /64 加 SLAAC 的结果，验收时记为已知限制，不当成失败。要去掉它，只能让测试机不用 GUA、改用 ULA 再在网关做 NAT66，国内 IPv6 就不再端到端。
-- [ ] 实机人工签收：dnsleaktest.com 与 ipleak.net 的 v4/v6 都属于当前出口地区，没有家庭宽带公网地址。
+- [ ] 实机人工签收：dnsleaktest.com 与 ipleak.net 的 v4/v6 都属于当前出口地区，没有家庭宽带公网地址。`unlisted_domestic_dns` 打开时 DNS 一栏还会出现国内解析器（预期，见上面「DNS」），签收时写明设置值。
+- [ ] `clients_ipv6_via_gateway` 关闭时走隧道的域名没有 AAAA：自动化回归（`TestGatewayDNSSettingsCombinations`；面板「防泄露」页的生成配置核对 `dns_aaaa_policy`、`unlisted_domestic_dns`）、真实二进制（`TestSmartDNSRealBinary`）、网关上 `meridian-verify.sh` 的 `dns_aaaa_tunnelled`（真实查询，只有执行过才算）。
 - [ ] 实机人工签收：ROS 上 `fd00::/8`（或 `fc00::/7`）黑洞的只读查询输出已存档（或 `meridian-verify.sh` 带 `MERIDIAN_ROS_SSH` 的 `PASS ros_ula_blackhole` 及其证据文件）。
 - [ ] 实机人工签收：断隧道时测试机不通、ROS / 家庭 WAN 抓包里没有境外流量。
 - [ ] 隔离 Linux 集成证据：`meridian-verify.sh` 在网关上 `meridian-verify-local-ok`，证据目录已存档。

@@ -26,6 +26,80 @@ var SmartDNSSharedDirs = []string{
 	"/etc/meridian/dns",
 	"/var/lib/meridian/geosite",
 	"/var/lib/meridian/keywords",
+	// The China IP lists the list update saves (china.txt, china6.txt);
+	// read only with Settings.UnlistedDomesticDNS (ip-set below).
+	"/var/lib/meridian/lists",
+}
+
+// The China IP lists as the list update saves them (internal/lists,
+// chnFamilies), loaded as SmartDNS ip-sets for the domestic answer check
+// of unlisted names. Their SmartDNS ip-set names.
+const (
+	chinaListFile4 = "/var/lib/meridian/lists/china.txt"
+	chinaListFile6 = "/var/lib/meridian/lists/china6.txt"
+)
+
+// SmartDNSReadsChinaLists reports whether a SmartDNS config loads the China
+// IP lists (the host agent restarts the resolver after a chnroute update
+// only then).
+func SmartDNSReadsChinaLists(conf string) bool {
+	for _, r := range SmartDNSFileRefs(conf) {
+		if r == chinaListFile4 || r == chinaListFile6 {
+			return true
+		}
+	}
+	return false
+}
+
+// unlistedExitGroup is the SmartDNS group label of the default exit's
+// resolver when it answers unlisted names only after the domestic check
+// (-fallback); the label only names the entry, membership in the default
+// group is what matters.
+const unlistedExitGroup = "unlisted_exit"
+
+// dnsAAAAPolicy is how the gateway resolver treats AAAA (and the IPv6 hints
+// of HTTPS records). SmartDNS 1.2026.08.05 (Release48.4) decides an AAAA
+// SOA from the domain rules before any upstream is asked:
+//
+//   - forceSOA: "force-AAAA-SOA yes" answers every AAAA with an empty
+//     NOERROR (SOA), unless the matching domain rule carries
+//     "-address -6" (DOMAIN_FLAG_ADDR_IPV6_IGN, checked first in
+//     _dns_server_is_return_soa_qtype, src/dns_server/soa.c).
+//   - a rule whose AAAA must stay empty carries "-address #6", which wins
+//     over everything else.
+//
+// The catch-all (names no list and no rule matches) gets AAAA only when
+// the operator stated that clients route IPv6 through this gateway AND the
+// default exit/group carries IPv6; otherwise forceSOA is on and only the
+// domestic sets and the rules allowed IPv6 are exempt.
+type dnsAAAAPolicy struct {
+	clientsV6 bool
+	forceSOA  bool
+}
+
+func aaaaPolicy(t model.Topology, def target) dnsAAAAPolicy {
+	v6 := t.Settings.ClientsIPv6ViaGateway
+	return dnsAAAAPolicy{clientsV6: v6, forceSOA: !(v6 && def.V6)}
+}
+
+// domesticFlag is appended to a domestic (direct) domain rule: domestic
+// names keep their AAAA, IPv6 to them goes direct through the home router.
+func (p dnsAAAAPolicy) domesticFlag() string {
+	if p.forceSOA {
+		return " -address -6"
+	}
+	return ""
+}
+
+// ruleAAAA: whether a tunnelled rule returns AAAA, and its address flag.
+func (p dnsAAAAPolicy) ruleAAAA(rp rulePlan) (bool, string) {
+	if rp.FilterAAAA || !p.clientsV6 {
+		return false, " -address #6"
+	}
+	if p.forceSOA {
+		return true, " -address -6"
+	}
+	return true, ""
 }
 
 // SmartDNSFileRefs lists the files a SmartDNS config loads, in order of
@@ -91,6 +165,21 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 	sb.WriteString("bind-tls [::]:853\n")
 	sb.WriteString("\n")
 
+	aaaa := aaaaPolicy(t, defT)
+	if aaaa.forceSOA {
+		if aaaa.clientsV6 {
+			sb.WriteString("# AAAA: the default exit/group has no IPv6 end to end, so names no rule matches get\n")
+		} else {
+			sb.WriteString("# AAAA: clients take IPv6 from the home router, not from this gateway (settings\n")
+			sb.WriteString("# clients_ipv6_via_gateway off): IPv6 to a tunnelled name would leave over the home line.\n")
+		}
+		sb.WriteString("# No AAAA (empty NOERROR, IPv6 hints dropped from HTTPS records) for any name except the\n")
+		sb.WriteString("# domestic sets and the rules allowed IPv6, which carry \"-address -6\".\n")
+		sb.WriteString("force-AAAA-SOA yes\n")
+		sb.WriteString("\n")
+	}
+
+	split := t.Settings.UnlistedDomesticDNS
 	dots := t.Settings.DomesticDoT
 	if len(dots) == 0 {
 		dots = []string{"223.5.5.5", "1.12.12.12"}
@@ -100,13 +189,17 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 		fmt.Fprintf(&sb, "server %s -group domestic -exclude-default-group\n", ip)
 	}
 	sb.WriteString("\n")
+	if split {
+		writeUnlistedDomestic(&sb, dots)
+	}
 	for _, e := range exits {
 		if e.DNSULA == "" {
 			fmt.Fprintf(&sb, "# exit %s has no tunnel DNS address\n", e.Node.ID)
 			continue
 		}
 		excl := " -exclude-default-group"
-		if defT.Group == nil && e.Node.ID == def.Node.ID {
+		isDefault := defT.Group == nil && e.Node.ID == def.Node.ID
+		if isDefault && !split {
 			excl = ""
 		}
 		// ULA only. The tunnel v4 address is not routed past the first hop,
@@ -119,16 +212,23 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 			addr = e.Resolver
 		}
 		fmt.Fprintf(&sb, "server %s -group %s%s\n", addr, e.Group, excl)
+		if isDefault && split {
+			fmt.Fprintf(&sb, "server %s -group %s -fallback\n", addr, unlistedExitGroup)
+		}
 	}
 	sb.WriteString("\n")
-	writeGroupResolvers(&sb, groups, defT.Group)
+	writeGroupResolvers(&sb, groups, defT.Group, split)
 	sb.WriteString("nftset #4:inet#meridian#default4\n")
-	sb.WriteString("nftset #6:inet#meridian#default6\n")
+	if aaaa.forceSOA {
+		sb.WriteString("# default6 stays empty: names no rule matches get no AAAA.\n")
+	} else {
+		sb.WriteString("nftset #6:inet#meridian#default6\n")
+	}
 	sb.WriteString("\n")
 	sb.WriteString("domain-set -name gs_cn -file /var/lib/meridian/geosite/cn.txt\n")
 	sb.WriteString("domain-set -name gs_apple -file /var/lib/meridian/geosite/apple.txt\n")
-	sb.WriteString("domain-rules /domain-set:gs_cn/ -nameserver domestic -nftset #4:inet#meridian#direct4,#6:inet#meridian#direct6\n")
-	sb.WriteString("domain-rules /domain-set:gs_apple/ -nameserver domestic -nftset #4:inet#meridian#direct4,#6:inet#meridian#direct6\n")
+	fmt.Fprintf(&sb, "domain-rules /domain-set:gs_cn/ -nameserver domestic%s -nftset #4:inet#meridian#direct4,#6:inet#meridian#direct6\n", aaaa.domesticFlag())
+	fmt.Fprintf(&sb, "domain-rules /domain-set:gs_apple/ -nameserver domestic%s -nftset #4:inet#meridian#direct4,#6:inet#meridian#direct6\n", aaaa.domesticFlag())
 	sb.WriteString("\n")
 
 	// Known DoH names return SOA. This list is not exhaustive.
@@ -142,12 +242,9 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 
 	for _, rp := range rules {
 		nset := fmt.Sprintf("#4:inet#meridian#%s", rp.Set4)
-		if !rp.FilterAAAA {
+		withAAAA, flag := aaaa.ruleAAAA(rp)
+		if withAAAA {
 			nset += fmt.Sprintf(",#6:inet#meridian#%s", rp.Set6)
-		}
-		flag := ""
-		if rp.FilterAAAA {
-			flag = " -address #6"
 		}
 		ns := rp.Exit.Group
 		if rp.ViaGroup != nil {
@@ -230,7 +327,9 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 // Only the default group, when it is switchable, leaves out
 // -exclude-default-group: it is then the one upstream for names no rule
 // matches. Every other group upstream is reached only by its own rules.
-func writeGroupResolvers(sb *strings.Builder, groups []GroupPlan, def *GroupPlan) {
+// With split (Settings.UnlistedDomesticDNS) the default group's rule entry
+// is excluded too and a second entry, -fallback, serves unlisted names.
+func writeGroupResolvers(sb *strings.Builder, groups []GroupPlan, def *GroupPlan, split bool) {
 	n := 0
 	for _, g := range groups {
 		if !g.Dynamic {
@@ -240,15 +339,62 @@ func writeGroupResolvers(sb *strings.Builder, groups []GroupPlan, def *GroupPlan
 			sb.WriteString("# region groups switched by the hub: the group's resolver address, the group mark on the socket\n")
 		}
 		n++
+		isDefault := def != nil && def.Group.ID == g.Group.ID
 		excl := " -exclude-default-group"
-		if def != nil && def.Group.ID == g.Group.ID {
+		if isDefault && !split {
 			excl = ""
 		}
 		fmt.Fprintf(sb, "server %s -group %s%s -set-mark %d\n", g.Resolver, g.DNSGroup, excl, g.Mark)
+		if isDefault && split {
+			// The same resolver and mark for unlisted names, asked only
+			// after the domestic check failed (writeUnlistedDomestic).
+			fmt.Fprintf(sb, "server %s -group %s -fallback -set-mark %d\n", g.Resolver, unlistedExitGroup, g.Mark)
+		}
 	}
 	if n > 0 {
 		sb.WriteString("\n")
 	}
+}
+
+// writeUnlistedDomestic adds the domestic answer check for names no list and
+// no rule matches (Settings.UnlistedDomesticDNS), in SmartDNS 1.2026.08.05
+// (Release48.4) terms:
+//
+//   - the domestic resolvers are added a second time, in the default group
+//     and with -whitelist-ip: an address in their answer that is not in a
+//     whitelist-ip prefix (the China lists, as ip-sets) is skipped
+//     (_dns_server_ip_rule_check, src/dns_server/ip_rule.c), and a
+//     passthrough answer with any such address is not relayed at all
+//     (_dns_server_passthrough_rule_check, src/dns_server/rules.c);
+//   - the default exit's (or default group's) resolver is in the default
+//     group only as -fallback: the first send of a query skips fallback
+//     servers (_dns_client_send_query, src/dns_client/dns_client.c), and
+//     it is asked on the retry that follows an answer whose addresses
+//     were all skipped (DNS_CLIENT_ACTION_RETRY in
+//     _dns_server_process_answer) or the 500 ms upstream timeout, or at
+//     once when no domestic server can be sent to.
+//
+// So the domestic answer wins whenever it consists of China addresses
+// (an accepted answer is a chnroute address, which the classifier sends
+// direct ahead of default4), and a poisoned (non-China) domestic answer
+// is never returned. The entries for the domestic sets (group domestic)
+// and for the rules stay as they were: they never carry -whitelist-ip or
+// -fallback. Measured with the pinned binary and stub upstreams:
+// TestSmartDNSRealBinary.
+func writeUnlistedDomestic(sb *strings.Builder, dots []string) {
+	sb.WriteString("# Unlisted names (settings unlisted_domestic_dns): the domestic resolvers are asked first and\n")
+	sb.WriteString("# their answer is used only for China addresses (whitelist-ip, the chnroute lists); any\n")
+	sb.WriteString("# other address is discarded and the default exit's resolver (-fallback) answers instead.\n")
+	sb.WriteString("# These domestic resolvers see every unlisted name, foreign ones included.\n")
+	fmt.Fprintf(sb, "ip-set -name chnroute -file %s\n", chinaListFile4)
+	fmt.Fprintf(sb, "ip-set -name chnroute6 -file %s\n", chinaListFile6)
+	sb.WriteString("whitelist-ip ip-set:chnroute\n")
+	sb.WriteString("whitelist-ip ip-set:chnroute6\n")
+	for _, ip := range dots {
+		fmt.Fprintf(sb, "server-tls %s:853 -group domestic_check -whitelist-ip\n", ip)
+		fmt.Fprintf(sb, "server %s -group domestic_check -whitelist-ip\n", ip)
+	}
+	sb.WriteString("\n")
 }
 
 func renderExitDNS(t model.Topology, n model.Node, tunnels []Tunnel) string {
@@ -370,6 +516,16 @@ func dnsSeedCommands(t model.Topology) string {
 	}
 	for _, id := range keywords {
 		fmt.Fprintf(&sb, "[ -f /var/lib/meridian/keywords/%s.txt ] || : > /var/lib/meridian/keywords/%s.txt\n", id, id)
+	}
+	if t.Settings.UnlistedDomesticDNS {
+		// SmartDNS refuses a config whose ip-set file is missing. Empty
+		// lists accept no domestic answer: every unlisted name is then
+		// answered by the exit, as with the setting off, until the first
+		// list update saves the real lists (and restarts SmartDNS).
+		sb.WriteString("install -d /var/lib/meridian/lists\n")
+		for _, f := range []string{chinaListFile4, chinaListFile6} {
+			fmt.Fprintf(&sb, "[ -f %s ] || : > %s\n", f, f)
+		}
 	}
 	return sb.String()
 }

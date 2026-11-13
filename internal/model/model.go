@@ -257,6 +257,29 @@ type Settings struct {
 
 	DomesticDoT []string `json:"domestic_dot"`
 
+	// ClientsIPv6ViaGateway is the operator's statement that LAN clients
+	// use this gateway as their IPv6 router (their IPv6 default route points
+	// at the gateway's link-local address, docs/test-device.md). False (the
+	// default, and every topology saved before the setting existed) means
+	// clients take IPv6 from the home router's RA, so IPv6 to a tunnelled
+	// destination would leave over the home line, bypassing the gateway:
+	// the gateway resolver then returns no AAAA (empty NOERROR) for any
+	// name that is not domestic. True returns AAAA for a tunnelled name
+	// only when its exit or group carries IPv6 end to end (egress_v6).
+	// Domestic names keep their AAAA either way. See docs/architecture.md
+	// 「客户端 IPv6 与 AAAA」.
+	ClientsIPv6ViaGateway bool `json:"clients_ipv6_via_gateway,omitempty"`
+
+	// UnlistedDomesticDNS asks the domestic resolvers too for a name that
+	// no list and no rule matches, and uses their answer only when every
+	// address in it is a China address (the chnroute lists); otherwise the
+	// default exit's resolver answers. False (the default) keeps the strict
+	// behaviour: unlisted names are resolved only through the tunnel. With
+	// it on the domestic resolvers see every unlisted name, foreign ones
+	// included, and those queries leave over the home line. See
+	// docs/architecture.md「未列名单域名的国内解析」.
+	UnlistedDomesticDNS bool `json:"unlisted_domestic_dns,omitempty"`
+
 	// TransitV4Prefix and TransitV6Prefix carry the exit choice across
 	// hops. WireGuard does not preserve fwmark, so the gateway SNATs LAN
 	// sources onto a per-exit transit address. Public NAT/NAT66 still
