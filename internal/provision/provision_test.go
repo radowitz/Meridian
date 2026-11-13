@@ -862,3 +862,45 @@ func TestProvisionScriptCommitsWithoutArtifacts(t *testing.T) {
 		t.Fatalf("journal:\n%s", st)
 	}
 }
+
+// An update whose bundle no longer has an interface the previous install
+// created (a link was renumbered or removed): the old interface is removed
+// before meridian-up.sh brings the new ones up, so it cannot keep the
+// listen port. Interfaces of the new bundle and interfaces that are not in
+// this node's manifest are left alone.
+func TestProvisionUpdateRemovesStaleInterfaces(t *testing.T) {
+	sb := newSandbox(t)
+	first, _ := testScript(t, "tw", "none")
+	if out, code := sb.run(first); code != 0 || !strings.Contains(out, "MERIDIAN_PROVISION_OK") {
+		t.Fatalf("install: %d\n%s", code, out)
+	}
+	man := sb.read("/var/lib/meridian/node/manifest")
+	if !strings.Contains(man, "iface m14") {
+		t.Fatalf("manifest:\n%s", man)
+	}
+	// The previous install also had m77 (renumbered away in the new bundle);
+	// wg9 is somebody else's and not in the manifest.
+	sb.write("/var/lib/meridian/node/manifest", man+"iface m77\n")
+	sb.write("/link-m77", "")
+	sb.write("/link-wg9", "")
+	sb.write("/calls.log", "")
+	upd, _ := testScript(t, "tw", "same")
+	out, code := sb.run(upd)
+	if code != 0 || !strings.Contains(out, "MERIDIAN_PROVISION_OK") {
+		t.Fatalf("update: %d\n%s", code, out)
+	}
+	calls := sb.read("/calls.log")
+	del, up := strings.Index(calls, "ip link del m77"), strings.Index(calls, "wg-quick up")
+	if del < 0 || sb.exists("/link-m77") {
+		t.Fatalf("stale interface not removed:\n%s", calls)
+	}
+	if up >= 0 && up < del {
+		t.Fatalf("new interfaces came up before the stale one was removed:\n%s", calls)
+	}
+	if strings.Contains(calls, "ip link del m14") || strings.Contains(calls, "ip link del wg9") || !sb.exists("/link-m14") || !sb.exists("/link-wg9") {
+		t.Fatalf("touched an interface that is current or not ours:\n%s", calls)
+	}
+	if strings.Contains(sb.read("/var/lib/meridian/node/manifest"), "iface m77") {
+		t.Fatal("the new manifest still lists the stale interface")
+	}
+}

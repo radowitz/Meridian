@@ -344,6 +344,27 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		fmt.Fprintf(&sb, "cat > \"$tmp\" <<'%s'\n%s%s\n", delim, ensureNL(body), delim)
 		fmt.Fprintf(&sb, "mv -f \"$tmp\" %s\n", shellQuote(clean))
 	}
+	// An update that renumbered or removed links: interfaces of the previous
+	// install that this bundle no longer has still hold the listen port (and
+	// routes) their successors need. Seen on a real exit: adding a second
+	// hub link renamed its existing tunnel interface, the new one could not
+	// bind the same port ("RTNETLINK answers: Address already in use") and
+	// the update was compensated. They are removed before the new ones come
+	// up; only names from this node's own manifest that look like Meridian
+	// interfaces. A failed update restores the previous files and re-runs
+	// the previous meridian-up.sh, which brings them back.
+	sb.WriteString(`if [ -f "$M_MANIFEST" ]; then
+  for m_i in $(awk '$1=="iface" {print $2}' "$M_MANIFEST"); do
+    case "$m_i" in m[0-9]*|mmesh) ;; *) continue ;; esac
+    case " $M_IFACES " in *" $m_i "*) continue ;; esac
+    if ip link show "$m_i" >/dev/null 2>&1; then
+      m_note iface-stale "$m_i"
+      echo "meridian: removing interface $m_i of the previous install (not in this bundle)"
+      ip link del "$m_i"
+    fi
+  done
+fi
+`)
 	sb.WriteString("if [ -x /usr/local/sbin/meridian-up.sh ]; then\n")
 	sb.WriteString("  /usr/local/sbin/meridian-up.sh\n")
 	sb.WriteString("fi\n")
