@@ -238,7 +238,7 @@ SmartDNS 里的写法（固定版本 Release48.4，源码 `src/dns_server/soa.c`
 
 真实二进制的测试（`TestSmartDNSRealBinary`，见[验收清单](verification.md#网关解析器的真实二进制测试)）证明：`force-AAAA-SOA` 下默认组的 AAAA 为空、`cn` 名单的 AAAA 照常返回（即使那个地址不在中国）、规则按各自的标志处理；去掉这一行（以前的配置）时默认组的 AAAA 会被返回。
 
-现有拓扑升级后网关解析器的生成结果会变（这就是修复）：加 `force-AAAA-SOA yes`，`cn`/`apple` 加 `-address -6`，每条规则都变成 `-address #6`，去掉 `default6` 的 nftset。nft、路由和其他节点不变。`meridian-verify.sh` 在设置关闭时真实地问一次本机解析器（`dig @127.0.0.1 AAAA www.google.com`，可用 `MERIDIAN_VERIFY_AAAA_NAME` 换成别的国外名字），回答里有 AAAA 就 FAIL（`dns_aaaa_tunnelled`）。
+现有拓扑升级后网关解析器的生成结果会变（这就是修复）：加 `force-AAAA-SOA yes`、`cache-persist no`（见下一节「缓存与策略变化」），`cn`/`apple` 加 `-address -6`，每条规则都变成 `-address #6`，去掉 `default6` 的 nftset。nft、路由和其他节点不变。`meridian-verify.sh` 在设置关闭时真实地问一次本机解析器（`dig @127.0.0.1 AAAA www.google.com`，可用 `MERIDIAN_VERIFY_AAAA_NAME` 换成别的国外名字），回答里有 AAAA 就 FAIL（`dns_aaaa_tunnelled`）。
 
 ### 未列名单域名的国内解析
 
@@ -246,34 +246,58 @@ SmartDNS 里的写法（固定版本 Release48.4，源码 `src/dns_server/soa.c`
 
 关闭时不在任何名单、也没有命中规则的名字只经隧道由默认出口的解析器解析：名单外的国内网站拿到的是面向海外的 CDN 节点，要么被送进隧道，要么直连到一个很差的节点（“国内网站开头慢、不像直连”）。
 
-打开时，这类名字先问国内解析器，**只有回答里的地址是中国地址（chnroute 名单）时才采用**，并因为地址在 `chnroute` / `chnroute6` 里而直连（分类链里 `chnroute` 在 `default4` 之前，即使这个地址也被写进了 `default4`）；回答里不是中国的地址（包括被污染的结果）一律丢弃，改用默认出口解析器的回答，走隧道。混合回答只保留其中的中国地址。
+打开时，这类名字的 A/AAAA 同时问国内解析器和默认出口的解析器，**只有国内回答里的每一个地址都是中国地址（chnroute 名单）时才采用**，整份回答要么全收要么全不收；收下的地址在 `chnroute` / `chnroute6` 里，分类链（`chnroute` 在 `default4` 之前）让它直连。其余情况一律用出口解析器的回答、走隧道：CNAME 链最后是国外地址、中国与国外混合、NODATA / NXDOMAIN、被污染的地址、国内不回答。出口不回答时客户端得到 SERVFAIL，国内的国外地址永远不会被返回。
 
-SmartDNS 里的写法（同一固定版本；网关容器 `pymumu/smartdns:latest` 需要 **Release47 或更新**，`-fallback` 是 Release47 加的，`ip-set` 是 Release45）：
+**为什么不是 SmartDNS 自己做（第一版的做法，在真实网关上失败了）。** 第一版用 SmartDNS 的 `-whitelist-ip`（国内上游只收白名单地址）加出口上游 `-fallback`。在真实网关上（SmartDNS 1.2026.11.09）`www.wikipedia.org`、`www.facebook.com`、`www.bbc.com` 只得到一条没有地址的 CNAME，并被缓存。用固定版本和替身上游复现了（`TestSmartDNSRealBinary` 的 `cname-foreign`，Release48.4 和 1.2026.11.09 都一样）：诚实的国内解析器回答「CNAME + 国外 A」时，白名单只丢掉 A；`_dns_server_process_answer`（`src/dns_server/answer.c`）处理 CNAME 时已经把请求的 rcode 设成 NOERROR，而「地址全被跳过就重试」那一支要求 rcode 还是 SERVFAIL，所以不重试，回调返回 OK、`query->has_result` 置位，`_dns_client_retry_dns_query` 不再发送，`-fallback` 的出口一次都没被问到，请求以只有 CNAME 的回答结束并进缓存。`blacklist-ip` 命中同样只跳过地址（CNAME 照样设了 rcode），`bogus-nxdomain` 会把回答变成 NXDOMAIN；这个版本没有“只要有一个地址不合格就丢掉整份回答”的选项。之前的测试只覆盖了单独一条被污染的 A，那时“全部跳过→重试”恰好成立。
+
+**现在的做法：网关上的一个小服务 `meridian-dns-split`**（`internal/dnssplit`，`/usr/local/bin/meridian dns-split`，systemd 单元 `meridian-dns-split.service`，只在设置打开时编译和安装）。网关 SmartDNS 的默认组只有它一个上游：
 
 ```
-ip-set -name chnroute -file /var/lib/meridian/lists/china.txt
-ip-set -name chnroute6 -file /var/lib/meridian/lists/china6.txt
-whitelist-ip ip-set:chnroute
-whitelist-ip ip-set:chnroute6
-server-tls 223.5.5.5:853 -group domestic_check -whitelist-ip      # 不带 -exclude-default-group：在默认组里
-server 223.5.5.5 -group domestic_check -whitelist-ip
-server fd66::53:d -group rg_hk -exclude-default-group -set-mark 269   # 规则用的那一行，退出默认组
-server fd66::53:d -group unlisted_exit -fallback -set-mark 269        # 默认组：只在国内检查失败后才问
+server 127.0.0.1:5356 -group unlisted_split          # 默认组：名单外的名字
+server fd66::53:d -group rg_hk -exclude-default-group -set-mark 269   # 默认组自己的规则仍直接问它
 ```
 
-- `-whitelist-ip`：这个上游回答里不在 `whitelist-ip` 前缀里的地址被跳过（`src/dns_server/ip_rule.c` 的 `_dns_server_ip_rule_check`）；透传路径上只要有一个这样的地址整个回答就不转发（`src/dns_server/rules.c` 的 `_dns_server_passthrough_rule_check`）。`whitelist-ip` 只作用于带这个选项的上游，`domestic` 组（名单用的）和出口解析器不受影响。
-- `-fallback`：查询第一次发送时跳过 fallback 上游（`src/dns_client/dns_client.c` 的 `_dns_client_send_query`），在回答的地址全被跳过后的立即重试（`DNS_CLIENT_ACTION_RETRY`）、500 ms 上游超时后的重试，或国内上游一个都发不出去时才问它。所以不是“谁先回用谁”：国内解析器比出口慢也仍然先用国内的中国地址，出口的回答不会抢先。
-- 两个名单文件由名单更新保存在宿主 `/var/lib/meridian/lists/`（约 6000 条 IPv4、3400 条 IPv6，用 `ip-set` 文件引用而不是几千行内联）；SmartDNS 容器只读挂载这个目录（`deploy/docker-compose.yml`；目录里另有 `status.json` 和 `chnroute.nft`，都不是秘密）。SmartDNS 找不到 ip-set 文件就拒绝启动，所以打开时 `meridian-up.sh` 先建空文件；空名单不接受任何国内回答，效果等于关闭，直到第一次名单更新。名单更新替换了这两个文件、且安装的配置读它们时，host agent 重启 SmartDNS（`chnroute_changed`；设置关闭时 chnroute 更新不重启解析器）。
-- 规则和 `cn`/`apple` 名单不受影响；第 1 节的 AAAA 规则照旧：设置「客户端 IPv6 经本网关」关闭时，被采用的国内答案也只有 A——`force-AAAA-SOA` 在问任何上游之前按域名规则决定，名单外的名字没有域名规则可以豁免。按回答判断 AAAA 的唯一办法（`ignore-ip ::/0` 加中国 IPv6 白名单）实测让每个国外名字的 AAAA 等 0.5–1 秒的上游超时，所以没有采用；这些国内网站照样经 IPv4 直连。
+单元的 `ExecStart` 带着编译出的参数：`--domestic 223.5.5.5:53,1.12.12.12:53`（`domestic_dot`，UDP 53）、`--exit` 默认组的解析地址（或静态默认出口的隧道解析地址）和 `--exit-mark`（与 SmartDNS 那一行的 `-set-mark` 相同，十进制；所以需要 root 的 `CAP_NET_ADMIN`，单元只保留这一个能力）、`--china4/--china6` 名单更新保存在宿主 `/var/lib/meridian/lists/` 的两个文件。规则：
+
+- 只处理 A 和 AAAA；其他类型（HTTPS、SVCB、TXT…）只问出口。
+- 国内和出口同时发出，尽早决定（参数都写在单元的 `ExecStart` 里，下面是默认值）：
+  - 任何一个国内解析器给出合格回答，立即用它（只要还没决定），不管出口是否已经回答（国内比出口慢也一样，测试 `unl-cn-slow`）。
+  - 一个国内解析器回了不合格的回答之后，再在同一个查询上等 `--settle 30ms`：明文 UDP 上可能先到一个被注入的伪造回答、后到真正的回答，这段时间里到的合格回答仍会被采用（测试 `forged-then-genuine`、`split-dom`）。之后它就算“答完了”。
+  - 出口已经回答，并且（所有国内解析器都答完或超时，或者至少有一个国内解析器回答过并已 settle）时，立即用出口的回答。所以一个不回答的国内解析器不会拖住结果：另一个已回答并 settle 后就不再等它。`--domestic-timeout 400ms` 只在**没有任何**国内解析器回答时才是等待上限。
+  - 出口不回答时等所有国内解析器（中国回答仍可用），然后 SERVFAIL；出口单次 `--exit-timeout 2s`，UDP 截断时改走 TCP。
+  - 判错的方向只有一种是可以接受的：真正的中国回答来得太晚（晚于另一解析器 settle 和出口回答），这个名字就走出口的回答、进隧道，而不是直连——不是泄漏。返回带国外地址的国内回答在任何时序下都不会发生：国内回答只有合格时才会被返回。
+  - 本机测得的决定时间（替身上游，`internal/dnssplit` 的 `TestDecisionTimes`）：两个国内 10 ms 回国外、出口 50 ms → 51 ms；出口 5 ms → 42 ms（10 + 30 settle）；出口 150 ms → 151 ms；一个国内不回答、另一个 10 ms 回国外、出口 20 ms → 42 ms；伪造 5 ms、真中国 20 ms → 21 ms 采用国内；国内都不回答 → 400 ms。
+  - `--stats-interval 10m`：每段时间一行汇总日志（`meridian-dns-split-stats`）：各结果的次数、决定时间的 p50/p90/p99、不回答的国内解析器次数、伪造后又收到合格回答的次数；**不记录任何域名**。
+- 合格：rcode NOERROR、没有截断、回答段里至少一个所问类型的地址，并且回答段里**每一条** A/AAAA 都在中国名单里（不管属于 CNAME 链上哪个名字）。
+- 名单在启动时读；读不到或为空时不收任何国内回答（等于关闭，直到名单更新）。不需要给 SmartDNS 容器挂载名单目录。
+
+AAAA 仍先由 SmartDNS 按第 1 节决定（`force-AAAA-SOA`），只有允许 AAAA 时 AAAA 查询才会到这个服务；所以「客户端 IPv6 经本网关」关闭时，被采用的国内回答也只有 A（没有域名规则能豁免名单外的名字；按回答判断 AAAA 的 `ignore-ip ::/0` 办法实测让每个国外名字的 AAAA 等 0.5–1 秒）。
+
+**缓存与策略变化。** SmartDNS 默认 `cache-persist` 是 auto：空间够就把缓存存到容器里的 `/var/cache/smartdns/`，启动时读回。安装时的 `docker restart` 因此不会清空缓存——真实网关上关掉设置、重装、SmartDNS 被重启之后，仍在回答旧策略缓存下来的 CNAME。真实二进制测试复现了（SIGTERM 后用另一份配置启动，旧回答仍被返回）。网关配置现在固定 `cache-persist no`（两个设置怎么改都一样），重启后从空缓存开始，测试证明换配置重启后按新策略回答。名单更新替换了 China 文件、且安装的配置用了这个服务时，host agent 先重启 `meridian-dns-split` 再重启 SmartDNS（`chnroute_changed`）；设置关闭时 chnroute 更新不碰解析器。
 
 **代价，打开前要知道：**
 
-- 国内解析器能看到**所有名单外的域名，包括国外的**，这些查询从网关经家宽直接发出（UDP 53 明文和 DoT 都有，与 `domestic` 组相同）。这与“国外域名的 DNS 不经家宽发出”的严格保证相反：打开后它不再成立，`meridian-verify.sh` 和 [验收清单](verification.md) 里的 DNS 泄漏项按新的保证描述——泄漏测试网站会同时列出国内解析器和出口的解析器，这是预期结果；仍要求测试设备自己不向外发 53/853。
-- 出口解析器不通时，被污染或不是中国地址的名字得到空回答（NOERROR、没有地址）而不是 SERVFAIL，网关会缓存约一分钟（`rr-ttl-min 60`），出口恢复后这段时间里这些名字仍是空的；关闭时是 SERVFAIL，恢复后立即可用。
-- 国内解析器不回答时，名单外的名字要等 500 ms 超时才问出口。
-- 回答的 CNAME 链可能来自国内解析器而地址来自出口；被污染的 HTTPS 记录去掉地址提示后可能被采用（没有地址，客户端仍按 A/AAAA 连接）。
+- 国内解析器能看到**所有名单外的域名，包括国外的**，这些查询从网关经家宽以明文 UDP 53 发出（服务不用 DoT）。这与“国外域名的 DNS 不经家宽发出”的严格保证相反：打开后它不再成立，`meridian-verify.sh` 和 [验收清单](verification.md) 的 DNS 泄漏项按新的保证描述——泄漏测试网站会同时列出国内解析器和出口的解析器，这是预期结果；仍要求测试设备自己不向外发 53/853。
+- 国外名字的冷查询要等到出口回答和国内回答后的 30 ms settle（两者取后者）；两个国内解析器都不回答时等 400 ms；出口解析器不通时 SERVFAIL 要等约 2 秒。第一版服务（2026-11-13 在真实网关上）对每个冷的国外名字都等满 400 ms，因为它只在所有国内解析器都给出结论后才决定；正好 400 ms 说明有一个国内解析器（从服务发出的查询看）没有回答，具体是哪个、为什么没有在网关上核实。现在已回答的那个 settle 之后就不再等它，统计行里的 `silent domestic resolvers` 能看出这种情况。
+- 中国地址的判断只看 chnroute 名单：落在名单里的伪造地址会被采用；国内 CDN 把国外网站解析到中国节点时也会直连。
+- 它用宿主上的 `/usr/local/bin/meridian`（`deploy/debian/install.sh` 从面板镜像拷出来的那一份）。打开设置之前要先用新镜像重跑一次 `install.sh`：旧的宿主二进制不认识 `dns-split`，会把它当成启动面板，所以单元先 `grep -q meridian-dns-split-ready /usr/local/bin/meridian`，旧二进制时不启动（名单外的名字随之 SERVFAIL，`dns_split_active` FAIL）。
+- 多了一个必须运行的宿主服务：它停了，名单外的名字全部 SERVFAIL（`meridian-verify.sh` 的 `dns_split_active`）。监听固定 127.0.0.1:5356（UDP/TCP），预检按这个单元的端口检查占用，校验把 5356 列为保留端口。默认组没有解析器时不生成这个服务，名单外的名字仍走严格路径。
 
-真实二进制测试覆盖：国内回答是中国地址→采用（国内比出口慢 80 ms 也一样）；国内回答被污染→出口的回答，永远不是被污染的地址；国内超时→出口的回答；出口不通→没有地址；空名单→全部用出口；以上每种情况下 AAAA 的规则不变。**这些只在本机容器里用替身上游跑过，没有在真实网关上运行过。**
+**和其他部分的关系（地区组、两个枢纽、多中继、挂靠出口、外部出口、Mesh、远程接入）。** 原则只有一条：`meridian-dns-split` 问出口时用的地址和标记，与 SmartDNS 里默认组那一行**完全相同**，所以它走的路径就是默认组自己的解析查询的路径；变化都发生在这台网关之后。`TestGatewayDNSPolicyAcrossDefaults` 对下面每种默认（加上每种设置组合）核对 `--exit`/`--exit-mark` 与那一行的地址和 `-set-mark` 逐字相同。
+
+- **地区组与切换**：默认组可切换时 `--exit` 是组的解析地址、`--exit-mark` 是组标记（十进制）。网关的 `transit_snat` 按「组标记 + 组解析地址 + 53」把本机的查询改成组的中转源（对任何本机套接字都一样，不认进程），枢纽按源进组表、到当前成员、成员 DNAT 到自己的解析器。枢纽切换成员不需要网关上任何变化。换默认组（面板改 `default_group`）会改单元的参数，安装时重启它。命名空间测试 `TestNetnsGroupDNSFailover` 在网关命名空间里用编译出的单元参数跑这个服务：切换前问到 us，枢纽切到 us-2 后问到 us-2，两个成员都断时 SERVFAIL，组自己的查询仍然一次都没到国内解析器（服务为名单外名字发的国内查询单独计数）。
+- **两个枢纽、多中继分担**：静态默认出口在有备用枢纽时用与枢纽无关的解析地址（`ExitPlan.Resolver`），与 SmartDNS 那一行相同；组标记的本机套接字按 102 表走指定中继（多中继时是最重的那台或备用枢纽），没有标记的走本机到隧道前缀的路由——两者都与 SmartDNS 自己的上游查询相同。
+- **挂靠出口（`via_exit`）**：组切到挂靠出口时，枢纽把组的中转源换成挂靠出口的（`nested_snat`），中继出口放行，解析在挂靠出口自己完成。服务不知道也不需要知道这一层。
+- **外部 TCP 出口**：服务问出口用明文 UDP（截断时 TCP）。这能用，原因是：发往外部出口解析地址的 DNS 不是它的“数据”——承载节点的 `ext_dnat` 先把「这个出口的中转源 → 组解析网段」和（有备用枢纽时）「→ 它的独立解析地址」的 UDP **和** TCP 53 DNAT 到承载节点上这个出口的解析组（SmartDNS 同时 `bind` 和 `bind-tcp`），这两条排在拒绝它其余 UDP 和全部 IPv6 的规则**之前**；单枢纽的静态情形直接发往承载节点 lo 上的解析地址，同样有 UDP 监听。承载节点的解析组再经 SOCKS 用 TCP 去问公共解析器——UDP 只出现在网关到承载节点的隧道里，从不经过 SOCKS 设备。结构测试核对这条规则顺序和两个监听，`TestNetnsExternalExit` 用 UDP 查询从组的中转源和独立解析地址实际问到过（只在本机 Linux 容器里，P2）。外部出口只回答 A：它在组里时组不算能承载 IPv6，`force-AAAA-SOA` 保持打开，规则一律 `-address #6`；编译器另外把外部出口一律算作没有 IPv6（`carriesV6`），即使 `egress_v6` 绕过了校验（`external_v6`）也不会给通向它的名字返回 AAAA。
+- **Mesh 备路**：组切到 Mesh 时组的解析查询经 Mesh 到组的 Mesh 解析成员（「地区组的解析」）；服务带同一个组标记，走同一条路。Mesh 不承载或未封装时失败，不回落。真实 Cloudflare Mesh 没有证据（同那一节）。
+- **组的解析不回落国内**：分流只作用于**没有命中任何名单和规则**的名字（默认组的兜底）。规则命中的名字——包括指向默认组本身的规则——只问它目标的上游组，那个组里只有组解析地址或出口解析地址，既没有国内解析器也没有这个服务；目标不回答时解析失败，不会换去问国内。结构测试对每条规则核对它的 `-nameserver` 组成员；真实二进制测试（打开设置时）用会被采用的中国回答引诱，统计替身国内解析器收到的查询：规则名字一次都没有被问到，目标不回答的规则名字解析失败。
+- **国内回答写进哪个集合**：服务采用的国内回答由 SmartDNS 的默认组写进 `default4`（以及允许 AAAA 时的 `default6`）。没有东西依赖这一点：这些地址都在 chnroute 名单里，分类链里 `chnroute` / `chnroute6` 在 `default4` / `default6` 之前，所以它们按 chnroute 直连；`default4` 里的这些条目从不起作用。唯一的差别是服务读的是名单**文件**，nft 的 `chnroute` 集合是名单更新加载的：两者不一致（例如 nft 加载失败而文件已替换）时，一个被采用的中国地址可能不在 nft 集合里，这时它按 `default4` 进隧道——方向是安全的（进隧道，不是绕过隧道）。
+- **远程接入设备**：它们用网关在 `mra` 上的地址做 DNS（劫持和准入与局域网相同），问的是同一个 SmartDNS，得到同一套策略；打开远程接入不改变解析器配置和这个单元（`TestGatewayDNSPolicyRemoteAccessSame`）。「客户端 IPv6 经本网关」说的是**局域网**客户端，它仍是全局唯一的开关，不按设备区分：全隧道模式（`::/0`）的远程设备的 IPv6 确实经过网关、按同样的规则分流，所以对它们来说打开这个设置是安全的；但设置关闭（默认）时它们同样拿不到走隧道域名的 AAAA，只用 IPv4 经隧道——不丢连通性，也不泄漏。不为远程设备单独放开 AAAA：那需要按客户端区分的解析视图，而局域网手机的默认情形（IPv6 来自家里路由器）必须保持关闭。仅家里网段模式的设备本来就只把家里网段送进隧道，其余流量（包括 IPv6）走设备自己的网络，不受这台网关的分流管。
+- **单元的能力**：以 root 运行，`CapabilityBoundingSet=CAP_NET_ADMIN`（给 `SO_MARK`；只在组标记非 0 时用），`AmbientCapabilities=` 为空，`NoNewPrivileges=yes`、`ProtectSystem=strict`（只读名单文件、只监听回环端口）、`ProtectHome=yes`、`PrivateTmp=yes`。
+
+真实二进制测试覆盖上面每一种回答（见[验收清单](verification.md#网关解析器的真实二进制测试)），`internal/dnssplit` 的单元测试另外覆盖 NXDOMAIN、出口截断改 TCP、非 A/AAAA 只问出口、TCP 监听、像外部出口那样只回答 A 的出口解析器和拒绝连接的出口端口。这些在本机容器里用替身上游跑过。
+
+**真实网关上的结果（2026-11-13，由主会话在用户的网关上测过一次；没有存档的日志）。** 网关运行的是独立分支上的同一套实现（`meridian-dns-split` 加上面的决定时机）：20 个冷的国外名字全部解析到出口给的地址，用时 52–72 ms（上一版时机下每个约 400 ms，因为两个国内解析器里有一个从不回答这类查询）；之前只得到 CNAME 的三个名字解析正确；带国内 CDN 节点的名单外名字由国内解析器回答，约 8 ms，并直连；走隧道的名字没有 AAAA，名单内的国内名字保留 AAAA；关掉设置立即生效，没有旧回答；网关的 `meridian-verify.sh` 通过（`dns_aaaa_tunnelled`、`dns_split_active`）。这是一次人工观测，不是可复现的记录；外部出口、挂靠出口、多中继、Mesh 和远程接入下的这项功能都**没有**在真实环境里用过。iOS 的「无线局域网没有接入互联网」**不知道是否已经解决**，见[测试设备](test-device.md)「iOS 联网检测复测」。
 
 chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly/domain-list-community（MIT）。GPL 的规则包只作为可选数据源，不放进仓库，也不链进面板。下载、展开和发布见下一节「名单源」。
 
@@ -305,7 +329,7 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 只有手动：面板「立即更新」（`POST /api/lists/update`）或宿主上 root 运行 `meridian-update-geosite.sh` / `meridian-update-chnroute.sh`。两个脚本只是 `exec meridian lists-update …`，走的是同一个 host agent 固定动作 `/v1/lists`。本轮不加定时任务。
 
 1. 下载与检查（不持锁、不改宿主）：每个名单按策略顺序逐个源尝试。geosite 分类在**同一个源**上把它的 include 闭包整个取齐（并发 6，每个文件连接 10 s、单次 60 s、5xx/网络错误重试 1 次、上限 8 MiB；每个名单在每个源上总共 5 min），展开、校验通过才算这个源成功；任何一个子文件失败，整个名单换下一个源重来，不会把两个源的文件拼在一起。China IP 两个地址族各自独立选源。
-2. 发布（持 host agent 的动作锁，最多等 `LockWait`，和安装/回滚互斥）：geosite / 关键词文件各自写临时文件后 `rename`，一个名单要么全新要么全旧；chnroute 把所有通过的地址族放进**一个** `nft -f` 事务（每族 `flush set` + `add element`），nft 接受后才替换 `/var/lib/meridian/lists/china*.txt` 和重载副本 `lists/chnroute.nft`。有 geosite/关键词文件变化时重启 SmartDNS（它只在启动时读 domain-set 文件），仍在锁内；China IP 文件内容变了（`chnroute_changed`）、且安装的 SmartDNS 配置把它们当 ip-set 读（`unlisted_domestic_dns` 打开）时同样重启。
+2. 发布（持 host agent 的动作锁，最多等 `LockWait`，和安装/回滚互斥）：geosite / 关键词文件各自写临时文件后 `rename`，一个名单要么全新要么全旧；chnroute 把所有通过的地址族放进**一个** `nft -f` 事务（每族 `flush set` + `add element`），nft 接受后才替换 `/var/lib/meridian/lists/china*.txt` 和重载副本 `lists/chnroute.nft`。有 geosite/关键词文件变化时重启 SmartDNS（它只在启动时读 domain-set 文件），仍在锁内；China IP 文件内容变了（`chnroute_changed`）、且安装的配置把名单外的名字交给 `meridian-dns-split`（`unlisted_domestic_dns` 打开）时，先重启它、再重启 SmartDNS（清掉按旧名单决定的缓存）。
 3. 结果写进宿主 `/var/lib/meridian/lists/status.json`：每个名单当前生效的版本（来源、URL、时间、条数）和最近一次更新的完整报告（每个源的尝试、耗时、错误、是否保留旧版）。
 
 失败的名单保留上一份完整版本；从未存在的 geosite 文件建成空文件，只为让 SmartDNS 能启动。只有一个更新能同时运行；第二个请求得到 503。

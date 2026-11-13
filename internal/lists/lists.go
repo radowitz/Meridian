@@ -835,9 +835,9 @@ type Report struct {
 	// them only at start and must be restarted.
 	DNSChanged bool `json:"dns_changed"`
 	// ChnrouteChanged: a saved China IP list (lists/china.txt, china6.txt)
-	// was replaced. SmartDNS reads them only when the gateway config loads
-	// them as ip-sets (unlisted_domestic_dns); the host agent restarts it
-	// then.
+	// was replaced. meridian-dns-split reads them at start when the gateway
+	// uses it (unlisted_domestic_dns); the host agent then restarts it and
+	// SmartDNS (whose cache holds answers decided with the old lists).
 	ChnrouteChanged bool `json:"chnroute_changed,omitempty"`
 	// Set by the host agent after the update.
 	DNSRestart string   `json:"dns_restart,omitempty"`

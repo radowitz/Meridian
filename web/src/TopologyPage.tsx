@@ -912,6 +912,13 @@ function LinkDetail({
 
 // ------------------------------------------------------- gateway settings ---
 
+// Appended to the help of the two resolver settings in every state: who
+// else gets this policy, and what the unlisted-name check never touches.
+const V6_SHARED_NOTE =
+  "远程接入的设备用同一个解析器、同一个设置：全隧道模式的设备 IPv6 本来就经过网关，设置关闭时它们只拿走隧道域名的 IPv4，照常能用；仅家里网段模式的设备其余流量不经网关。外部 SOCKS 出口（只有 IPv4 TCP）以及会切到它的地区组，无论怎样都不返回 AAAA。";
+const SPLIT_RULES_NOTE =
+  "命中名单或规则的域名（包括指向默认组的规则）只问自己目标的解析器：打开这个设置也不会发给国内解析器，目标的解析器不通时解析失败、不改问国内。";
+
 function SettingsDrawer({ open, topo, onClose, onChange }: { open: boolean; topo: Topology; onClose: () => void; onChange: (t: Topology) => void }) {
   const s = topo.settings;
   const set = (p: Partial<Settings>) => onChange({ ...topo, settings: { ...s, ...p } });
@@ -944,8 +951,8 @@ function SettingsDrawer({ open, topo, onClose, onChange }: { open: boolean; topo
           label="客户端 IPv6 经本网关"
           help={
             s.clients_ipv6_via_gateway
-              ? "已打开：出口（或地区组）能端到端承载 IPv6 时，走隧道的域名也返回 AAAA。前提是每台客户端的 IPv6 默认路由都指向本网关（见 docs/test-device.md）；手机只能手填 IPv4 网关和 DNS、IPv6 仍走家里路由器时不要打开，否则这些 IPv6 地址会从家宽直接出去、绕过隧道。"
-              : "关闭（默认）：除国内域名外，所有域名都不返回 AAAA。手机等客户端的 IPv6 来自家里路由器，拿不到国外域名的 IPv6 地址，只用 IPv4 经本网关进隧道，不会从家宽 IPv6 绕过隧道；国内域名照常返回 AAAA，经家里路由器直连。"
+              ? "已打开：出口（或地区组）能端到端承载 IPv6 时，走隧道的域名也返回 AAAA。前提是每台客户端的 IPv6 默认路由都指向本网关（见 docs/test-device.md）；手机只能手填 IPv4 网关和 DNS、IPv6 仍走家里路由器时不要打开，否则这些 IPv6 地址会从家宽直接出去、绕过隧道。" + V6_SHARED_NOTE
+              : "关闭（默认）：除国内域名外，所有域名都不返回 AAAA。手机等客户端的 IPv6 来自家里路由器，拿不到国外域名的 IPv6 地址，只用 IPv4 经本网关进隧道，不会从家宽 IPv6 绕过隧道；国内域名照常返回 AAAA，经家里路由器直连。" + V6_SHARED_NOTE
           }
           checked={!!s.clients_ipv6_via_gateway}
           onChange={(v) => set({ clients_ipv6_via_gateway: v })}
@@ -954,8 +961,8 @@ function SettingsDrawer({ open, topo, onClose, onChange }: { open: boolean; topo
           label="未列名单的域名也问国内 DNS"
           help={
             s.unlisted_domestic_dns
-              ? "已打开：不在任何名单、也没有命中规则的域名同时发给国内解析器，只有它返回的全是中国地址时才采用并直连，否则（包括被污染的结果）用出口解析器的结果走隧道。代价：国内解析器能看到这些域名（包括国外的），查询经家宽直接发出；DNS 泄漏测试里会出现国内解析器。出口解析器不通时这类域名得到空结果，网关会缓存约一分钟。"
-              : "关闭（默认，严格）：不在名单里的域名只经隧道由出口解析器解析，国外域名的查询不经家宽发出。名单外的国内网站可能拿到面向海外的节点（走隧道或绕远）。打开后国内解析器会看到所有名单外的域名。"
+              ? "已打开：不在任何名单、也没有命中规则的域名同时发给国内解析器和出口解析器，只有国内返回的地址全是中国地址时才采用并直连，否则（国外地址、CNAME 指向国外、混合或被污染的结果）用出口解析器的结果走隧道。代价：国内解析器能看到这些域名（包括国外的），查询经家宽直接发出；DNS 泄漏测试里会出现国内解析器。需要网关上的 meridian-dns-split 服务（安装时自动启用）。" + SPLIT_RULES_NOTE
+              : "关闭（默认，严格）：不在名单里的域名只经隧道由出口解析器解析，国外域名的查询不经家宽发出。名单外的国内网站可能拿到面向海外的节点（走隧道或绕远）。打开后国内解析器会看到所有名单外的域名。" + SPLIT_RULES_NOTE
           }
           checked={!!s.unlisted_domestic_dns}
           onChange={(v) => set({ unlisted_domestic_dns: v })}

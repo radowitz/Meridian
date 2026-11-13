@@ -181,9 +181,9 @@ func TestListsUpdateWaitsForActionAndIsSingle(t *testing.T) {
 	// take the semaphore while the download was still blocked.
 }
 
-// A chnroute update restarts SmartDNS only when its installed config loads
-// the saved China lists (unlisted_domestic_dns), and only when a list file
-// actually changed.
+// A chnroute update restarts meridian-dns-split and then SmartDNS (flushing
+// answers made under the old lists) only when the installed config uses the
+// check (unlisted_domestic_dns), and only when a list file actually changed.
 func TestListsChnrouteRestartsDNSOnlyWhenItReadsTheLists(t *testing.T) {
 	var v4 strings.Builder
 	for i := 0; i < 1200; i++ {
@@ -195,7 +195,7 @@ func TestListsChnrouteRestartsDNSOnlyWhenItReadsTheLists(t *testing.T) {
 		restart bool
 	}{
 		{"config without China lists", "server 127.0.0.1\ndomain-set -name gs_cn -file /var/lib/meridian/geosite/cn.txt\n", false},
-		{"config loading China lists", "ip-set -name chnroute -file /var/lib/meridian/lists/china.txt\nwhitelist-ip ip-set:chnroute\n", true},
+		{"config using dns-split", "server 223.5.5.5 -group domestic -exclude-default-group\nserver 127.0.0.1:5356 -group unlisted_split\n", true},
 		{"no config", "", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -213,6 +213,9 @@ func TestListsChnrouteRestartsDNSOnlyWhenItReadsTheLists(t *testing.T) {
 			}
 			if got := f.ran("systemctl restart smartdns.service"); got != map[bool]int{false: 0, true: 1}[c.restart] {
 				t.Fatalf("restarts %d, want restart=%v: %v", got, c.restart, f.commands())
+			}
+			if got := f.ran("systemctl restart meridian-dns-split.service"); got != map[bool]int{false: 0, true: 1}[c.restart] {
+				t.Fatalf("dns-split restarts %d, want restart=%v: %v", got, c.restart, f.commands())
 			}
 			// The same list again: nothing changed, no restart.
 			req.RequestID = "c2"

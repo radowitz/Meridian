@@ -275,6 +275,9 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		switch n.Role {
 		case model.RoleGateway:
 			add(prefix+"etc/smartdns/smartdns.conf", renderGatewayDNS(t, exits, groups, decisions))
+			if unit, ok := renderDNSSplitUnit(t, exits, groups); ok {
+				add(prefix+"etc/systemd/system/"+DNSSplitUnit, unit)
+			}
 			add(prefix+"usr/local/sbin/meridian-update-chnroute.sh", renderChnrouteScript(t))
 			add(prefix+"usr/local/sbin/meridian-update-geosite.sh", renderGeositeScript(t))
 		case model.RoleExit:

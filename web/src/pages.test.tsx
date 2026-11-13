@@ -440,6 +440,21 @@ describe("rules", () => {
     }
   });
 
+  it("states that rule names never go to the domestic resolvers, whatever the unlisted-name setting", async () => {
+    for (const split of [false, true]) {
+      const t = topology();
+      t.settings = { ...t.settings, unlisted_domestic_dns: split };
+      fakeApi({ "GET /api/topology": () => t });
+      const { unmount } = renderAt("#/rules");
+      const note = await screen.findByTestId("rules-dns-note");
+      expect(note).toHaveTextContent("规则命中的域名只由规则目标（地区组或出口）的解析器解析");
+      expect(note).toHaveTextContent("不会改问国内解析器");
+      expect(note).toHaveTextContent(split ? "（当前已打开）" : "（当前关闭）");
+      expect(note).toHaveTextContent("指向外部 SOCKS 出口（只有 IPv4 TCP）的规则永远不返回");
+      unmount();
+    }
+  });
+
   it("puts a requirement mismatch from validation on the field and keeps the drawer open", async () => {
     fakeApi({
       "GET /api/topology": () => topology(),
@@ -571,6 +586,10 @@ describe("gateway settings: resolver", () => {
     expect(drawer).toHaveTextContent("除国内域名外，所有域名都不返回 AAAA");
     expect(drawer).toHaveTextContent("不会从家宽 IPv6 绕过隧道");
     expect(drawer).toHaveTextContent("国外域名的查询不经家宽发出");
+    // Remote-access devices share the policy; rule names never go domestic.
+    expect(drawer).toHaveTextContent("远程接入的设备用同一个解析器、同一个设置");
+    expect(drawer).toHaveTextContent("外部 SOCKS 出口（只有 IPv4 TCP）以及会切到它的地区组，无论怎样都不返回 AAAA");
+    expect(drawer).toHaveTextContent("打开这个设置也不会发给国内解析器");
 
     await userEvent.click(v6);
     expect(v6).toBeChecked();
@@ -578,7 +597,8 @@ describe("gateway settings: resolver", () => {
     expect(drawer).toHaveTextContent("绕过隧道");
     await userEvent.click(split);
     expect(split).toBeChecked();
-    expect(drawer).toHaveTextContent("只有它返回的全是中国地址时才采用并直连");
+    expect(drawer).toHaveTextContent("只有国内返回的地址全是中国地址时才采用并直连");
+    expect(drawer).toHaveTextContent("CNAME 指向国外");
     expect(drawer).toHaveTextContent("国内解析器能看到这些域名（包括国外的）");
     expect(drawer).toHaveTextContent("DNS 泄漏测试里会出现国内解析器");
 

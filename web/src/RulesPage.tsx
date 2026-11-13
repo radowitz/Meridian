@@ -543,6 +543,10 @@ export default function RulesPage() {
           表格就是匹配顺序：手动规则总是排在内置规则前面，各自按优先级排。上下箭头和「…」里的移到最前 / 最后只在同一类里移动；移动后需要时会把这一类重新编号（步长 10），保存后按这个顺序生效。
         </Typography.Paragraph>
       ) : null}
+      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }} data-testid="rules-dns-note">
+        解析：规则命中的域名只由规则目标（地区组或出口）的解析器解析，经同一条隧道；目标的解析器不通时解析失败，不会改问国内解析器。网关设置「未列名单的域名也问国内 DNS」只作用于没有命中任何名单和规则的域名
+        {topo.settings.unlisted_domestic_dns ? "（当前已打开）" : "（当前关闭）"}。走隧道的规则默认不返回 AAAA；只有「客户端 IPv6 经本网关」打开且目标的每个可切换成员都有 IPv6 时才返回，指向外部 SOCKS 出口（只有 IPv4 TCP）的规则永远不返回。
+      </Typography.Paragraph>
       {topo.rules.length === 0 ? (
         <EmptyState
           title="还没有规则"

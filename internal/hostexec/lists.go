@@ -134,17 +134,18 @@ func ValidateLists(req ListsRequest) error {
 	return nil
 }
 
-// smartDNSReadsChinaLists: the installed gateway resolver config loads the
-// saved China lists (ip-set, setting unlisted_domestic_dns). SmartDNS reads
-// them only at start, so a chnroute update must restart it then; with the
-// setting off a chnroute update leaves the resolver (and its cache) alone.
-func (a *Agent) smartDNSReadsChinaLists() bool {
+// smartDNSUsesDNSSplit: the installed gateway resolver config sends
+// unlisted names to meridian-dns-split (setting unlisted_domestic_dns),
+// which reads the China lists only at start; SmartDNS caches its answers.
+// A chnroute update restarts both then; with the setting off it leaves the
+// resolver (and its cache) alone.
+func (a *Agent) smartDNSUsesDNSSplit() bool {
 	p := a.SmartDNSConf
 	if p == "" {
 		p = "/etc/smartdns/smartdns.conf"
 	}
 	b, err := os.ReadFile(p)
-	return err == nil && ReadsChinaLists(string(b))
+	return err == nil && UsesDNSSplit(string(b))
 }
 
 func (a *Agent) listsDir() string {
@@ -214,10 +215,19 @@ func (a *Agent) UpdateLists(ctx context.Context, req ListsRequest) (lists.Report
 			}
 		},
 		AfterPublish: func(ctx context.Context, rep *lists.Report) {
-			if !rep.DNSChanged && !(rep.ChnrouteChanged && a.smartDNSReadsChinaLists()) {
+			split := rep.ChnrouteChanged && a.smartDNSUsesDNSSplit()
+			if !rep.DNSChanged && !split {
 				return
 			}
 			x := &run{a: a, ctx: ctx}
+			if split {
+				// The check reads the China lists at start; restart it
+				// before SmartDNS so the flushed cache refills from the
+				// new lists only.
+				if _, err := x.cmd(a.StepTimeout, "systemctl", "restart", DNSSplitUnit); err != nil {
+					rep.Warnings = append(rep.Warnings, "名单已发布，但重启 "+DNSSplitUnit+" 失败："+err.Error())
+				}
+			}
 			switch x.dnsProvider() {
 			case "unit":
 				if _, err := x.cmd(a.StepTimeout, "systemctl", "restart", "smartdns.service"); err != nil {
@@ -345,27 +355,21 @@ func (c *Client) post(ctx context.Context, path string, body any, timeout time.D
 	return resp.StatusCode, nil
 }
 
-// The China IP lists the gateway's resolver may load (compile renders the
-// same two paths; a test in the compile package keeps the two in step).
+// The gateway's unlisted-name check (compile renders the same unit name
+// and listen address; a test in the compile package keeps the two in step).
 // This package cannot import compile: compile's tests import hostexec.
 const (
-	chinaListFile4 = "/var/lib/meridian/lists/china.txt"
-	chinaListFile6 = "/var/lib/meridian/lists/china6.txt"
+	DNSSplitUnit   = "meridian-dns-split.service"
+	dnsSplitListen = "127.0.0.1:5356"
 )
 
-// ReadsChinaLists reports whether a SmartDNS config loads the China IP
-// lists: an "ip-set … -file <list>" line that is not commented out.
-func ReadsChinaLists(conf string) bool {
-	for _, line := range strings.Split(conf, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "ip-set ") {
-			continue
-		}
-		f := strings.Fields(line)
-		for i := 0; i+1 < len(f); i++ {
-			if f[i] == "-file" && (f[i+1] == chinaListFile4 || f[i+1] == chinaListFile6) {
-				return true
-			}
+// UsesDNSSplit reports whether a gateway SmartDNS config sends unlisted
+// names to meridian-dns-split: a "server 127.0.0.1:5356 …" line (compile
+// renders it at the start of the line, never commented out).
+func UsesDNSSplit(conf string) bool {
+	for _, l := range strings.Split(conf, "\n") {
+		if strings.HasPrefix(l, "server "+dnsSplitListen+" ") {
+			return true
 		}
 	}
 	return false

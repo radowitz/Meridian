@@ -1223,11 +1223,18 @@ else
 fi
 
 # --- DNS: domestic answers for unlisted names (unlisted_domestic_dns) -------
-# The resolver accepts a domestic resolver's answer for an unlisted name only
-# when its addresses are in the China lists it loads as ip-sets; empty lists
-# accept nothing (every unlisted name then goes to the exit, as with the
-# setting off).
+# SmartDNS sends unlisted names to meridian-dns-split on 127.0.0.1:5356; it
+# accepts a domestic answer only when every address in it is in the China
+# lists it reads at start; empty lists accept nothing (every unlisted name
+# then gets the exit's answer, as with the setting off).
 if [ "$unlisted_dns" = 1 ]; then
+  if ! command -v systemctl >/dev/null 2>&1; then
+    unknown dns_split_active "systemctl not found; meridian-dns-split.service was not checked"
+  elif run dns-split-active systemctl is-active meridian-dns-split.service; then
+    pass dns_split_active "meridian-dns-split.service is active (evidence dns-split-active.txt)"
+  else
+    fail dns_split_active "meridian-dns-split.service is not active: SmartDNS's only upstream for unlisted names is down, they get SERVFAIL (evidence dns-split-active.txt; journalctl -u meridian-dns-split)"
+  fi
   bad=""
   for f in "$listsdir/lists/china.txt" "$listsdir/lists/china6.txt"; do
     if [ ! -f "$f" ] || ! grep -qvE '^[[:space:]]*(#|$)' "$f"; then
@@ -1235,7 +1242,7 @@ if [ "$unlisted_dns" = 1 ]; then
     fi
   done
   if [ -z "$bad" ]; then
-    pass unlisted_domestic_lists "the China lists the resolver checks domestic answers against are present (unlisted names may be answered by the domestic resolvers when their answer is a China address)"
+    pass unlisted_domestic_lists "the China lists meridian-dns-split checks domestic answers against are present (an unlisted name gets the domestic answer only when every address in it is a China address)"
   else
     fail unlisted_domestic_lists "missing or empty:$bad — no domestic answer is accepted for unlisted names; run the list update (panel 名单 → 更新, or meridian-update-chnroute.sh)"
   fi

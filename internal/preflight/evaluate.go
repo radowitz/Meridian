@@ -1099,11 +1099,15 @@ func (e *eval) listens() {
 				what = "出口解析器（SmartDNS）"
 			} else if strings.HasPrefix(lp.Owner, "wstunnel-client") {
 				what = "wstunnel 客户端本地端口"
+			} else if lp.Owner == "meridian-dns-split.service" {
+				what = "名单外域名检查（127.0.0.1 上固定的 5356）"
 			}
 			msg := fmt.Sprintf("%s（%s）要绑定 %s，但 %s 已被%s占用。", what, lp.Owner, res, l.Raw0(), e.listenerWho(l))
 			action := "在拓扑里给这个节点换一个未占用的端口（链路的「WireGuard 端口」、节点的「WireGuard 监听端口」或「WSS 监听端口」），或确认占用者可以停用后再重新预检。面板不会停掉别的服务。"
 			var fix *Fix
 			switch {
+			case lp.Owner == "meridian-dns-split.service":
+				action = "名单外域名检查固定监听 127.0.0.1:5356（UDP/TCP），给网关的 SmartDNS 用。让占用者换一个端口，或在网关设置里关掉「未列名单的域名也问国内 DNS」，然后重新预检。面板不会停掉别的服务。"
 			case lp.Owner == "smartdns":
 				action = "出口解析器的端口固定为 53/853，只绑定隧道地址；占用者绑定了通配地址或同一个隧道地址。让占用者只绑定它自己需要的地址（例如 127.0.0.53），或换一台服务器，然后重新预检。面板不会停掉别的服务。"
 			default:

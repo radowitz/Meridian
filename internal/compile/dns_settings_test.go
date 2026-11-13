@@ -1,11 +1,14 @@
 package compile
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/dnssplit"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/model"
 )
@@ -171,9 +174,10 @@ func TestGatewayDNSSettingsCombinations(t *testing.T) {
 			}
 
 			// Servers: who is in the default group, with which flags.
-			defAddr := ""
+			var defAddr string
+			var defMark uint32
 			if defT.Group != nil {
-				defAddr = defT.Group.Resolver
+				defAddr, defMark = defT.Group.Resolver, defT.Group.Mark
 			} else {
 				defAddr = defT.Exit.DNSULA
 			}
@@ -181,92 +185,97 @@ func TestGatewayDNSSettingsCombinations(t *testing.T) {
 				t.Fatal("default has no resolver address")
 			}
 			var inDefault []confServer
-			dots := map[string]int{}
 			for _, s := range confServers(t, conf) {
 				if !s.excl {
 					inDefault = append(inDefault, s)
 				}
-				if s.group == "domestic" {
-					if !s.excl || s.whitelist || s.fallback {
-						t.Fatalf("domestic-set server changed: %+v", s)
-					}
-					dots[s.addr]++
+				if s.whitelist || s.fallback {
+					t.Fatalf("SmartDNS's own answer filtering is not used (it returns address-less CNAMEs): %+v", s)
 				}
-				if s.whitelist && (s.group != "domestic_check" || s.excl) {
-					t.Fatalf("whitelist on a server that is not the unlisted check: %+v", s)
-				}
-				if s.fallback && (s.addr != defAddr || s.group != unlistedExitGroup || s.excl) {
-					t.Fatalf("fallback on the wrong server: %+v (default %s)", s, defAddr)
+				if s.group == "domestic" && !s.excl {
+					t.Fatalf("domestic-set server in the default group: %+v", s)
 				}
 			}
+			if len(inDefault) != 1 {
+				t.Fatalf("default group has %d servers, want 1: %+v", len(inDefault), inDefault)
+			}
+			unit := b.File("nodes/gw/etc/systemd/system/" + DNSSplitUnit)
 			if c.split {
-				var wl, fb int
-				for _, s := range inDefault {
-					switch {
-					case s.whitelist && s.group == "domestic_check":
-						wl++
-					case s.fallback && s.addr == defAddr:
-						fb++
-						if defT.Group != nil && s.mark == "" {
-							t.Fatalf("the default group's fallback entry lost its mark: %+v", s)
-						}
-					default:
-						t.Fatalf("unexpected server in the default group: %+v", s)
-					}
+				if inDefault[0].addr != DNSSplitListen || inDefault[0].mark != "" {
+					t.Fatalf("unlisted names do not go to meridian-dns-split: %+v", inDefault[0])
 				}
-				if wl != len(dots) || fb != 1 {
-					t.Fatalf("default group has %d whitelisted domestic and %d fallback servers, want %d and 1:\n%s", wl, fb, len(dots), conf)
-				}
-				for _, l := range []string{
-					"ip-set -name chnroute -file " + chinaListFile4,
-					"ip-set -name chnroute6 -file " + chinaListFile6,
-					"whitelist-ip ip-set:chnroute", "whitelist-ip ip-set:chnroute6",
-				} {
-					if !strings.Contains(conf, "\n"+l+"\n") {
-						t.Fatalf("missing %q", l)
-					}
-				}
-				if strings.Index(conf, "ip-set -name chnroute ") > strings.Index(conf, "whitelist-ip ip-set:chnroute") {
-					t.Fatal("whitelist-ip refers to an ip-set defined after it")
-				}
-				// The rule's own entry for the default resolver stays excluded
-				// and unflagged: rules are never delayed by the check.
+				// The resolver's own entry (its rules) stays, excluded.
 				found := false
 				for _, s := range confServers(t, conf) {
-					if s.addr == defAddr && !s.fallback {
-						found = true
-						if !s.excl {
-							t.Fatalf("default resolver's rule entry is still in the default group: %+v", s)
-						}
-					}
+					found = found || s.addr == defAddr
 				}
 				if !found {
 					t.Fatal("default resolver has no entry for its own rules")
 				}
+				if !SmartDNSUsesDNSSplit(conf) {
+					t.Fatal("SmartDNSUsesDNSSplit = false")
+				}
+				m := regexp.MustCompile(`(?m)^ExecStart=/usr/local/bin/meridian (dns-split .*)$`).FindStringSubmatch(unit)
+				if m == nil {
+					t.Fatalf("no dns-split unit:\n%s", unit)
+				}
+				// The guard against an older host binary greps for the
+				// marker the dns-split code itself logs.
+				if !strings.Contains(unit, "ExecStartPre=/bin/grep -q meridian-dns-split-ready /usr/local/bin/meridian") {
+					t.Fatal("no guard against a host binary without dns-split")
+				}
+				src, err := os.ReadFile(filepath.Join("..", "dnssplit", "dnssplit.go"))
+				if err != nil || !strings.Contains(string(src), `"meridian-dns-split-ready: `) {
+					t.Fatal("dnssplit no longer logs the marker the unit greps for")
+				}
+				args := strings.Fields(m[1])[1:]
+				cfg, err := dnssplit.ParseArgs(args)
+				if err != nil {
+					t.Fatalf("rendered flags do not parse: %v (%s)", err, m[1])
+				}
+				want := "[" + defAddr + "]:53"
+				if !strings.Contains(defAddr, ":") {
+					want = defAddr + ":53"
+				}
+				if cfg.Listen != DNSSplitListen || cfg.Exit != want || cfg.ExitMark != int(defMark) {
+					t.Fatalf("dns-split upstream %+v, want exit %s mark %d", cfg, want, defMark)
+				}
+				if strings.Join(cfg.Domestic, ",") != "223.5.5.5:53,1.12.12.12:53" {
+					t.Fatalf("domestic %v", cfg.Domestic)
+				}
+				if cfg.DomesticTimeout != dnssplit.DefaultDomesticTimeout || cfg.Settle != dnssplit.DefaultSettle ||
+					cfg.ExitTimeout != dnssplit.DefaultExitTimeout || cfg.StatsInterval != dnssplit.DefaultStatsInterval ||
+					!strings.Contains(m[1], " --settle 30ms ") || !strings.Contains(m[1], " --domestic-timeout 400ms ") {
+					t.Fatalf("timings not written out with their defaults: %s", m[1])
+				}
+				if cfg.China4 != chinaListFile4 || cfg.China6 != chinaListFile6 {
+					t.Fatalf("lists %s %s", cfg.China4, cfg.China6)
+				}
 			} else {
-				if len(inDefault) != 1 || inDefault[0].addr != defAddr || inDefault[0].fallback || inDefault[0].whitelist {
+				if inDefault[0].addr != defAddr {
 					t.Fatalf("default group, want only %s: %+v", defAddr, inDefault)
 				}
-				for _, n := range []string{"ip-set ", "whitelist-ip", "-fallback", "domestic_check"} {
-					if strings.Contains(conf, n) {
-						t.Fatalf("%q without unlisted_domestic_dns", n)
-					}
+				if unit != "" || SmartDNSUsesDNSSplit(conf) || strings.Contains(conf, "unlisted_split") {
+					t.Fatal("dns-split rendered without unlisted_domestic_dns")
 				}
 			}
 
-			// Files the resolver loads, and the seed of the up script.
-			// The host agent has its own copy of this predicate (it cannot
-			// import this package); the two must agree on every rendering.
-			if hostexec.ReadsChinaLists(conf) != SmartDNSReadsChinaLists(conf) {
-				t.Fatalf("hostexec.ReadsChinaLists disagrees with SmartDNSReadsChinaLists (split=%v)", c.split)
+			// The host agent has its own copy of this predicate and the
+			// unit name (it cannot import this package); they must agree
+			// on every rendering.
+			if hostexec.UsesDNSSplit(conf) != SmartDNSUsesDNSSplit(conf) {
+				t.Fatalf("hostexec.UsesDNSSplit disagrees with SmartDNSUsesDNSSplit (split=%v)", c.split)
 			}
-			if SmartDNSReadsChinaLists(conf) != c.split {
-				t.Fatalf("SmartDNSReadsChinaLists = %v", !c.split)
+			if hostexec.DNSSplitUnit != DNSSplitUnit {
+				t.Fatalf("hostexec.DNSSplitUnit %q, compile %q", hostexec.DNSSplitUnit, DNSSplitUnit)
 			}
-			up := b.File("nodes/gw/usr/local/sbin/meridian-up.sh")
-			seeded := strings.Contains(up, "[ -f "+chinaListFile4+" ] || : > "+chinaListFile4) && strings.Contains(up, "[ -f "+chinaListFile6+" ] || : > "+chinaListFile6)
-			if seeded != c.split {
-				t.Fatalf("up script seeds the China lists: %v, want %v", seeded, c.split)
+			for _, n := range []string{"ip-set ", "whitelist-ip", "-fallback"} {
+				if strings.Contains(conf, n) {
+					t.Fatalf("%q in the gateway config", n)
+				}
+			}
+			if !strings.Contains(conf, "\ncache-persist no\n") {
+				t.Fatal("the answer cache may survive a restart (cache-persist not off)")
 			}
 			for _, r := range SmartDNSFileRefs(conf) {
 				under := false

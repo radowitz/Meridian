@@ -218,12 +218,12 @@ func resolverItems(t model.Topology, files map[string]string, gwp string) []Item
 		out = append(out, Item{ID: aid, Status: Pass, Title: atitle, Detail: "「客户端 IPv6 经本网关」打开：出口或地区组能承载 IPv6 时返回 AAAA。只有每台客户端的 IPv6 默认路由都指向本网关时这才不泄漏，那要在客户端上核对（docs/test-device.md）。"})
 	}
 	const uid, utitle = "unlisted_domestic_dns", "未列名单域名的国内解析"
-	has := strings.Contains(conf, "-whitelist-ip") && strings.Contains(conf, " -fallback")
+	has := strings.Contains(conf, "\nserver 127.0.0.1:5356 ") && files[gwp+"etc/systemd/system/meridian-dns-split.service"] != ""
 	switch {
 	case t.Settings.UnlistedDomesticDNS && has:
-		out = append(out, Item{ID: uid, Status: Pass, Title: utitle, Detail: "已打开：名单外的域名先问国内解析器，只接受中国地址（whitelist-ip，chnroute 名单），否则用出口解析器的回答。代价：国内解析器能看到所有名单外的域名，包括国外的，这些查询经家宽发出。名单为空时一个国内回答都不采用，由 meridian-verify.sh 的 unlisted_domestic_lists 检查。"})
+		out = append(out, Item{ID: uid, Status: Pass, Title: utitle, Detail: "已打开：名单外的域名交给网关上的 meridian-dns-split，它同时问国内解析器和出口解析器，只有国内回答里的地址全是中国地址（chnroute 名单）时才采用，否则用出口解析器的回答。代价：国内解析器能看到所有名单外的域名，包括国外的，这些查询经家宽发出。服务是否在运行、名单是否为空由 meridian-verify.sh 的 dns_split_active、unlisted_domestic_lists 检查。"})
 	case t.Settings.UnlistedDomesticDNS:
-		out = append(out, Item{ID: uid, Status: Fail, Title: utitle, Detail: "设置已打开，但生成的解析器配置里没有国内检查（-whitelist-ip / -fallback）。"})
+		out = append(out, Item{ID: uid, Status: Fail, Title: utitle, Detail: "设置已打开，但生成的配置里没有把名单外的域名交给 meridian-dns-split（或缺它的 systemd 单元），例如默认组没有解析器。"})
 	case has:
 		out = append(out, Item{ID: uid, Status: Fail, Title: utitle, Detail: "设置是关闭的，但生成的解析器配置把名单外的域名也发给国内解析器。"})
 	default:

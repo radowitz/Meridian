@@ -153,6 +153,7 @@ var (
 	reAddress    = regexp.MustCompile(`(?m)^\s*Address\s*=\s*(.+)$`)
 	reWSServer   = regexp.MustCompile(`wstunnel server .*?\bwss?://(\[[0-9a-fA-F:.]+\]|[0-9.]+|localhost):([0-9]+)`)
 	reWSClient   = regexp.MustCompile(`-L\s+'?(udp|tcp)://(\[[0-9a-fA-F:.]+\]|[0-9.]+):([0-9]+):`)
+	reDNSSplit   = regexp.MustCompile(`(?m)^\s*ExecStart=/usr/local/bin/meridian dns-split .*--listen (\[[0-9a-fA-F:.]+\]|[0-9.]+):([0-9]+)`)
 	reBind       = regexp.MustCompile(`(?m)^\s*(bind|bind-tcp|bind-tls|bind-https)\s+(\S+)`)
 	reNFTTable   = regexp.MustCompile(`(?m)^\s*table (inet|ip|ip6|arp|bridge|netdev) ([A-Za-z0-9_]+) \{`)
 	reRTLine     = regexp.MustCompile(`(?m)^([0-9]+)\s+([A-Za-z0-9_.-]+)`)
@@ -308,6 +309,13 @@ func FootprintOf(files map[string]string) Footprint {
 			for _, m := range reWSClient.FindAllStringSubmatch(body, -1) {
 				if l, ok := listenOf(m[1], m[2], m[3], base); ok {
 					fp.Listens = append(fp.Listens, l)
+				}
+			}
+			if m := reDNSSplit.FindStringSubmatch(body); m != nil {
+				for _, proto := range []string{"udp", "tcp"} {
+					if l, ok := listenOf(proto, m[1], m[2], base); ok {
+						fp.Listens = append(fp.Listens, l)
+					}
 				}
 			}
 		case p == "/etc/smartdns/smartdns.conf":

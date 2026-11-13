@@ -789,16 +789,21 @@ func TestVerifyScriptResolverSettings(t *testing.T) {
 		h.dig = nil
 		h.files["var/lib/meridian/lists/china.txt"] = "1.0.1.0/24\n1.0.2.0/23\n"
 		h.files["var/lib/meridian/lists/china6.txt"] = "2400:3200::/32\n"
+		h.systemctl = map[string]string{"is-active meridian-dns-split.service": "active\n"}
 		return h
 	}
 	runVerifyCases(t, script, base, []verifyCase{
 		{name: "both on", wantCode: 0,
-			want: []string{"INFO dns_aaaa_tunnelled: clients_ipv6_via_gateway is on", "PASS unlisted_domestic_lists",
+			want: []string{"INFO dns_aaaa_tunnelled: clients_ipv6_via_gateway is on", "PASS unlisted_domestic_lists", "PASS dns_split_active",
 				"INFO unlisted_domestic_dns: on: the domestic resolvers see every unlisted name",
 				"PENDING-HUMAN dns_leak_client", "the leak sites list the domestic resolvers next to the exit's", "local-ok"},
 			forbidden: []string{"PASS dns_aaaa", "UNKNOWN", "FAIL", "with no 53/853 from it;"}},
 		{name: "china6 list empty", mutate: func(h *verifyHost) { h.files["var/lib/meridian/lists/china6.txt"] = "" }, wantCode: 1,
 			want: []string{"FAIL unlisted_domestic_lists: missing or empty: ", "china6.txt"}, forbidden: []string{"PASS unlisted_domestic_lists", "local-ok"}},
+		{name: "dns-split not running", mutate: func(h *verifyHost) { h.systemctl = map[string]string{} }, wantCode: 1,
+			want: []string{"FAIL dns_split_active: meridian-dns-split.service is not active"}, forbidden: []string{"PASS dns_split_active", "local-ok"}},
+		{name: "no systemctl", mutate: func(h *verifyHost) { h.systemctl = nil }, wantCode: 2,
+			want: []string{"UNKNOWN dns_split_active"}, forbidden: []string{"PASS dns_split_active"}},
 		{name: "china list missing", mutate: func(h *verifyHost) { delete(h.files, "var/lib/meridian/lists/china.txt") }, wantCode: 1,
 			want: []string{"FAIL unlisted_domestic_lists", "china.txt"}},
 	})

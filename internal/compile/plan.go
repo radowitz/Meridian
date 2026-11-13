@@ -389,16 +389,27 @@ func groupTarget(gp GroupPlan) (target, bool) {
 		return target{}, false
 	}
 	if !gp.Dynamic {
-		return target{Exit: gp.Target, Mark: gp.Target.Mark, V6: gp.Target.Node.EgressV6}, true
+		return target{Exit: gp.Target, Mark: gp.Target.Mark, V6: carriesV6(gp.Target)}, true
 	}
 	v6 := true
 	for _, e := range gp.Try {
-		if !e.Node.EgressV6 {
+		if !carriesV6(e) {
 			v6 = false
 		}
 	}
 	g := gp
 	return target{Exit: gp.Target, Mark: gp.Mark, V6: v6, Group: &g}, true
+}
+
+// carriesV6: the exit carries IPv6 end to end, so names tunnelled to it may
+// get AAAA (with clients_ipv6_via_gateway). An external SOCKS exit never
+// does, whatever its egress_v6 says: its carrier refuses every IPv6 packet
+// of it (writeCarrierNFT) and its resolver group answers no AAAA.
+// Validation already refuses egress_v6 on it (external_v6); this keeps the
+// resolver from handing out AAAA for an IPv4-only path even if a topology
+// slipped past that check.
+func carriesV6(e ExitPlan) bool {
+	return e.Node.EgressV6 && !e.External
 }
 
 func defaultExit(t model.Topology, groups []GroupPlan) (target, bool) {
@@ -466,7 +477,7 @@ func planRules(t model.Topology, exits []ExitPlan, groups []GroupPlan, decisions
 func ruleExit(r model.Rule, exits []ExitPlan, groups []GroupPlan, decisions map[string]string) (target, bool) {
 	if r.TargetExit != "" {
 		e, ok := exitByID(exits, r.TargetExit)
-		return target{Exit: e, Mark: e.Mark, V6: e.Node.EgressV6}, ok
+		return target{Exit: e, Mark: e.Mark, V6: carriesV6(e)}, ok
 	}
 	gp, ok := groupByID(groups, r.TargetGroup)
 	if !ok {
@@ -475,7 +486,7 @@ func ruleExit(r model.Rule, exits []ExitPlan, groups []GroupPlan, decisions map[
 	if gp.Group.Mode == model.GroupAuto {
 		if id := decisions[r.ID]; id != "" && id != gp.Selection.Target && containsID(gp.Selection.Order, id) {
 			if e, ok := exitByID(exits, id); ok {
-				return target{Exit: e, Mark: e.Mark, V6: e.Node.EgressV6}, true
+				return target{Exit: e, Mark: e.Mark, V6: carriesV6(e)}, true
 			}
 		}
 	}

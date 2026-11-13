@@ -250,8 +250,8 @@ func NodePorts(t model.Topology, nodeID string) []PortUse {
 // reservedUDP / reservedTCP are ports a tunnel socket may never take: the
 // resolver (53, DoT 853 on TCP), SSH, DHCP, NTP, mDNS.
 var (
-	reservedUDP = map[int]string{53: "DNS（SmartDNS 绑定隧道地址的 53）", 67: "DHCP", 68: "DHCP", 123: "NTP", 546: "DHCPv6", 547: "DHCPv6", 853: "DoT/DoQ", 5353: "mDNS"}
-	reservedTCP = map[int]string{22: "SSH", 53: "DNS（SmartDNS 绑定隧道地址的 53）", 853: "DoT（SmartDNS）"}
+	reservedUDP = map[int]string{53: "DNS（SmartDNS 绑定隧道地址的 53）", 67: "DHCP", 68: "DHCP", 123: "NTP", 546: "DHCPv6", 547: "DHCPv6", 853: "DoT/DoQ", 5353: "mDNS", 5356: "网关的名单外域名检查（meridian-dns-split，127.0.0.1）"}
+	reservedTCP = map[int]string{22: "SSH", 53: "DNS（SmartDNS 绑定隧道地址的 53）", 853: "DoT（SmartDNS）", 5356: "网关的名单外域名检查（meridian-dns-split，127.0.0.1）"}
 )
 
 // checkPorts: a node's own sockets must not collide with each other or

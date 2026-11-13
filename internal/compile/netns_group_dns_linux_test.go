@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/radowitz/meridian/internal/dnssplit"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/validate"
 )
@@ -45,6 +46,16 @@ import (
 // python3 with SO_MARK set to the group mark, which is what SmartDNS's
 // -set-mark does. ROS owns the domestic resolver addresses and counts any
 // packet to them on 53/853 and any packet to the group resolver range.
+//
+// meridian-dns-split (unlisted_domestic_dns): the gateway namespace also
+// runs it (this test binary as a helper process, TestNetnsHelperProcess)
+// with the flags of its compiled unit for the same topology with group us
+// as the default; in phases 1, 4, 5, 7 and 8 an unlisted name asked from it
+// gets the member in use's answer (us, us-2, us over the Mesh) and SERVFAIL
+// with no member or the Mesh down: its exit query carries the group mark (Go SO_MARK) through the same
+// compiled path as SmartDNS's -set-mark, and with the domestic side silent
+// nothing else answers. Its domestic queries are counted apart from the
+// group queries, which still never reach a domestic resolver.
 //
 // Mesh backup (phases 7 to 9): the hub and exit us run their COMPILED
 // meridian-mesh-up.sh against stand-in sidecars, the namespaces "hsc" and
@@ -362,10 +373,14 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 	// unmarkedBase is the one query the control phase sends without a mark on
 	// purpose; the phases after it count from there.
 	unmarkedBase := 0
+	// gwDomBase, rosDomBase: the domestic queries meridian-dns-split sent on
+	// purpose (unlisted names, splitQuery below); a group query never adds
+	// to them.
+	gwDomBase, rosDomBase := 0, 0
 	noLeak := func(phase string) {
 		t.Helper()
-		c := map[string]int{"gw unmarked": cnt("gw", "unmarked") - unmarkedBase, "gw lan": cnt("gw", "lan"), "gw domestic": cnt("gw", "domestic"),
-			"ros domestic": cnt("ros", "domestic"), "ros group": cnt("ros", "group")}
+		c := map[string]int{"gw unmarked": cnt("gw", "unmarked") - unmarkedBase, "gw lan": cnt("gw", "lan"), "gw domestic": cnt("gw", "domestic") - gwDomBase,
+			"ros domestic": cnt("ros", "domestic") - rosDomBase, "ros group": cnt("ros", "group")}
 		t.Logf("EVIDENCE %s counters: %v marked=%d snatted=%d at_us=%d at_us2=%d", phase, c, cnt("gw", "marked"), cnt("gw", "snatted"), cnt("us", "q"), cnt("us2", "q"))
 		for k, v := range c {
 			if v != 0 {
@@ -382,6 +397,52 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 		}
 	}
 
+	// meridian-dns-split (unlisted_domestic_dns) in the gateway namespace,
+	// started with the exact flags of its compiled unit for this topology
+	// with group us as the default (the lab wires group us). Its exit query
+	// carries the group mark through Go's SO_MARK (internal/dnssplit), so
+	// it must take the same path as the group's own queries above: the
+	// compiled transit_snat, the hub's group table, the member in use. Its
+	// domestic queries go unmarked to the domestic_dot addresses, which ROS
+	// owns with nothing listening (port unreachable): the domestic side is
+	// silent here, so every answer it gives must be the exit's.
+	splitTopo := topo
+	splitTopo.Settings.UnlistedDomesticDNS = true
+	splitTopo.Settings.DefaultGroup = "us"
+	sb := mustCompile(t, splitTopo)
+	if sb.File("nodes/gw/etc/nftables.d/meridian.nft") != b.File("nodes/gw/etc/nftables.d/meridian.nft") {
+		// Only the classifier's catch-all mark may differ (the default
+		// group); the own-query SNAT rule for group us must be the same.
+		snatUS := fmt.Sprintf("ip6 daddr %s meta mark %#x meta l4proto { tcp, udp } th dport 53 snat ip6 to %s", us.Resolver, us.Mark, us.TransitV6)
+		if !strings.Contains(sb.File("nodes/gw/etc/nftables.d/meridian.nft"), snatUS) || !strings.Contains(b.File("nodes/gw/etc/nftables.d/meridian.nft"), snatUS) {
+			t.Fatalf("the group us own-query SNAT rule differs between the lab and the dns-split topology: %s", snatUS)
+		}
+	}
+	unitM := reLabSplit.FindStringSubmatch(sb.File("nodes/gw/etc/systemd/system/" + DNSSplitUnit))
+	if unitM == nil {
+		t.Fatal("no compiled dns-split unit")
+	}
+	splitCfg, err := dnssplit.ParseArgs(strings.Fields(unitM[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if splitCfg.Exit != bracketHostPort(us.Resolver, 53) || splitCfg.ExitMark != int(us.Mark) {
+		t.Fatalf("compiled dns-split asks %s mark %d, want group us %s mark %d", splitCfg.Exit, splitCfg.ExitMark, us.Resolver, us.Mark)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start("gw", "env", "MERIDIAN_NETNS_HELPER=dns-split", "MERIDIAN_NETNS_HELPER_ARGS="+unitM[1], exe, "-test.run=^TestNetnsHelperProcess$")
+	time.Sleep(time.Second)
+	splitQuery := func(name string) string {
+		g0, r0 := cnt("gw", "domestic"), cnt("ros", "domestic")
+		out, _ := sh(in("gw", "env", "MERIDIAN_NETNS_HELPER=query", "MERIDIAN_NETNS_HELPER_ARGS="+splitCfg.Listen+" "+name, exe, "-test.run=^TestNetnsHelperProcess$")...)
+		gwDomBase += cnt("gw", "domestic") - g0
+		rosDomBase += cnt("ros", "domestic") - r0
+		return strings.TrimSpace(out)
+	}
+
 	// 1. Before failover: the preferred member answers and carries data.
 	check("before", "UDP query via group us", query(us.Mark, "udp"), "198.18.1.1")
 	check("before", "TCP query via group us", query(us.Mark, "tcp"), "198.18.1.1")
@@ -389,6 +450,12 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 	if cnt("gw", "marked") == 0 || cnt("gw", "snatted") == 0 || cnt("us", "q") == 0 || cnt("us2", "q") != 0 {
 		fails++
 		t.Errorf("before: marked=%d snatted=%d at_us=%d at_us2=%d (want marked, SNATed, at us only)", cnt("gw", "marked"), cnt("gw", "snatted"), cnt("us", "q"), cnt("us2", "q"))
+	}
+	m0, q0 := cnt("gw", "marked"), cnt("us", "q")
+	check("before", "meridian-dns-split, unlisted name (domestic silent): the exit's answer via group us", splitQuery("unlisted.example.com"), "198.18.1.1")
+	if cnt("gw", "marked") == m0 || cnt("us", "q") == q0 || gwDomBase == 0 {
+		fails++
+		t.Errorf("before: dns-split marked=%d at_us=%d domestic=%d (want its exit query marked and at us, and its domestic queries sent)", cnt("gw", "marked")-m0, cnt("us", "q")-q0, gwDomBase)
 	}
 	noLeak("before")
 	finish("before")
@@ -460,6 +527,7 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 		fails++
 		t.Error("after failover: no group query reached us-2")
 	}
+	check("after failover", "meridian-dns-split, unlisted name: the exit's answer via group us", splitQuery("unlisted-2.example.com"), "198.18.1.2")
 	noLeak("after failover")
 	finish("after failover")
 
@@ -471,6 +539,7 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 	check("all members down", "hub active hop of group us", state("active"), "mmesh")
 	check("all members down", "hub report: hop in table us (Mesh unsealed)", report("hop"), "blackhole")
 	check("all members down", "UDP query via group us", query(us.Mark, "udp"), "TIMEOUT")
+	check("all members down", "meridian-dns-split, unlisted name: SERVFAIL, no other resolver", splitQuery("unlisted-3.example.com"), "SERVFAIL")
 	noLeak("all members down")
 	finish("all members down")
 
@@ -481,9 +550,9 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	q2 = cnt("us2", "q")
 	check("control", "unmarked query", query(0, "udp"), "TIMEOUT")
-	if cnt("us2", "q") != q2 || cnt("ros", "group") != 0 || cnt("ros", "domestic") != 0 || cnt("gw", "lan") != 0 {
+	if cnt("us2", "q") != q2 || cnt("ros", "group") != 0 || cnt("ros", "domestic") != rosDomBase || cnt("gw", "lan") != 0 {
 		fails++
-		t.Errorf("control: an unmarked query reached a member (%d), ROS (%d/%d) or the LAN port (%d)", cnt("us2", "q")-q2, cnt("ros", "group"), cnt("ros", "domestic"), cnt("gw", "lan"))
+		t.Errorf("control: an unmarked query reached a member (%d), ROS (%d/%d) or the LAN port (%d)", cnt("us2", "q")-q2, cnt("ros", "group"), cnt("ros", "domestic")-rosDomBase, cnt("gw", "lan"))
 	}
 	finish("control")
 	unmarkedBase = cnt("gw", "unmarked")
@@ -816,6 +885,7 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 	check("mesh", "UDP query via group us (answered by exit us over the Mesh)", query(us.Mark, "udp"), "198.18.1.1")
 	check("mesh", "TCP query via group us (answered by exit us over the Mesh)", query(us.Mark, "tcp"), "198.18.1.1")
 	check("mesh", "LAN client connection via group us over the Mesh (source seen by the server)", connect(), "100.64.1.2")
+	check("mesh", "meridian-dns-split, unlisted name (answered by exit us over the Mesh)", splitQuery("unlisted-mesh.example.com"), "198.18.1.1")
 	meshCounters := func(phase string) {
 		t.Helper()
 		c := map[string]int{"us q_tun": mcnt("us", "q_tun"), "us r_tun": mcnt("us", "r_tun"), "us r_wan": mcnt("us", "r_wan"), "hub sidecar docker bridge": mcnt("hsc", "leak")}
@@ -845,6 +915,7 @@ func TestNetnsGroupDNSFailover(t *testing.T) {
 	check("mesh down", "UDP query via group us", query(us.Mark, "udp"), "TIMEOUT")
 	check("mesh down", "TCP query via group us", query(us.Mark, "tcp"), "TIMEOUT")
 	check("mesh down", "LAN client connection via group us", connect(), "TIMEOUT")
+	check("mesh down", "meridian-dns-split, unlisted name: SERVFAIL, no other resolver", splitQuery("unlisted-mesh-2.example.com"), "SERVFAIL")
 	meshCounters("mesh down")
 	noLeak("mesh down")
 	finishMesh("mesh down")
@@ -992,3 +1063,42 @@ try:
 except Exception:
     print("TIMEOUT")
 `
+
+// TestNetnsHelperProcess is not a test: the netns tests run this binary
+// inside a namespace (ip netns exec … -test.run=^TestNetnsHelperProcess$)
+// with MERIDIAN_NETNS_HELPER set:
+//
+//   - "dns-split": run meridian dns-split with the flags in
+//     MERIDIAN_NETNS_HELPER_ARGS (internal/dnssplit.Main) until killed;
+//   - "query": MERIDIAN_NETNS_HELPER_ARGS is "ADDR:PORT NAME"; send one A
+//     query over UDP and print the first address, "SERVFAIL", "EMPTY" or
+//     "TIMEOUT".
+func TestNetnsHelperProcess(t *testing.T) {
+	mode := os.Getenv("MERIDIAN_NETNS_HELPER")
+	if mode == "" {
+		t.Skip("helper process for the netns tests")
+	}
+	args := strings.Fields(os.Getenv("MERIDIAN_NETNS_HELPER_ARGS"))
+	switch mode {
+	case "dns-split":
+		os.Exit(dnssplit.Main(args))
+	case "query":
+		if len(args) != 2 {
+			fmt.Println("BADARGS")
+			os.Exit(2)
+		}
+		r, err := dnsQuery(args[0], args[1], qA, 4*time.Second)
+		switch {
+		case err != nil:
+			fmt.Println("TIMEOUT")
+		case r.rcode == 2:
+			fmt.Println("SERVFAIL")
+		case len(r.addrs) == 0:
+			fmt.Println("EMPTY")
+		default:
+			fmt.Println(r.addrs[0])
+		}
+		os.Exit(0)
+	}
+	t.Fatalf("unknown helper mode %q", mode)
+}

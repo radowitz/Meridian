@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/radowitz/meridian/internal/dnssplit"
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
 )
@@ -26,36 +27,123 @@ var SmartDNSSharedDirs = []string{
 	"/etc/meridian/dns",
 	"/var/lib/meridian/geosite",
 	"/var/lib/meridian/keywords",
-	// The China IP lists the list update saves (china.txt, china6.txt);
-	// read only with Settings.UnlistedDomesticDNS (ip-set below).
-	"/var/lib/meridian/lists",
 }
 
 // The China IP lists as the list update saves them (internal/lists,
-// chnFamilies), loaded as SmartDNS ip-sets for the domestic answer check
-// of unlisted names. Their SmartDNS ip-set names.
+// chnFamilies). meridian-dns-split (internal/dnssplit) reads them on the
+// host; SmartDNS does not.
 const (
 	chinaListFile4 = "/var/lib/meridian/lists/china.txt"
 	chinaListFile6 = "/var/lib/meridian/lists/china6.txt"
 )
 
-// SmartDNSReadsChinaLists reports whether a SmartDNS config loads the China
-// IP lists (the host agent restarts the resolver after a chnroute update
-// only then).
-func SmartDNSReadsChinaLists(conf string) bool {
-	for _, r := range SmartDNSFileRefs(conf) {
-		if r == chinaListFile4 || r == chinaListFile6 {
+// The unlisted-name check (Settings.UnlistedDomesticDNS): a host service
+// on loopback that the gateway SmartDNS asks for names no list and no rule
+// matches. Port 5356 is reserved (validate.reservedUDP/TCP).
+const (
+	DNSSplitUnit   = "meridian-dns-split.service"
+	DNSSplitListen = "127.0.0.1:5356"
+)
+
+// SmartDNSUsesDNSSplit reports whether a gateway SmartDNS config sends
+// unlisted names to meridian-dns-split (the host agent then restarts both
+// after the China lists changed).
+func SmartDNSUsesDNSSplit(conf string) bool {
+	for _, l := range strings.Split(conf, "\n") {
+		if strings.HasPrefix(l, "server "+DNSSplitListen+" ") {
 			return true
 		}
 	}
 	return false
 }
 
-// unlistedExitGroup is the SmartDNS group label of the default exit's
-// resolver when it answers unlisted names only after the domestic check
-// (-fallback); the label only names the entry, membership in the default
-// group is what matters.
-const unlistedExitGroup = "unlisted_exit"
+// dnsSplitUpstream is the resolver unlisted names are asked at today: the
+// default group's resolver address with its mark, or the static default
+// exit's tunnel resolver. ok is false when the default has none (the split
+// is then not rendered; unlisted names keep the strict path).
+func dnsSplitUpstream(t model.Topology, exits []ExitPlan, def target) (addr string, mark uint32, ok bool) {
+	if def.Group != nil {
+		return def.Group.Resolver, def.Group.Mark, def.Group.Resolver != ""
+	}
+	for _, e := range exits {
+		if e.Node.ID != def.Exit.Node.ID || e.DNSULA == "" {
+			continue
+		}
+		if t.DualHub() {
+			return e.Resolver, 0, e.Resolver != ""
+		}
+		return e.DNSULA, 0, true
+	}
+	return "", 0, false
+}
+
+func bracketHostPort(addr string, port int) string {
+	if strings.Contains(addr, ":") {
+		return fmt.Sprintf("[%s]:%d", addr, port)
+	}
+	return fmt.Sprintf("%s:%d", addr, port)
+}
+
+// renderDNSSplitUnit runs "meridian dns-split" (internal/dnssplit) with the
+// compiled upstreams. Root for SO_MARK (CAP_NET_ADMIN only).
+func renderDNSSplitUnit(t model.Topology, exits []ExitPlan, groups []GroupPlan) (string, bool) {
+	if !t.Settings.UnlistedDomesticDNS {
+		return "", false
+	}
+	defT, ok := defaultExit(t, groups)
+	if !ok {
+		return "", false
+	}
+	addr, mark, ok := dnsSplitUpstream(t, exits, defT)
+	if !ok {
+		return "", false
+	}
+	var dom []string
+	for _, ip := range domesticDoT(t) {
+		dom = append(dom, bracketHostPort(ip, 53))
+	}
+	return fmt.Sprintf(`# Unlisted names (settings unlisted_domestic_dns): the gateway SmartDNS asks
+# this service; it uses a domestic answer only when every address in it is
+# a China address (chnroute lists), otherwise the default exit's resolver's
+# answer. See docs/architecture.md「未列名单域名的国内解析」.
+[Unit]
+Description=Meridian unlisted-name DNS check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# An older host binary has no dns-split and would start the panel instead:
+# refuse to start until install.sh has copied a binary that has it.
+ExecStartPre=/bin/grep -q meridian-dns-split-ready /usr/local/bin/meridian
+# Timings (defaults of internal/dnssplit): a qualifying domestic answer is
+# used at once; otherwise the exit's answer as soon as the exit answered and
+# a domestic resolver that replied has settled (--settle after its first
+# non-qualifying reply, for an injected reply followed by the genuine one);
+# --domestic-timeout only caps domestic resolvers that never reply;
+# --stats-interval is a summary log line of counts and decision times
+# (no names).
+ExecStart=/usr/local/bin/meridian dns-split --listen %s --domestic %s --exit %s --exit-mark %d --china4 %s --china6 %s --domestic-timeout %s --settle %s --exit-timeout %s --stats-interval %s
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+`, DNSSplitListen, strings.Join(dom, ","), bracketHostPort(addr, 53), mark, chinaListFile4, chinaListFile6,
+		dnssplit.DefaultDomesticTimeout, dnssplit.DefaultSettle, dnssplit.DefaultExitTimeout, dnssplit.DefaultStatsInterval), true
+}
+
+func domesticDoT(t model.Topology) []string {
+	if len(t.Settings.DomesticDoT) == 0 {
+		return []string{"223.5.5.5", "1.12.12.12"}
+	}
+	return t.Settings.DomesticDoT
+}
 
 // dnsAAAAPolicy is how the gateway resolver treats AAAA (and the IPv6 hints
 // of HTTPS records). SmartDNS 1.2026.08.05 (Release48.4) decides an AAAA
@@ -143,6 +231,11 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 	sb.WriteString("speed-check-mode none\n")
 	sb.WriteString("dualstack-ip-selection no\n")
 	sb.WriteString("cache-size 65536\n")
+	// The cache must not outlive a restart: by default (cache-persist
+	// auto) SmartDNS saves it to /var/cache/smartdns inside the container
+	// and loads it on start, so answers of an old policy (an AAAA, an
+	// unlisted answer, an old list) survived the restart an install does.
+	sb.WriteString("cache-persist no\n")
 	sb.WriteString("serve-expired yes\n")
 	sb.WriteString("rr-ttl-min 60\n")
 	// One wildcard listener per port and protocol. In SmartDNS "[::]" is a
@@ -179,18 +272,15 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 		sb.WriteString("\n")
 	}
 
-	split := t.Settings.UnlistedDomesticDNS
-	dots := t.Settings.DomesticDoT
-	if len(dots) == 0 {
-		dots = []string{"223.5.5.5", "1.12.12.12"}
-	}
+	_, split := renderDNSSplitUnit(t, exits, groups)
+	dots := domesticDoT(t)
 	for _, ip := range dots {
 		fmt.Fprintf(&sb, "server-tls %s:853 -group domestic -exclude-default-group\n", ip)
 		fmt.Fprintf(&sb, "server %s -group domestic -exclude-default-group\n", ip)
 	}
 	sb.WriteString("\n")
 	if split {
-		writeUnlistedDomestic(&sb, dots)
+		writeUnlistedDomestic(&sb)
 	}
 	for _, e := range exits {
 		if e.DNSULA == "" {
@@ -212,9 +302,6 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 			addr = e.Resolver
 		}
 		fmt.Fprintf(&sb, "server %s -group %s%s\n", addr, e.Group, excl)
-		if isDefault && split {
-			fmt.Fprintf(&sb, "server %s -group %s -fallback\n", addr, unlistedExitGroup)
-		}
 	}
 	sb.WriteString("\n")
 	writeGroupResolvers(&sb, groups, defT.Group, split)
@@ -327,8 +414,9 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 // Only the default group, when it is switchable, leaves out
 // -exclude-default-group: it is then the one upstream for names no rule
 // matches. Every other group upstream is reached only by its own rules.
-// With split (Settings.UnlistedDomesticDNS) the default group's rule entry
-// is excluded too and a second entry, -fallback, serves unlisted names.
+// With split (Settings.UnlistedDomesticDNS) the default group's entry is
+// excluded too: unlisted names go to meridian-dns-split, which asks the
+// same resolver with the same mark itself.
 func writeGroupResolvers(sb *strings.Builder, groups []GroupPlan, def *GroupPlan, split bool) {
 	n := 0
 	for _, g := range groups {
@@ -345,55 +433,29 @@ func writeGroupResolvers(sb *strings.Builder, groups []GroupPlan, def *GroupPlan
 			excl = ""
 		}
 		fmt.Fprintf(sb, "server %s -group %s%s -set-mark %d\n", g.Resolver, g.DNSGroup, excl, g.Mark)
-		if isDefault && split {
-			// The same resolver and mark for unlisted names, asked only
-			// after the domestic check failed (writeUnlistedDomestic).
-			fmt.Fprintf(sb, "server %s -group %s -fallback -set-mark %d\n", g.Resolver, unlistedExitGroup, g.Mark)
-		}
 	}
 	if n > 0 {
 		sb.WriteString("\n")
 	}
 }
 
-// writeUnlistedDomestic adds the domestic answer check for names no list and
-// no rule matches (Settings.UnlistedDomesticDNS), in SmartDNS 1.2026.08.05
-// (Release48.4) terms:
-//
-//   - the domestic resolvers are added a second time, in the default group
-//     and with -whitelist-ip: an address in their answer that is not in a
-//     whitelist-ip prefix (the China lists, as ip-sets) is skipped
-//     (_dns_server_ip_rule_check, src/dns_server/ip_rule.c), and a
-//     passthrough answer with any such address is not relayed at all
-//     (_dns_server_passthrough_rule_check, src/dns_server/rules.c);
-//   - the default exit's (or default group's) resolver is in the default
-//     group only as -fallback: the first send of a query skips fallback
-//     servers (_dns_client_send_query, src/dns_client/dns_client.c), and
-//     it is asked on the retry that follows an answer whose addresses
-//     were all skipped (DNS_CLIENT_ACTION_RETRY in
-//     _dns_server_process_answer) or the 500 ms upstream timeout, or at
-//     once when no domestic server can be sent to.
-//
-// So the domestic answer wins whenever it consists of China addresses
-// (an accepted answer is a chnroute address, which the classifier sends
-// direct ahead of default4), and a poisoned (non-China) domestic answer
-// is never returned. The entries for the domestic sets (group domestic)
-// and for the rules stay as they were: they never carry -whitelist-ip or
-// -fallback. Measured with the pinned binary and stub upstreams:
-// TestSmartDNSRealBinary.
-func writeUnlistedDomestic(sb *strings.Builder, dots []string) {
-	sb.WriteString("# Unlisted names (settings unlisted_domestic_dns): the domestic resolvers are asked first and\n")
-	sb.WriteString("# their answer is used only for China addresses (whitelist-ip, the chnroute lists); any\n")
-	sb.WriteString("# other address is discarded and the default exit's resolver (-fallback) answers instead.\n")
-	sb.WriteString("# These domestic resolvers see every unlisted name, foreign ones included.\n")
-	fmt.Fprintf(sb, "ip-set -name chnroute -file %s\n", chinaListFile4)
-	fmt.Fprintf(sb, "ip-set -name chnroute6 -file %s\n", chinaListFile6)
-	sb.WriteString("whitelist-ip ip-set:chnroute\n")
-	sb.WriteString("whitelist-ip ip-set:chnroute6\n")
-	for _, ip := range dots {
-		fmt.Fprintf(sb, "server-tls %s:853 -group domestic_check -whitelist-ip\n", ip)
-		fmt.Fprintf(sb, "server %s -group domestic_check -whitelist-ip\n", ip)
-	}
+// writeUnlistedDomestic makes meridian-dns-split (internal/dnssplit) the
+// only upstream of the default group: names no list and no rule matches
+// go there, and it returns either a domestic answer made only of China
+// addresses or the default exit's answer. SmartDNS 1.2026.08.05 cannot do
+// this itself: with -whitelist-ip on the domestic servers and the exit as
+// -fallback, a domestic "CNAME + foreign A" keeps the CNAME, the request's
+// rcode is no longer SERVFAIL, the "all addresses skipped, retry" branch
+// of _dns_server_process_answer does not run, the fallback is never asked,
+// and the client gets (and SmartDNS caches) the address-less CNAME
+// (reproduced with the pinned binary, TestSmartDNSRealBinary). AAAA is
+// still decided here first (force-AAAA-SOA), so only allowed AAAA queries
+// reach the check.
+func writeUnlistedDomestic(sb *strings.Builder) {
+	sb.WriteString("# Unlisted names (settings unlisted_domestic_dns) go to meridian-dns-split on loopback: it\n")
+	sb.WriteString("# uses a domestic answer only when every address in it is a China address, otherwise the\n")
+	sb.WriteString("# default exit's answer. The domestic resolvers see every unlisted name, foreign ones included.\n")
+	fmt.Fprintf(sb, "server %s -group unlisted_split\n", DNSSplitListen)
 	sb.WriteString("\n")
 }
 
@@ -517,16 +579,6 @@ func dnsSeedCommands(t model.Topology) string {
 	}
 	for _, id := range keywords {
 		fmt.Fprintf(&sb, "[ -f /var/lib/meridian/keywords/%s.txt ] || : > /var/lib/meridian/keywords/%s.txt\n", id, id)
-	}
-	if t.Settings.UnlistedDomesticDNS {
-		// SmartDNS refuses a config whose ip-set file is missing. Empty
-		// lists accept no domestic answer: every unlisted name is then
-		// answered by the exit, as with the setting off, until the first
-		// list update saves the real lists (and restarts SmartDNS).
-		sb.WriteString("install -d /var/lib/meridian/lists\n")
-		for _, f := range []string{chinaListFile4, chinaListFile6} {
-			fmt.Fprintf(&sb, "[ -f %s ] || : > %s\n", f, f)
-		}
 	}
 	return sb.String()
 }

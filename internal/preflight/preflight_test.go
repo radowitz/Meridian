@@ -1649,3 +1649,43 @@ func TestGatewayStaleTransitAddressesAreOurs(t *testing.T) {
 		t.Fatalf("a foreign lo address inside fd66::/48 must still block: %+v", ev.Findings)
 	}
 }
+
+// With unlisted_domestic_dns the gateway runs meridian-dns-split on
+// 127.0.0.1:5356 (UDP and TCP); the pre-check must see that listen as the
+// unit's, and nothing of it without the setting.
+func TestFootprintDNSSplitListen(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		topo := defaults.Example()
+		topo.Settings.UnlistedDomesticDNS = on
+		b, err := compile.Compile(topo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{}
+		for p, body := range b.Files {
+			if strings.HasPrefix(p, "nodes/gw/") {
+				files["/"+strings.TrimPrefix(p, "nodes/gw/")] = body
+			}
+		}
+		fp := FootprintOf(files)
+		got := map[string]bool{}
+		for _, l := range fp.Listens {
+			if l.Owner == compile.DNSSplitUnit {
+				if l.Addr.String() != "127.0.0.1" || l.Port != 5356 || l.Wildcard {
+					t.Fatalf("dns-split listen %+v", l)
+				}
+				got[l.Proto] = true
+			}
+		}
+		if on != (got["udp"] && got["tcp"]) || (!on && len(got) > 0) {
+			t.Fatalf("setting %v: dns-split listens %v", on, got)
+		}
+		hasUnit := false
+		for _, u := range fp.Units {
+			hasUnit = hasUnit || u == compile.DNSSplitUnit
+		}
+		if hasUnit != on {
+			t.Fatalf("setting %v: unit in footprint %v", on, hasUnit)
+		}
+	}
+}

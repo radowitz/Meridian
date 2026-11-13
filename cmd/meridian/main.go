@@ -13,6 +13,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/api"
 	"github.com/radowitz/meridian/internal/artifacts"
+	"github.com/radowitz/meridian/internal/dnssplit"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/pathquality"
@@ -26,6 +27,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "host-restore" {
 		os.Exit(hostRestore(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "dns-split" {
+		os.Exit(dnssplit.Main(os.Args[2:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == "lists-update" {
 		os.Exit(listsUpdate(os.Args[2:]))

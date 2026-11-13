@@ -70,11 +70,7 @@ services:
   #   docker compose --profile dns up -d
   # Every path the generated config loads is mounted read-only at the same
   # path (compile.SmartDNSSharedDirs): DoT certificate, geosite and keyword
-  # domain sets, and the China IP lists the list update saves on the host
-  # (/var/lib/meridian/lists: china.txt and china6.txt, read only when the
-  # gateway setting unlisted_domestic_dns is on; the directory also holds
-  # the list status and the saved chnroute batch, nothing secret).
-  # NET_ADMIN is required for nftset writes into inet meridian.
+  # domain sets. NET_ADMIN is required for nftset writes into inet meridian.
   # Verify on the gateway with deploy/verify-smartdns.sh (Linux + Docker).
   # Pin the image digest before production; do not rely on :latest long-term.
   # The fixed container name lets meridian-host restart it after an install
@@ -91,7 +87,6 @@ services:
       - /etc/meridian/dns:/etc/meridian/dns:ro
       - /var/lib/meridian/geosite:/var/lib/meridian/geosite:ro
       - /var/lib/meridian/keywords:/var/lib/meridian/keywords:ro
-      - /var/lib/meridian/lists:/var/lib/meridian/lists:ro
     restart: unless-stopped
     # The image has no ENTRYPOINT (its CMD is "/usr/sbin/smartdns -f -x"), so
     # the binary must be named here; with only flags the container fails to
