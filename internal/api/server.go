@@ -130,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/meta", s.meta)
 	mux.HandleFunc("GET /api/topology", s.getTopology)
 	mux.HandleFunc("PUT /api/topology", s.putTopology)
+	mux.HandleFunc("POST /api/topology/allocations", s.postAllocations)
 	mux.HandleFunc("POST /api/validate", s.postValidate)
 	mux.HandleFunc("POST /api/compile", s.postCompile)
 	mux.HandleFunc("POST /api/diff", s.postDiff)
@@ -285,15 +286,28 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// ?import=1: the document replaces the stored one wholesale (an export
+	// brought back): its own allocation table counts, every slot the stored
+	// topology used is retired. Without it the stored table is
+	// authoritative (store.Save).
+	imported := r.URL.Query().Get("import") == "1"
 	// remote_access is owned by /api/remote-access: a whole-document save
 	// (the topology editor) keeps the stored block, whatever it sent.
 	s.raMu.Lock()
 	defer s.raMu.Unlock()
-	if cur, err := s.topology(); err == nil {
-		t.RemoteAccess = cur.RemoteAccess.Clone()
-	} else {
+	cur, err := s.topology()
+	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	t.RemoteAccess = cur.RemoteAccess.Clone()
+	// Validate what will be stored: the slots the store will keep or give
+	// (the save reconciles again under the store lock, with the same result
+	// unless another save slipped in between).
+	if imported {
+		store.ReconcileImport(cur.Allocations, &t)
+	} else {
+		model.ReconcileAllocations(cur.Allocations, &t)
 	}
 	res := validate.Run(t)
 	draft := r.URL.Query().Get("draft") == "1" || t.Settings.Draft
@@ -324,7 +338,11 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.Store.Save(t); err != nil {
+	save := s.Store.Save
+	if imported {
+		save = s.Store.SaveImport
+	}
+	if err := save(t); err != nil {
 		s.resMu.Unlock()
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -805,6 +823,13 @@ func (s *Server) bodyOrStored(r *http.Request) (model.Topology, error) {
 	// Legacy pool fields in a submitted document become region groups,
 	// exactly as the store would read them.
 	model.MigrateRegionGroups(&t)
+	// The working copy compiles with the slots a save would give it: the
+	// stored table is authoritative, whatever the document carries.
+	cur, err := s.topology()
+	if err != nil {
+		return model.Topology{}, err
+	}
+	model.ReconcileAllocations(cur.Allocations, &t)
 	return t, nil
 }
 

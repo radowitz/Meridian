@@ -322,3 +322,142 @@ func TestExampleJSONIsCurrent(t *testing.T) {
 		t.Fatal("examples/topology.example.json is out of date with defaults.Example()")
 	}
 }
+
+// ---- allocation table ----
+
+// putRaw stores a row exactly as an older version wrote it (no table).
+func putRaw(t *testing.T, s *Store, topo model.Topology) {
+	t.Helper()
+	topo.Allocations = nil
+	raw, err := json.Marshal(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"allocations"`) {
+		t.Fatal("row has a table")
+	}
+	if err := s.Put("topology", string(raw)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStoreMigratesAllocationsOnLoadAndPersistsOnce(t *testing.T) {
+	s := openTest(t)
+	putRaw(t, s, defaults.SharedRelaysExample())
+	loaded, ok, err := s.Load()
+	if err != nil || !ok || loaded.Allocations == nil {
+		t.Fatalf("load: %v %v %+v", ok, err, loaded.Allocations)
+	}
+	want := defaults.SharedRelaysExample()
+	model.MigrateAllocations(&want)
+	if !equalJSON(loaded.Allocations, want.Allocations) {
+		t.Fatalf("in-memory table %+v, want positions %+v", loaded.Allocations, want.Allocations)
+	}
+	wrote, err := s.MigrateAllocations()
+	if err != nil || !wrote {
+		t.Fatalf("first migration: wrote=%v err=%v", wrote, err)
+	}
+	row1, _, _ := s.Get("topology")
+	if !strings.Contains(row1, `"allocations"`) {
+		t.Fatal("table not persisted")
+	}
+	wrote, err = s.MigrateAllocations()
+	if err != nil || wrote {
+		t.Fatalf("second migration: wrote=%v err=%v", wrote, err)
+	}
+	row2, _, _ := s.Get("topology")
+	if row1 != row2 {
+		t.Fatal("second migration rewrote the row")
+	}
+}
+
+func equalJSON(a, b any) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
+}
+
+// A save keeps every stored slot whatever the document carries (a stale
+// tab, a client without the field, a tampered table), retires deleted
+// links and numbers new ones after the stored ones.
+func TestSaveKeepsStoredAllocations(t *testing.T) {
+	s := openTest(t)
+	putRaw(t, s, defaults.SharedRelaysExample())
+	stored, _, _ := s.Load()
+
+	edit := defaults.SharedRelaysExample() // no table at all
+	var links []model.Link
+	for _, l := range edit.Links {
+		if l.ID != "ix-dc2" {
+			links = append(links, l)
+		}
+	}
+	edit.Links = append(links, model.Link{ID: "a-first", From: "gw", To: "ali", Transport: model.TransportDirectWG, Enabled: true, Standby: true})
+	edit.Allocations = &model.Allocations{Links: map[string]model.Slot{"gw-ali": {Slot: 42}}}
+	if err := s.Save(edit); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := s.Load()
+	for id, slot := range stored.Allocations.Links {
+		if id == "ix-dc2" {
+			continue
+		}
+		if got.Allocations.Links[id] != slot {
+			t.Fatalf("%s moved %v → %v", id, slot, got.Allocations.Links[id])
+		}
+	}
+	old := stored.Allocations.Links["ix-dc2"].Slot
+	if len(got.Allocations.RetiredLinks) != 1 || got.Allocations.RetiredLinks[0] != old {
+		t.Fatalf("retired = %v, want [%d]", got.Allocations.RetiredLinks, old)
+	}
+	if s, ok := got.Allocations.LinkSlot("a-first"); !ok || s != len(stored.Allocations.Links) {
+		t.Fatalf("new link slot = %d %v, want %d", s, ok, len(stored.Allocations.Links))
+	}
+}
+
+// Export (Load + JSON) and import (SaveImport into another panel) keep the
+// table; importing a document without one numbers it by position.
+func TestExportImportRoundTrip(t *testing.T) {
+	src := openTest(t)
+	putRaw(t, src, defaults.SharedRelaysExample())
+	if _, err := src.MigrateAllocations(); err != nil {
+		t.Fatal(err)
+	}
+	// Some history: a link added after the migration and one deleted.
+	cur, _, _ := src.Load()
+	cur.Links = append(cur.Links, model.Link{ID: "a-first", From: "gw", To: "ali", Transport: model.TransportDirectWG, Enabled: true, Standby: true})
+	if err := src.Save(cur); err != nil {
+		t.Fatal(err)
+	}
+	exported, _, _ := src.Load()
+	raw, _ := json.Marshal(Redact(exported))
+
+	dst := openTest(t)
+	// The fresh panel already stored the example (as the API does on its
+	// first read): its slots must not push the imported ones aside.
+	if err := dst.Save(defaults.Example()); err != nil {
+		t.Fatal(err)
+	}
+	var doc model.Topology
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.SaveImport(doc); err != nil {
+		t.Fatal(err)
+	}
+	imported, _, _ := dst.Load()
+	if !equalJSON(imported.Allocations.Links, exported.Allocations.Links) || !equalJSON(imported.Allocations.Exits, exported.Allocations.Exits) {
+		t.Fatalf("imported table %+v, exported %+v", imported.Allocations, exported.Allocations)
+	}
+	// An old export without a table: positions.
+	old := defaults.SharedRelaysExample()
+	if err := dst.SaveImport(old); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := dst.Load()
+	want := defaults.SharedRelaysExample()
+	model.MigrateAllocations(&want)
+	if !equalJSON(got.Allocations.Links, want.Allocations.Links) {
+		t.Fatalf("old export numbered %+v, want positions %+v", got.Allocations.Links, want.Allocations.Links)
+	}
+}

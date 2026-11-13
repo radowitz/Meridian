@@ -11,6 +11,7 @@
 // refresh does not force re-entry. Never localStorage, never a URL.
 
 import type {
+  AllocationView,
   ApiErrorBody,
   ApplyResult,
   Carrying,
@@ -233,6 +234,10 @@ export function putTopology(topo: Topology, draft: boolean) {
 
 export const validate = (topo?: Topology) =>
   request<{ issues: Issue[]; paths: PathReport[] }>("POST", "/api/validate", topo ?? {});
+
+/** What each link (and exit/group) holds in the working copy, with the slots a save would give it. Read-only. */
+export const allocations = (topo?: Topology, signal?: AbortSignal) =>
+  request<AllocationView>("POST", "/api/topology/allocations", topo ?? {}, signal);
 
 export const compile = (topo?: Topology) => request<Record<string, unknown>>("POST", "/api/compile", topo ?? {});
 

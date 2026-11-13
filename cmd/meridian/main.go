@@ -118,6 +118,15 @@ func main() {
 	} else if rep.Changed {
 		log.Printf("region-group migration: created groups %v, %d rules, %d nodes", rep.CreatedGroups, rep.Rules, rep.Nodes)
 	}
+	// A stored topology from before the allocation table keeps the
+	// interface names, ports, subnets and marks its link/exit/group
+	// positions gave it (idempotent; one row write; nothing on any host
+	// changes).
+	if wrote, err := st.MigrateAllocations(); err != nil {
+		log.Printf("allocation migration failed: %v", err)
+	} else if wrote {
+		log.Printf("allocation migration: stored the current interface, port, subnet and mark numbering")
+	}
 	srv.StartUnlockScheduler()
 	// WSS certificates: a rotation starts on its own 30 days before expiry
 	// (the panel then shows which ends to re-install, in order).

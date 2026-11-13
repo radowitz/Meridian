@@ -115,7 +115,10 @@ func Run(t model.Topology) Result {
 	out.Issues = append(out.Issues, checkIXReplacement(t, nodes)...)
 	out.Issues = append(out.Issues, checkHubs(t, nodes)...)
 	out.Issues = append(out.Issues, checkSharing(t, nodes)...)
+	out.Issues = append(out.Issues, checkAllocations(t)...)
 	out.Issues = append(out.Issues, checkSubnets(t)...)
+	out.Issues = append(out.Issues, checkLinkAddrReserved(t)...)
+	out.Issues = append(out.Issues, checkIfaceNames(t)...)
 	out.Issues = append(out.Issues, checkPorts(t)...)
 	out.Issues = append(out.Issues, checkRules(t, nodes)...)
 	out.Issues = append(out.Issues, checkRuleReachable(t)...)
@@ -400,30 +403,32 @@ func checkNATLink(t model.Topology, l model.Link, a, b model.Node) []Issue {
 func checkAddrConflicts(t model.Topology, l model.Link) []Issue {
 	var out []Issue
 	ros := t.Settings.ROSIPv4
-	for _, addr := range []string{l.FromV4, l.ToV4} {
+	for _, f := range []struct{ field, addr string }{{"from_v4", l.FromV4}, {"to_v4", l.ToV4}} {
+		addr := f.addr
 		if addr == "" {
 			continue
 		}
 		ip, err := netip.ParseAddr(addr)
-		if err != nil {
-			out = append(out, Issue{Code: "bad_address", Severity: SeverityError, LinkID: l.ID, Message: "隧道 IPv4 地址无法解析：" + addr})
+		if err != nil || !ip.Is4() {
+			out = append(out, Issue{Code: "bad_address", Severity: SeverityError, LinkID: l.ID, Field: f.field, Message: "隧道 IPv4 地址无法解析：" + addr})
 			continue
 		}
 		if ros != "" && ip.String() == ros {
-			out = append(out, Issue{Code: "ula_via_ros", Severity: SeverityError, LinkID: l.ID, Message: "隧道地址不能是 ROS " + ros + "。"})
+			out = append(out, Issue{Code: "ula_via_ros", Severity: SeverityError, LinkID: l.ID, Field: f.field, Message: "隧道地址不能是 ROS " + ros + "。"})
 		}
 		if lan, err := netip.ParsePrefix(lanPrefix(t)); err == nil && lan.Contains(ip) {
-			out = append(out, Issue{Code: "prefix_conflict", Severity: SeverityError, LinkID: l.ID, Message: "隧道 IPv4 落在局域网 " + lan.String() + " 里。"})
+			out = append(out, Issue{Code: "prefix_conflict", Severity: SeverityError, LinkID: l.ID, Field: f.field, Message: "隧道 IPv4 落在局域网 " + lan.String() + " 里。"})
 		}
 	}
 	ula, _ := netip.ParsePrefix(or(t.Settings.ULAPrefix, "fd66::/48"))
-	for _, addr := range []string{l.FromULA, l.ToULA} {
+	for _, f := range []struct{ field, addr string }{{"from_ula", l.FromULA}, {"to_ula", l.ToULA}} {
+		addr := f.addr
 		if addr == "" {
 			continue
 		}
 		ip, err := netip.ParseAddr(addr)
 		if err != nil || !ula.Contains(ip) {
-			out = append(out, Issue{Code: "prefix_conflict", Severity: SeverityError, LinkID: l.ID, Message: "隧道 ULA 必须位于 " + ula.String() + "：" + addr})
+			out = append(out, Issue{Code: "prefix_conflict", Severity: SeverityError, LinkID: l.ID, Field: f.field, Message: "隧道 ULA 必须位于 " + ula.String() + "：" + addr})
 		}
 	}
 	return out
@@ -713,34 +718,6 @@ func checkIXReplacement(t model.Topology, nodes map[string]model.Node) []Issue {
 		msg = "已经打开 IX 替换模式，但待命 WSS 没有预先部署。请先画好并启用待命隧道。"
 	}
 	return []Issue{{Code: "ix_replacement_not_provisioned", Severity: sev, Message: msg}}
-}
-
-func checkSubnets(t model.Topology) []Issue {
-	var out []Issue
-	type block struct {
-		prefix netip.Prefix
-		id     string
-	}
-	var blocks []block
-	for _, l := range t.Links {
-		if l.FromV4 != "" && l.ToV4 != "" {
-			p, err := p2pPrefix(l.FromV4, l.ToV4)
-			if err == nil {
-				blocks = append(blocks, block{p, l.ID})
-			}
-		}
-	}
-	for i := 0; i < len(blocks); i++ {
-		for j := i + 1; j < len(blocks); j++ {
-			if blocks[i].prefix.Overlaps(blocks[j].prefix) && blocks[i].prefix != blocks[j].prefix {
-				out = append(out, Issue{
-					Code: "subnet_overlap", Severity: SeverityError, LinkID: blocks[i].id,
-					Message: fmt.Sprintf("隧道网段 %s 与 %s 重叠。", blocks[i].prefix, blocks[j].prefix),
-				})
-			}
-		}
-	}
-	return out
 }
 
 func checkRules(t model.Topology, nodes map[string]model.Node) []Issue {

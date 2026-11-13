@@ -173,10 +173,11 @@ type Link struct {
 	WSSMTU int `json:"wss_mtu,omitempty"`
 	// WGPort is the WireGuard UDP port on the listening end (zero: the
 	// listening node's listen_port when it listens on this link only,
-	// else 51820 + the link's index; a UDP+WSS failover link also uses
+	// else 51820 + the link's slot; a UDP+WSS failover link also uses
 	// WGPort+1). WSSLocalPort is the wstunnel client's UDP port on
-	// 127.0.0.1 of the dialing end (zero: 52000 + index). See
-	// validate.TunnelPorts.
+	// 127.0.0.1 of the dialing end (zero: 52000 + slot). The slot is the
+	// link's persisted allocation (Topology.Allocations), not its
+	// position. See validate.TunnelPorts.
 	WGPort       int `json:"wg_port,omitempty"`
 	WSSLocalPort int `json:"wss_local_port,omitempty"`
 
@@ -184,6 +185,9 @@ type Link struct {
 	// link is an error: PersistentKeepalive must stay on.
 	Keepalive *int `json:"keepalive,omitempty"`
 
+	// FromV4 … ToULA override the slot's default tunnel addresses
+	// (validation refuses one that overlaps another link's subnet, manual
+	// or automatic, or a reserved range).
 	FromV4  string `json:"from_v4,omitempty"`
 	ToV4    string `json:"to_v4,omitempty"`
 	FromULA string `json:"from_ula,omitempty"`
@@ -313,6 +317,13 @@ type Topology struct {
 	// (remote_access.go). Nil or disabled compiles to exactly what a
 	// topology without it compiles to.
 	RemoteAccess *RemoteAccess `json:"remote_access,omitempty"`
+	// Allocations is the persisted slot table: the interface, default
+	// ports and tunnel subnets of each link and the mark, table and transit
+	// addresses of each exit and group (link_allocations.go). The store
+	// owns it: a save keeps every stored entry whatever the document says.
+	// Nil only in a document from before it existed, whose slots are then
+	// its positions (MigrateAllocations).
+	Allocations *Allocations `json:"allocations,omitempty"`
 }
 
 // Auth methods of a Server.

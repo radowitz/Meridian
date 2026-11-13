@@ -50,7 +50,20 @@ import { WSSLinkStatus } from "./WSS";
 import { PathQualitySettings } from "./RelaySharing";
 import { serverReadiness } from "./ServersPage";
 import { href, useRouter, useTopologyDoc } from "./state";
-import type { DeploymentView, Issue, Link as TLink, Node, Role, ServerView, Settings, Topology, Transport } from "./types";
+import type {
+  AllocationChange,
+  AllocationView,
+  DeploymentView,
+  Issue,
+  LinkAllocation,
+  Link as TLink,
+  Node,
+  Role,
+  ServerView,
+  Settings,
+  Topology,
+  Transport,
+} from "./types";
 import { DEPLOYMENT_STATUS, WithdrawDialog, withdrawSucceeded } from "./Withdraw";
 import { roleLabel, transportLabel } from "./types";
 import {
@@ -594,7 +607,169 @@ function NodeDetail({
   );
 }
 
-function LinkDetail({ link, topo, onChange, onDelete }: { link: TLink; topo: Topology; onChange: (t: Topology) => void; onDelete: () => void }) {
+// ------------------------------------------------------- link allocation ---
+
+/**
+ * What each link holds in the working copy (POST /api/topology/allocations),
+ * re-read 300 ms after the last edit. null until the first answer; failed
+ * when the panel cannot answer (an older backend): the editor then simply
+ * does not show the allocation.
+ */
+function useAllocationView(topo: Topology | null): { view: AllocationView | null; failed: boolean } {
+  const [view, setView] = useState<AllocationView | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!topo) return;
+    const ctl = new AbortController();
+    const timer = window.setTimeout(() => {
+      api
+        .allocations(topo, ctl.signal)
+        .then((v) => {
+          if (!ctl.signal.aborted) {
+            setView(v);
+            setFailed(false);
+          }
+        })
+        .catch(() => {
+          if (!ctl.signal.aborted) setFailed(true);
+        });
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      ctl.abort();
+    };
+  }, [topo]);
+  return { view, failed };
+}
+
+const CHANGE_LABEL: Record<AllocationChange["what"], string> = {
+  interface: "接口",
+  listener: "监听端",
+  wg_port: "WireGuard 端口",
+  wss_leg_port: "WSS 腿端口",
+  local_port: "wstunnel 本地端口",
+  tunnel_v4: "隧道 IPv4",
+  tunnel_ula: "隧道 ULA",
+  enabled: "启用",
+  state: "状态",
+};
+
+const WG_FROM: Record<string, string> = { link: "链路上填写", node: "监听节点的监听端口", default: "按分配序号" };
+
+function changeText(c: AllocationChange) {
+  return `${CHANGE_LABEL[c.what] ?? c.what}：${c.before || "（无）"} → ${c.after || "（无）"}`;
+}
+
+/** Read-only: the interface, ports and subnets the link's slot (or an override) gives it. */
+function LinkAllocationFacts({ alloc, changes, failed, nm }: { alloc?: LinkAllocation; changes: AllocationChange[]; failed: boolean; nm: (id: string) => string }) {
+  if (!alloc) {
+    return <Typography.Text type="secondary">{failed ? "读不到分配信息。" : "读取中…"}</Typography.Text>;
+  }
+  if (alloc.state === "not_tunnel") {
+    return <Typography.Text type="secondary">这种传输方式不建 WireGuard 接口，不占分配序号。</Typography.Text>;
+  }
+  if (alloc.state === "unallocated") {
+    return (
+      <Alert
+        type="error"
+        showIcon
+        data-testid="link-allocation-exhausted"
+        message="分不到接口序号"
+        description="所有接口序号都已占用，或剩下的与手工填写的地址、端口冲突；已删除链路的序号在下一次保存之后才会复用。删掉不用的链路后保存，或改掉冲突的手工值。"
+      />
+    );
+  }
+  if (alloc.state === "unresolved") {
+    return <Typography.Text type="secondary">链路的一端还不完整，补齐后显示接口和地址。</Typography.Text>;
+  }
+  const legs = alloc.legs ?? [];
+  const items: [ReactNode, ReactNode][] = [
+    [
+      "分配序号",
+      <span key="slot">
+        <Mono>{String(alloc.slot)}</Mono>
+        {alloc.new ? <Tag style={{ marginLeft: 8 }}>保存后分配</Tag> : null}
+        {!alloc.enabled ? <Tag style={{ marginLeft: 8 }}>停用：保留序号</Tag> : null}
+      </span>,
+    ],
+    ["接口", <Mono key="if">{legs.map((l) => l.iface).join("  ")}</Mono>],
+    [
+      "WireGuard 端口",
+      <span key="wg">
+        <Mono>{String(alloc.wg_port)}</Mono>
+        {alloc.wss_leg_port ? (
+          <>
+            {" "}
+            + WSS 腿 <Mono>{String(alloc.wss_leg_port)}</Mono>
+          </>
+        ) : null}
+        <Typography.Text type="secondary">
+          {" "}
+          · 在 {nm(alloc.listener ?? "")} 上监听 · {WG_FROM[alloc.wg_from ?? "default"] ?? alloc.wg_from}
+        </Typography.Text>
+      </span>,
+    ],
+  ];
+  if (alloc.local_port) {
+    items.push([
+      "wstunnel 本地端口",
+      <span key="local">
+        <Mono>{String(alloc.local_port)}</Mono>
+        <Typography.Text type="secondary"> · {nm(alloc.dialer ?? "")} 的 127.0.0.1</Typography.Text>
+      </span>,
+    ]);
+  }
+  for (const l of legs) {
+    items.push([
+      `隧道地址（${l.iface}）`,
+      <span key={`addr-${l.iface}`} className="mono-small">
+        {nm(l.west)} {l.west_v4} · {l.west_ula}
+        <br />
+        {nm(l.east)} {l.east_v4} · {l.east_ula}
+      </span>,
+    ]);
+  }
+  return (
+    <div data-testid="link-allocation">
+      <Facts items={items} />
+      {changes.length > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginTop: 8 }}
+          data-testid="link-allocation-changes"
+          message="保存后这条已保存链路的接口/端口/地址会改变"
+          description={
+            <>
+              {changes.map((c) => (
+                <div key={c.what}>{changeText(c)}</div>
+              ))}
+              <div>两端节点都要重新下发；隧道会短暂中断。</div>
+            </>
+          }
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function LinkDetail({
+  link,
+  topo,
+  onChange,
+  onDelete,
+  alloc,
+  allocChanges = [],
+  allocFailed = false,
+}: {
+  link: TLink;
+  topo: Topology;
+  onChange: (t: Topology) => void;
+  onDelete: () => void;
+  alloc?: LinkAllocation;
+  allocChanges?: AllocationChange[];
+  allocFailed?: boolean;
+}) {
   const patch = (p: Partial<TLink>) => {
     const next = { ...link, ...p };
     if (next.transport === "ix_replacement_wss" || next.transport === "cf_mesh") next.standby = true;
@@ -646,12 +821,12 @@ function LinkDetail({ link, topo, onChange, onDelete }: { link: TLink; topo: Top
         <Row label="Keepalive（秒）" help="NAT 拨出的一端需要 > 0。">
           <InputNumber min={0} max={600} value={link.keepalive} onChange={(v) => patch({ keepalive: v ?? undefined })} style={{ width: "100%" }} />
         </Row>
-        <Row label="WireGuard 端口" help="监听端的 UDP 端口；不填时用监听节点的监听端口或 51820+序号。UDP+WSS 故障切换还占用下一个端口。">
+        <Row label="WireGuard 端口" help="监听端的 UDP 端口；不填时用监听节点的监听端口或 51820+分配序号。UDP+WSS 故障切换还占用下一个端口。">
           <InputNumber min={1} max={65534} value={link.wg_port} onChange={(v) => patch({ wg_port: v ?? undefined })} style={{ width: "100%" }} aria-label="WireGuard 端口" />
         </Row>
       </Space.Compact>
       {link.transport === "wg_over_wss" || link.transport === "udp_wss_failover" || link.transport === "ix_replacement_wss" ? (
-        <Row label="wstunnel 本地端口" help="拨号端 wstunnel 客户端在 127.0.0.1 上的 UDP 端口；不填时 52000+序号。被占用时改这里。">
+        <Row label="wstunnel 本地端口" help="拨号端 wstunnel 客户端在 127.0.0.1 上的 UDP 端口；不填时 52000+分配序号。被占用时改这里。">
           <InputNumber
             min={1}
             max={65535}
@@ -667,6 +842,12 @@ function LinkDetail({ link, topo, onChange, onDelete }: { link: TLink; topo: Top
           <WSSLinkStatus linkId={link.id} />
         </Row>
       ) : null}
+      <Row
+        label="接口与地址（只读）"
+        help="链路第一次保存时按链路 ID 分配一个序号并存进拓扑：接口名、默认端口和隧道网段都由它决定。增删、重排别的链路不会改变它；要换端口填上面的覆盖项。"
+      >
+        <LinkAllocationFacts alloc={alloc} changes={allocChanges} failed={allocFailed} nm={nm} />
+      </Row>
       {link.transport === "cf_mesh" ? (
         <Row label="Mesh 发布的路由" help="出口端 Mesh 节点通告的网段；在 Cloudflare 页部署时发布、失败时撤回。">
           <Select
@@ -1036,6 +1217,7 @@ export default function TopologyPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [migrationDismissed, setMigrationDismissed] = useState(false);
   const topo = doc.topo;
+  const allocation = useAllocationView(topo);
 
   const selected: Selection = useMemo(() => {
     const id = route.params[0];
@@ -1131,6 +1313,25 @@ export default function TopologyPage() {
           description="点节点，在右侧选择它运行的服务器。没有服务器的节点不能装机，也不能参与 Mesh 部署。"
         />
       ) : null}
+      {doc.dirty && (allocation.view?.changes ?? []).length > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          data-testid="allocation-changes"
+          message="这次保存会改变已保存链路的接口、端口或地址"
+          description={
+            <>
+              {(allocation.view?.changes ?? []).map((c) => (
+                <div key={`${c.link_id}-${c.what}`}>
+                  <Link to={href("topology", c.link_id)}>{c.link_id}</Link> {changeText(c)}
+                </div>
+              ))}
+              <div>只有你明确改过的值会变（端口、地址、传输方式、启用）；增删别的链路不会改变已有链路的分配。变化的链路两端都要重新下发。</div>
+            </>
+          }
+        />
+      ) : null}
       <div className="topo-legend">
         {(Object.keys(roleLabel) as Role[]).map((r) => (
           <span key={r} className={`legend-dot role-${r}`}>
@@ -1194,6 +1395,9 @@ export default function TopologyPage() {
           <LinkDetail
             link={link}
             topo={topo}
+            alloc={allocation.view?.links.find((l) => l.link_id === link.id)}
+            allocChanges={(allocation.view?.changes ?? []).filter((c) => c.link_id === link.id)}
+            allocFailed={allocation.failed}
             onChange={doc.setTopo}
             onDelete={() =>
               confirm({

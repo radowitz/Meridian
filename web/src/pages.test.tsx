@@ -16,6 +16,7 @@ import { deleteNode } from "./TopologyPage";
 import { clearCooldowns } from "./ui";
 import { PATH_QUALITY_DEFAULTS } from "./types";
 import type {
+  AllocationView,
   DeploymentView,
   GatewayDeploymentView,
   WithdrawPlan,
@@ -2600,6 +2601,58 @@ describe("ports", () => {
     const body = JSON.parse(saved!) as Topology;
     expect(body.links[0].wss_local_port).toBe(52900);
     expect(body.links[0].wg_port).toBe(51841);
+  });
+
+  it("shows the link's allocated interface, ports and subnets read-only and warns before a save changes them", async () => {
+    const t = topology({ links: [{ id: "gw-hub", from: "gw", to: "hk-hub", transport: "udp_wss_failover", enabled: true, standby: false }] });
+    let wgPortSent: number | undefined;
+    const view = (changed: boolean): AllocationView => ({
+      links: [
+        {
+          link_id: "gw-hub",
+          slot: 3,
+          state: "allocated",
+          enabled: true,
+          new: false,
+          listener: "hk-hub",
+          dialer: "gw",
+          wg_port: changed ? 40001 : 51823,
+          wg_from: changed ? "link" : "default",
+          wss_leg_port: changed ? 40002 : 51824,
+          local_port: 52003,
+          legs: [
+            { iface: "m03", mode: "udp", wg_port: 51823, west: "gw", east: "hk-hub", west_v4: "10.66.4.1", east_v4: "10.66.4.2", west_ula: "fd66:0:0:4::1", east_ula: "fd66:0:0:4::2" },
+            { iface: "m03w", mode: "wss", wg_port: 51824, west: "gw", east: "hk-hub", west_v4: "10.66.103.1", east_v4: "10.66.103.2", west_ula: "fd66:0:0:83::1", east_ula: "fd66:0:0:83::2" },
+          ],
+        },
+      ],
+      marks: [],
+      changes: changed ? [{ link_id: "gw-hub", what: "wg_port", before: "51823", after: "40001" }] : [],
+      max_links: 99,
+      max_marks: 240,
+    });
+    const api = fakeApi({
+      "GET /api/topology": () => t,
+      "POST /api/topology/allocations": (req) => {
+        wgPortSent = (req.body as Topology).links[0].wg_port;
+        return view(wgPortSent === 40001);
+      },
+    });
+    renderAt("#/topology/gw-hub");
+    const facts = await screen.findByTestId("link-allocation");
+    expect(facts).toHaveTextContent("m03");
+    expect(facts).toHaveTextContent("m03w");
+    expect(facts).toHaveTextContent("51823");
+    expect(facts).toHaveTextContent("52003");
+    expect(facts).toHaveTextContent("10.66.4.1");
+    expect(facts).toHaveTextContent("10.66.103.2");
+    expect(screen.queryByTestId("allocation-changes")).toBeNull();
+    // Editing the override shows what the save would change.
+    const detail = screen.getByTestId("link-detail");
+    await userEvent.type(within(detail).getByLabelText("WireGuard 端口"), "40001");
+    expect(await screen.findByTestId("link-allocation-changes")).toHaveTextContent("WireGuard 端口：51823 → 40001");
+    expect(await screen.findByTestId("allocation-changes")).toHaveTextContent("gw-hub");
+    expect(api.find("POST /api/topology/allocations").length).toBeGreaterThan(1);
   });
 
   it("shows the WSS listen port for an exit node", async () => {

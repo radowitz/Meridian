@@ -16,15 +16,18 @@ import (
 // The WireGuard port of a link (on the side that listens) is, in order:
 // the link's wg_port; the listening node's listen_port, when the node
 // listens on exactly one link without its own wg_port; 51820 plus the
-// link's index among the enabled tunnel links sorted by ID. A UDP+WSS
-// failover link uses that port and the one above it. A WSS link's
+// link's slot (its persisted allocation, model.EffectiveAllocations — not
+// its position, so adding or removing other links never moves it). A
+// UDP+WSS failover link uses that port and the one above it. A WSS link's
 // wstunnel client binds 127.0.0.1:<wss_local_port> (default 52000 plus the
-// index) on the dialing side; the WSS server listens on the listening
+// slot) on the dialing side; the WSS server listens on the listening
 // node's wss_listen_port (default 443).
 
 // LinkPorts is what one tunnel link binds.
 type LinkPorts struct {
-	LinkID    string          `json:"link_id"`
+	LinkID string `json:"link_id"`
+	// Index is the link's slot (model.Allocations): interface m%02d, the
+	// default ports and tunnel subnets are derived from it.
 	Index     int             `json:"index"`
 	Transport model.Transport `json:"transport"`
 	// Listener and Dialer are the nodes that hold the two ends (a link
@@ -46,15 +49,11 @@ type LinkPorts struct {
 func (lp LinkPorts) WSS() bool { return lp.Local != 0 }
 
 // tunnelLinks are the enabled links that become WireGuard interfaces,
-// sorted by ID (compile.buildTunnels uses the same order and index).
+// sorted by ID (compile.buildTunnels uses the same order).
 func tunnelLinks(t model.Topology) []model.Link {
 	var links []model.Link
 	for _, l := range t.Links {
-		if !l.Enabled {
-			continue
-		}
-		switch l.Transport {
-		case model.TransportDirectWG, model.TransportWGOverWSS, model.TransportUDPWSSFailover, model.TransportIXReplacementWSS:
+		if l.Enabled && model.TunnelTransport(l.Transport) {
 			links = append(links, l)
 		}
 	}
@@ -128,8 +127,13 @@ func homeDistance(n model.Node) int {
 }
 
 // TunnelPorts lists the ports of every tunnel link (links whose ends
-// cannot be resolved are skipped; other checks report them).
+// cannot be resolved, or that have no slot, are skipped; other checks
+// report them).
 func TunnelPorts(t model.Topology) []LinkPorts {
+	return tunnelPorts(t, model.EffectiveAllocations(t))
+}
+
+func tunnelPorts(t model.Topology, alloc *model.Allocations) []LinkPorts {
 	links := tunnelLinks(t)
 	type end struct{ west, east model.Node }
 	ends := map[string]end{}
@@ -151,8 +155,12 @@ func TunnelPorts(t model.Topology) []LinkPorts {
 		}
 	}
 	var out []LinkPorts
-	for i, l := range links {
+	for _, l := range links {
 		en, ok := ends[l.ID]
+		if !ok {
+			continue
+		}
+		i, ok := alloc.LinkSlot(l.ID)
 		if !ok {
 			continue
 		}
@@ -167,14 +175,14 @@ func TunnelPorts(t model.Topology) []LinkPorts {
 		case lis.ListenPort != 0 && defaults[lis.ID] == 1:
 			lp.WG, lp.WGFrom = lis.ListenPort, "node"
 		default:
-			lp.WG, lp.WGFrom = 51820+i, "default"
+			lp.WG, lp.WGFrom = model.LinkDefaultWGPort(i), "default"
 		}
 		switch l.Transport {
 		case model.TransportUDPWSSFailover:
 			lp.WSSLeg = lp.WG + 1
-			lp.Local = orInt(l.WSSLocalPort, 52000+i)
+			lp.Local = orInt(l.WSSLocalPort, model.LinkDefaultLocalPort(i))
 		case model.TransportWGOverWSS, model.TransportIXReplacementWSS:
-			lp.Local = orInt(l.WSSLocalPort, 52000+i)
+			lp.Local = orInt(l.WSSLocalPort, model.LinkDefaultLocalPort(i))
 		}
 		out = append(out, lp)
 	}

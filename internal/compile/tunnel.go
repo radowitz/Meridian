@@ -74,98 +74,133 @@ type side struct {
 	ula  string
 }
 
+// buildTunnels makes the tunnels of every enabled tunnel link, in slot
+// order. A link's interface name, default ports and default addresses come
+// from its slot (model.EffectiveAllocations), never from its position, so
+// adding, removing or reordering other links leaves them alone.
+//
+// The order matters wherever the first matching tunnel wins (the hub's
+// direct tunnel to an exit, a relay's probe target) and wherever lists are
+// rendered in tunnel order. Slot order is the old link-ID order for a
+// migrated topology (its slots are its ID-order positions), and a link
+// added later sorts after the links that were there, so it neither takes
+// over an existing role nor reorders another node's lists.
 func buildTunnels(t model.Topology) ([]Tunnel, error) {
+	alloc := model.EffectiveAllocations(t)
 	var links []model.Link
 	for _, l := range t.Links {
-		if !l.Enabled {
-			continue
-		}
-		switch l.Transport {
-		case model.TransportDirectWG, model.TransportWGOverWSS, model.TransportUDPWSSFailover, model.TransportIXReplacementWSS:
+		if l.Enabled && model.TunnelTransport(l.Transport) {
 			links = append(links, l)
 		}
 	}
-	sort.Slice(links, func(i, j int) bool { return links[i].ID < links[j].ID })
+	slotOf := func(l model.Link) int {
+		if s, ok := alloc.LinkSlot(l.ID); ok {
+			return s
+		}
+		return model.MaxLinkSlots
+	}
+	sort.SliceStable(links, func(i, j int) bool {
+		si, sj := slotOf(links[i]), slotOf(links[j])
+		if si != sj {
+			return si < sj
+		}
+		return links[i].ID < links[j].ID
+	})
 
 	ports := map[string]validate.LinkPorts{}
 	for _, lp := range validate.TunnelPorts(t) {
 		ports[lp.LinkID] = lp
 	}
 	var out []Tunnel
-	for i, l := range links {
-		west, east, err := materialize(t, l)
+	for _, l := range links {
+		tuns, err := linkTunnels(t, l, alloc, ports)
 		if err != nil {
 			return nil, err
 		}
-		// Ports come from validate.TunnelPorts, the single source the
-		// validation and the preflight remedies use as well.
-		lp, ok := ports[l.ID]
-		lis := east.node
-		if east.node.NatDialOut {
-			lis = west.node
+		out = append(out, tuns...)
+	}
+	return out, nil
+}
+
+// linkTunnels makes the one or two tunnels of link l.
+func linkTunnels(t model.Topology, l model.Link, alloc *model.Allocations, ports map[string]validate.LinkPorts) ([]Tunnel, error) {
+	var out []Tunnel
+	i, ok := alloc.LinkSlot(l.ID)
+	if !ok {
+		return nil, fmt.Errorf("link %s: no free interface slot (%d in use)", l.ID, model.MaxLinkSlots)
+	}
+	west, east, err := materialize(t, l)
+	if err != nil {
+		return nil, err
+	}
+	// Ports come from validate.TunnelPorts, the single source the
+	// validation and the preflight remedies use as well.
+	lp, ok := ports[l.ID]
+	lis := east.node
+	if east.node.NatDialOut {
+		lis = west.node
+	}
+	if !ok || lp.Index != i || lp.Listener != lis.ID {
+		return nil, fmt.Errorf("link %s: port plan does not match the tunnel ends", l.ID)
+	}
+	base := model.LinkIface(i)
+	modes := []string{"udp"}
+	switch l.Transport {
+	case model.TransportWGOverWSS, model.TransportIXReplacementWSS:
+		modes = []string{"wss"}
+	case model.TransportUDPWSSFailover:
+		modes = []string{"udp", "wss"}
+	}
+	for _, mode := range modes {
+		tun := Tunnel{
+			LinkID: l.ID, Name: l.Name, Transport: l.Transport, Mode: mode,
+			Base: base, Standby: l.Standby, DialOut: east.node.NatDialOut,
+			Keepalive: keepaliveOf(l),
+			West:      west.node, East: east.node,
+			WestV4: west.v4, EastV4: east.v4, WestULA: west.ula, EastULA: east.ula,
 		}
-		if !ok || lp.Index != i || lp.Listener != lis.ID {
-			return nil, fmt.Errorf("link %s: port plan does not match the tunnel ends", l.ID)
-		}
-		base := fmt.Sprintf("m%02d", i)
-		modes := []string{"udp"}
-		switch l.Transport {
-		case model.TransportWGOverWSS, model.TransportIXReplacementWSS:
-			modes = []string{"wss"}
-		case model.TransportUDPWSSFailover:
-			modes = []string{"udp", "wss"}
-		}
-		for _, mode := range modes {
-			tun := Tunnel{
-				LinkID: l.ID, Name: l.Name, Transport: l.Transport, Mode: mode,
-				Base: base, Standby: l.Standby, DialOut: east.node.NatDialOut,
-				Keepalive: keepaliveOf(l),
-				West:      west.node, East: east.node,
-				WestV4: west.v4, EastV4: east.v4, WestULA: west.ula, EastULA: east.ula,
+		if mode == "udp" {
+			tun.MTU = orInt(l.MTU, 1420)
+			if l.Transport == model.TransportUDPWSSFailover {
+				tun.MTU = orInt(l.MTU, 1412)
 			}
-			if mode == "udp" {
-				tun.MTU = orInt(l.MTU, 1420)
-				if l.Transport == model.TransportUDPWSSFailover {
-					tun.MTU = orInt(l.MTU, 1412)
-				}
-				tun.WGPort = lp.WG
+			tun.WGPort = lp.WG
+		} else {
+			// On udp+wss failover, Link.MTU is the UDP leg. Do not copy it
+			// onto the WSS leg: 1412 does not fit a WSS session on PPPoE 1492.
+			if l.Transport == model.TransportUDPWSSFailover {
+				tun.MTU = orInt(l.WSSMTU, 1360)
+				tun.WGPort = lp.WSSLeg
+				tun.WestV4, tun.EastV4, tun.WestULA, tun.EastULA = companionAddrs(i)
 			} else {
-				// On udp+wss failover, Link.MTU is the UDP leg. Do not copy it
-				// onto the WSS leg: 1412 does not fit a WSS session on PPPoE 1492.
-				if l.Transport == model.TransportUDPWSSFailover {
-					tun.MTU = orInt(l.WSSMTU, 1360)
-					tun.WGPort = lp.WSSLeg
-					tun.WestV4, tun.EastV4, tun.WestULA, tun.EastULA = companionAddrs(i)
-				} else {
-					tun.MTU = orInt(l.WSSMTU, orInt(l.MTU, 1360))
-					tun.WGPort = lp.WG
-				}
-				tun.ClientUDP = lp.Local
+				tun.MTU = orInt(l.WSSMTU, orInt(l.MTU, 1360))
+				tun.WGPort = lp.WG
 			}
-			// The Hong Kong hub has no IPv6. A pure-v6 Endpoint is dialed only
-			// by a node that itself has v6 and is not the hub (the dual-stack
-			// relay, already reached over v4 from the hub).
-			if !tun.East.PathV4 && tun.East.PathV6 && tun.East.EndpointV6 != "" &&
-				tun.West.Role != model.RoleHub && tun.West.PathV6 {
-				tun.OuterV6 = true
-			}
-			if tun.WestV4 == "" || tun.EastV4 == "" || tun.WestULA == "" || tun.EastULA == "" {
-				w4, e4, w6, e6 := allocatedAddrs(i)
-				if tun.WestV4 == "" {
-					tun.WestV4 = w4
-				}
-				if tun.EastV4 == "" {
-					tun.EastV4 = e4
-				}
-				if tun.WestULA == "" {
-					tun.WestULA = w6
-				}
-				if tun.EastULA == "" {
-					tun.EastULA = e6
-				}
-			}
-			out = append(out, tun)
+			tun.ClientUDP = lp.Local
 		}
+		// The Hong Kong hub has no IPv6. A pure-v6 Endpoint is dialed only
+		// by a node that itself has v6 and is not the hub (the dual-stack
+		// relay, already reached over v4 from the hub).
+		if !tun.East.PathV4 && tun.East.PathV6 && tun.East.EndpointV6 != "" &&
+			tun.West.Role != model.RoleHub && tun.West.PathV6 {
+			tun.OuterV6 = true
+		}
+		if tun.WestV4 == "" || tun.EastV4 == "" || tun.WestULA == "" || tun.EastULA == "" {
+			w4, e4, w6, e6 := allocatedAddrs(i)
+			if tun.WestV4 == "" {
+				tun.WestV4 = w4
+			}
+			if tun.EastV4 == "" {
+				tun.EastV4 = e4
+			}
+			if tun.WestULA == "" {
+				tun.WestULA = w6
+			}
+			if tun.EastULA == "" {
+				tun.EastULA = e6
+			}
+		}
+		out = append(out, tun)
 	}
 	return out, nil
 }
@@ -244,19 +279,16 @@ func keepaliveOf(l model.Link) int {
 	return *l.Keepalive
 }
 
+// allocatedAddrs are the default tunnel addresses of link slot i.
 func allocatedAddrs(i int) (westV4, eastV4, westULA, eastULA string) {
-	n := i + 1
-	return fmt.Sprintf("10.66.%d.1", n), fmt.Sprintf("10.66.%d.2", n),
-		fmt.Sprintf("fd66:0:0:%x::1", n), fmt.Sprintf("fd66:0:0:%x::2", n)
+	return model.LinkAutoAddrs(i)
 }
 
-// companionAddrs is the second /30 used by the WSS leg of udp+WSS failover.
-// It stays out of the explicitly numbered primary subnets (10.66.1.0/24-ish)
-// and out of the transit prefix 10.66.200.0/24.
+// companionAddrs is the second /30 used by the WSS leg of udp+WSS failover
+// on link slot i. It stays out of the primary subnets (10.66.1–99) and out
+// of the transit prefix 10.66.200.0/24 (model.MaxLinkSlots).
 func companionAddrs(i int) (westV4, eastV4, westULA, eastULA string) {
-	host := 100 + i
-	return fmt.Sprintf("10.66.%d.1", host), fmt.Sprintf("10.66.%d.2", host),
-		fmt.Sprintf("fd66:0:0:%x::1", 0x80+i), fmt.Sprintf("fd66:0:0:%x::2", 0x80+i)
+	return model.LinkCompanionAddrs(i)
 }
 
 func v4PairPrefix(local, peer string) (localCIDR, peerCIDR string) {

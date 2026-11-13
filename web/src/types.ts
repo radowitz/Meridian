@@ -72,7 +72,7 @@ export interface Link {
   mtu?: number;
   wss_mtu?: number;
   wg_port?: number;
-  /** wstunnel client port on 127.0.0.1 of the dialing end (default 52000 + link index). */
+  /** wstunnel client port on 127.0.0.1 of the dialing end (default 52000 + the link's slot). */
   wss_local_port?: number;
   keepalive?: number;
   from_v4?: string;
@@ -217,6 +217,79 @@ export interface Topology {
   links: Link[];
   rules: Rule[];
   region_groups?: RegionGroup[];
+  /**
+   * Persisted slot table (server-owned): each link's interface, default
+   * ports and subnets, each exit's and group's mark. A save keeps every
+   * stored entry whatever the document says; the editor only passes it
+   * through and shows it (POST /api/topology/allocations).
+   */
+  allocations?: Allocations;
+}
+
+export interface Allocations {
+  links?: Record<string, { slot: number }>;
+  exits?: Record<string, { slot: number }>;
+  groups?: Record<string, { slot: number }>;
+  retired_links?: number[];
+  retired_marks?: number[];
+}
+
+/** One WireGuard interface of a link (POST /api/topology/allocations). */
+export interface LinkLeg {
+  iface: string;
+  mode: "udp" | "wss";
+  wg_port: number;
+  west: string;
+  east: string;
+  west_v4: string;
+  east_v4: string;
+  west_ula: string;
+  east_ula: string;
+}
+
+export interface LinkAllocation {
+  link_id: string;
+  slot?: number;
+  state: "allocated" | "unallocated" | "not_tunnel" | "unresolved";
+  enabled: boolean;
+  /** The stored table has no slot for it yet; the save gives it this one. */
+  new: boolean;
+  listener?: string;
+  dialer?: string;
+  wg_port?: number;
+  wg_from?: "link" | "node" | "default";
+  wss_leg_port?: number;
+  local_port?: number;
+  legs?: LinkLeg[];
+  error?: string;
+}
+
+export interface MarkAllocation {
+  kind: "exit" | "group";
+  id: string;
+  slot: number;
+  mark: string;
+  table: number;
+  transit_v4: string;
+  transit_v6: string;
+}
+
+/** Something a save would change about a link the stored topology has. */
+export interface AllocationChange {
+  link_id: string;
+  what: "interface" | "listener" | "wg_port" | "wss_leg_port" | "local_port" | "tunnel_v4" | "tunnel_ula" | "enabled" | "state";
+  before: string;
+  after: string;
+}
+
+export interface AllocationView {
+  links: LinkAllocation[];
+  marks: MarkAllocation[];
+  changes: AllocationChange[] | null;
+  retired_links?: number[] | null;
+  retired_marks?: number[] | null;
+  max_links: number;
+  max_marks: number;
 }
 
 export interface Issue {

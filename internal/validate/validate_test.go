@@ -761,3 +761,198 @@ func TestGroupResolverReserved(t *testing.T) {
 		})
 	}
 }
+
+// ---- stable allocation and the unified address checks ----
+
+func migratedDual() model.Topology {
+	t := defaults.DualHubExample()
+	model.MigrateAllocations(&t)
+	return t
+}
+
+func issueFor(res Result, code, linkOrNode, field string) *Issue {
+	for i, is := range res.Issues {
+		if is.Code == code && (is.LinkID == linkOrNode || is.NodeID == linkOrNode || is.GroupID == linkOrNode) && is.Field == field {
+			return &res.Issues[i]
+		}
+	}
+	return nil
+}
+
+func setLink(t *model.Topology, id string, f func(*model.Link)) {
+	for i := range t.Links {
+		if t.Links[i].ID == id {
+			f(&t.Links[i])
+			return
+		}
+	}
+	panic("no link " + id)
+}
+
+func TestMigratedDualHubHasNoErrors(t *testing.T) {
+	for _, iss := range Run(migratedDual()).Issues {
+		if iss.Severity == SeverityError {
+			t.Fatalf("migrated dual-hub example: %+v", iss)
+		}
+	}
+}
+
+// The case real deployment missed: a typed-in address in another link's
+// automatic subnet. The issue names the manual link and its field.
+func TestManualAddressInAutomaticSubnetRefused(t *testing.T) {
+	topo := migratedDual()
+	slot, _ := topo.Allocations.LinkSlot("ix-dc2")
+	w4, e4, w6, _ := model.LinkAutoAddrs(slot)
+	setLink(&topo, "ix-dc1", func(l *model.Link) { l.FromV4, l.ToV4 = w4, e4 })
+	is := issueFor(Run(topo), "subnet_overlap", "ix-dc1", "from_v4")
+	if is == nil || !strings.Contains(is.Message, "ix-dc2") || !strings.Contains(is.Message, "自动分配") {
+		t.Fatalf("issue = %+v; all: %+v", is, Run(topo).Issues)
+	}
+	// Only one side typed in (the other keeps the slot's default): still
+	// refused, on that field.
+	topo = migratedDual()
+	setLink(&topo, "ix-dc1", func(l *model.Link) { l.ToV4 = e4 })
+	if is := issueFor(Run(topo), "subnet_overlap", "ix-dc1", "to_v4"); is == nil {
+		t.Fatalf("to_v4 overlap not refused: %+v", Run(topo).Issues)
+	}
+	// IPv6 too.
+	topo = migratedDual()
+	setLink(&topo, "ix-dc1", func(l *model.Link) { l.FromULA = w6 })
+	if is := issueFor(Run(topo), "subnet_overlap", "ix-dc1", "from_ula"); is == nil {
+		t.Fatalf("from_ula overlap not refused: %+v", Run(topo).Issues)
+	}
+	// The WSS leg of udp_wss_failover has its own subnet.
+	topo = migratedDual()
+	gs, _ := topo.Allocations.LinkSlot("gw-ali")
+	c4, c42, _, _ := model.LinkCompanionAddrs(gs)
+	setLink(&topo, "ix-dc1", func(l *model.Link) { l.FromV4, l.ToV4 = c4, c42 })
+	if is := issueFor(Run(topo), "subnet_overlap", "ix-dc1", "from_v4"); is == nil || !strings.Contains(is.Message, "WSS 腿") {
+		t.Fatalf("WSS-leg overlap not refused: %+v", is)
+	}
+	// Two manual links in one /30 (identical subnets were not refused before).
+	topo = migratedDual()
+	setLink(&topo, "ix-dc1", func(l *model.Link) { l.FromV4, l.ToV4 = "10.66.90.1", "10.66.90.2" })
+	setLink(&topo, "ix-dc2", func(l *model.Link) { l.FromV4, l.ToV4 = "10.66.90.1", "10.66.90.2" })
+	assertError(t, Run(topo), "subnet_overlap")
+	// A free manual subnet is fine.
+	topo = migratedDual()
+	setLink(&topo, "ix-dc1", func(l *model.Link) { l.FromV4, l.ToV4 = "10.66.90.1", "10.66.90.2" })
+	if hasCode(Run(topo), "subnet_overlap") {
+		t.Fatalf("free manual subnet refused: %+v", Run(topo).Issues)
+	}
+	// The same holds for a document without the table (its positions).
+	legacy := defaults.DualHubExample()
+	setLink(&legacy, "ix-dc1", func(l *model.Link) { l.FromV4, l.ToV4 = w4, e4 })
+	if is := issueFor(Run(legacy), "subnet_overlap", "ix-dc1", "from_v4"); is == nil {
+		t.Fatal("overlap with a position-derived subnet not refused")
+	}
+}
+
+func TestManualAddressInReservedRangeRefused(t *testing.T) {
+	cases := []struct {
+		field, addr, want string
+		ra                bool
+	}{
+		{"from_v4", "10.66.200.2", "中转前缀", false},
+		{"to_v4", "169.254.66.1", "链路本地", false},
+		{"from_v4", "10.67.0.5", "远程接入", true},
+		{"from_ula", "fd67::5", "远程接入", true},
+		{"to_ula", "fd66:0:0:ff::20", "中转", false},
+	}
+	for _, c := range cases {
+		topo := migratedDual()
+		if c.ra {
+			topo.RemoteAccess = &model.RemoteAccess{}
+			topo.Settings.ULAPrefix = "fc00::/7"
+		}
+		setLink(&topo, "ix-dc1", func(l *model.Link) {
+			switch c.field {
+			case "from_v4":
+				l.FromV4 = c.addr
+			case "to_v4":
+				l.ToV4 = c.addr
+			case "from_ula":
+				l.FromULA = c.addr
+			case "to_ula":
+				l.ToULA = c.addr
+			}
+		})
+		is := issueFor(Run(topo), "link_addr_reserved", "ix-dc1", c.field)
+		if is == nil || !strings.Contains(is.Message, c.want) {
+			t.Errorf("%s=%s: issue %+v; all %+v", c.field, c.addr, is, Run(topo).Issues)
+		}
+	}
+	// Existing checks now name the field.
+	topo := migratedDual()
+	setLink(&topo, "ix-dc1", func(l *model.Link) { l.ToV4 = "192.168.100.7" })
+	if issueFor(Run(topo), "prefix_conflict", "ix-dc1", "to_v4") == nil {
+		t.Fatal("LAN overlap without field")
+	}
+}
+
+func TestInterfaceNameConflicts(t *testing.T) {
+	topo := migratedDual()
+	slot, _ := topo.Allocations.LinkSlot("ix-dc1")
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == "dc1" {
+			topo.Nodes[i].WANInterface = model.LinkIface(slot)
+		}
+		if topo.Nodes[i].ID == "dc2" {
+			topo.Nodes[i].WANInterface = "mmesh"
+		}
+	}
+	res := Run(topo)
+	if issueFor(res, "iface_name_conflict", "dc1", "wan_interface") == nil || issueFor(res, "iface_name_conflict", "dc2", "wan_interface") == nil {
+		t.Fatalf("iface conflicts: %+v", res.Issues)
+	}
+}
+
+func TestAllocationTableChecked(t *testing.T) {
+	topo := migratedDual()
+	a := topo.Allocations.Clone()
+	s, _ := a.LinkSlot("ix-dc1")
+	a.Links["ix-dc2"] = model.Slot{Slot: s}
+	a.Links["hk5-dc1"] = model.Slot{Slot: model.MaxLinkSlots}
+	a.Groups["hk"] = a.Exits["dc1"]
+	topo.Allocations = a
+	res := Run(topo)
+	if issueFor(res, "link_alloc_invalid", "ix-dc2", "allocation") == nil || issueFor(res, "link_alloc_invalid", "hk5-dc1", "allocation") == nil {
+		t.Fatalf("duplicate/out-of-range link slots not refused: %+v", res.Issues)
+	}
+	if issueFor(res, "mark_alloc_invalid", "hk", "allocation") == nil {
+		t.Fatalf("duplicate mark slot not refused: %+v", res.Issues)
+	}
+}
+
+// Ports follow the slot: a udp_wss_failover link at slot s binds s's port
+// and the next one, which a link at slot s+1 on the same listener would
+// also take by default; checkPorts refuses it with the link and field.
+func TestPortsFollowSlots(t *testing.T) {
+	topo := migratedDual()
+	a := topo.Allocations.Clone()
+	gs, _ := a.LinkSlot("gw-ali") // udp_wss_failover, listener ali
+	topo.Links = append(topo.Links, model.Link{ID: "zz-ali", From: "gw", To: "ali", Transport: model.TransportDirectWG, Enabled: true, Standby: true})
+	for id, v := range a.Links {
+		if v.Slot == gs+1 {
+			a.Links[id] = model.Slot{Slot: 90}
+		}
+	}
+	a.Links["zz-ali"] = model.Slot{Slot: gs + 1}
+	topo.Allocations = a
+	res := Run(topo)
+	found := false
+	for _, is := range res.Issues {
+		if is.Code == "port_conflict" && is.Field == "wg_port" && (is.LinkID == "zz-ali" || is.LinkID == "gw-ali") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("port conflict from slots not refused: %+v", res.Issues)
+	}
+	// Without the hand-made table, a new link never gets such a slot.
+	topo = migratedDual()
+	topo.Links = append(topo.Links, model.Link{ID: "zz-ali", From: "gw", To: "ali", Transport: model.TransportDirectWG, Enabled: true, Standby: true})
+	if hasCode(Run(topo), "port_conflict") {
+		t.Fatalf("allocator gave a conflicting slot: %+v", Run(topo).Issues)
+	}
+}

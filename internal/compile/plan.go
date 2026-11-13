@@ -62,15 +62,24 @@ func planExitsHub(t model.Topology, tunnels []Tunnel, hub string) []ExitPlan {
 		}
 	}
 	sort.Slice(exits, func(i, j int) bool { return exits[i].ID < exits[j].ID })
+	alloc := model.EffectiveAllocations(t)
 	out := make([]ExitPlan, 0, len(exits))
-	for i, n := range exits {
+	for _, n := range exits {
+		// The index is the exit's mark slot (model.Allocations), not its
+		// position: adding or removing another exit or group never moves
+		// its mark, table, transit or resolver address. Validation refuses
+		// an exit without one (mark_alloc_exhausted).
+		i, ok := alloc.ExitSlot(n.ID)
+		if !ok {
+			continue
+		}
 		p := ExitPlan{
 			Node:      n,
 			Index:     i,
 			Mark:      exitMark(i),
-			Table:     201 + i,
-			TransitV4: fmt.Sprintf("10.66.200.%d", 10+i),
-			TransitV6: fmt.Sprintf("fd66:0:0:ff::%x", 10+i),
+			Table:     markTable(i),
+			TransitV4: markTransitV4(i),
+			TransitV6: markTransitV6(i),
 			Group:     "g_" + strings.ReplaceAll(n.ID, "-", "_"),
 			Hub:       hub,
 			Resolver:  validate.ExitResolverAddr(i).String(),
@@ -114,7 +123,7 @@ func switchableMap(exits []ExitPlan) map[string]bool {
 }
 
 // GroupPlan is one region group as compiled: its own mark, transit address
-// and hub table (indexes continue after the exits, groups sorted by ID), the
+// and hub table (from its mark slot, model.Allocations), the
 // static choice and the members the hub may switch the table to.
 type GroupPlan struct {
 	Group     model.RegionGroup
@@ -190,16 +199,23 @@ func planGroupsHub(t model.Topology, exits []ExitPlan, hub string) []GroupPlan {
 	groups := append([]model.RegionGroup(nil), t.Groups...)
 	sort.Slice(groups, func(i, j int) bool { return groups[i].ID < groups[j].ID })
 	sw := switchableMap(exits)
+	alloc := model.EffectiveAllocations(t)
 	out := make([]GroupPlan, 0, len(groups))
-	for j, g := range groups {
-		idx := len(exits) + j
+	for _, g := range groups {
+		// The group's mark slot, shared with the exits' (a topology from
+		// before the table numbered groups after the exits; the migration
+		// keeps exactly that).
+		idx, ok := alloc.GroupSlot(g.ID)
+		if !ok {
+			continue
+		}
 		gp := GroupPlan{
 			Group:     g,
 			Index:     idx,
 			Mark:      exitMark(idx),
-			Table:     201 + idx,
-			TransitV4: fmt.Sprintf("10.66.200.%d", 10+idx),
-			TransitV6: fmt.Sprintf("fd66:0:0:ff::%x", 10+idx),
+			Table:     markTable(idx),
+			TransitV4: markTransitV4(idx),
+			TransitV6: markTransitV6(idx),
 			Hold:      g.EffectiveOnFailure() == model.OnFailureHold,
 			Resolver:  validate.GroupResolverAddr(idx).String(),
 			DNSGroup:  "rg_" + strings.ReplaceAll(g.ID, "-", "_"),
@@ -528,5 +544,11 @@ func exitIngress(n model.Node, tunnels []Tunnel, hubID string) Tunnel {
 	return other
 }
 
-func transitV4Net() string { return "10.66.200.0/24" }
-func transitV6Net() string { return "fd66:0:0:ff::/64" }
+// markTable, markTransitV4 and markTransitV6 are the hub table and the
+// transit addresses of mark slot i (an exit's or a group's, see
+// model.Allocations); exitMark is its fwmark.
+func markTable(i int) int        { return 201 + i }
+func markTransitV4(i int) string { return fmt.Sprintf("10.66.200.%d", 10+i) }
+func markTransitV6(i int) string { return fmt.Sprintf("fd66:0:0:ff::%x", 10+i) }
+func transitV4Net() string       { return "10.66.200.0/24" }
+func transitV6Net() string       { return "fd66:0:0:ff::/64" }
