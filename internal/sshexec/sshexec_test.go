@@ -14,8 +14,10 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"fmt"
 	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/preflight"
 	"github.com/radowitz/meridian/internal/sshexec/sshtest"
 )
 
@@ -363,6 +365,12 @@ func TestRunPreflightRefusesBadArgs(t *testing.T) {
 		{"'relative'"},                    // not absolute
 		{"'/etc/wireguard/a b'"},          // space
 		{"'/etc/wireguard/a'\n'/etc/x'"},  // newline
+		{"'tcp4:192.0.2.66:1080; id'"},    // probe with a trailing command
+		{"'tcp4:192.0.2.66:99999'"},       // probe port out of range
+		{"'tcp4:example.net:1080'"},       // probe by name
+		{"'tcp4:2001:db8::1:1080'"},       // probe to IPv6
+		{"tcp4:192.0.2.66:1080"},          // probe not quoted
+		{"'tcp4:192.0.2.66:1080''x'"},     // probe with glued text
 	} {
 		_, err := c.RunPreflight(context.Background(), Target{ServerID: "srv"}, args)
 		if CodeOf(err) != CodeBadArgs {
@@ -371,5 +379,19 @@ func TestRunPreflightRefusesBadArgs(t *testing.T) {
 	}
 	if dialed {
 		t.Fatal("dialed with refused arguments")
+	}
+	// A carrier's preflight carries the paths plus one TCP connect probe per
+	// external exit ('tcp4:<IPv4>:<port>'): accepted. Refusing it here made every preflight of a carrier fail on
+	// a real host.
+	if err := checkPreflightArgs([]string{"'/etc/wireguard/m01.conf'", "'tcp4:192.0.2.66:1080'"}); err != nil {
+		t.Fatalf("a valid probe argument was refused: %v", err)
+	}
+	// More probes than the script accepts are refused.
+	many := []string{}
+	for i := 0; i <= preflight.MaxProbes; i++ {
+		many = append(many, fmt.Sprintf("'tcp4:192.0.2.%d:1080'", i+1))
+	}
+	if _, err := c.RunPreflight(context.Background(), Target{ServerID: "srv"}, many); CodeOf(err) != CodeBadArgs {
+		t.Fatalf("too many probes: %v", err)
 	}
 }

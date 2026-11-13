@@ -823,6 +823,35 @@ var preflightArg = regexp.MustCompile(`^'/[A-Za-z0-9._/@+-]{1,200}'$`)
 // CodeBadArgs: the preflight arguments were refused before connecting.
 const CodeBadArgs = "preflight_bad_args"
 
+// checkPreflightArgs is the second check of the preflight command's
+// arguments (preflight.ArgsWithProbes is the first): single-quoted absolute
+// paths and single-quoted TCP connect probes, nothing else.
+func checkPreflightArgs(args []string) error {
+	if len(args) > preflight.MaxPaths+preflight.MaxProbes {
+		return errf(CodeBadArgs, "预检参数过多")
+	}
+	probes := 0
+	for _, a := range args {
+		// A TCP connect probe for an external exit's proxy
+		// ('tcp4:<IPv4>:<port>', preflight.ValidProbe): the carrier's
+		// preflight was refused here on a real host because only paths
+		// were accepted.
+		if q := strings.TrimSuffix(strings.TrimPrefix(a, "'"), "'"); len(q)+2 == len(a) && preflight.ValidProbe(q) {
+			if probes++; probes > preflight.MaxProbes {
+				return errf(CodeBadArgs, "预检参数过多")
+			}
+			continue
+		}
+		if !preflightArg.MatchString(a) || strings.Contains(a, "..") {
+			return errf(CodeBadArgs, "预检参数不合法：%q", a)
+		}
+	}
+	if len(args)-probes > preflight.MaxPaths {
+		return errf(CodeBadArgs, "预检参数过多")
+	}
+	return nil
+}
+
 // RunPreflight sends the fixed read-only preflight script to "bash -s --
 // <paths>" on the target (trusted, pinned host key; t pins the identity
 // the caller captured) and returns its report, capped at
@@ -830,13 +859,8 @@ const CodeBadArgs = "preflight_bad_args"
 // script text is preflight.Script(); args come from preflight.Args and are
 // checked again here.
 func (c *Connector) RunPreflight(ctx context.Context, t Target, args []string) (Result, error) {
-	if len(args) > preflight.MaxPaths {
-		return Result{ServerID: t.ServerID}, errf(CodeBadArgs, "预检参数过多")
-	}
-	for _, a := range args {
-		if !preflightArg.MatchString(a) || strings.Contains(a, "..") {
-			return Result{ServerID: t.ServerID}, errf(CodeBadArgs, "预检参数不合法：%q", a)
-		}
+	if err := checkPreflightArgs(args); err != nil {
+		return Result{ServerID: t.ServerID}, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, PreflightTimeout)
 	defer cancel()
