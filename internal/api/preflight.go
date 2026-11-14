@@ -286,7 +286,11 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 	}
 	rep := preflight.Parse(res.Output)
 	rep.Source = "ssh"
-	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep, Ports: s.portSources(n.ID), Artifacts: s.artifactContext()})
+	var cmp *preflight.FileComparison
+	if rep.Complete {
+		cmp = remoteFileComparison(rep.Manifest, n.ID, dep, files)
+	}
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep, Ports: s.portSources(n.ID), Artifacts: s.artifactContext(), Files: cmp})
 	now := time.Now().UTC()
 	if res.AuthMethod != "" {
 		ident.AuthMethod = res.AuthMethod
@@ -671,6 +675,82 @@ func ownedOf(m apply.Manifest) *preflight.Owned {
 	return o
 }
 
+// absPaths turns bundle-relative paths into host paths.
+func absPaths(xs []string) []string {
+	out := make([]string, 0, len(xs))
+	for _, p := range xs {
+		out = append(out, "/"+strings.TrimPrefix(p, "/"))
+	}
+	return out
+}
+
+// gatewayFileComparison is the gateway's per-file comparison for its
+// preflight: exactly the comparison of POST /api/diff "installed"
+// (apply.InstalledFileDiff: the installed manifest against the compiled
+// files, both in their pre-injection form, so no key is needed and none is
+// involved). files are host paths. Nil when nothing is installed or the
+// comparison cannot be made (the change list then lists every file, as
+// before).
+func (s *Server) gatewayFileComparison(files map[string]string) *preflight.FileComparison {
+	local := make(map[string]string, len(files))
+	for p, b := range files {
+		local[strings.TrimPrefix(p, "/")] = b
+	}
+	d, to, err := s.applier(true).InstalledFileDiff(local)
+	if err != nil || d == nil {
+		return nil
+	}
+	return &preflight.FileComparison{Basis: preflight.BasisInstalled, Added: absPaths(d.FilesAdded), Changed: absPaths(d.FilesChanged),
+		Removed: absPaths(d.FilesRemoved), Unchanged: absPaths(d.FilesUnchanged(to)), NotCompared: []string{}}
+}
+
+// remoteFileComparison compares a remote node's files with its own
+// manifest as the preflight read it (apply.DiffManifests over content
+// hashes). The manifest hashes the copies the script wrote (a final newline
+// added, secrets injected), so the compiled files are hashed the same way
+// (provision.HostContent). Files that get a secret injected cannot be
+// compared that way: they are unchanged when the manifest's bundle digest
+// equals the files' (the digest covers the pre-injection content) and "not
+// compared" otherwise. Panel-delivered binaries are not files of the
+// bundle and are left out. Nil when the manifest is not this node's.
+func remoteFileComparison(m *preflight.NodeManifest, node, dep string, files map[string]string) *preflight.FileComparison {
+	if m == nil || m.Node != node || m.Deployment != dep {
+		return nil
+	}
+	art := map[string]bool{}
+	for _, a := range m.Artifacts {
+		art[a.Path] = true
+	}
+	from := map[string]string{}
+	for p, h := range m.Files {
+		if !art[p] {
+			from[p] = h
+		}
+	}
+	to := map[string]string{}
+	injected := map[string]bool{}
+	for p, b := range files {
+		to[p] = apply.FileHash(provision.HostContent(b))
+		injected[p] = provision.InjectedAtInstall(b)
+	}
+	toM := apply.FilesOnly(to)
+	d := apply.DiffManifests(apply.FilesOnly(from), toM)
+	same := m.Bundle != "" && m.Bundle == preflight.BundleDigest(files)
+	c := &preflight.FileComparison{Basis: preflight.BasisHost, Added: append([]string{}, d.FilesAdded...), Removed: append([]string{}, d.FilesRemoved...),
+		Unchanged: d.FilesUnchanged(toM), Changed: []string{}, NotCompared: []string{}, RemovedKept: true}
+	for _, p := range d.FilesChanged {
+		switch {
+		case injected[p] && same:
+			c.Unchanged = append(c.Unchanged, p)
+		case injected[p]:
+			c.NotCompared = append(c.NotCompared, p)
+		default:
+			c.Changed = append(c.Changed, p)
+		}
+	}
+	return c
+}
+
 func (s *Server) runHostPreflight(ctx context.Context, files map[string]string) (*preflightRecord, error) {
 	p := s.hostPreflighter()
 	if p == nil {
@@ -695,7 +775,8 @@ func (s *Server) runHostPreflight(ctx context.Context, files map[string]string) 
 	}
 	rep := preflight.Parse(text)
 	rep.Source = "host-agent"
-	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: localNodeID, Deployment: dep, Gateway: true, Owned: ownedOf(inst), Ports: s.portSources(localNodeID), Artifacts: s.artifactContext()})
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: localNodeID, Deployment: dep, Gateway: true, Owned: ownedOf(inst), Ports: s.portSources(localNodeID), Artifacts: s.artifactContext(),
+		Files: s.gatewayFileComparison(files)})
 	now := time.Now().UTC()
 	rec := &preflightRecord{ID: "pf-" + randHex(8), Kind: "gateway", NodeID: localNodeID, NodeName: "网关", Role: string(model.RoleGateway),
 		Deployment: dep, Bundle: preflight.BundleDigest(files), FirstInstall: inst.Empty() || inst.Withdrawn(), At: now, ExpiresAt: now.Add(preflightTTL),

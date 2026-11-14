@@ -155,16 +155,24 @@ func (a Applier) PreviousAvailable() bool {
 // when nothing is installed. Content diffs against the installed copy are
 // not offered: only names and hashes.
 func (a Applier) InstalledDiff(b *compile.Bundle) (*ManifestDiff, error) {
+	d, _, err := a.InstalledFileDiff(nodeFiles(b.Files, a.localID()))
+	return d, err
+}
+
+// InstalledFileDiff is InstalledDiff for this node's files (paths relative
+// to the host root, as in the bundle) and also returns the manifest the
+// files derive to (for FilesUnchanged). nil when nothing is installed.
+func (a Applier) InstalledFileDiff(local map[string]string) (*ManifestDiff, Manifest, error) {
 	inst, err := a.Installed()
 	if err != nil || inst.Empty() {
-		return nil, err
+		return nil, Manifest{}, err
 	}
-	to, err := DeriveManifest(a.localID(), nodeFiles(b.Files, a.localID()), 0, "")
+	to, err := DeriveManifest(a.localID(), local, 0, "")
 	if err != nil {
-		return nil, err
+		return nil, Manifest{}, err
 	}
 	d := DiffManifests(inst, to)
-	return &d, nil
+	return &d, to, nil
 }
 
 // Diff compares the last applied canonical text with the candidate.

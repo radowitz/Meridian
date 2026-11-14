@@ -627,7 +627,21 @@ export interface ApiErrorBody {
   field?: string;
   in_use_by?: Ref[];
   issues?: Issue[];
+  /** independent_resource_changed: the refused fields and where to change them. */
+  fields?: IndependentFieldRefusal[];
   [extra: string]: unknown;
+}
+
+/** One block a whole-topology save may not change (PUT /api/topology, 409 independent_resource_changed). */
+export interface IndependentFieldRefusal {
+  /** Document path: service_groups | rule_sets | mihomo_import | remote_access | settings.sniff */
+  field: string;
+  resource: string;
+  /** The API that owns it, and its writing requests. */
+  endpoint: string;
+  methods: string[];
+  /** IDs of the list entries that differ ("settings": remote access's own settings). */
+  items?: string[];
 }
 
 // ---- Core / host -----------------------------------------------------------
@@ -860,7 +874,11 @@ export interface PreflightFix {
 export interface PreflightChange {
   /** file | interface | listen | route | rule | nft | unit | package | sysctl | state */
   kind: string;
-  /** create | replace | update | bind | add | enable | install | set */
+  /**
+   * create | replace | update | bind | add | enable | install | set | remove;
+   * files: create | change | remove | not_compared (secret injected, not comparable) |
+   * replace (no installed record to compare with). Unchanged files are only counted (file_changes).
+   */
   action: string;
   resource: string;
   detail?: string;
@@ -921,7 +939,24 @@ export interface PreflightRecord {
   blocking: boolean;
   findings: PreflightFinding[];
   changes: PreflightChange[];
+  /** Per-file comparison with what is installed (absent: first install / nothing to compare with). */
+  file_changes?: PreflightFileChanges;
   counts: { blocking: number; warning: number; info: number };
+}
+
+/** The preflight's per-file comparison (the same comparison as the deploy page's 待安装的改动). Paths only. */
+export interface PreflightFileChanges {
+  /** installed_manifest (gateway) | host_manifest (remote node's own record) */
+  basis: string;
+  added: string[];
+  changed: string[];
+  removed: string[];
+  unchanged: string[];
+  /** Files with an injected secret whose installed copy cannot be compared (remote). */
+  not_compared: string[];
+  /** Removed files stay on the host as orphans until a withdraw (remote). */
+  removed_kept?: boolean;
+  summary: string;
 }
 
 /** One panel-delivered binary (wstunnel, SmartDNS) of a preflight plan. */

@@ -255,6 +255,51 @@ type Context struct {
 	Ports []PortSource
 	// Artifacts are the panel-delivered binaries for every architecture.
 	Artifacts []Artifact
+	// Files is the per-file comparison of the bundle with what is
+	// installed (nil: nothing to compare with). The caller computes it
+	// with the deploy page's comparison; the evaluation only reports it.
+	Files *FileComparison
+}
+
+// File comparison bases.
+const (
+	// BasisInstalled: the gateway's installed manifest (the host
+	// transaction's record of what it wrote, pre-injection hashes).
+	BasisInstalled = "installed_manifest"
+	// BasisHost: a remote node's own manifest as this preflight read it.
+	BasisHost = "host_manifest"
+)
+
+// FileComparison is the per-file comparison of the files an install
+// writes with what is installed, by content hash (apply.DiffManifests,
+// the comparison behind POST /api/diff). Paths are host paths ("/etc/…").
+// No content and no hash leaves the panel: only paths and counts.
+type FileComparison struct {
+	Basis   string   `json:"basis"`
+	Added   []string `json:"added"`
+	Changed []string `json:"changed"`
+	// Removed are installed files the bundle no longer has.
+	Removed []string `json:"removed"`
+	// Unchanged are written with exactly the content already installed.
+	Unchanged []string `json:"unchanged"`
+	// NotCompared are files on both sides whose installed hash cannot be
+	// compared without the secrets the install injects (a remote node's
+	// WireGuard, WSS and external-exit secret files: its manifest hashes
+	// the injected copy). The install writes them; whether they differ is
+	// not known.
+	NotCompared []string `json:"not_compared"`
+	// RemovedKept: removed files stay on the host (a remote node records
+	// them as orphans; a withdraw removes them). False: the install
+	// deletes them (gateway).
+	RemovedKept bool `json:"removed_kept,omitempty"`
+	// Summary says it in one sentence (set by Evaluate).
+	Summary string `json:"summary"`
+}
+
+// Changes reports whether the comparison found any file that differs or
+// could not be compared.
+func (c *FileComparison) Changes() int {
+	return len(c.Added) + len(c.Changed) + len(c.Removed) + len(c.NotCompared)
 }
 
 // BinaryPlan is what the install does with one panel-delivered binary.
@@ -305,8 +350,14 @@ type Evaluation struct {
 	Packages []PackageState `json:"package_plan,omitempty"`
 	Blocking bool           `json:"blocking"`
 	Findings []Finding      `json:"findings"`
-	Changes  []Change       `json:"changes"`
-	Counts   struct {
+	// Changes lists what the install does. Files whose content is already
+	// installed are not listed there: they are counted in FileChanges.
+	Changes []Change `json:"changes"`
+	// FileChanges is the per-file comparison with what is installed (nil:
+	// first install or nothing to compare with; every file is then listed
+	// in Changes as before).
+	FileChanges *FileComparison `json:"file_changes,omitempty"`
+	Counts      struct {
 		Blocking int `json:"blocking"`
 		Warning  int `json:"warning"`
 		Info     int `json:"info"`
@@ -843,7 +894,58 @@ func kernelVersion(k string) (int, int, bool) {
 
 // ---------------------------------------------------------------- paths ---
 
+// fileStatus is a file's state in the comparison ("" when there is none
+// or it does not list the file).
+func (e *eval) fileStatus(p string) string {
+	c := e.ctx.Files
+	if c == nil {
+		return ""
+	}
+	for _, x := range []struct {
+		st   string
+		list []string
+	}{{"added", c.Added}, {"changed", c.Changed}, {"unchanged", c.Unchanged}, {"not_compared", c.NotCompared}} {
+		if containsStr(x.list, p) {
+			return x.st
+		}
+	}
+	return ""
+}
+
+// fileSummary reports the comparison and says it in one sentence.
+func (e *eval) fileSummary() {
+	c := e.ctx.Files
+	if c == nil {
+		return
+	}
+	out := *c
+	sortStrs := func(xs []string) []string {
+		ys := append([]string{}, xs...)
+		sort.Strings(ys)
+		return ys
+	}
+	out.Added, out.Changed, out.Removed, out.Unchanged, out.NotCompared =
+		sortStrs(c.Added), sortStrs(c.Changed), sortStrs(c.Removed), sortStrs(c.Unchanged), sortStrs(c.NotCompared)
+	switch {
+	case out.Changes() == 0:
+		out.Summary = fmt.Sprintf("没有文件变化：这次安装写入的 %d 个文件与已安装的内容相同。", len(out.Unchanged))
+	default:
+		var parts []string
+		for _, x := range []struct {
+			n    int
+			what string
+		}{{len(out.Added), "新增"}, {len(out.Changed), "内容变化"}, {len(out.Removed), "不再生成"}, {len(out.NotCompared), "未比较"}} {
+			if x.n > 0 {
+				parts = append(parts, fmt.Sprintf("%s %d 个", x.what, x.n))
+			}
+		}
+		out.Summary = fmt.Sprintf("文件：%s；%d 个与已安装的内容相同。", strings.Join(parts, "、"), len(out.Unchanged))
+	}
+	e.out.FileChanges = &out
+}
+
 func (e *eval) paths() {
+	e.fileSummary()
 	var legacy, occupied []string
 	for _, p := range e.fp.Files {
 		pi, seen := e.r.Paths[p]
@@ -853,15 +955,31 @@ func (e *eval) paths() {
 			}
 			continue
 		}
+		st := e.fileStatus(p)
 		if !pi.Exists {
-			e.change("file", "create", p, "")
+			detail := ""
+			if st == "changed" || st == "unchanged" || st == "not_compared" {
+				detail = "已安装的清单里有，但主机上已不存在：安装会重新写入"
+			}
+			e.change("file", "create", p, detail)
 			continue
 		}
 		if h, ok := e.own.Files[p]; ok {
 			if h != "" && pi.SHA256 != "" && h != pi.SHA256 {
 				e.add(Warning, CodeModifiedSince, p, "这个受管文件在上次安装后被改过（哈希与清单不同），安装会覆盖这些改动。", "需要保留的改动请先在拓扑里表达或另存。")
 			}
-			e.change("file", "replace", p, "受管文件")
+			switch st {
+			case "unchanged":
+				// Counted in FileChanges, not listed as an action.
+			case "changed":
+				e.change("file", "change", p, "内容有变化")
+			case "added":
+				e.change("file", "create", p, "已安装的清单里没有：安装会写入并接管")
+			case "not_compared":
+				e.change("file", "not_compared", p, "含安装时注入的密钥，无法与主机上的内容比较：安装会重写它")
+			default:
+				e.change("file", "replace", p, "受管文件（没有可比较的安装记录）")
+			}
 			continue
 		}
 		switch {
@@ -873,6 +991,17 @@ func (e *eval) paths() {
 			legacy = append(legacy, p)
 		default:
 			occupied = append(occupied, p)
+		}
+	}
+	if c := e.ctx.Files; c != nil {
+		removed := append([]string{}, c.Removed...)
+		sort.Strings(removed)
+		for _, p := range removed {
+			if c.RemovedKept {
+				e.change("file", "remove", p, "不再由拓扑生成：安装不删除它，主机清单里记为遗留，撤回时移除")
+			} else {
+				e.change("file", "remove", p, "不再由拓扑生成：安装会删除它")
+			}
 		}
 	}
 	if len(occupied) > 0 {

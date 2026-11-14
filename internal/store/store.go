@@ -163,6 +163,27 @@ func (s *Store) SaveImport(next model.Topology) error {
 	return s.save(next, true)
 }
 
+// SaveGuarded is Save (imported false) or SaveImport (imported true) with
+// guard run under the store lock on the stored document (prev; the zero
+// topology when nothing is stored) just before the write. guard may refuse
+// (its error is returned and nothing is written) or adjust next, so a check
+// against the stored document and the write are one step: no other save
+// can slip in between.
+func (s *Store) SaveGuarded(next model.Topology, imported bool, guard func(prev model.Topology, next *model.Topology) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if guard != nil {
+		prev, _, err := s.Load()
+		if err != nil {
+			return err
+		}
+		if err := guard(prev, &next); err != nil {
+			return err
+		}
+	}
+	return s.save(next, imported)
+}
+
 // ImportBase is the base SaveImport reconciles against: no entry, every
 // slot of cur (stored entries and retired ones) retired.
 func ImportBase(cur *model.Allocations) *model.Allocations {

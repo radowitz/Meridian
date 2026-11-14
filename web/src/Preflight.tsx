@@ -8,7 +8,7 @@ import { CheckCircleFilled, CloseCircleFilled, ExclamationCircleFilled, InfoCirc
 import { Alert, Collapse, Space, Tag, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { ApiError } from "./api";
-import type { LoginHelp, PreflightBinary, PreflightChange, PreflightFinding, PreflightPackage, PreflightRecord } from "./types";
+import type { LoginHelp, PreflightBinary, PreflightChange, PreflightFileChanges, PreflightFinding, PreflightPackage, PreflightRecord } from "./types";
 import { href } from "./state";
 import { CopyButton, Facts, Link, Mono, TimeText } from "./ui";
 
@@ -43,6 +43,8 @@ const CHANGE_KIND: Record<string, string> = {
 
 const CHANGE_ACTION: Record<string, string> = {
   create: "新建",
+  change: "内容变化",
+  not_compared: "未比较",
   replace: "替换",
   update: "更新",
   bind: "绑定",
@@ -162,6 +164,72 @@ export function ForwardRules({ rec }: { rec: PreflightRecord }) {
   );
 }
 
+const FILE_BASIS: Record<string, string> = {
+  installed_manifest: "与网关上已安装的受管清单按文件内容比较（与部署页「待安装的改动」同一份比较）",
+  host_manifest: "与节点上的受管清单按文件内容比较",
+};
+
+/** Order of file entries: what changes first. */
+const FILE_ORDER: Record<string, number> = { change: 0, create: 1, remove: 2, not_compared: 3, replace: 4 };
+
+/**
+ * The per-file comparison in one line, outside the collapsed change list:
+ * "nothing changes" is said plainly.
+ */
+export function FileChangesSummary({ fc }: { fc: PreflightFileChanges }) {
+  const none = fc.added.length + fc.changed.length + fc.removed.length + fc.not_compared.length === 0;
+  return (
+    <div data-testid="preflight-file-summary" data-none={none ? "true" : "false"} style={{ marginTop: 12 }}>
+      <Typography.Text strong>{fc.summary}</Typography.Text>
+      <div>
+        <Typography.Text type="secondary">
+          {FILE_BASIS[fc.basis] ?? fc.basis}。只比较文件；接口、路由、监听等条目按这次安装要建立的状态列出，不与已安装的状态比较。
+        </Typography.Text>
+      </div>
+    </div>
+  );
+}
+
+/** File entries of the change list: what differs first, then the unchanged count (expandable). */
+function FileChangeList({ list, fc }: { list: PreflightChange[]; fc?: PreflightFileChanges }) {
+  const sorted = [...list].sort((a, b) => (FILE_ORDER[a.action] ?? 9) - (FILE_ORDER[b.action] ?? 9) || a.resource.localeCompare(b.resource));
+  return (
+    <>
+      {sorted.length > 0 ? <ChangeItems list={sorted} /> : <Typography.Text type="secondary"> 没有要改动的文件</Typography.Text>}
+      {fc && fc.unchanged.length > 0 ? (
+        <details data-testid="preflight-unchanged" style={{ marginTop: 4, paddingLeft: 18 }}>
+          <summary>
+            <Typography.Text type="secondary">{fc.unchanged.length} 个文件内容不变</Typography.Text>
+          </summary>
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {fc.unchanged.map((p) => (
+              <li key={p} className="mono-small">
+                {p}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </>
+  );
+}
+
+function ChangeItems({ list }: { list: PreflightChange[] }) {
+  return (
+    <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+      {list.map((c, i) => (
+        <li key={i} className="mono-small" data-change={`${c.kind}:${c.action}`}>
+          <Tag style={{ marginRight: 6 }} color={c.action === "remove" ? "volcano" : c.action === "change" ? "gold" : undefined}>
+            {CHANGE_ACTION[c.action] ?? c.action}
+          </Tag>
+          {c.resource}
+          {c.detail ? <Typography.Text type="secondary">（{c.detail}）</Typography.Text> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** Why execution is not possible with this result, or null when it is. */
 export function preflightBlockedReason(rec: PreflightRecord | null | undefined, now = new Date()): string | null {
   if (!rec) return "还没有预检：先预检并审阅结果";
@@ -173,6 +241,8 @@ export function preflightBlockedReason(rec: PreflightRecord | null | undefined, 
 export function PreflightReport({ rec }: { rec: PreflightRecord }) {
   const groups = (["blocking", "warning", "info"] as const).map((sev) => ({ sev, items: rec.findings.filter((f) => f.severity === sev) }));
   const byKind = new Map<string, PreflightChange[]>();
+  // With a file comparison the files come first (also when none changes).
+  if (rec.file_changes) byKind.set("file", []);
   for (const c of rec.changes) byKind.set(c.kind, [...(byKind.get(c.kind) ?? []), c]);
   const t = rec.target;
   return (
@@ -219,6 +289,7 @@ export function PreflightReport({ rec }: { rec: PreflightRecord }) {
         ]}
       />
       <InstallPlan rec={rec} />
+      {rec.file_changes ? <FileChangesSummary fc={rec.file_changes} /> : null}
       <ForwardRules rec={rec} />
       {groups.map(({ sev, items }) =>
         items.length === 0 ? null : (
@@ -277,17 +348,7 @@ export function PreflightReport({ rec }: { rec: PreflightRecord }) {
                 {[...byKind.entries()].map(([kind, list]) => (
                   <div key={kind} style={{ marginBottom: 8 }}>
                     <Typography.Text strong>{CHANGE_KIND[kind] ?? kind}</Typography.Text>
-                    <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-                      {list.map((c, i) => (
-                        <li key={i} className="mono-small" data-change={`${c.kind}:${c.action}`}>
-                          <Tag style={{ marginRight: 6 }} color={c.action === "remove" ? "volcano" : undefined}>
-                            {CHANGE_ACTION[c.action] ?? c.action}
-                          </Tag>
-                          {c.resource}
-                          {c.detail ? <Typography.Text type="secondary">（{c.detail}）</Typography.Text> : null}
-                        </li>
-                      ))}
-                    </ul>
+                    {kind === "file" ? <FileChangeList list={list} fc={rec.file_changes} /> : <ChangeItems list={list} />}
                   </div>
                 ))}
               </div>

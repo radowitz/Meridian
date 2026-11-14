@@ -133,8 +133,7 @@ func DeriveManifest(node string, files map[string]string, version int64, canonic
 		if strings.Contains(p, "..") || strings.HasPrefix(p, "/") || !allowed(p) {
 			return Manifest{}, fmt.Errorf("拒绝受管路径 %s", p)
 		}
-		sum := sha256.Sum256([]byte(files[p]))
-		m.Files = append(m.Files, ManagedFile{Path: p, SHA256: hex.EncodeToString(sum[:]), Mode: fmt.Sprintf("%04o", hostMode(p))})
+		m.Files = append(m.Files, ManagedFile{Path: p, SHA256: FileHash(files[p]), Mode: fmt.Sprintf("%04o", hostMode(p))})
 		dir, base := filepath.Dir(p), filepath.Base(p)
 		switch {
 		case dir == "etc/wireguard" && strings.HasSuffix(base, ".conf"):
@@ -202,6 +201,53 @@ type ManifestDiff struct {
 	SidecarsRemoved    []string `json:"sidecars_removed,omitempty"`
 }
 
+// FileHash is the hash a manifest records for a file's content (hex
+// SHA-256). Installed gateway copies keep the bundle's placeholders, so the
+// hash of a compiled file is comparable with the installed one.
+func FileHash(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// FilesOnly is a manifest that lists files with the given hashes and
+// nothing else, for comparing file sets with DiffManifests where no full
+// manifest exists (a remote node's record as its preflight read it).
+func FilesOnly(hashes map[string]string) Manifest {
+	paths := make([]string, 0, len(hashes))
+	for p := range hashes {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	m := Manifest{Files: make([]ManagedFile, 0, len(paths))}
+	for _, p := range paths {
+		m.Files = append(m.Files, ManagedFile{Path: p, SHA256: hashes[p]})
+	}
+	return m
+}
+
+// FilesUnchanged lists the files of to that d neither adds nor changes:
+// the files an install writes with exactly the content already installed.
+func (d ManifestDiff) FilesUnchanged(to Manifest) []string {
+	skip := map[string]bool{}
+	for _, p := range d.FilesAdded {
+		skip[p] = true
+	}
+	for _, p := range d.FilesChanged {
+		skip[p] = true
+	}
+	var out []string
+	for _, f := range to.Files {
+		if !skip[f.Path] {
+			out = append(out, f.Path)
+		}
+	}
+	return out
+}
+
+// DiffManifests compares two manifests: files by path and content hash,
+// runtime names by name. It is the one per-file comparison (POST /api/diff
+// "installed", the per-node install state, the install pre-check's file
+// list).
 func DiffManifests(from, to Manifest) ManifestDiff {
 	var d ManifestDiff
 	for _, f := range to.Files {

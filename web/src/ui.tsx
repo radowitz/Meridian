@@ -38,7 +38,7 @@ import {
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ApiError, isApiError } from "./api";
 import { href, useOptionalRouter, useRouter, useStatus, useTopologyDoc, useUnsavedGuard } from "./state";
-import type { Issue, Ref } from "./types";
+import type { IndependentFieldRefusal, Issue, Ref } from "./types";
 
 // ======================================================== status vocabulary ===
 
@@ -328,6 +328,8 @@ export const ERROR_TEXT: Record<string, string> = {
   preflight_blocked: "预检有阻断项，没有执行",
   preflight_changed: "执行前重新预检出现了新问题，没有执行",
   preflight_failed: "预检没有完成",
+  // whole-topology save (PUT /api/topology)
+  independent_resource_changed: "这些内容要在各自的页面修改，整份拓扑保存没有写入任何内容",
   preflight_bad_args: "预检参数不合法",
   bundle_changed: "预检之后要下发的配置变了，需要重新预检",
   node_busy: "这个节点正在预检或装机",
@@ -507,6 +509,51 @@ function RateLimitCountdown({ error }: { error: ApiError }) {
   return <RateLimitNote seconds={left} />;
 }
 
+/** Where each independent block of the topology is changed in the panel. */
+const INDEPENDENT_PAGE: Record<string, { page: string; label: string }> = {
+  service_groups: { page: "rules", label: "分流规则页的「服务组」" },
+  rule_sets: { page: "rules", label: "分流规则页的「规则集」" },
+  mihomo_import: { page: "rules", label: "分流规则页的「导入」" },
+  "settings.sniff": { page: "rules", label: "分流规则页的「按域名嗅探」" },
+  remote_access: { page: "remote", label: "远程接入页" },
+};
+
+/**
+ * A refused whole-topology save (independent_resource_changed): each block
+ * the request could not change, the entries that differ, and where it is
+ * changed (panel page and API).
+ */
+export function IndependentFieldsNote({ fields, onNavigate }: { fields: IndependentFieldRefusal[]; onNavigate?: () => void }) {
+  return (
+    <ul className="ref-list" data-testid="independent-fields">
+      {fields.map((f) => {
+        const where = INDEPENDENT_PAGE[f.field];
+        return (
+          <li key={f.field} data-field={f.field}>
+            <Typography.Text strong>{f.resource}</Typography.Text>
+            {f.items && f.items.length > 0 ? (
+              <Typography.Text type="secondary">{`（不同的：${f.items.join("、")}）`}</Typography.Text>
+            ) : null}
+            ：在{" "}
+            {where ? (
+              <Link to={href(where.page)} onNavigate={onNavigate}>
+                {where.label}
+              </Link>
+            ) : (
+              "它自己的页面"
+            )}{" "}
+            修改（接口 <Mono>{f.endpoint}</Mono>）
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function independentFieldsOf(e: ApiError): IndependentFieldRefusal[] {
+  return e.code === "independent_resource_changed" && Array.isArray(e.body?.fields) ? (e.body.fields as IndependentFieldRefusal[]) : [];
+}
+
 /** Shows the API's message, its code in Chinese, referrers as links, and a retry. */
 export function ApiErrorAlert({
   error,
@@ -524,6 +571,7 @@ export function ApiErrorAlert({
   if (!error) return null;
   const title = errorTitle(error);
   const showMessage = error.message && error.message !== title;
+  const independent = independentFieldsOf(error);
   return (
     <Alert
       type="error"
@@ -533,9 +581,10 @@ export function ApiErrorAlert({
       onClose={onClose}
       message={title}
       description={
-        showMessage || error.inUseBy.length > 0 || children || retryAfterOf(error) > 0 || error.body?.not_executed === true ? (
+        showMessage || error.inUseBy.length > 0 || independent.length > 0 || children || retryAfterOf(error) > 0 || error.body?.not_executed === true ? (
           <div className="error-body">
             {showMessage ? <div>{error.message}</div> : null}
+            {independent.length > 0 ? <IndependentFieldsNote fields={independent} /> : null}
             {retryAfterOf(error) > 0 ? <RateLimitCountdown error={error} /> : null}
             <ExecNote notExecuted={error.body?.not_executed === true} safeToRetry={error.body?.safe_to_retry === true && retryAfterOf(error) === 0} />
             {error.inUseBy.length > 0 ? (

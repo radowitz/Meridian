@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -317,11 +318,20 @@ func (s *Server) getTopology(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
-	t, err := decodeTopo(r)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	t, err := decodeTopoBytes(body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// What the request said about the independent resources, before the
+	// stored blocks are put in (topology_contract.go).
+	sent := presenceOf(body)
+	asSent := t
 	// ?import=1: the document replaces the stored one wholesale (an export
 	// brought back): its own allocation table counts, every slot the stored
 	// topology used is retired. Without it the stored table is
@@ -336,16 +346,16 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	t.RemoteAccess = cur.RemoteAccess.Clone()
-	// Rule-sets, service groups and the import mapping have their own
-	// endpoints (rulesets.go, rules_import.go): a whole-document save keeps
-	// the stored blocks.
-	if !imported {
-		t.RuleSets, t.ServiceGroups, t.MihomoImport = cur.RuleSets, cur.ServiceGroups, cur.MihomoImport
-		// settings.sniff is owned by /api/sniff (sniff.go): a document
-		// loaded before the setting changed must not turn it back.
-		t.Settings.Sniff = cur.Settings.Sniff
+	// Service groups, rule-sets, the import mapping, remote access and the
+	// sniff setting have their own endpoints: a whole-document save keeps
+	// the stored blocks and refuses, as a whole, a request that carries a
+	// different value (topology_contract.go). ?import=1 writes all of them
+	// except remote access.
+	if refused := checkIndependent(sent, asSent, cur, imported); len(refused) > 0 {
+		writeIndependentRefusal(w, &errIndependentChanged{fields: refused})
+		return
 	}
+	keepIndependent(&t, cur, imported)
 	// Validate what will be stored: the slots the store will keep or give
 	// (the save reconciles again under the store lock, with the same result
 	// unless another save slipped in between).
@@ -390,12 +400,13 @@ func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	save := s.Store.Save
-	if imported {
-		save = s.Store.SaveImport
-	}
-	if err := save(t); err != nil {
+	// The same check again under the store lock, against the document as
+	// stored at the moment of the write.
+	if err := s.Store.SaveGuarded(t, imported, independentGuard(sent, asSent, imported)); err != nil {
 		s.resMu.Unlock()
+		if writeIndependentRefusal(w, err) {
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -934,9 +945,11 @@ func (s *Server) bodyOrStored(r *http.Request) (model.Topology, error) {
 	return t, nil
 }
 
-func decodeTopo(r *http.Request) (model.Topology, error) {
+// decodeTopoBytes decodes a whole topology document (unknown fields are
+// ignored, as before) and migrates legacy pool fields.
+func decodeTopoBytes(body []byte) (model.Topology, error) {
 	var t model.Topology
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&t); err != nil {
 		return model.Topology{}, err
 	}
 	model.MigrateRegionGroups(&t)

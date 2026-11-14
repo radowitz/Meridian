@@ -244,8 +244,28 @@ export const health = () => request<{ status: string; service: string }>("GET", 
 export const getMeta = () => request<Meta>("GET", "/api/meta");
 export const getTopology = () => request<Topology>("GET", "/api/topology");
 
+/**
+ * Blocks of the topology document that have their own endpoints. The
+ * whole-document save never writes them and refuses (409
+ * independent_resource_changed) a request that carries a value different
+ * from the stored one — which a working copy loaded before such an
+ * endpoint changed them would. The editors never change them, so the save
+ * leaves them out ("omitted": the stored blocks stay).
+ */
+export const INDEPENDENT_FIELDS = ["service_groups", "rule_sets", "mihomo_import", "remote_access"] as const;
+
+/** The document a whole-topology save sends: without the independent blocks (and without settings.sniff). */
+export function topologyForSave(topo: Topology): Topology {
+  const out: Record<string, unknown> = { ...topo };
+  for (const k of INDEPENDENT_FIELDS) delete out[k];
+  const settings: Record<string, unknown> = { ...topo.settings };
+  delete settings.sniff;
+  out.settings = settings;
+  return out as unknown as Topology;
+}
+
 export function putTopology(topo: Topology, draft: boolean) {
-  return request<TopologySaveResult>("PUT", draft ? "/api/topology?draft=1" : "/api/topology", topo);
+  return request<TopologySaveResult>("PUT", draft ? "/api/topology?draft=1" : "/api/topology", topologyForSave(topo));
 }
 
 export const validate = (topo?: Topology) =>

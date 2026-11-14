@@ -1162,6 +1162,20 @@ func dirOf(p string) string {
 	return p[:i]
 }
 
+// HostContent is a file's content as the provision script writes it on
+// the host (a missing final newline is added), before any secret is
+// injected. A remote node's manifest hashes the written copy.
+func HostContent(body string) string { return ensureNL(body) }
+
+// InjectedAtInstall reports whether the install fills a secret into this
+// compiled file (the WireGuard private key, a WSS or credential-store
+// secret): the host's copy then differs from the compiled one by design,
+// and its hash in a remote node's manifest cannot be compared with the
+// compiled file without that secret.
+func InjectedAtInstall(body string) bool {
+	return strings.Contains(body, compile.PrivateKeyPlaceholder) || model.SecretPlaceholderRe.MatchString(body) || compile.HasWSSTokens(body)
+}
+
 func ensureNL(s string) string {
 	if strings.HasSuffix(s, "\n") {
 		return s

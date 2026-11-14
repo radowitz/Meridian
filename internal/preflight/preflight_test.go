@@ -1744,3 +1744,60 @@ func TestRemoteUpdateListsRemovedInterfaces(t *testing.T) {
 		t.Fatalf("%s removals %v", ev.Ownership, removed)
 	}
 }
+
+// With a file comparison, the change list names only the files that differ
+// (no blanket "replace"), files with a secret that could not be compared
+// say so, removed files say whether they stay, and the unchanged ones are
+// counted in FileChanges. Without one (first install) nothing changes.
+func TestFileChangesFromComparison(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "ali"))
+	state := installedByUs(fp, "ali", "dep-test") + "cmd wstunnel yes\ncmd smartdns yes\n"
+	r := fixture(t, "clean-debian13.txt", fp, allPresent(fp), state)
+	if len(fp.Files) < 3 {
+		t.Fatalf("fixture has %d files", len(fp.Files))
+	}
+	changed, secret, rest := fp.Files[0], fp.Files[1], fp.Files[2:]
+	ctx := remote("ali")
+	ctx.Files = &FileComparison{Basis: BasisHost, Changed: []string{changed}, NotCompared: []string{secret}, Unchanged: rest,
+		Removed: []string{"/etc/meridian/gone.conf"}, RemovedKept: true}
+	ev := Evaluate(r, fp, ctx)
+	byPath := map[string]Change{}
+	for _, c := range ev.Changes {
+		if c.Kind == "file" {
+			if c.Action == "replace" {
+				t.Fatalf("file listed as replace: %+v", c)
+			}
+			byPath[c.Resource] = c
+		}
+	}
+	if len(byPath) != 3 || byPath[changed].Action != "change" || byPath[secret].Action != "not_compared" ||
+		byPath["/etc/meridian/gone.conf"].Action != "remove" || !strings.Contains(byPath["/etc/meridian/gone.conf"].Detail, "撤回时移除") {
+		t.Fatalf("file changes %+v", byPath)
+	}
+	fc := ev.FileChanges
+	if fc == nil || len(fc.Unchanged) != len(rest) || fc.Changes() != 3 || !strings.Contains(fc.Summary, "未比较 1 个") {
+		t.Fatalf("summary %+v", fc)
+	}
+	// Nothing differs: no file entry at all, and the summary says so.
+	ctx.Files = &FileComparison{Basis: BasisHost, Unchanged: fp.Files}
+	ev = Evaluate(r, fp, ctx)
+	for _, c := range ev.Changes {
+		if c.Kind == "file" {
+			t.Fatalf("unchanged file listed: %+v", c)
+		}
+	}
+	if ev.FileChanges == nil || !strings.HasPrefix(ev.FileChanges.Summary, "没有文件变化") {
+		t.Fatalf("%+v", ev.FileChanges)
+	}
+	// No comparison: every managed file is listed as before.
+	ev = Evaluate(r, fp, remote("ali"))
+	n := 0
+	for _, c := range ev.Changes {
+		if c.Kind == "file" && c.Action == "replace" {
+			n++
+		}
+	}
+	if ev.FileChanges != nil || n != len(fp.Files) {
+		t.Fatalf("without comparison: %d of %d listed, %+v", n, len(fp.Files), ev.FileChanges)
+	}
+}
