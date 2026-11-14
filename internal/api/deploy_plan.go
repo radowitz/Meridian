@@ -115,7 +115,8 @@ var deployLimits = struct {
 }{
 	Proves: []string{
 		"网关：meridian-host 的安装事务已提交——文件写入、接口与防火墙激活、服务启动，事务里的健康检查通过",
-		"远端节点：装机脚本完成激活并写下清单，面板在同一登录里读回服务器上的记录，与装上去的内容一致",
+		"远端节点：装机脚本完成激活并写下清单，面板在同一登录里读回服务器上的记录，与装上去的内容一致（读回失败、不完整或不一致时这一步是「结果不明」，不算装好）",
+		"「已在服务器上（采纳）」：预检完整读到的服务器记录（网关是安装清单）已经是这份内容；没有重新执行，也没有重新做健康检查",
 	},
 	DoesNotProve: []string{
 		"隧道真的握手、流量真的经出口出去（端到端连通）",
@@ -522,7 +523,26 @@ func (l *deployLive) identity(node string) *targetIdentity {
 }
 
 // plan computes the plan from the live state.
-func (l *deployLive) plan() *deployPlan {
+// verifiedInSync: the node's own state is in sync AND, for a remote node,
+// the last read-back of the host's record matched (verify = verified). An
+// install whose record was never read back, or read back differently, is
+// not taken as done by the guide (the single-node flow keeps its own
+// "installed" outcome; the guide does not inherit it): the node gets a step
+// whose preflight reads the record and adopts the content without
+// reinstalling when it is there.
+func verifiedInSync(n model.Node, st nodeInstallState) bool {
+	if st.Pending {
+		return false
+	}
+	if n.Role == model.RoleGateway {
+		return true
+	}
+	return st.Verify != nil && st.Verify.State == verifyOK
+}
+
+// plan computes the plan from the live state. extra forces nodes into it
+// (a re-plan keeps a failed or unknown step until its record is re-checked).
+func (l *deployLive) plan(extra ...map[string]bool) *deployPlan {
 	t := l.t
 	p := &deployPlan{TopologyVersion: l.version, Steps: []planStep{}, Skipped: []planSkip{}}
 	pending := map[string]bool{}
@@ -535,7 +555,11 @@ func (l *deployLive) plan() *deployPlan {
 			p.Skipped = append(p.Skipped, planSkip{NodeID: n.ID, NodeName: n.Name, Role: string(n.Role), Kind: "unmanaged", Why: "不受管（例如 IX 专线）：不需要装机"})
 		default:
 			st, ok := l.states[n.ID]
-			if ok && !st.Pending {
+			forced := false
+			for _, x := range extra {
+				forced = forced || x[n.ID]
+			}
+			if ok && verifiedInSync(n, st) && !forced {
 				p.Skipped = append(p.Skipped, planSkip{NodeID: n.ID, NodeName: n.Name, Role: string(n.Role), Kind: "in_sync", Why: "没有变化：与它上一次成功安装的内容一致"})
 				continue
 			}
@@ -559,6 +583,10 @@ func (l *deployLive) plan() *deployPlan {
 			ps.Warnings = append(ps.Warnings, "这个节点装在之前的服务器或身份上：先在「部署记录与撤回」里撤回旧的安装，否则预检会拒绝")
 		case nodeUnknown:
 			ps.Warnings = append(ps.Warnings, "状态不明：预检会先读取服务器上的安装记录；内容已经装上就直接采纳，不重做")
+		case nodeInSync:
+			if n.Role != model.RoleGateway {
+				ps.Warnings = append(ps.Warnings, "面板的记录说内容已一致，但没有读回服务器上一致的安装记录：预检会读取它，内容已经在就直接采纳，不重装")
+			}
 		}
 		p.Steps = append(p.Steps, ps)
 	}
@@ -1142,15 +1170,17 @@ func (s *Server) postDeployPreflight(w http.ResponseWriter, r *http.Request) {
 	// Already there? Never contact the host for a node whose own record says
 	// it is in sync on a first visit; after a failure or an unknown outcome
 	// the host's actual record decides (below).
-	if ns, ok := l.states[st.NodeID]; ok && !ns.Pending && !retry {
-		run = s.finishStep(runID, st.NodeID, func(run *deployRun, st *deployStep, now time.Time) {
-			clearAttempt(st)
-			st.Phase, st.Outcome, st.Evidence = phaseDone, "adopted", "panel_record"
-			st.Message = "这个节点已经与上一次成功安装的内容一致（在引导之外装好的）：不重做"
-			run.event(now, st.NodeID, "已一致，跳过")
-		})
-		writeJSON(w, http.StatusOK, s.deployView(run))
-		return
+	if n, nok := l.t.NodeByID(st.NodeID); nok && !retry {
+		if ns, ok := l.states[st.NodeID]; ok && verifiedInSync(n, ns) {
+			run = s.finishStep(runID, st.NodeID, func(run *deployRun, st *deployStep, now time.Time) {
+				clearAttempt(st)
+				st.Phase, st.Outcome, st.Evidence = phaseDone, "adopted", "panel_record"
+				st.Message = "这个节点已经与上一次成功安装的内容一致（在引导之外装好的，读回的服务器记录也一致）：不重做"
+				run.event(now, st.NodeID, "已一致，跳过")
+			})
+			writeJSON(w, http.StatusOK, s.deployView(run))
+			return
+		}
 	}
 
 	if st.Kind == "gateway" {
@@ -1365,16 +1395,25 @@ func (s *Server) deployRemoteInstall(ctx context.Context, runID string, st deplo
 				h.Verify, h.Detail = strOf(v, "state"), strOf(v, "detail")
 			}
 			step.Health = h
-			if h.Verify == verifyMismatch {
+			switch h.Verify {
+			case verifyOK:
+			case verifyMismatch:
 				step.Outcome = "unknown"
 				stopAt(run, step, phaseUnknown, fmt.Sprintf("%s：脚本报告成功，但读回的服务器记录与装上去的内容不一致（%s）：不当作完成", step.NodeName, h.Detail), now)
 				return
+			default:
+				// Missing, unverified or unparsable read-back: the script said it
+				// succeeded, but nothing confirmed what is on the host.
+				step.Outcome = "unknown"
+				detail := h.Detail
+				if detail == "" {
+					detail = "回答里没有可用的核对结果"
+				}
+				stopAt(run, step, phaseUnknown, fmt.Sprintf("%s：脚本报告成功，但没有读回服务器上的安装记录（%s）：不当作完成。不用盲目重装——「重新核对」会再读一次记录，内容已经在就直接采纳", step.NodeName, detail), now)
+				return
 			}
 			step.Phase = phaseDone
-			step.Message = "已下发：脚本完成激活，服务器上的记录与装上去的内容一致"
-			if h.Verify != verifyOK {
-				step.Message = "已下发：脚本完成激活；没有读回服务器上的记录（" + orDashS(h.Detail) + "）"
-			}
+			step.Message = "已下发：脚本完成激活，读回的服务器记录与装上去的内容一致"
 			run.event(now, step.NodeID, "已下发")
 		case outcome == "refused" || outcome == "compensated" || outcome == "left_behind":
 			step.Outcome = outcome
@@ -1421,7 +1460,7 @@ func (s *Server) deployGatewayInstall(ctx context.Context, runID string, st depl
 		code := strOf(body, "code")
 		step.Code, step.Message = code, strOf(body, "error")
 		if status == http.StatusOK {
-			step.Phase, step.Outcome = phaseDone, "installed"
+			step.Outcome = "installed"
 			h := &deployHealth{Source: "gateway_transaction"}
 			if host, ok := body["host"]; ok {
 				raw, _ := json.Marshal(host)
@@ -1435,6 +1474,14 @@ func (s *Server) deployGatewayInstall(ctx context.Context, runID string, st depl
 				}
 			}
 			step.Health = h
+			if !h.Committed {
+				// A 200 always carries the committed transaction report; anything
+				// else is not evidence of an install.
+				step.Outcome = "unknown"
+				stopAt(run, step, phaseUnknown, "网关：安装的回答里没有已提交的事务报告：结果不明，不当作完成；「重新核对」会按安装清单比较", now)
+				return
+			}
+			step.Phase = phaseDone
 			step.Message = "已安装到网关：事务已提交，服务已启动，健康检查通过"
 			run.event(now, step.NodeID, "已安装到网关")
 			return
@@ -1559,7 +1606,13 @@ func (s *Server) postDeployReplan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
-	p := l.plan()
+	keep := map[string]bool{}
+	for _, st := range run.Steps {
+		if st.Phase == phaseFailed || st.Phase == phaseUnknown {
+			keep[st.NodeID] = true
+		}
+	}
+	p := l.plan(keep)
 	old := map[string]deployStep{}
 	for _, st := range run.Steps {
 		old[st.NodeID] = st

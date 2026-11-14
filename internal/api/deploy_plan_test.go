@@ -242,6 +242,10 @@ type deployFix struct {
 	script map[string]func(stdin string) (string, uint32)
 	host   map[string]string
 	runs   map[string]int
+	// state: how the host answers the read-back of its record right after
+	// the script ("" normal, "fail": the command fails, "cut": the answer
+	// has no end line).
+	state map[string]string
 }
 
 func newDeployFix(t *testing.T, sshNodes ...string) *deployFix {
@@ -249,7 +253,7 @@ func newDeployFix(t *testing.T, sshNodes ...string) *deployFix {
 	s := newTest(t)
 	s.HostRoot = t.TempDir()
 	f := &deployFix{s: s, hp: &fakeHostPreflight{}, srv: map[string]*sshtest.Server{}, sid: map[string]string{}, extra: map[string]string{},
-		script: map[string]func(string) (string, uint32){}, host: map[string]string{}, runs: map[string]int{}}
+		script: map[string]func(string) (string, uint32){}, host: map[string]string{}, runs: map[string]int{}, state: map[string]string{}}
 	s.HostPreflight = f.hp
 	s.Activate = func() error {
 		f.mu.Lock()
@@ -338,7 +342,8 @@ func (f *deployFix) markInSync(t *testing.T, sel func(string) bool) {
 		}
 		id := l.idents[n.ID]
 		f.s.saveOutcome(provisionOutcome{NodeID: n.ID, ServerID: id.ServerID, Address: id.Address, Port: id.Port, Fingerprint: id.Fingerprint,
-			User: id.User, CredentialID: id.CredentialID, Bundle: l.bundles[n.ID], At: time.Now().UTC(), OK: true, Outcome: "installed", Run: "run-seed"})
+			User: id.User, CredentialID: id.CredentialID, Bundle: l.bundles[n.ID], At: time.Now().UTC(), OK: true, Outcome: "installed", Run: "run-seed",
+			Verify: &nodeVerify{At: time.Now().UTC(), State: verifyOK, Source: "post_install", HostBundle: l.bundles[n.ID]}})
 	}
 }
 
@@ -362,8 +367,14 @@ func (f *deployFix) answer(node, cmd, stdin string) (string, uint32) {
 	}
 	if cmd == sshexec.NodeStateCommand {
 		f.mu.Lock()
-		h := f.host[node]
+		h, mode := f.host[node], f.state[node]
 		f.mu.Unlock()
+		switch mode {
+		case "fail":
+			return "cat: /var/lib/meridian/node/manifest: Input/output error\n", 1
+		case "cut":
+			return "meridian-node-state 1\n" + h, 0
+		}
 		return "meridian-node-state 1\n" + h + "meridian-node-state-end\n", 0
 	}
 	return "unexpected", 1
@@ -875,5 +886,133 @@ func TestDeployRunInStatus(t *testing.T) {
 	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/cancel", map[string]any{}, http.StatusOK)
 	if st := status(); st != nil {
 		t.Fatalf("after cancel %+v", st)
+	}
+}
+
+// The script reports success but the host's record is not read back
+// (the read fails, or its answer is cut short): the step is unknown, the
+// run stops, the next node is not offered; the re-check reads the record
+// and adopts the content without running the install a second time.
+func TestDeployUnverifiedReadBackStopsAndRecovers(t *testing.T) {
+	for _, mode := range []string{"fail", "cut"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newDeployFix(t, "sg", "tw")
+			run := f.start(t)
+			f.mu.Lock()
+			f.state["sg"] = mode
+			f.mu.Unlock()
+			f.preflight(t, run, "sg", http.StatusOK)
+			bundle := f.step(t, "sg").ReviewBundle
+			out := f.install(t, run, "sg", http.StatusOK)
+			st := f.step(t, "sg")
+			if out.Run.State != runStopped || st.Phase != phaseUnknown || st.Outcome != "unknown" || st.Health == nil || st.Health.Verify == verifyOK {
+				t.Fatalf("after an unverified read-back: %s %+v", out.Run.State, st)
+			}
+			if !strings.Contains(out.Run.StopReason, "脚本报告成功") || !strings.Contains(out.Run.StopReason, "没有读回") {
+				t.Fatalf("stop reason %q", out.Run.StopReason)
+			}
+			if f.scripts("sg") != 1 {
+				t.Fatalf("scripts %d", f.scripts("sg"))
+			}
+			// The dependent node is not offered, and the run is not done.
+			if out := f.preflight(t, run, "tw", http.StatusConflict); out.Code != codeDeployNotCurrent {
+				t.Fatalf("next node offered: %+v", out)
+			}
+			if g := f.get(t); g.Run.Current != "sg" || g.Run.State == runDone {
+				t.Fatalf("run %s current %s", g.Run.State, g.Run.Current)
+			}
+			for _, x := range f.get(t).Run.Steps {
+				if x.NodeID == "tw" && (x.CanPreflight || x.CanInstall) {
+					t.Fatalf("tw actionable: %+v", x)
+				}
+			}
+			// A topology-independent re-plan keeps the unknown step even
+			// though the panel's own record says "installed".
+			f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/replan", map[string]any{}, http.StatusOK)
+			if st := f.step(t, "sg"); st.Phase != phaseUnknown {
+				t.Fatalf("replan dropped the unknown step: %+v", st)
+			}
+			// The re-check: the preflight reads the host's record, which shows
+			// the content; adopted, not installed again.
+			f.mu.Lock()
+			f.state["sg"] = ""
+			f.extra["sg"] = "manifest-begin\nmanifest node sg\nmanifest deployment " + mustDeployment(t, f.s) + "\nmanifest server " + f.sid["sg"] +
+				"\nmanifest bundle " + bundle + "\nmanifest-end\njournal-begin\njournal state done\njournal run " + st.Run + "\njournal-end\n"
+			f.mu.Unlock()
+			f.preflight(t, run, "sg", http.StatusOK)
+			st = f.step(t, "sg")
+			if st.Phase != phaseDone || st.Outcome != "adopted" || st.Evidence != "host_record" || f.scripts("sg") != 1 {
+				t.Fatalf("re-check: %+v scripts %d", st, f.scripts("sg"))
+			}
+			if g := f.get(t); g.Run.State != runActive || g.Run.Current != "tw" {
+				t.Fatalf("run %s current %s", g.Run.State, g.Run.Current)
+			}
+		})
+	}
+}
+
+// The re-check after an unverified read-back when the record still does
+// not show the content: the operator reviews and confirms again.
+func TestDeployUnverifiedReadBackRecheckWithoutRecord(t *testing.T) {
+	f := newDeployFix(t, "sg")
+	run := f.start(t)
+	f.mu.Lock()
+	f.state["sg"] = "fail"
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	f.install(t, run, "sg", http.StatusOK)
+	f.mu.Lock()
+	f.state["sg"] = ""
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	st := f.step(t, "sg")
+	if st.Phase != phaseReview || !st.CanInstall || f.scripts("sg") != 1 {
+		t.Fatalf("re-check without a record: %+v scripts %d", st, f.scripts("sg"))
+	}
+	f.install(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); st.Phase != phaseDone || st.Health == nil || st.Health.Verify != verifyOK {
+		t.Fatalf("confirmed retry: %+v", st)
+	}
+}
+
+// A node the panel records as installed without a verified read-back
+// (single-node flow, or a record from before the read-back) is not
+// skipped: it gets a step, and its preflight adopts the content when the
+// host's record shows it.
+func TestDeployPlanUnverifiedInSyncNodeGetsStep(t *testing.T) {
+	f := newDeployFix(t, "sg")
+	l, err := f.s.liveDeploy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.s.updateOutcome("sg", func(o *provisionOutcome) {
+		id := l.idents["sg"]
+		*o = provisionOutcome{NodeID: "sg", ServerID: id.ServerID, Address: id.Address, Port: id.Port, Fingerprint: id.Fingerprint,
+			User: id.User, CredentialID: id.CredentialID, Bundle: l.bundles["sg"], At: time.Now().UTC(), OK: true, Outcome: "installed", Run: "run-u",
+			Installed: true, InstalledBundle: l.bundles["sg"], InstalledRun: "run-u",
+			InstalledTarget: &targetIdentity{ServerID: id.ServerID, Address: id.Address, Port: id.Port, User: id.User, Fingerprint: id.Fingerprint, CredentialID: id.CredentialID},
+			Verify:          &nodeVerify{At: time.Now().UTC(), State: verifyUnread, Source: "post_install"}}
+	})
+	if ns := nodeState(t, f.s, "sg"); ns.State != nodeInSync {
+		t.Fatalf("setup: %+v", ns)
+	}
+	plan := f.get(t).Plan
+	var found *planStep
+	for i := range plan.Steps {
+		if plan.Steps[i].NodeID == "sg" {
+			found = &plan.Steps[i]
+		}
+	}
+	if found == nil || !strings.Contains(strings.Join(found.Warnings, "|"), "没有读回") {
+		t.Fatalf("plan %+v", plan.Steps)
+	}
+	run := f.start(t)
+	f.mu.Lock()
+	f.extra["sg"] = "manifest-begin\nmanifest node sg\nmanifest deployment " + mustDeployment(t, f.s) + "\nmanifest server " + f.sid["sg"] +
+		"\nmanifest bundle " + l.bundles["sg"] + "\nmanifest-end\n"
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); st.Phase != phaseDone || st.Outcome != "adopted" || st.Evidence != "host_record" || f.scripts("sg") != 0 {
+		t.Fatalf("adopt: %+v scripts %d", st, f.scripts("sg"))
 	}
 }
