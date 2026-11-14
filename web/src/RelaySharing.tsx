@@ -8,7 +8,7 @@ import { Alert, Checkbox, Divider, Form, InputNumber, Select, Space, Tag, Toolti
 import type { ReactNode } from "react";
 import type { PathGrade, PathMeasured, PathQuality, RelayOverride, RelayStatus, Sharing, SharingRelay, Topology } from "./types";
 import { PATH_QUALITY_DEFAULTS, probeCostBytes } from "./types";
-import { DataTable, EllipsisText, Explain, KV, StatusTag, TimeText, bytes, type StatusKind } from "./ui";
+import { DataTable, EllipsisText, Explain, KV, StatusTag, TimeText, bytes, formatRelative, type StatusKind } from "./ui";
 
 export const RELAY_STATUS: Record<RelayStatus, { kind: StatusKind; label: string; help: string }> = {
   active: { kind: "ok", label: "分担中", help: "按质量权重接收新连接" },
@@ -84,12 +84,15 @@ function MeasuredShort({ m }: { m?: PathMeasured }) {
 function ProbeCell({ r }: { r: SharingRelay }) {
   const p = r.probe;
   if (!p || !p.at) return <Typography.Text type="secondary">{p && p.bytes_today ? `今日 ${bytes(p.bytes_today)}` : "未探测"}</Typography.Text>;
+  const speed = `${p.kbps !== undefined ? `${(p.kbps / 1000).toFixed(1)} Mbit/s` : "—"}${p.loss_pct !== undefined ? ` · 丢 ${p.loss_pct.toFixed(0)}%` : ""}`;
+  // Two lines: verdict + speed, then when and today's bytes.
   return (
-    <span data-testid={`probe-${r.id}`}>
-      {p.ok === false ? <Tag color="error">不达标</Tag> : p.ok ? <Tag color="success">达标</Tag> : null}
-      {p.kbps !== undefined ? `${(p.kbps / 1000).toFixed(1)} Mbit/s` : "—"}
-      {p.loss_pct !== undefined ? ` · 丢 ${p.loss_pct.toFixed(0)}%` : ""}{" "}
-      <Typography.Text type="secondary">
+    <span data-testid={`probe-${r.id}`} className="cell-stack">
+      <span className="cell-line" title={speed}>
+        {p.ok === false ? <Tag color="error">不达标</Tag> : p.ok ? <Tag color="success">达标</Tag> : null}
+        {speed}
+      </span>
+      <Typography.Text type="secondary" className="cell-line">
         <TimeText value={p.at} /> · 今日 {bytes(p.bytes_today)}
       </Typography.Text>
     </span>
@@ -218,10 +221,13 @@ export function RelaySharingView({ s, compact }: { s: Sharing; compact?: boolean
     <div data-testid="relay-sharing">
       {head}
       {facts}
+      {/* Fixed layout: the declared widths (940 px) are what the browser uses, and the
+          one-line cells are cut inside them instead of widening the table (974 px at 1280). */}
       <DataTable<SharingRelay>
         size="small"
         rowKey="id"
         dataSource={s.relays}
+        tableLayout="fixed"
         columns={[
           {
             title: "中继",
@@ -229,45 +235,53 @@ export function RelaySharingView({ s, compact }: { s: Sharing; compact?: boolean
             width: 150,
             render: (_, r) => (
               <div className="cell-stack">
-                <span>
-                  {r.name} {s.designated === r.id ? <Tag title="本机自己的组解析等无中继标记的流量走它">指定</Tag> : null}
+                <span className="inline-status">
+                  <EllipsisText text={r.name} />
+                  {s.designated === r.id ? <Tag title="本机自己的组解析等无中继标记的流量走它">指定</Tag> : null}
                 </span>
-                {r.iface ? <Typography.Text type="secondary" className="mono">{r.iface}</Typography.Text> : null}
+                {r.iface ? <EllipsisText className="muted" mono text={r.iface} /> : null}
               </div>
             ),
           },
           {
             title: "状态",
             kind: "flex",
-            width: 150,
+            width: 170,
             render: (_, r) => {
               const st = RELAY_STATUS[r.status] ?? RELAY_STATUS.unknown;
+              // At most two lines: the tag (and a short "清理中" tag), then the reason with its time on one cut line.
+              const why = r.reason && r.status !== "active" ? REASON[r.reason] ?? r.reason : "";
+              const since = r.status_since && !r.status_since.startsWith("0001-") ? formatRelative(new Date(r.status_since)) : "";
               return (
                 <div className="cell-stack">
-                  <span data-testid={`relay-status-${r.id}`}>
-                    <StatusTag kind={st.kind} title={st.help}>
-                      {st.label}
-                    </StatusTag>
+                  <span className="inline-status">
+                    <span data-testid={`relay-status-${r.id}`}>
+                      <StatusTag kind={st.kind} title={st.help}>
+                        {st.label}
+                      </StatusTag>
+                    </span>
+                    {r.drain ? (
+                      <Tooltip title="已有连接正被清理">
+                        <Tag color="error" className="tag-tight" data-testid={`relay-drain-${r.id}`}>
+                          清理中<span className="sr-only">：已有连接正被清理</span>
+                        </Tag>
+                      </Tooltip>
+                    ) : null}
                   </span>
-                  {r.reason && r.status !== "active" ? (
-                    <Typography.Text type="secondary" className="cell-small">
-                      {REASON[r.reason] ?? r.reason}，<TimeText value={r.status_since} />
-                    </Typography.Text>
-                  ) : null}
-                  {r.drain ? (
-                    <Typography.Text type="danger" className="cell-small" data-testid={`relay-drain-${r.id}`}>
-                      已有连接正被清理
-                    </Typography.Text>
-                  ) : null}
+                  {why ? <EllipsisText className="cell-small muted" text={since ? `${why}，${since}` : why} /> : null}
                 </div>
               );
             },
           },
           {
             title: "新连接份额",
-            kind: "flex",
+            kind: "fixed",
             width: 100,
-            render: (_, r) => <span data-testid={`relay-weight-${r.id}`}>{share(r)}</span>,
+            render: (_, r) => (
+              <span data-testid={`relay-weight-${r.id}`} className="cell-line">
+                <EllipsisText text={share(r)} />
+              </span>
+            ),
           },
           {
             title: "质量（网关测量）",
@@ -276,7 +290,9 @@ export function RelaySharingView({ s, compact }: { s: Sharing; compact?: boolean
             render: (_, r) => (
               <div className="cell-stack">
                 <StatusTag kind={GRADE[r.grade]?.kind ?? "unverified"}>{GRADE[r.grade]?.label ?? r.grade}</StatusTag>
-                <Measured m={r.measured} />
+                <span className="cell-line">
+                  <Measured m={r.measured} />
+                </span>
               </div>
             ),
           },
@@ -285,13 +301,12 @@ export function RelaySharingView({ s, compact }: { s: Sharing; compact?: boolean
             kind: "flex",
             width: 170,
             render: (_: unknown, r: SharingRelay) => (
-              <Typography.Text className="cell-small">
-                ↓ {rate(r.traffic.rx_bps)} ↑ {rate(r.traffic.tx_bps)}
-                <br />
-                <Typography.Text type="secondary">
-                  累计 ↓ {bytes(r.traffic.rx_bytes)} ↑ {bytes(r.traffic.tx_bytes)} · 新连接 {r.traffic.new_conns}
-                </Typography.Text>
-              </Typography.Text>
+              <span className="cell-stack cell-small">
+                <span className="cell-line">
+                  ↓ {rate(r.traffic.rx_bps)} ↑ {rate(r.traffic.tx_bps)}
+                </span>
+                <EllipsisText className="muted" text={`累计 ↓ ${bytes(r.traffic.rx_bytes)} ↑ ${bytes(r.traffic.tx_bytes)} · 新连接 ${r.traffic.new_conns}`} />
+              </span>
             ),
           },
           { title: "吞吐探测", kind: "flex", width: 170, render: (_: unknown, r: SharingRelay) => <ProbeCell r={r} /> },

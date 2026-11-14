@@ -17,6 +17,9 @@
 // opts.url points the iframe at another origin/path of the panel or the
 // demo (default: this page's origin and path). The demo's own marker bar
 // and watermark ([data-demo-chrome]) are not audited.
+// Second pass: `stack` lists, below 768 px, tables that are not stacked cards
+// but scroll, cards wider than their box and pinned columns; `alerts` lists
+// pages with more than one page-level alert or a section with more than one.
 window.__AUDIT_PAGES = ["", "topology", "exits", "rules", "lists", "servers", "keys", "cloudflare", "remote", "deploy", "unlock", "leak"];
 window.__audit = async function (width, pages, wait, opts) {
   opts = opts || {};
@@ -61,12 +64,32 @@ window.__audit = async function (width, pages, wait, opts) {
       if (el.matches('button,.ant-tag,th,.ant-menu-item,.ant-tabs-tab,.ant-descriptions-item-label,.ant-statistic-title,.ant-form-item-label>label,.ant-segmented-item-label,.ant-steps-item-title,.ant-select-selection-item,.ant-radio-button-wrapper,.ant-list-item-meta-title,.ant-card-head-title,.ant-badge-status-text,code,h1,h2,h3,h4,.ant-page-header-heading-title')) { const n = lines(el); if (n >= 2 && txt(el).length > 0) push('w', res.wrap, el, n + ' lines w=' + Math.round(r.width)); }
       if (el.children.length === 0 && txt(el).length >= 3 && r.width < 34 && r.height > 50) push('q', res.squeeze, el, Math.round(r.width) + 'x' + Math.round(r.height));
     }
+    // Second pass (docs/ui-layout.md): below the tablet breakpoint every
+    // row-oriented table is stacked cards (no table that scrolls sideways, no
+    // pinned column, no card wider than its box); at every width at most one
+    // page-level alert and at most one alert per section.
+    res.stack = []; res.alerts = [];
+    if (vw < 768) {
+      for (const w of D.querySelectorAll('.data-table-wrap')) {
+        if (w.closest('[data-demo-chrome]')) continue;
+        if (w.dataset.stacked !== 'true') { const sc = w.querySelector('.ant-table-content,.ant-table-body'); if (sc && sc.scrollWidth > sc.clientWidth + 2) push('k', res.stack, w, 'table scrolls ' + (sc.scrollWidth - sc.clientWidth) + 'px (not stacked)'); }
+        for (const c of w.querySelectorAll('.data-card')) if (c.scrollWidth > c.clientWidth + 2) push('k', res.stack, c, 'card content +' + (c.scrollWidth - c.clientWidth) + 'px');
+      }
+      for (const f of D.querySelectorAll('.page .ant-table-cell-fix-right')) { if (f.getBoundingClientRect().width > 0) { push('k', res.stack, f, 'pinned column at phone width'); break; } }
+    }
+    const LOCAL = '.section, .tile, .group-card, .data-table-wrap, .ant-table, .ant-drawer, .ant-modal, .sticky-bar, .doc-bar, .ant-collapse, .issues';
+    const pageLevel = [...D.querySelectorAll('.page .ant-alert')].filter(a => !a.parentElement.closest(LOCAL));
+    if (pageLevel.length > 1) res.alerts.push(pageLevel.length + ' page-level alerts: ' + pageLevel.map(txt).join(' | '));
+    for (const sec of D.querySelectorAll('.page .section')) {
+      const own = [...sec.querySelectorAll('.ant-alert')].filter(a => a.parentElement.closest(LOCAL) === sec);
+      if (own.length > 1) res.alerts.push(own.length + ' alerts in section «' + txt(sec.querySelector('.section-head') || sec) + '»');
+    }
     out[p || 'overview'] = res;
   }
   window.__last = out;
   return out;
 };
-window.__fmt = (o, keys) => Object.entries(o).filter(([k]) => !keys || keys.includes(k)).map(([k, v]) => k + ': ox=' + v.ox + '\n' + ['spill', 'hscroll', 'beyond', 'outCard', 'wrap', 'squeeze', 'absOut'].filter(c => v[c].length).map(c => '  ' + c + ':\n    ' + v[c].join('\n    ')).join('\n')).join('\n');
+window.__fmt = (o, keys) => Object.entries(o).filter(([k]) => !keys || keys.includes(k)).map(([k, v]) => k + ': ox=' + v.ox + '\n' + ['spill', 'hscroll', 'beyond', 'outCard', 'wrap', 'squeeze', 'absOut', 'stack', 'alerts'].filter(c => v[c] && v[c].length).map(c => '  ' + c + ':\n    ' + v[c].join('\n    ')).join('\n')).join('\n');
 // The whole demo matrix: pages × scenarios × themes × widths. Scenarios
 // default to the demo's own list (window.__meridianDemo in the iframe).
 // Returns { "<scenario>/<theme>/<width>": { "<page>": result } }.
@@ -93,6 +116,6 @@ window.__auditDemo = async function (o) {
 };
 // Only the combinations with findings.
 window.__fmtDemo = o => Object.entries(o).map(([k, r]) => {
-  const body = window.__fmt(Object.fromEntries(Object.entries(r).filter(([p, v]) => p !== '__gaps' && (v.ox > 0 || ['spill', 'hscroll', 'beyond', 'outCard', 'wrap', 'squeeze', 'absOut'].some(c => v[c].length)))));
+  const body = window.__fmt(Object.fromEntries(Object.entries(r).filter(([p, v]) => p !== '__gaps' && (v.ox > 0 || ['spill', 'hscroll', 'beyond', 'outCard', 'wrap', 'squeeze', 'absOut', 'stack', 'alerts'].some(c => v[c] && v[c].length)))));
   return body || r.__gaps ? '== ' + k + (r.__gaps ? ' (requests the demo could not answer: ' + r.__gaps.join(', ') + ')' : '') + '\n' + body : '';
 }).filter(Boolean).join('\n');

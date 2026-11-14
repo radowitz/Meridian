@@ -357,8 +357,8 @@ describe("rules page with 165 rules", () => {
     const tableEl = row.closest("table")!;
     const heads = [...tableEl.querySelectorAll("thead th")].map((th) => th.textContent?.trim()).filter(Boolean);
     expect(heads).toEqual(["顺序", "规则", "去向", "要求与遮蔽", "校验", "启用", "操作"]);
-    // The sum of the declared widths fits the 1016 px content box at 1280.
-    expect(parseInt(tableEl.style.width, 10)).toBeLessThanOrEqual(1000);
+    // The sum of the declared widths (with the expand column) fits the 1016 px content box at 1280.
+    expect(parseInt(tableEl.style.width, 10)).toBeLessThanOrEqual(1016);
     expect(row.querySelector("td.col-actions.ant-table-cell-fix-right")).not.toBeNull();
     // The match line is one line cut with "…": the whole text, explicit domains included, is focusable.
     // Two lines: the name (cut, focusable) with its origin tag on the same line, then the match.
@@ -374,9 +374,15 @@ describe("rules page with 165 rules", () => {
     const match = row.querySelector<HTMLElement>(".rule-cell-match")!;
     expect(match).toHaveAttribute("tabindex", "0");
     expect(match).toHaveTextContent("service-4.with-a-rather-long-subdomain.example.net · 显式域名 2 个：a-4.example.org、b-4.example.org");
-    // Shadowing stays in its own wrapping column, not under the action column.
+    // Shadowing: a compact indicator in its own fixed column (never under the action column);
+    // the full text is one click away in the row's detail.
+    const hint = await screen.findByTestId("rule-hints-r002");
+    expect(hint).toHaveTextContent("不会命中");
+    expect(hint.closest("td")!.className).toContain("col-fixed");
+    expect(hint).toHaveAttribute("aria-label", expect.stringContaining("永远不会命中（被 第 1 条 遮蔽）"));
+    fireEvent.click(hint);
     await waitFor(() => expect(screen.getByTestId("rule-shadow-r002")).toHaveTextContent("永远不会命中（被 第 1 条 遮蔽）"));
-    expect(screen.getByTestId("rule-shadow-r002").closest("td")!.className).toContain("col-flex");
+    expect(screen.getByTestId("rule-shadow-r002").closest("tr")!.className).toContain("ant-table-expanded-row");
 
     // Header: one primary action, the rest in "更多操作".
     const actions = screen.getByTestId("page-header-actions");

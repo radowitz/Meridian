@@ -12,15 +12,20 @@ import {
 } from "@ant-design/icons";
 import {
   Background,
+  BaseEdge,
   Controls,
   MiniMap,
+  Position,
   ReactFlow,
   ReactFlowProvider,
+  getBezierPath,
+  getSmoothStepPath,
   useEdgesState,
   useNodesState,
   useReactFlow,
   type Connection,
   type Edge,
+  type EdgeProps,
   type Node as RFNode,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -175,12 +180,61 @@ export function autoLayout(nodes: Node[], groups?: readonly { members: string[] 
       const r = i % LAYOUT.rowsPerColumn;
       // Centre short layers against the tallest possible layer.
       const offset = ((LAYOUT.rowsPerColumn - rows) * LAYOUT.rowHeight) / 2;
-      out.set(n.id, { x: (col + c) * LAYOUT.colWidth, y: offset + r * LAYOUT.rowHeight });
+      // A wrapped layer's later columns are shifted down by a fraction of a
+      // row (brick pattern): a link to a card in column c then crosses the
+      // columns before it at the height of a gap between their cards, not
+      // through a card (see RoutedEdge).
+      const brick = Math.round((c * LAYOUT.rowHeight) / cols);
+      out.set(n.id, { x: (col + c) * LAYOUT.colWidth, y: offset + brick + r * LAYOUT.rowHeight });
     });
     col += cols;
   }
   return out;
 }
+
+/** Width of a node card on the canvas (styles.css .react-flow__node.topo-node). */
+export const NODE_WIDTH = 200;
+
+/**
+ * Geometry of a link drawn left to right (source's right side to target's
+ * left side). A link that skips a column is drawn as right angles: across the
+ * gap next to its source, down or up in that gap (no card stands there), then
+ * straight into the target at the target's height, which the brick layout
+ * puts between the cards of the columns it crosses. Its label sits just
+ * before the target. Other links are the usual curve. Exported for tests.
+ */
+export function edgeRoute(sx: number, sy: number, tx: number, ty: number): { routed: boolean; centerX: number; labelX: number; labelY: number } {
+  const gap = LAYOUT.colWidth - NODE_WIDTH;
+  const routed = tx - sx > LAYOUT.colWidth;
+  return routed ? { routed, centerX: sx + gap / 2, labelX: tx - gap / 2, labelY: ty } : { routed, centerX: (sx + tx) / 2, labelX: (sx + tx) / 2, labelY: (sy + ty) / 2 };
+}
+
+/** The canvas's only edge type: a curve between neighbouring columns, right angles around the cards otherwise. */
+function RoutedEdge(p: EdgeProps) {
+  const r = edgeRoute(p.sourceX, p.sourceY, p.targetX, p.targetY);
+  const [path, lx, ly] = r.routed
+    ? getSmoothStepPath({ ...p, borderRadius: 10, centerX: r.centerX })
+    : getBezierPath({ sourceX: p.sourceX, sourceY: p.sourceY, sourcePosition: p.sourcePosition, targetX: p.targetX, targetY: p.targetY, targetPosition: p.targetPosition });
+  return (
+    <BaseEdge
+      id={p.id}
+      path={path}
+      markerEnd={p.markerEnd}
+      style={p.style}
+      interactionWidth={p.interactionWidth}
+      label={p.label}
+      labelX={r.routed ? r.labelX : lx}
+      labelY={r.routed ? r.labelY : ly}
+      labelStyle={p.labelStyle}
+      labelShowBg={p.labelShowBg}
+      labelBgStyle={p.labelBgStyle}
+      labelBgPadding={p.labelBgPadding}
+      labelBgBorderRadius={p.labelBgBorderRadius}
+    />
+  );
+}
+
+const EDGE_TYPES = { routed: RoutedEdge };
 
 function toFlow(topo: Topology, servers: Map<string, ServerView>, issues: Issue[]): { nodes: RFNode[]; edges: Edge[] } {
   const bad = new Set(issues.filter((i) => i.severity === "error").flatMap((i) => [i.node_id, i.link_id]).filter(Boolean) as string[]);
@@ -191,12 +245,16 @@ function toFlow(topo: Topology, servers: Map<string, ServerView>, issues: Issue[
       id: n.id,
       position: n.x === undefined && n.y === undefined && auto ? auto.get(n.id)! : { x: n.x ?? 0, y: n.y ?? 0 },
       data: { label: nodeLabel(n, n.server_id ? servers.get(n.server_id) : undefined) },
+      // The layout runs left to right, so links leave a card on its right and enter on its left.
+      sourcePosition: Position.Right,
+      targetPosition: Position.Left,
       className: `topo-node role-${n.role}${n.residential ? " residential" : ""}${n.role === "exit" && n.external ? " external" : ""}${n.role === "exit" && n.via_exit ? " nested" : ""}${bad.has(n.id) ? " has-error" : ""}`,
     })),
     edges: topo.links.map((l) => ({
       id: l.id,
       source: l.from,
       target: l.to,
+      type: "routed",
       label: transportLabel[l.transport] + (l.standby ? " · 待命" : "") + (l.enabled ? "" : " · 停用"),
       labelBgPadding: [6, 3] as [number, number],
       labelBgBorderRadius: 4,
@@ -253,6 +311,7 @@ function Canvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        edgeTypes={EDGE_TYPES}
         deleteKeyCode={null}
         onNodeDragStop={(_, node) =>
           onChange({ ...topo, nodes: topo.nodes.map((n) => (n.id === node.id ? { ...n, x: Math.round(node.position.x), y: Math.round(node.position.y) } : n)) })

@@ -712,8 +712,12 @@ function GroupCard({
                 </span>
                 <span className="member-pos">{i + 1}</span>
                 <div className="member-main">
-                  <Space size={[4, 2]} wrap>
-                    <Link to={href("topology", id)}>{m?.name || id}</Link>
+                  <Space size={[4, 2]} wrap className="member-line">
+                    <Tooltip title={m?.name || id} trigger={["hover", "focus"]} mouseEnterDelay={0.2}>
+                      <span className="ellipsis-text member-name">
+                        <Link to={href("topology", id)}>{m?.name || id}</Link>
+                      </span>
+                    </Tooltip>
                     {m ? <MemberAttrs m={m} /> : null}
                     {nodes?.get(id) ? <ExitKindTags node={nodes.get(id)!} name={name} /> : null}
                     {m?.actual_active ? (
@@ -1353,7 +1357,7 @@ export function ExitKindTags({ node, name }: { node: Node; name: (id: string) =>
   return (
     <>
       {isNestedExit(node) ? (
-        <Tooltip title="这个出口的唯一隧道连到中继出口，再由中继出口经枢纽到达；它不直接连枢纽。">
+        <Tooltip title={`经 ${name(node.via_exit!)} 中继：这个出口的唯一隧道连到中继出口，再由中继出口经枢纽到达；它不直接连枢纽。`}>
           <Tag color="purple" data-testid={`nested-tag-${node.id}`}>
             经 {name(node.via_exit!)} 中继
           </Tag>

@@ -354,3 +354,31 @@ describe("table width budget at 1280 with real-size rows", () => {
     expectWithinBudget(2);
   });
 });
+
+// ------------------------------------------------- relay sharing (exits) ---
+
+describe("table width budget: relay sharing from the demo scenarios", () => {
+  for (const scenario of ["healthy", "degraded"]) {
+    it(`${scenario}: the six columns fit a section at 1280 and the browser is held to the declared widths`, async () => {
+      const { responsesOf } = await import("./demo/testkit");
+      const { RelaySharingView } = await import("./RelaySharing");
+      const { App: AntApp } = await import("antd");
+      const { render } = await import("@testing-library/react");
+      const up = (await responsesOf(scenario))["GET /api/upstream"].body as { sharing?: Parameters<typeof RelaySharingView>[0]["s"] };
+      expect(up.sharing, "the scenario has relay sharing").toBeTruthy();
+      render(
+        <AntApp>
+          <section className="section">
+            <RelaySharingView s={up.sharing!} />
+          </section>
+        </AntApp>,
+      );
+      const [t] = expectWithinBudget(1);
+      expect(t.budget).toBe(TABLE_BUDGET.section);
+      const table = document.querySelector<HTMLTableElement>('[data-testid="relay-sharing"] .data-table table')!;
+      // table-layout: fixed — nowrap cell content cannot widen the columns beyond the declared sum.
+      expect(table.style.tableLayout).toBe("fixed");
+      expect([...table.querySelectorAll("thead th")].map((th) => th.textContent?.trim())).toEqual(["中继", "状态", "新连接份额", "质量（网关测量）", "流量", "吞吐探测"]);
+    });
+  }
+});

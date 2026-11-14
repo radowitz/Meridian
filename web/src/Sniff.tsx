@@ -9,7 +9,7 @@ import { Alert, Button, Checkbox, Input, Space, Switch, Tag, Typography } from "
 import { useEffect, useState } from "react";
 import * as api from "./api";
 import type { SniffRecord, SniffSettings, SniffView } from "./types";
-import { ApiErrorAlert, DataTable, Explain, Facts, Mono, SafetyNotice, Section, StatusTag, TimeText, useApi } from "./ui";
+import { ApiErrorAlert, DataTable, EllipsisText, Explain, Facts, Mono, SafetyNotice, Section, StatusTag, TimeText, useApi } from "./ui";
 
 /** Plain words for the forwarder's "no name" reasons (internal/sniff). */
 export const SNIFF_WHY: Record<string, string> = {
@@ -186,11 +186,12 @@ export function SniffSection() {
                   width: 190,
                   render: (_, r) =>
                     r.sniffed ? (
-                      <Space size={2} wrap>
+                      // One line: tag + the name cut with "…" (full text on hover / focus); wraps only inside a phone card.
+                      <span className="inline-status sniff-why">
                         <Tag color="blue">按名字</Tag>
-                        {names && r.name ? <Typography.Text code className="mono">{r.name}</Typography.Text> : null}
+                        {names && r.name ? <EllipsisText className="sniff-name" mono text={r.name} /> : null}
                         {r.why === "ech_outer" ? <Tag>ECH 明文名</Tag> : null}
-                      </Space>
+                      </span>
                     ) : (
                       <Space size={2} wrap>
                         <Tag>按地址</Tag>

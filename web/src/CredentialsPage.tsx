@@ -569,8 +569,8 @@ export default function CredentialsPage() {
                 width: 200,
                 render: (_, c) => (c.kind === "private_key" ? <Mono ellipsis>{c.fingerprint}</Mono> : <Typography.Text type="secondary">—</Typography.Text>),
               },
-              { title: "创建", kind: "fixed", width: 100, render: (_, c) => <TimeText value={c.created_at} /> },
-              { title: "最近轮换", kind: "fixed", width: 100, render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
+              { title: "创建", kind: "fixed", width: 100, card: "detail", render: (_, c) => <TimeText value={c.created_at} /> },
+              { title: "最近轮换", kind: "fixed", width: 100, card: "detail", render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
               {
                 title: "使用者",
                 kind: "flex",
@@ -942,7 +942,7 @@ function SocksSection({ focus, openCreate }: { focus: boolean; openCreate: boole
                     </span>
                   ),
                 },
-                { title: "备注", kind: "flex", width: 160, render: (_, c) => c.notes || <Typography.Text type="secondary">—</Typography.Text> },
+                { title: "备注", kind: "flex", width: 160, card: "detail", render: (_, c) => c.notes || <Typography.Text type="secondary">—</Typography.Text> },
                 {
                   title: "用户名和密码",
                   kind: "fixed",
@@ -954,8 +954,8 @@ function SocksSection({ focus, openCreate }: { focus: boolean; openCreate: boole
                     </Space>
                   ),
                 },
-                { title: "创建", kind: "fixed", width: 100, render: (_, c) => <TimeText value={c.created_at} /> },
-                { title: "最近轮换", kind: "fixed", width: 100, render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
+                { title: "创建", kind: "fixed", width: 100, card: "detail", render: (_, c) => <TimeText value={c.created_at} /> },
+                { title: "最近轮换", kind: "fixed", width: 100, card: "detail", render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
                 {
                   title: "使用者",
                   kind: "flex",

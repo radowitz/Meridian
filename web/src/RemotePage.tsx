@@ -48,11 +48,13 @@ import {
   CopyButton,
   DataView,
   EmptyState,
+  Explain,
   Facts,
   IssueList,
   Mono,
   Page,
   RefusedDialog,
+  SafetyNotice,
   Section,
   StatusTag,
   TimeText,
@@ -387,27 +389,38 @@ interface DeviceValues {
   preshared_key: boolean;
 }
 
+/**
+ * What each mode does NOT do, kept visible on its card (safety-relevant);
+ * the full explanation from the API is behind 「了解更多」.
+ */
+const MODE_SAFETY: Record<RemoteMode, string | null> = {
+  full: null,
+  home: "上网流量不经过 Meridian，不受分流和防泄漏规则保护；部分 DNS 查询可能仍走当前网络。",
+};
+
 function ModeChoice({ value, onChange, modes }: { value?: RemoteMode; onChange?: (m: RemoteMode) => void; modes: Record<string, string> }) {
   return (
     <div className="option-cards" role="radiogroup" aria-label="路由模式">
       {(["full", "home"] as RemoteMode[]).map((m) => (
-        <button
-          key={m}
-          type="button"
-          role="radio"
-          aria-checked={value === m}
-          className={`option-card${value === m ? " selected" : ""}`}
-          onClick={() => onChange?.(m)}
-        >
-          <div className="option-card-title">
-            {MODE_TITLE[m]}
-            {m === "full" ? <Tag color="blue">推荐</Tag> : null}
-          </div>
-          <div className="option-card-desc">{MODE_SHORT[m]}</div>
-          <div className="option-card-desc" style={{ marginTop: 6, fontSize: 12 }}>
-            {modes[m]}
-          </div>
-        </button>
+        <div key={m} className={`option-card option-card-box${value === m ? " selected" : ""}`} data-testid={`mode-card-${m}`}>
+          <button type="button" role="radio" aria-checked={value === m} className="option-card-pick" onClick={() => onChange?.(m)}>
+            <span className="option-card-title">
+              {MODE_TITLE[m]}
+              {m === "full" ? <Tag color="blue">推荐</Tag> : null}
+            </span>
+            <span className="option-card-desc">{MODE_SHORT[m]}</span>
+          </button>
+          {MODE_SAFETY[m] ? (
+            <div className="option-card-safety" data-testid={`mode-safety-${m}`}>
+              {MODE_SAFETY[m]}
+            </div>
+          ) : null}
+          {modes[m] ? (
+            <Explain summary={null}>
+              {modes[m]}
+            </Explain>
+          ) : null}
+        </div>
       ))}
     </div>
   );
@@ -718,21 +731,11 @@ export default function RemotePage() {
       <DataView state={view} rows={8}>
         {(v) => (
           <>
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              data-testid="remote-independent"
-              message="远程接入是独立的资源：保存拓扑、按顺序部署引导都不会打开、关闭或改动这里的开关和设备"
-              description="只有这一页能改它。这里的改动和别的改动一样，要「安装到网关」（或部署引导里网关那一步）之后才在网关上生效。"
-            />
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="手机在外网（蜂窝或别人的 Wi-Fi）能否真的连回来，面板验证不了"
-              description="面板只能生成配置和读网关上的握手记录。路由器转发、运营商是否放行 UDP、DDNS 是否指向正确的地址，都要你用手机在外网实际连一次才算验证。"
-            />
+            <div className="page-notes" data-testid="remote-independent">
+              <Explain summary="远程接入是独立的资源：保存拓扑、按顺序部署引导都不会打开、关闭或改动这里的开关和设备。">
+                只有这一页能改它。这里的改动和别的改动一样，要「安装到网关」（或部署引导里网关那一步）之后才在网关上生效。
+              </Explain>
+            </div>
             <SettingsSection
               view={v}
               onSaved={(r, what) => {
@@ -763,6 +766,9 @@ export default function RemotePage() {
                 </Space>
               }
             >
+              <SafetyNotice kind="unverified" title="手机在外网（蜂窝或别人的 Wi-Fi）能否真的连回来，面板验证不了">
+                面板只能生成配置和读网关上的握手记录。路由器转发、运营商是否放行 UDP、DDNS 是否指向正确的地址，都要你用手机在外网实际连一次才算验证。
+              </SafetyNotice>
               {!v.settings.endpoint || !v.settings.listen_port ? (
                 <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="先在上面填写 Endpoint 和监听端口，才能添加设备。" />
               ) : null}

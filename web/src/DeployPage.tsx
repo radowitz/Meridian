@@ -42,6 +42,7 @@ import { roleLabel } from "./types";
 import { WSSPanel } from "./WSS";
 import {
   DataTable,
+  EllipsisLink,
   Explain,
   SplitStatus,
   ApiErrorAlert,
@@ -1039,10 +1040,10 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
             kind: "flex",
             width: 170,
             render: (_, n) => (
-              <Space size={4} wrap>
-                <Link to={href("topology", n.id)}>{n.name || n.id}</Link>
-                <Tag>{roleLabel[n.role]}</Tag>
-              </Space>
+              <span className="inline-status">
+                <EllipsisLink to={href("topology", n.id)} text={n.name || n.id} />
+                <Tag className="tag-tight">{roleLabel[n.role]}</Tag>
+              </span>
             ),
           },
           {
@@ -1055,10 +1056,10 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
               if (!sv) return servers ? <StatusTag kind="failed">服务器不存在</StatusTag> : <Typography.Text type="secondary">…</Typography.Text>;
               const r = serverReadiness(sv);
               return (
-                <Space size={4} wrap>
-                  <Link to={href("servers", sv.id)}>{sv.name}</Link>
+                <span className="inline-status">
+                  <EllipsisLink to={href("servers", sv.id)} text={sv.name} />
                   <StatusTag kind={r.kind}>{r.label}</StatusTag>
-                </Space>
+                </span>
               );
             },
           },

@@ -728,3 +728,154 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
   .hub-line { grid-template-columns: auto minmax(0, 1fr); }
   .hub-line-cause { grid-column: 1 / -1; }
 }
+
+/* ============================================================ second pass
+   (docs/ui-layout.md, "Second pass"). */
+
+/* DataTable stacked mode (phone width, below the tablet breakpoint): one card
+   per row, label + value, the actions in the card's top-right corner, no
+   sideways scrolling and no pinned column. */
+.data-cards { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.data-card {
+  border: 1px solid var(--m-border); border-radius: 8px; background: var(--m-surface);
+  padding: 10px 12px; min-width: 0; display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere;
+}
+.data-card.row-disabled > :not(.data-card-head) { opacity: 0.6; }
+.data-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
+.data-card-title { flex: 1 1 auto; min-width: 0; font-weight: 600; }
+.data-card-actions { flex: none; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; max-width: 60%; }
+.data-card-actions .table-actions { flex-wrap: wrap; white-space: normal; justify-content: flex-end; }
+.data-card-fields { margin: 0; display: grid; grid-template-columns: minmax(56px, max-content) minmax(0, 1fr); gap: 4px 12px; font-size: 13px; min-width: 0; }
+.data-card-field { display: contents; }
+.data-card-field > dt { color: var(--m-text-2); white-space: nowrap; word-break: keep-all; }
+.data-card-field > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+/* In a card there is room to wrap: cut text shows in full (the tooltip stays). */
+.data-card .ellipsis-text { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.data-card .rule-cell-head, .data-card .rule-target, .data-card .cell-nowrap-flex { flex-wrap: wrap !important; }
+.data-card .ant-space { flex-wrap: wrap; max-width: 100%; }
+.data-card .ant-table-wrapper { max-width: 100%; }
+.data-card-toggle { align-self: flex-start; font-size: 13px; }
+.data-card-more { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; border-top: 1px dashed var(--m-border); min-width: 0; }
+.data-card-more[hidden] { display: none; }
+.data-card-more .row-secondary { grid-template-columns: minmax(0, 1fr); }
+.data-cards-empty { padding: 16px 0; }
+.data-cards-pagination { margin-top: 10px; display: flex; flex-wrap: wrap; row-gap: 8px; justify-content: flex-end; }
+/* Labels are at most 8em wide (a longer one wraps between its characters, not over the value). */
+.data-card-field > dt { white-space: normal; word-break: normal; max-width: 8em; }
+
+/* Rules: the requirement / shadow indicator (compact tags) opens the row's detail. */
+.rule-hint-btn {
+  display: inline-flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; max-width: 100%;
+  border: 0; background: none; padding: 0; margin: 0; cursor: pointer; font: inherit; color: inherit; text-align: left;
+}
+.rule-hint-btn .ant-tag { margin-inline-end: 0; cursor: pointer; }
+.rule-hint-btn:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px; border-radius: 4px; }
+.rules-table td.col-fixed .rule-target { max-width: 100%; }
+
+/* Option cards with a pick button, one visible safety line and 「了解更多」 (remote access modes). */
+.option-card-box { cursor: default; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.option-card-pick {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; border: 0; background: none; padding: 0; margin: 0;
+  text-align: left; color: inherit; font: inherit; cursor: pointer;
+}
+.option-card-pick:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 4px; border-radius: 4px; }
+.option-card-box:has(.option-card-pick:hover) { border-color: var(--m-accent); }
+.option-card-safety { font-size: 12px; color: var(--m-warn); overflow-wrap: anywhere; }
+.option-card-box .explain { font-size: 12px; }
+
+/* Unlock matrix: region-group and exit names are cut (full name on hover /
+   focus) and bounded by the columns they head, so 9 exits fit at 1280. */
+.matrix-group-name { display: block; margin: 0 auto; }
+.matrix-group-name a { color: inherit; }
+.wide-grid-scroll .matrix-compact th.matrix-exit { max-width: 112px; }
+.matrix-exit-head { max-width: 72px; }
+.matrix-exit-name { max-width: 72px; }
+
+/* Exits: a member row never spills; the name and long tags are cut (full text in their tooltips). */
+.member-main .member-line { max-width: 100%; min-width: 0; }
+.member-main .member-line > .ant-space-item { min-width: 0; max-width: 100%; }
+.member-main .ant-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+.member-name { max-width: 100%; }
+.member-reasons { overflow-wrap: anywhere; }
+.member-health { min-width: 0; }
+
+/* Tile rows: the name is cut (full text on hover / focus), the status keeps its space. */
+.tile-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.tile-item-name { flex: 1 1 auto; min-width: 0; display: flex; }
+.tile-item-name > .ellipsis-text { max-width: 100%; }
+.tile-item-status { flex: none; max-width: 60%; display: inline-flex; justify-content: flex-end; min-width: 0; }
+.tile-item-status .ant-tag { margin-inline-end: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+/* Overview 出口地区组: the group name (the row's identity) keeps at least 8em
+   (or 40 % of the row); the actual member's name is what gets cut. */
+.group-row { grid-template-columns: minmax(min(8em, 40%), 1fr) auto minmax(0, max-content); }
+.group-row-name.ellipsis-text { display: block; max-width: 100%; }
+.group-row-state { min-width: 0; max-width: 100%; overflow: hidden; display: flex; justify-content: flex-end; }
+.group-row-state .ant-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; margin-inline-end: 0; }
+.group-row-state .split-status { max-width: 100%; }
+.group-row-actual { display: block; min-width: 0; max-width: 100%; }
+.group-row-actual > .ellipsis-text { display: block; }
+@media (max-width: 767px) {
+  .group-row { grid-template-columns: minmax(min(8em, 45%), 1fr) minmax(0, max-content); }
+}
+
+/* One cut line inside a table cell (a row stays at most two lines). */
+.cell-line { display: block; max-width: 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cell-stack > .ellipsis-text { max-width: 100%; }
+.tag-tight { margin-inline-end: 0; }
+
+/* Names and lists inside table cells never spill: Space items may shrink, lists break inside. */
+.data-table .ant-space-item, .data-card .ant-space-item { min-width: 0; max-width: 100%; }
+.data-table .inline-status > .ellipsis-text, .data-card .inline-status > .ellipsis-text { flex: 0 1 auto; }
+.data-table .inline-status .ant-tag { flex: none; margin-inline-end: 0; }
+/* overflow-x: clip — a line of mixed CJK and monospace text can report a few
+   pixels of inline overflow at its end (measured 5 px in a browser); clip does
+   not create a scroll box, so the list markers in the padding stay visible. */
+.ref-list { max-width: 100%; min-width: 0; overflow-wrap: anywhere; overflow-x: clip; }
+.ref-list li { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.ref-list li .ant-tag { max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+.cell-wrap-space { max-width: 100%; }
+/* The spinning icon of a loading button: its rotating square's corners stuck
+   out of the button by about 3 px (the circle itself stays inside). */
+.ant-btn .ant-btn-loading-icon, .ant-btn .ant-btn-icon:has(> .anticon-spin) { overflow: hidden; }
+
+/* File pick (antd Upload, read in the browser only): button + chosen name. */
+.file-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; min-width: 0; }
+.file-pick-name { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+
+/* Dark theme: light-only colours left over (unlock chips with white text on
+   the light dark-theme greens/reds, the React Flow minimap mask and nodes). */
+[data-theme="dark"] .cat-unlocked, [data-theme="dark"] .cat-not-unlocked { color: #10151b; }
+[data-theme="dark"] .react-flow {
+  --xy-minimap-mask-background-color: rgba(15, 19, 24, 0.6);
+  --xy-minimap-node-background-color: #343d49;
+  --xy-minimap-node-stroke-color: #4c5664;
+  --xy-handle-background-color: #4c5664;
+  --xy-handle-border-color: #161b22;
+}
+
+/* Follow-up fixes (second pass). */
+/* Rules indicator: always one line (strongest tag + "+N"). */
+.rule-hint-btn { flex-wrap: nowrap; white-space: nowrap; max-width: 100%; overflow: hidden; }
+.rule-hint-btn .ant-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rule-hint-more { flex: none; font-size: 12px; color: var(--m-text-2); }
+/* Sniff decisions: tag + name on one line, the name cut. */
+.sniff-why { flex-wrap: nowrap; max-width: 100%; }
+.sniff-why .ant-tag { flex: none; margin-inline-end: 0; }
+.sniff-why > .ellipsis-text { flex: 0 1 auto; min-width: 0; }
+.data-card .sniff-why { flex-wrap: wrap; }
+/* Exits member rows: the Space gap spaces the tags; antd's own 8 px tag margin made a full-width tag 8 px wider than its row. */
+.member-main .ant-tag, .tile-item .ant-tag, .group-row .ant-tag { margin-inline-end: 0; }
+.member-main .member-line { flex-wrap: wrap; }
+/* Lists of paths and units (deploy, withdraw): break anywhere, so no 5 px of a token sticks out. */
+.ref-list li.mono-small, .ref-list li .mono-small { word-break: break-all; overflow-wrap: anywhere; }
+.ref-list li { max-width: 100%; }
+/* Unlock matrix: the widths come from its <colgroup> (MATRIX_LAYOUT, table-layout: fixed),
+   so the cell minimums of the generic grid (104 / 132 px) must not apply; what does not
+   fit one line in a cell (TCP-only tag, active dot, expiry icon) wraps under the chip. */
+.wide-grid-scroll table.matrix-compact th, .wide-grid-scroll table.matrix-compact td,
+.wide-grid-scroll table.matrix-compact th:first-child, .wide-grid-scroll table.matrix-compact td:first-child { min-width: 0; max-width: none; overflow: hidden; }
+.wide-grid-scroll table.matrix-compact .matrix-service, .wide-grid-scroll table.matrix-compact .matrix-corner { min-width: 0 !important; }
+.wide-grid-scroll table.matrix-compact th.matrix-exit { max-width: none; }
+.matrix-compact .matrix-btn { flex-wrap: wrap; row-gap: 2px; white-space: normal; max-width: 100%; text-align: left; }
+.matrix-compact .matrix-btn .cat-chip { white-space: nowrap; }
+.matrix-compact .matrix-cell { min-width: 0; max-width: 100%; }

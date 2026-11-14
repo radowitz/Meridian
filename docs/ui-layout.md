@@ -16,8 +16,8 @@ queries in `styles.css` repeat the values, in a block headed "breakpoints").
 | desktop-xl | 1440 | Page content is at most 1320 px wide, centred. |
 | desktop | 1280 and up | Every table shows its key columns without sideways scrolling. Secondary columns are already in the expandable row. |
 | laptop | 1024 to 1279 | Tile grid gets narrower tiles. Tables may scroll inside their own box; the hint appears. |
-| tablet | 768 to 1023 | One-column card grids, tighter section padding. |
-| phone | 767 and below, 390 target | Header actions fill the row and wrap. `Facts` become label-over-value. Sticky bars get less padding. Below 480: 12 px content padding, one-column tiles, 32 px minimum button height. |
+| tablet | 768 to 1023 | One-column card grids, tighter section padding. Tables scroll in their box with the pinned action column. |
+| phone | 767 and below, 390 target | Header actions fill the row and wrap. `Facts` become label-over-value. Sticky bars get less padding. Every `DataTable` is stacked cards (no sideways scrolling, no pinned column; "Second pass"). Below 480: 12 px content padding, one-column tiles, 32 px minimum button height. |
 
 At every width the document itself must not scroll horizontally because of a
 shared component. Wide things scroll inside their own box (`DataTable`,
@@ -42,7 +42,9 @@ shared component. Wide things scroll inside their own box (`DataTable`,
 7. **Sticky toolbars** stick at exactly the top bar's height, opaque, so the top
    bar and the toolbar are one continuous area.
 8. **Tables** declare a width policy per column; truncated text is reachable;
-   secondary fields go in an expandable row; a scrolling table says so.
+   secondary fields go in an expandable row; a scrolling table says so. At
+   phone width a table is stacked cards (key fields and every action without
+   sideways scrolling).
 9. **Wide grids** (unlock matrix, coverage) freeze the first column, show a
    scroll hint, and keep compact cells.
 10. **Hidden text inside a scrolling box needs a positioned ancestor inside
@@ -57,6 +59,8 @@ shared component. Wide things scroll inside their own box (`DataTable`,
     the command box), and so are the small wrappers that hold hidden text
     (`.cat-chip.compact`, `.matrix-btn`, `.matrix-expired`, `.split-status`).
     `web/tools/ui-audit.js` reports violations as `absOut`.
+11. **One primary alert** per page, at most one alert per section; the rest is
+    inline status, `Explain` or a `SafetyNotice` where it applies ("Second pass").
 
 ## Shared pieces (all in `web/src/ui.tsx`)
 
@@ -241,14 +245,14 @@ server login "未选择 · 密码", node key "还没有 · 第一次装机".
 | Overview | — | — | Tiles at least 360 px (fewer columns, not narrower tiles). 出口地区组: one grid row per group (name with "…" and tooltip / mode / one `SplitStatus` tag with details in the tooltip). Mesh 账户 stacked (address + short tag). 探测通道: tag + reason that wraps under it. 国内中继分担 tile: one compact row per relay (name, status tag, share, "45 ms · 0.4%"), details in tooltips; facts as `KV` rows. |
 | Topology | — | — | Node cards 200 px, 14 px name, one line per fact cut with "…" (whole text in the card title). Canvas `clamp(520px, 100vh - 250px, 960px)`. Nodes that were never placed get a layered position (`autoLayout`: gateway → relay → IX → hub → exit, 300 × 130 px grid, at most 5 per column; exits of one region group adjacent; an exit reached through another exit in a layer to the right, in its carrier's order); saved positions are kept; 「自动排列」re-lays all nodes on request (marks the document changed; positions are saved with the topology). Edge labels have padded backgrounds. |
 | Exits | Relay sharing (exits page): 中继, 状态, 份额, 质量, 流量, 吞吐探测 with widths | Mode rules once above the groups (`group-modes-note`), DNS / relay costs, exit kinds | Hub bar: a head (title, carrying hub, read button) and one row per hub (tier tag, name and server cut with "…", last read + short tag, cause on one line with its fix; read errors wrap). Single hub: `Facts` rows 枢纽 / 上次读取 / 原因. A hub report that is unusable for the same reason in every group (`sharedHubReports`) is said once on that hub's row ("各地区组的报告：…"); each card then shows only "主枢纽 [未验证]" / "备用枢纽 [未验证]" with the reason in the tooltip and hidden text; cards that differ keep their full line. Each card: `SplitStatus` for the actual state, the cause on one line (`joinReasons`) with the fix; unverified exit kinds as `SafetyNotice`. |
-| Rules | 顺序 124, 规则 (two lines: the name cut with "…" and its origin tag on the same line, then a one-line match with full text) flex, 去向 flex (one line: tag + name cut with "…"), 要求与遮蔽 flex (wraps, never under the action column), 校验 92, 启用 60, 操作 104; sum 962 px | Order explanation, AAAA / unlisted-name note, upgrade notes after the first, shared-address note | DNS fail-closed sentence (`SafetyNotice failclosed`); header: 添加规则 + "更多操作" (导入, QUIC 开关, Apple 模板). |
+| Rules | 顺序 124, 规则 (two lines: the name cut with "…" and its origin tag on the same line, then a one-line match with full text) flex 280 (takes all the remaining width), 去向 fixed 200 (one line: tag + name cut with "…"), 要求与遮蔽 fixed 100 (compact indicator, opens the detail; second pass), 校验 92, 启用 60, 操作 104, expand 48; sum 1008 px | Order explanation, AAAA / unlisted-name note, upgrade notes after the first, shared-address note | DNS fail-closed sentence (`SafetyNotice failclosed`); header: 添加规则 + "更多操作" (导入, QUIC 开关, Apple 模板). |
 | Rules: import drawer | mapping, services, rule-sets, ordered preview (行 / 原文 ellipsis / 映射为 / 状态 / 说明 / 删除), 50 per page | Preview notes after the first | "确认之前不写入任何东西" alert; blocking status. |
 | Rules: rule-sets, service groups, tester, sniffing | Rule-sets: 名称 (+ auth tag), URL ellipsis, 状态 (+ 部分生效 tag, errors), 使用, 操作 (立即更新 + menu); secondary: URL, format, counts, unsupported, used by. Sniff decisions: 时间, 原目的地址, 判断依据, 规则, 目标, 结果; secondary: 来源 | Section intros | Sniff fail-closed sentence (`SafetyNotice`); coverage (by name / by address / costs) as three short lists. |
 | Lists | Report: 名单, 结果, 生效来源, 版本时间, 条数, 尝试; secondary: 文件, 丢弃 | — | Source option cards unchanged. |
 | Servers | 名称, 地址 (one line, full text on focus), 主机指纹, 状态, 操作; secondary: 登录, 节点, 最近测试, fingerprint, channel | — | — |
 | Keys | SSH: 名称, 种类, 指纹 (ellipsis), 创建, 最近轮换, 使用者, 操作; SOCKS likewise | — | "不可查看" next to 已设置. |
 | Cloudflare / Mesh | Accounts: 名称, Account ID (ellipsis + copy), Token, 权限检查 (`SplitStatus`), Mesh, 绑定部署, 操作; checks and permission tables with widths; Mesh readiness: tag 未就绪 + "还需：…" text; pinned hosts with ellipsis | — | "写权限未确认" alert. |
-| Remote access | Devices: 设备, 模式, 地址 (ellipsis), 状态, 密钥, 启用, 操作 | — | Router command is a `CommandBlock` (one line, scrolls in its box). |
+| Remote access | Devices: 设备, 模式, 地址 (ellipsis), 状态, 密钥, 启用, 操作 | Independent-resource note (second pass) | Router command is a `CommandBlock` (one line, scrolls in its box). "手机在外网能否连回来，面板验证不了" (`SafetyNotice unverified`, devices section; second pass). |
 | Deploy | Remote nodes: 节点, 服务器, 安装状态, 密钥 (`SplitStatus`), 操作 (one button + menu); binaries: ellipsis SHA / path; guide plan and run: #, 节点, 现在/状态, 为什么在这个位置/说明 (flex 320, wraps); deployment records: 节点, 服务器 (fingerprint on one line), 状态, 操作 (撤回 or 删除记录 + menu: 恢复中断的装机, 放弃) | Guide order, push/preflight explanation, binaries, diff intro, deployment-record intro | "不会一次确认全部"、"已装好不是端到端验证"、retry note, all alerts about refusals, leftovers and unknown outcomes. |
 | Unlock | Matrix: compact cells (one word per family, grade as "*", expiry as a clock icon; full label in title + hidden text; detail drawer), exit header names cut with tooltip, `WideGrid` (frozen first column, scroll hint), filters by region group / exit / service / family; catalog 服务, 能告诉你什么, 检测的平台, 地址族, 规则; state, history, owner candidate tables with widths; coverage: 地区 96, 项目 ellipsis, 脚本 ellipsis, 结果 (tag + adapter / reason), 说明 flex (wraps), filters by section and by implemented / not | Legend descriptions, schedule details, routing details, catalog intro | Validation notice; launcher fail-closed note; "自动选择未在真实平台和真实网关上验证" and "自动安装未在真实网关上验证" (`SafetyNotice unverified`); coverage "只在合成样本上测过" (`SafetyNotice`). |
 | Leak checks | 检查 flex, 状态 132, 说明 flex; all rows on one page (no item can hide on page 2) | — | Every status tag (未执行 / 待人工签收). |
@@ -277,7 +281,7 @@ unlock and import-drawer tables.
 
 | Table | Container | Budget | Min width |
 |---|---|---|---|
-| Rules | page | 1016 | 970 |
+| Rules (+ expand: requirement / shadow detail) | page | 1016 | 1008 |
 | Servers (login, node, last test, fingerprint, channel in the expandable row) | page | 1016 (kept within 974) | 748 |
 | SSH keys | page | 1016 | 950 |
 | SOCKS credentials | section | 974 | 910 |
@@ -297,7 +301,7 @@ unlock and import-drawer tables.
 | Import drawer: mapping / services / rule-sets / rows | section in a 1100 px drawer | 1010 | 660 / 760 / 740 / 932 |
 | Unlock catalog / services / history / coverage / candidates | section | 974 | 788 / 760 / 826 / 806 / 580 |
 | Result detail parts (+ expand) | 560 px drawer | 512 | 448 |
-| Relay sharing (exits page) | section | 974 | 920 |
+| Relay sharing (exits page; `tableLayout="fixed"`, rendered from the demo fixtures in the budget test) | section | 974 | 940 |
 | Leak checks | section | 974 | 672 |
 
 ### Rules table pagination
@@ -323,6 +327,138 @@ in its own box with the first column frozen and the scroll hint.
 - No new API: the overview relay tile links to the exits page for the full relay table (the data is the same; nothing new is fetched).
 - Tables with fewer than 20 rows show no pagination; very long free text (alerts with server messages) still wraps inside its alert.
 - The topology canvas cannot reduce label overlap for saved positions that are close together; 「自动排列」 is the remedy and is explicit.
+
+## Second pass (revision 12, part 一)
+
+Extends the shared pieces; the first pass above stays as it was. Display layer
+only: no API call, request body or data meaning changed; no fixture changed.
+
+### Stacked tables at phone width (`DataTable` stacked mode)
+
+Below the tablet breakpoint (`STACK_QUERY` = `(max-width: 767px)`, i.e. the
+390 px phone class and up to 767 px) every `DataTable` renders its rows as
+stacked cards instead of a table that scrolls sideways with a pinned action
+column. It is built once in `DataTable`, from the column definitions:
+
+```tsx
+<DataTable<Rule>
+  columns={[
+    { title: "顺序", kind: "fixed", width: 124, render: … },           // card: "key" (default): label + value, always visible
+    { title: "规则", kind: "flex", width: 280, card: "title", render: … }, // the card's heading (the row's identity)
+    { title: "创建", kind: "fixed", width: 100, card: "detail", … },     // only under the card's 「详情」 toggle
+    { title: "内部", card: "hidden", … },                                // not in the card
+    { title: "操作", kind: "actions", width: 104, render: … },           // always the card's top-right corner
+  ]}
+  secondary={(r) => …}                 // under 「详情」 too
+  stack={false}                        // opt out: keep the scrolling table (wide matrix-like tables; none so far)
+/>
+```
+
+- `card`: `"title" | "key" | "detail" | "hidden"`. Without an explicit
+  `"title"`, the first column that declares no place is the heading. The
+  `actions` column is never pinned in cards; its buttons wrap in the corner.
+- Same behaviour as the table: `rowKey`, `onRow` (its attributes, e.g.
+  `data-testid`, go on the card `li`), `rowClassName`, `locale.emptyText`,
+  `loading`; pagination from the same `pageSize` / `pagination` (controlled
+  `current` / `onChange` / `showTotal` / size changer, `hideOnSinglePage`);
+  expansion from `secondary` / `expandable` (controlled `expandedRowKeys` +
+  `onExpandedRowsChange`, `rowExpandable`). The rules table's move up / down /
+  to the top / bottom / to position N are in its 顺序 field, so ordering works
+  in cards as in the table, and pages follow the moved rule.
+- Cut text (`EllipsisText`) wraps in a card (the tooltip stays), so key fields
+  are readable without sideways scrolling. Labels are at most 8em wide.
+- Classes: `.data-cards-wrap[data-stacked="true"]`, `.data-cards`,
+  `.data-card`, `.data-card-head`, `.data-card-title`, `.data-card-actions`,
+  `.data-card-fields`, `.data-card-field`, `.data-card-toggle`,
+  `.data-card-more`, `.data-cards-pagination`. Hook: `useMediaQuery(query)`.
+- Width budget: unchanged. The budget (`TABLE_BUDGET`, `tableMinWidth`) is for
+  the table at 1280; stacked mode has no declared widths and is never in play
+  at 1280 (the budget tests run with the desktop media stand-in).
+- Uses it: every DataTable. Checked at phone width in
+  `web/src/demo/demo_phone.test.tsx`: rules (move, edit, paging), servers, SSH
+  and SOCKS keys, remote-access devices, deploy remote nodes, deployment
+  records. Card headings set explicitly where the first column is not the
+  identity: rules (规则), deployment guide plan / run (节点), import preview
+  rows (原文). Key timestamps of the key tables (创建, 最近轮换, SOCKS 备注)
+  are `detail`.
+- The unlock matrix (`WideGrid`, not a DataTable) keeps scrolling in its box
+  with the frozen first column and the scroll hint. The coverage table is a
+  DataTable (five columns, one row per item) and becomes cards like the rest;
+  `stack={false}` would keep it scrolling if a browser check prefers that.
+
+### One primary alert
+
+**Rule:** a page has at most one page-level alert (an antd `Alert` that is not
+inside a section, tile, card, table, drawer, dialog or the sticky bar), and a
+section has at most one alert of its own. Everything else is inline status
+(`StatusReason`, `SplitStatus`), an `Explain`, or a `SafetyNotice` placed
+where it applies. Safety notices are never collapsed (no `SafetyNotice`
+inside an `Explain`, a closed card detail or anything `hidden`); they may hold
+an `Explain` for the background, never the other way round. Errors of a
+failed request (`ApiErrorAlert`) are the exception while they are shown.
+`layoutChecks()` in `web/src/demo/testkit.tsx` enforces it on every page in
+every demo scenario; `web/tools/ui-audit.js` reports it as `alerts`.
+
+| Page | Before | Now |
+|---|---|---|
+| Remote access | Three alerts on top: pending changes, "远程接入是独立的资源", "手机在外网能否连回来，面板验证不了" | Pending changes (`ApplyRequiredNotice`) is the only top alert. Independent resource: one-sentence `Explain` (`data-testid="remote-independent"`) with the rest collapsed. "Can the phone reach home": `SafetyNotice kind="unverified"` at the top of the devices section, where it applies. |
+| Deploy (部署引导 section) | Two alerts: "「已安装」只说明…不是端到端验证" and the run outcome | The limits sentence is a `SafetyNotice kind="unverified"` (`data-testid="deploy-limits"`, "能证明什么、不能证明什么" in an `Explain` inside it); the run outcome is the section's one alert. |
+| Add-device drawer | Two option cards of 9–11 lines | Each mode: title + one sentence (`MODE_SHORT`); the API's long text behind 「了解更多」; the safety-relevant part of 仅家网 stays visible on the card ("上网流量不经过 Meridian，不受分流和防泄漏规则保护；部分 DNS 查询可能仍走当前网络。", `data-testid="mode-safety-home"`). |
+| Others (overview, topology, exits, rules, lists, servers, keys, Cloudflare, unlock, leak) | — | Already within the rule in every scenario (checked). |
+
+### Per item
+
+| Where | Change |
+|---|---|
+| Shared | `EllipsisLink` (a link cut with "…", full text on hover and on the link's focus); `TileItem` (tile row: name cut, status keeps its space at the right edge); `.cell-line` (one cut line in a cell); `.ellipsis-link`. Tags inside member rows, tile rows, group rows and `ref-list` items cut with "…" instead of spilling; `Space` items in table cells may shrink. Spinner of a loading button clipped to its icon box (the rotating square's corners stuck out 3 px). |
+| Overview · 服务器 | One `TileItem` per server needing attention (`servers-tile-row-<id>`): name `EllipsisLink`, readiness tag in its own slot. |
+| Overview · 出口地区组 | Row grid `minmax(min(8em, 40%), 1fr) auto minmax(0, max-content)`: the group name (the identity) keeps at least 8em; the actual member is an `EllipsisText` (`groups-tile-actual-<id>`), an alerting member a tag cut with "…" whose tooltip is "member: alert". |
+| Rules | Name column first in width (flex, min 280; 去向 is fixed 200 now, so the name gets the rest: about 290 px at 1280, 450 px at 1440). 要求与遮蔽 is a fixed 100 px indicator on one line (`rule-hints-<id>`: the strongest of 不会命中 / 部分遮蔽 / 住宅 / IPv6 / 说明 N as one tag, then "+N" for the rest; tooltip and `aria-label` with the whole summary; click opens the detail); the full text is the row's expandable detail (`rule-shadow-<id>`). Rows without notes cannot expand. |
+| Rules · import drawer | antd `Upload` (no auto-upload, `beforeUpload` reads the file with `FileReader` and returns false; nothing leaves the browser): button 「选择配置文件」 and "未选择文件 … / 已读入 <name>". The YAML box's placeholder is a real three-line example (`CONFIG_PLACEHOLDER`). No other drawer or dialog had a native file input or an escaped placeholder. |
+| Exits · member rows | Name is an `EllipsisLink`-style cut link; the row's `Space` items may shrink; tags cut with "…" and without antd's 8 px end margin (the Space gap spaces them; that margin made a full-width tag spill 8 px) (the nested-exit tag's tooltip now starts with "经 <carrier> 中继"); reasons break inside. |
+| Rules · sniff decisions | 判断依据: tag + the sniffed name as one cut line (`EllipsisText mono`, full text on hover/focus), wrapping only in a phone card (was `code` that wrapped to two lines). |
+| Exits · relay sharing | `tableLayout="fixed"` with declared widths 150 / 170 / 100 / 180 / 170 / 170 = 940 ≤ 974 (in the first second-pass version the one-line cells widened the auto-layout table: it scrolled about 400 px). Every cell at most two lines: 中继 = name (+ 指定) / interface; 状态 = tag (+ short "清理中" tag, full "已有连接正被清理" in its tooltip and hidden text) / reason with relative time, one cut line; 质量 = grade tag / measurement on one cut line; 流量 = rates / totals (cut); 吞吐探测 = verdict + speed / time + today (cut). |
+| Unlock · matrix | Column widths are a `<colgroup>` with `table-layout: fixed` from `MATRIX_LAYOUT` (ui.tsx, next to `TABLE_BUDGET`): service column 180, exit columns 86, padding and borders inside them; 180 + 9 × 86 = 954 ≤ 972 (the grid box). The generic grid's cell minimums (104 / 132 px, which made the first version still scroll 58–65 px) no longer apply to it; what does not fit a cell's line (TCP-only tag, active dot, expiry icon) wraps under the chip. Region-group header names cut with "…" (tooltip, focusable) and bounded by the columns they span (`maxWidth = span × 86 − 14`, `matrix-group-<id>`); exit header names at most 72 px. Frozen first column and scroll hint unchanged. |
+| Deploy | Remote nodes: 节点 and 服务器 as cut links + tag on one line. Deployment records: node name / ID and server name / login as cut text (fingerprint already). `ref-list` items break inside; tags in them are cut. |
+| Topology | Links leave a card on its right and enter on its left (the layout runs left to right). A link that skips a column (hub → second exit column) is drawn with right angles: it turns in the gap next to its source (no card there) and runs at the target's height; 「自动排列」 now shifts the later columns of a wrapped layer down by `c × rowHeight / columns` (brick pattern), so that height falls between the cards of the columns it crosses. The label sits in the gap before the target. Saved manual positions are not touched (only 「自动排列」 and never-placed nodes use the layout). `edgeRoute()` is exported for tests. |
+| Dark theme | Unlock chips 已解锁 / 未解锁 had white text on the dark theme's light green / red (dark text now); the React Flow minimap mask and node fills and the handles used light defaults (dark values now); the preflight icons used a light-only fallback colour (theme variables now). |
+
+### Browser acceptance (to be run by the main session; NOT verified here)
+
+Demo preview (`npm --prefix web run demo:build && npm --prefix web run demo:serve`),
+`web/tools/ui-audit.js` pasted into its console:
+
+```js
+const m = await __auditDemo({ widths: [1440, 1280, 1024, 768, 390] }); // all pages × scenarios × light/dark
+console.log(__fmtDemo(m));   // ox / spill / hscroll / beyond / outCard / wrap / squeeze / absOut / stack / alerts
+```
+
+For every scenario (`healthy`, `degraded`, `unavailable`, `deploy-running`,
+`deploy-rate-limited`, `deploy-compensated`, `deploy-unknown`, `deploy-done`,
+`preflight-blocked`, `save-refused`) × light and dark × 1440 / 1280 / 1024 /
+768 / 390, and by eye where the audit cannot judge:
+
+1. 390 (and 767): rules, servers, keys (SSH, SOCKS), deploy remote nodes, remote devices, deployment records are cards; no `stack` findings (no table scrolling sideways, no card wider than its box, no pinned column); every action reachable; the rules cards' move buttons, 「…」 menu and pagination work; 「详情」 opens and closes.
+2. 768–1023: tables scroll inside their box with the hint and the pinned action column (as before); no `ox`.
+3. Overview, all three main scenarios: 服务器 rows keep the tag inside the tile with a long name; 出口地区组 rows keep the group name readable (at least about 8 characters) and cut the member; hover / Tab shows the full names.
+4. Rules at 1280 and 1440: the name column is the widest; the indicator column shows tags only for rules with notes; clicking it opens the detail; no horizontal scroll.
+5. Import drawer: 「选择配置文件」 button (Chinese, theme colours), chosen file name, three-line placeholder in both themes.
+6. Remote access: one alert at most at the top; the add-device cards are short; 仅家网's safety line visible; 「了解更多」 opens the full text.
+7. Exits at 1280, healthy and degraded: no `spill` on `.member-main`; relay sharing rows at most two lines.
+8. Unlock, healthy at 1280: the matrix (9 exits) does not scroll (`hscroll` empty for `.wide-grid-scroll`); at 1440 neither; with a narrow window it scrolls with the frozen column and the hint.
+9. Deploy, every deploy scenario: no 5 px `spill` in the node / record cells or `ul.ref-list`; no 3 px spill on the active loading button (`deploy-running`).
+10. Topology: press 「自动排列」, then check that no link runs under a card (hub → second exit column turns in the gap next to the hub); labels readable; reload: saved positions unchanged.
+11. Dark: every page, drawer and dialog (rule, import, node, link, server, key, device, config-once, preflight, withdraw, result detail, move-to-N, confirm dialogs): no light patches, white-on-light text, light borders or shadows; unlock chips readable; minimap dark.
+12. `alerts` empty everywhere.
+
+## Tests (second pass)
+
+- `web/src/ui_layout.test.tsx`, "DataTable at phone width (stacked cards)": card structure (heading, labelled key fields, actions in the corner, no table, no pinned column), details and secondary under 「详情」, uncontrolled and controlled pagination and expansion, opt-out and desktop.
+- `web/src/demo/demo_phone.test.tsx`: the row-oriented tables at phone width in the healthy scenario (counts against the scenario's data, every card has a heading and an action; rules: move up, edit, page 2 starts at 51).
+- `web/src/demo/testkit.tsx` `layoutChecks()` runs after every demo page render (all pages × healthy / degraded / unavailable and the partial scenarios): at most one page-level alert and one alert per section; no safety notice in a collapsed region; every cut text non-empty is focusable or holds a link (its full text is the tooltip).
+- Page checks: overview group rows (healthy) and server rows (degraded), unlock matrix group headers bounded and its `<colgroup>` widths (fixed layout, sum ≤ `MATRIX_LAYOUT.box` for up to 9 exits; healthy), relay sharing state cell at most two parts (degraded).
+- `web/src/table_budget.test.tsx`: the relay sharing table rendered from the healthy and degraded fixtures, within the section budget and with `table-layout: fixed`; `ui_layout.test.tsx`: `MATRIX_LAYOUT` fits 9 exits.
+- `web/src/second_pass.test.tsx`: import drawer upload control and placeholder (and that reading the file sends nothing); remote-access mode cards; topology brick layout and routed links.
 
 ## Tests (pages)
 

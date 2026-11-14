@@ -6,7 +6,8 @@
 // panel for preview / confirm and never stored in web storage. The panel
 // keeps only the rule part (docs/architecture.md「从 mihomo 导入」).
 
-import { Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Tag, Tooltip, Typography } from "antd";
+import { UploadOutlined } from "@ant-design/icons";
+import { Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Tag, Tooltip, Typography, Upload } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import type { ExclusionLineError, ImportPreview, ImportRequest, ImportRow, RuleRef, RuleSetAuthInput, RuleSetView, RuleTestResult, ServiceGroup, Topology } from "./types";
@@ -62,9 +63,13 @@ export const ACCEPT_LABEL: Record<string, string> = {
   quic_direct_below: "QUIC 开关之下的直连规则不拒绝 UDP 443",
 };
 
+/** A real multi-line example (not an escaped "\n") for the config box. */
+export const CONFIG_PLACEHOLDER = ["rules:", "  - DOMAIN-SUFFIX,example.com,Proxy", "  - MATCH,Proxy"].join("\n");
+
 /** Paste / upload a mihomo config, map its lines, preview in order, confirm. */
 export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; topo: Topology; onClose: () => void; onDone: () => void }) {
   const [config, setConfig] = useState("");
+  const [fileName, setFileName] = useState("");
   const [selection, setSelection] = useState("");
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [drop, setDrop] = useState<number[]>([]);
@@ -169,17 +174,29 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
       {error ? <ApiErrorAlert error={error} /> : null}
       <Form layout="vertical">
         <Form.Item label="mihomo 配置（YAML）">
-          <Input.TextArea rows={8} className="mono" value={config} onChange={(e) => setConfig(e.target.value)} aria-label="mihomo 配置" placeholder="rules:\n  - DOMAIN-SUFFIX,example.com,Proxy\n  - MATCH,Proxy" />
-          <input
-            type="file"
-            accept=".yaml,.yml,.txt"
-            aria-label="上传配置文件"
-            style={{ marginTop: 6 }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void f.text().then(setConfig);
-            }}
-          />
+          <Input.TextArea rows={8} className="mono" value={config} onChange={(e) => setConfig(e.target.value)} aria-label="mihomo 配置" placeholder={CONFIG_PLACEHOLDER} />
+          {/* Read in the browser only: nothing is uploaded anywhere (beforeUpload returns false). */}
+          <div className="file-pick" data-testid="import-file-pick">
+            <Upload
+              accept=".yaml,.yml,.txt"
+              showUploadList={false}
+              maxCount={1}
+              beforeUpload={(f) => {
+                setFileName(f.name);
+                const reader = new FileReader();
+                reader.onload = () => setConfig(String(reader.result ?? ""));
+                reader.readAsText(f);
+                return false;
+              }}
+            >
+              <Button icon={<UploadOutlined />} aria-label="上传配置文件">
+                选择配置文件
+              </Button>
+            </Upload>
+            <Typography.Text type="secondary" className="file-pick-name" data-testid="import-file-name">
+              {fileName ? `已读入 ${fileName}` : "未选择文件（.yaml / .yml / .txt），也可以直接粘贴"}
+            </Typography.Text>
+          </div>
         </Form.Item>
         <Form.Item
           label="当前选中状态（可选）"
@@ -340,7 +357,7 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
               onRow={(r) => ({ "data-testid": `import-row-${r.line}` }) as React.HTMLAttributes<HTMLElement>}
               columns={[
                 { title: "行", dataIndex: "line", kind: "fixed", width: 56 },
-                { title: "原文", kind: "ellipsis", width: 240, mono: true, render: (_, r) => r.text },
+                { title: "原文", kind: "ellipsis", width: 240, mono: true, card: "title", render: (_, r) => r.text },
                 { title: "映射为", kind: "flex", width: 220, render: (_, r) => <span>{ACTION_LABEL[r.action]}{r.match ? `：${r.match}` : ""}{r.target ? ` → ${r.target.kind === "service" ? `服务组 ${r.target.name}（${specLabel(topo, r.target.resolved)}）` : specLabel(topo, r.target.resolved ?? r.target.kind)}` : ""}</span> },
                 {
                   title: "状态",

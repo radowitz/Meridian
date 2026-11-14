@@ -16,7 +16,7 @@ import { PreflightReport } from "./Preflight";
 import { href } from "./state";
 import type { DeployPhase, DeployRun, DeploySkip, DeployStep, DeployView } from "./types";
 import { roleLabel } from "./types";
-import { ApiErrorAlert, DataTable, DataView, ExecNote, Explain, Link, Section, StatusTag, TimeText, useAction, useApi, useConfirmDanger, type StatusKind } from "./ui";
+import { ApiErrorAlert, DataTable, DataView, ExecNote, Explain, Link, SafetyNotice, Section, StatusTag, TimeText, useAction, useApi, useConfirmDanger, type StatusKind } from "./ui";
 
 const PHASE: Record<DeployPhase, { kind: StatusKind; label: string }> = {
   pending: { kind: "neutral", label: "待预检" },
@@ -93,41 +93,26 @@ function useCountdown(seconds: number | undefined, key: string): number {
 function Limits({ limits }: { limits: DeployView["limits"] }) {
   return (
     <>
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12 }}
-        data-testid="deploy-limits"
-        message="「已安装」只说明这次运行里安装成功、服务已启动、健康检查通过；「已采纳」的节点没有重新执行、没有重新检查健康。两者都不是端到端验证"
-        description={
-          <Collapse
-            size="small"
-            ghost
-            items={[
-              {
-                key: "l",
-                label: "能证明什么、不能证明什么",
-                children: (
-                  <div>
-                    <Typography.Text strong>能证明</Typography.Text>
-                    <ul style={{ margin: "4px 0 8px", paddingLeft: 18 }}>
-                      {limits.proves.map((t) => (
-                        <li key={t}>{t}</li>
-                      ))}
-                    </ul>
-                    <Typography.Text strong>不能证明（要另外实际验证）</Typography.Text>
-                    <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-                      {limits.does_not_prove.map((t) => (
-                        <li key={t}>{t}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ),
-              },
-            ]}
-          />
-        }
-      />
+      <div data-testid="deploy-limits">
+        <SafetyNotice kind="unverified" title="「已安装」只说明这次运行里安装成功、服务已启动、健康检查通过；「已采纳」的节点没有重新执行、没有重新检查健康。两者都不是端到端验证">
+          <Explain summary="能证明什么、不能证明什么">
+            <div>
+              <Typography.Text strong>能证明</Typography.Text>
+              <ul className="plain-list">
+                {limits.proves.map((t) => (
+                  <li key={t}>{t}</li>
+                ))}
+              </ul>
+              <Typography.Text strong>不能证明（要另外实际验证）</Typography.Text>
+              <ul className="plain-list">
+                {limits.does_not_prove.map((t) => (
+                  <li key={t}>{t}</li>
+                ))}
+              </ul>
+            </div>
+          </Explain>
+        </SafetyNotice>
+      </div>
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }} data-testid="deploy-remote-access-note">
         {limits.independent.join("。")}。远程接入在 <Link to={href("remote")}>远程接入</Link> 页管理。
       </Typography.Paragraph>
@@ -215,6 +200,7 @@ function PlanPreview({ view, onStart, starting }: { view: DeployView; onStart: (
                 title: "节点",
                 kind: "flex",
                 width: 200,
+                card: "title",
                 render: (_, s) => (
                   <Space size={4} wrap>
                     <Typography.Text strong>{s.node_name || s.node_id}</Typography.Text>
@@ -524,6 +510,7 @@ function RunView({
             title: "节点",
             kind: "flex",
             width: 200,
+            card: "title",
             render: (_, s) => (
               <Space size={4} wrap>
                 <Typography.Text strong={s.current}>{s.node_name || s.node_id}</Typography.Text>

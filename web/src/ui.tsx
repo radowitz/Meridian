@@ -23,6 +23,7 @@ import {
   Empty,
   Input,
   Modal,
+  Pagination,
   Popover,
   Skeleton,
   Space,
@@ -35,7 +36,7 @@ import {
   type TableColumnType,
   type TableProps,
 } from "antd";
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type ReactNode } from "react";
 import { ApiError, isApiError } from "./api";
 import { href, useOptionalRouter, useRouter, useStatus, useTopologyDoc, useUnsavedGuard } from "./state";
 import type { IndependentFieldRefusal, Issue, Ref } from "./types";
@@ -852,6 +853,34 @@ export function EllipsisText({ text, mono, className }: { text: ReactNode; mono?
   );
 }
 
+/**
+ * A link whose text is cut with "…" when it does not fit; the full text is a
+ * tooltip on hover and on keyboard focus of the link. For names in tight rows
+ * (overview tiles, matrix headers, member rows).
+ */
+export function EllipsisLink({ to, text, className, style, testId }: { to: string; text: string; className?: string; style?: CSSProperties; testId?: string }) {
+  return (
+    <Tooltip title={text} trigger={["hover", "focus"]} mouseEnterDelay={0.2}>
+      <span className={["ellipsis-text", "ellipsis-link", className ?? ""].filter(Boolean).join(" ")} style={style} data-testid={testId}>
+        <Link to={to}>{text}</Link>
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
+ * One row of a tile: a name that is cut with "…" (full text on hover/focus)
+ * and a status that always keeps its own space at the right edge.
+ */
+export function TileItem({ name, status, testId }: { name: ReactNode; status: ReactNode; testId?: string }) {
+  return (
+    <div className="tile-item" data-testid={testId}>
+      <span className="tile-item-name">{name}</span>
+      <span className="tile-item-status">{status}</span>
+    </div>
+  );
+}
+
 export function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
   const { message } = AntApp.useApp();
   return (
@@ -1501,11 +1530,25 @@ export function joinReasons(reason: string | (string | null | undefined)[] | nul
  */
 export type ColKind = "fixed" | "flex" | "ellipsis" | "actions";
 
+/**
+ * Where a column goes when the table is shown as stacked cards (phone width,
+ * see DataTable `stack`):
+ * - title: the card's heading (one per table; the row's identity). Without
+ *   one, the first column that declares no place is the heading.
+ * - key: label + value, always visible (default)
+ * - detail: label + value under the card's 「详情」 toggle, with `secondary`
+ * - hidden: not shown in the card (its content is already in another field)
+ * The `actions` column is always the card's top-right corner.
+ */
+export type CardRole = "title" | "key" | "detail" | "hidden";
+
 export interface DataColumn<T> extends Omit<TableColumnType<T>, "width" | "fixed" | "ellipsis"> {
   kind?: ColKind;
   width?: number;
   /** Render the value in monospace (ellipsis columns). */
   mono?: boolean;
+  /** Place of the column in the stacked cards (default "key"; the actions column is always the card's corner). */
+  card?: CardRole;
 }
 
 const FLEX_MIN = 160;
@@ -1538,6 +1581,15 @@ export const TABLE_BUDGET = {
 } as const;
 
 /**
+ * The unlock matrix's column widths (rendered as a <colgroup> with
+ * table-layout: fixed, so the browser uses exactly these; cell padding and
+ * borders are inside them, box-sizing is border-box). `box` is the grid's
+ * scroll box at 1280 (a Section's 974 px minus the box's 2 px border):
+ * the service column plus 9 exit columns fit it without scrolling.
+ */
+export const MATRIX_LAYOUT = { box: TABLE_BUDGET.section - 2, firstCol: 180, exitCol: 86, fitExits: 9 } as const;
+
+/**
  * The minimum width a DataTable forces: fixed / ellipsis / actions widths,
  * flex minimums (default 160) and the expand column when rows expand. This is
  * the table's `scroll.x`, so it is what has to fit its container.
@@ -1549,7 +1601,8 @@ export function tableMinWidth<T>(columns: DataColumn<T>[], expandable: boolean):
 function prepareColumns<T extends object>(columns: DataColumn<T>[]): { cols: TableColumnType<T>[]; minWidth: number } {
   let minWidth = 0;
   const cols = columns.map((c): TableColumnType<T> => {
-    const { kind = "flex", width, mono, render, className, ...rest } = c;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { kind = "flex", width, mono, render, className, card, ...rest } = c;
     const cls = (extra: string) => [className, extra].filter(Boolean).join(" ");
     if (kind === "flex") {
       const min = width ?? FLEX_MIN;
@@ -1625,17 +1678,29 @@ export function DataTable<T extends object>({
   pageSize = 20,
   pagination,
   expandable,
+  stack = true,
   ...rest
 }: Omit<TableProps<T>, "columns" | "scroll"> & {
   columns: DataColumn<T>[];
   /** Secondary fields, shown in an expandable row. */
   secondary?: (record: T) => ReactNode;
   pageSize?: number;
+  /**
+   * Below the tablet breakpoint (phone width) show the rows as stacked cards
+   * (label + value, actions in the card's corner, no sideways scrolling, no
+   * pinned column). Default true; `false` keeps the scrolling table (wide
+   * matrix-like tables).
+   */
+  stack?: boolean;
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const { cols, minWidth } = useMemo(() => prepareColumns(columns), [columns]);
   const hint = useScrollHint(wrap, ".ant-table-content");
+  const phone = useMediaQuery(STACK_QUERY);
   const rows = (rest.dataSource ?? []).length;
+  if (stack && phone) {
+    return <DataCards<T> columns={columns} prepared={cols} secondary={secondary} pageSize={pageSize} pagination={pagination} expandable={expandable} {...rest} />;
+  }
   return (
     <div className="data-table-wrap" ref={wrap} data-overflow={hint.overflow ? "true" : "false"}>
       <Table<T>
@@ -1650,6 +1715,187 @@ export function DataTable<T extends object>({
       <ScrollHint {...hint} />
     </div>
   );
+}
+
+/** Media query of the stacked (card) table layout: below the tablet breakpoint. */
+export const STACK_QUERY = `(max-width: ${BREAKPOINTS.tablet - 1}px)`;
+
+/** Whether a media query matches now; follows changes. False where matchMedia is missing. */
+export function useMediaQuery(query: string): boolean {
+  const get = () => (typeof window !== "undefined" && typeof window.matchMedia === "function" ? !!window.matchMedia(query)?.matches : false);
+  const [match, setMatch] = useState(get);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(query);
+    if (!mq) return;
+    const on = () => setMatch(!!mq.matches);
+    on();
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, [query]);
+  return match;
+}
+
+function cellValue<T>(record: T, dataIndex: unknown): unknown {
+  if (dataIndex === undefined || dataIndex === null) return undefined;
+  const path = Array.isArray(dataIndex) ? dataIndex : [dataIndex];
+  let v: unknown = record;
+  for (const k of path) v = v == null ? undefined : (v as Record<string, unknown>)[k as string];
+  return v;
+}
+
+function titleText(t: unknown): ReactNode {
+  return typeof t === "function" ? null : (t as ReactNode);
+}
+
+/**
+ * DataTable's stacked mode (phone width): one card per row. The column with
+ * `card: "title"` is the heading, the actions column sits in the card's top
+ * right, `key` columns are label + value rows, `detail` columns and
+ * `secondary` / `expandable` go under a 「详情」 toggle. Same pagination,
+ * row attributes (onRow, rowClassName) and expansion state as the table.
+ */
+function DataCards<T extends object>({
+  columns,
+  prepared,
+  secondary,
+  pageSize,
+  pagination,
+  expandable,
+  dataSource,
+  rowKey,
+  onRow,
+  rowClassName,
+  locale,
+  loading,
+  className,
+  ...rest
+}: Omit<TableProps<T>, "columns" | "scroll"> & {
+  columns: DataColumn<T>[];
+  prepared: TableColumnType<T>[];
+  secondary?: (record: T) => ReactNode;
+  pageSize: number;
+}) {
+  const data = (dataSource ?? []) as readonly T[];
+  const pg = pagination === false ? null : pagination ?? (data.length > pageSize ? { pageSize, showSizeChanger: true, hideOnSinglePage: true } : null);
+  const [ownPage, setOwnPage] = useState(1);
+  const [ownSize, setOwnSize] = useState(pg?.pageSize ?? pageSize);
+  const [ownOpen, setOwnOpen] = useState<readonly Key[]>(expandable?.defaultExpandedRowKeys ?? []);
+  const size = pg?.pageSize ?? ownSize;
+  const pages = Math.max(1, Math.ceil(data.length / size));
+  const current = pg ? Math.min(Math.max(1, pg.current ?? ownPage), pages) : 1;
+  const shown = pg ? data.slice((current - 1) * size, current * size) : data;
+  const open = expandable?.expandedRowKeys ?? ownOpen;
+  const keyOf = (r: T, i: number): Key =>
+    typeof rowKey === "function" ? (rowKey as (r: T, i?: number) => Key)(r, i) : ((r as Record<string, unknown>)[(rowKey as string) ?? "key"] as Key) ?? i;
+  const toggle = (r: T, k: Key) => {
+    const was = open.includes(k);
+    const next = was ? open.filter((x) => x !== k) : [...open, k];
+    if (!expandable?.expandedRowKeys) setOwnOpen(next);
+    expandable?.onExpandedRowsChange?.(next);
+    expandable?.onExpand?.(!was, r);
+  };
+  const render = (c: TableColumnType<T>, r: T, i: number): ReactNode => {
+    const v = cellValue(r, (c as { dataIndex?: unknown }).dataIndex);
+    const out = c.render ? c.render(v, r, i) : v;
+    return (out ?? null) as ReactNode;
+  };
+  // Without an explicit "title" column, the first column that declares no place is the card's heading.
+  const implicitTitle = columns.some((c) => c.card === "title") ? -1 : columns.findIndex((c) => c.kind !== "actions" && c.card === undefined);
+  const cols = columns.map((c, i) => ({
+    def: c,
+    col: prepared[i],
+    role: (c.kind === "actions" ? "actions" : i === implicitTitle ? "title" : (c.card ?? "key")) as CardRole | "actions",
+  }));
+  const titleCol = cols.find((c) => c.role === "title");
+  const actionCols = cols.filter((c) => c.role === "actions");
+  const keyCols = cols.filter((c) => c.role === "key");
+  const detailCols = cols.filter((c) => c.role === "detail");
+  const expandRender = secondary ? (r: T) => <div className="row-secondary">{secondary(r)}</div> : expandable?.expandedRowRender;
+  const field = (c: (typeof cols)[number], r: T, i: number, j: number) => (
+    <div className="data-card-field" key={j}>
+      <dt>{titleText(c.def.title)}</dt>
+      <dd>{render(c.col, r, i)}</dd>
+    </div>
+  );
+  if (loading && data.length === 0) {
+    return (
+      <div className="data-table-wrap data-cards-wrap" data-stacked="true">
+        <Skeleton active paragraph={{ rows: 3 }} />
+      </div>
+    );
+  }
+  return (
+    <div className="data-table-wrap data-cards-wrap" data-stacked="true" data-overflow="false" {...pickData(rest)}>
+      {data.length === 0 ? (
+        <div className="data-cards-empty">{(locale?.emptyText as ReactNode) ?? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无数据" />}</div>
+      ) : (
+        <ul className={["data-cards", className ?? ""].filter(Boolean).join(" ")}>
+          {shown.map((r, i) => {
+            const k = keyOf(r, i);
+            const attrs = (onRow?.(r, i) ?? {}) as HTMLAttributes<HTMLElement> & Record<string, unknown>;
+            const extraCls = typeof rowClassName === "function" ? rowClassName(r, i, 0) : rowClassName ?? "";
+            const canExpand = !!expandRender && (expandable?.rowExpandable ? expandable.rowExpandable(r) : true);
+            const hasMore = canExpand || detailCols.length > 0;
+            const isOpen = open.includes(k);
+            const moreId = `card-more-${String(k)}`;
+            return (
+              <li {...attrs} key={k} data-row-key={String(k)} className={["data-card", extraCls, attrs.className ?? ""].filter(Boolean).join(" ")}>
+                <div className="data-card-head">
+                  <div className="data-card-title">{titleCol ? render(titleCol.col, r, i) : null}</div>
+                  {actionCols.length > 0 ? (
+                    <div className="data-card-actions" data-card-actions="">
+                      {actionCols.map((c, j) => (
+                        <span key={j}>{render(c.col, r, i)}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                {keyCols.length > 0 ? <dl className="data-card-fields">{keyCols.map((c, j) => field(c, r, i, j))}</dl> : null}
+                {hasMore ? (
+                  <>
+                    <button type="button" className="data-card-toggle explain-toggle" aria-expanded={isOpen} aria-controls={moreId} onClick={() => toggle(r, k)}>
+                      {isOpen ? "收起详情" : "详情"}
+                    </button>
+                    <div id={moreId} className="data-card-more" hidden={!isOpen}>
+                      {isOpen ? (
+                        <>
+                          {detailCols.length > 0 ? <dl className="data-card-fields">{detailCols.map((c, j) => field(c, r, i, j))}</dl> : null}
+                          {canExpand && expandRender ? expandRender(r, i, 0, true) : null}
+                        </>
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {pg && !(pg.hideOnSinglePage && pages <= 1) ? (
+        <Pagination
+          className="data-cards-pagination"
+          size="small"
+          current={current}
+          pageSize={size}
+          total={data.length}
+          showSizeChanger={pg.showSizeChanger}
+          pageSizeOptions={pg.pageSizeOptions}
+          showTotal={pg.showTotal}
+          onChange={(p, s) => {
+            setOwnPage(s !== size ? 1 : p);
+            setOwnSize(s);
+            pg.onChange?.(p, s);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** data-* attributes passed to a DataTable (e.g. data-testid) go onto the card list's wrapper. */
+function pickData(o: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(o).filter(([k]) => k.startsWith("data-") || k.startsWith("aria-")));
 }
 
 /**

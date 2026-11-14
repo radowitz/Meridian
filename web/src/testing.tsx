@@ -5,7 +5,7 @@
 import { render } from "@testing-library/react";
 import { vi } from "vitest";
 import App from "./App";
-import { TABLE_BUDGET } from "./ui";
+import { STACK_QUERY, TABLE_BUDGET } from "./ui";
 import type { PanelStatus } from "./types";
 
 export interface FakeRequest {
@@ -238,5 +238,21 @@ export function tableBudgets(root: ParentNode = document): { name: string; conta
     const heads = [...wrap.querySelectorAll("thead th")].map((th) => th.textContent?.trim()).filter(Boolean);
     const { budget, container } = tableBudgetOf(wrap);
     return { name: heads.slice(0, 3).join("/"), container, budget, width: parseInt(table.style.width, 10) || 0 };
+  });
+}
+
+// ------------------------------------------------------- phone width ---
+
+/**
+ * Makes the stacked-table media query (STACK_QUERY, below the tablet
+ * breakpoint) match, as at a 390 px phone; every other query answers as the
+ * default desktop stand-in does. Restored by vi.restoreAllMocks (test-setup).
+ */
+export function phoneWidth() {
+  const real = window.matchMedia;
+  vi.spyOn(window, "matchMedia").mockImplementation((query: string) => {
+    const base = real.call(window, query);
+    const matches = query === STACK_QUERY ? true : base.matches;
+    return { ...base, matches, media: query } as MediaQueryList;
   });
 }

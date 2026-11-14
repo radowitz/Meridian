@@ -33,7 +33,7 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { ImportDrawer, RuleSetsSection, RuleTester, ServiceGroupsSection, specLabel } from "./RulesImport";
 import { SniffSection } from "./Sniff";
@@ -542,6 +542,8 @@ export default function RulesPage() {
   const [moveTo, setMoveTo] = useState<{ rule: Rule; to: number } | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(RULES_PAGE_SIZE);
+  /** Rules whose requirement / shadow detail is open (row expansion; the indicator toggles it too). */
+  const [expanded, setExpanded] = useState<string[]>([]);
   const topo = doc.topo;
   const focus = route.params[0];
   const ordered = !!topo?.rules_ordered;
@@ -626,6 +628,84 @@ export default function RulesPage() {
     followRow(next, r.id);
   };
 
+  /**
+   * Requirement and shadow notes of a rule: compact tags for the row (the
+   * indicator stays visible) and the full text for the expandable detail.
+   * Null when the rule has none (most rules).
+   */
+  const notesOf = (r: Rule): { tags: ReactNode; summary: string; detail: ReactNode } | null => {
+    const reqTags = [r.require_residential ? <Tag key="res" color="green">住宅</Tag> : null, r.require_v6 ? <Tag key="v6" color="blue">IPv6</Tag> : null].filter(Boolean);
+    const reqText = [r.require_residential ? "必须走住宅" : "", r.require_v6 ? "必须有 IPv6" : ""].filter(Boolean);
+    const req = reqTags.length > 0 ? <div className="rule-req">{reqTags}</div> : null;
+    const a = ordered ? analysis.get(r.id) : undefined;
+    if (!a)
+      return reqTags.length > 0
+        ? { tags: <>{reqTags[0]}{reqTags.length > 1 ? <span className="rule-hint-more">+{reqTags.length - 1}</span> : null}</>, summary: reqText.join("；"), detail: <div className="rule-notes" data-testid={`rule-shadow-${r.id}`}>{req}</div> } : null;
+    const ref = (ids?: string[] | null) => (ids ?? []).map((id) => `第 ${byID.get(id) ?? "?"} 条`).join("、");
+    const notes: string[] = [];
+    if (a.keyword_note) notes.push(a.keyword_note);
+    if (a.keywords && !a.keyword_note) notes.push(`${a.keywords} 条关键词条目在网关上不执行`);
+    if (a.rule_set?.unsupported && Object.keys(a.rule_set.unsupported).length) notes.push("规则集只部分生效：" + Object.entries(a.rule_set.unsupported).map(([k, v]) => `${k} ${v}`).join("，"));
+    if (a.rule_set?.held) notes.push("规则集有被暂缓的新版本");
+    if (a.legacy_lost) notes.push(`升级后变化：${a.legacy_lost} 个名字以前按更长的名字归本条，现在被 ${ref(a.legacy_lost_to)} 先命中`);
+    const partly = (a.partly_by ?? []).length > 0;
+    if (!a.fully_shadowed && !(a.shadowed > 0) && !partly && notes.length === 0 && reqTags.length === 0) return null;
+    const shadowText = a.fully_shadowed
+      ? `永远不会命中（被 ${ref(a.shadowed_by)} 遮蔽）`
+      : a.shadowed > 0
+        ? `${a.shadowed}/${a.entries} 个条目被 ${ref(a.shadowed_by)} 遮蔽`
+        : "";
+    // One compact tag for the strongest hint, then "+N" for the rest (the
+    // indicator stays one line in its 100 px column; the tooltip and the
+    // aria-label carry the whole summary).
+    const all = [
+      a.fully_shadowed ? (
+        <Tag key="full" color="warning">
+          不会命中
+        </Tag>
+      ) : a.shadowed > 0 || partly ? (
+        <Tag key="part" color="warning">
+          部分遮蔽
+        </Tag>
+      ) : null,
+      ...reqTags,
+      notes.length > 0 ? <Tag key="notes">说明 {notes.length}</Tag> : null,
+    ].filter(Boolean);
+    const tags = (
+      <>
+        {all[0]}
+        {all.length > 1 ? <span className="rule-hint-more">+{all.length - 1}</span> : null}
+      </>
+    );
+    const summary = [...reqText, shadowText, partly ? `部分名字先被 ${ref(a.partly_by)} 接走` : "", ...notes].filter(Boolean).join("；");
+    const detail = (
+      <div className="rule-notes" data-testid={`rule-shadow-${r.id}`}>
+        {req}
+        {a.fully_shadowed ? (
+          <span className="rule-note-status">
+            <StatusTag kind="attention">永远不会命中</StatusTag>
+            <span className="rule-note">（被 {ref(a.shadowed_by)} 遮蔽）</span>
+          </span>
+        ) : a.shadowed > 0 ? (
+          <Typography.Text type="warning" className="rule-note">
+            {a.shadowed}/{a.entries} 个条目被 {ref(a.shadowed_by)} 遮蔽
+          </Typography.Text>
+        ) : null}
+        {partly ? (
+          <Typography.Text type="secondary" className="rule-note">
+            部分名字先被 {ref(a.partly_by)} 接走
+          </Typography.Text>
+        ) : null}
+        {notes.map((n) => (
+          <Typography.Text key={n} type="secondary" className="rule-note">
+            {n}
+          </Typography.Text>
+        ))}
+      </div>
+    );
+    return { tags, summary, detail };
+  };
+
   const columns: DataColumn<Rule>[] = [
     {
       title: "顺序",
@@ -664,7 +744,8 @@ export default function RulesPage() {
     {
       title: "规则",
       kind: "flex",
-      width: 220,
+      width: 280,
+      card: "title",
       render: (_, r) => {
         const value =
           r.match_type === "geosite"
@@ -703,8 +784,8 @@ export default function RulesPage() {
     },
     {
       title: "去向",
-      kind: "flex",
-      width: 170,
+      kind: "fixed",
+      width: 200,
       render: (_, r) => {
         const t = targetOf(topo, r);
         if (t.kind === "quic" || t.kind === "direct" || t.kind === "reject") {
@@ -726,7 +807,7 @@ export default function RulesPage() {
             {t.missing ? (
               <EllipsisText className="rule-target-name" text={t.id || "未设置"} />
             ) : (
-              <Tooltip title={t.name} mouseEnterDelay={0.3}>
+              <Tooltip title={t.name} trigger={["hover", "focus"]} mouseEnterDelay={0.3}>
                 <span className="rule-target-name ellipsis-text">
                   <Link to={t.kind === "group" ? href("exits", t.id) : href("topology", t.id)}>{t.name}</Link>
                 </span>
@@ -738,51 +819,25 @@ export default function RulesPage() {
     },
     {
       title: ordered ? "要求与遮蔽" : "要求",
-      kind: "flex",
-      width: 200,
+      kind: "fixed",
+      width: 100,
       render: (_, r) => {
-        const req = r.require_residential || r.require_v6 ? (
-          <div className="rule-req">
-            {r.require_residential ? <Tag color="green">住宅</Tag> : null}
-            {r.require_v6 ? <Tag color="blue">IPv6</Tag> : null}
-          </div>
-        ) : null;
-        if (!ordered) return req ?? <Typography.Text type="secondary">—</Typography.Text>;
-        const a = analysis.get(r.id);
-        if (!a) return req ?? <Typography.Text type="secondary">—</Typography.Text>;
-        const ref = (ids?: string[] | null) => (ids ?? []).map((id) => `第 ${byID.get(id) ?? "?"} 条`).join("、");
-        const notes: string[] = [];
-        if (a.keyword_note) notes.push(a.keyword_note);
-        if (a.keywords && !a.keyword_note) notes.push(`${a.keywords} 条关键词条目在网关上不执行`);
-        if (a.rule_set?.unsupported && Object.keys(a.rule_set.unsupported).length) notes.push("规则集只部分生效：" + Object.entries(a.rule_set.unsupported).map(([k, v]) => `${k} ${v}`).join("，"));
-        if (a.rule_set?.held) notes.push("规则集有被暂缓的新版本");
-        if (a.legacy_lost) notes.push(`升级后变化：${a.legacy_lost} 个名字以前按更长的名字归本条，现在被 ${ref(a.legacy_lost_to)} 先命中`);
-        const none = !a.fully_shadowed && !a.shadowed && !(a.partly_by ?? []).length && notes.length === 0;
+        const n = notesOf(r);
+        if (!n) return <Typography.Text type="secondary">—</Typography.Text>;
+        const open = expanded.includes(r.id);
         return (
-          <div className="rule-notes" data-testid={`rule-shadow-${r.id}`}>
-            {req}
-            {a.fully_shadowed ? (
-              <span className="rule-note-status">
-                <StatusTag kind="attention">永远不会命中</StatusTag>
-                <span className="rule-note">（被 {ref(a.shadowed_by)} 遮蔽）</span>
-              </span>
-            ) : a.shadowed > 0 ? (
-              <Typography.Text type="warning" className="rule-note">
-                {a.shadowed}/{a.entries} 个条目被 {ref(a.shadowed_by)} 遮蔽
-              </Typography.Text>
-            ) : null}
-            {(a.partly_by ?? []).length > 0 ? (
-              <Typography.Text type="secondary" className="rule-note">
-                部分名字先被 {ref(a.partly_by)} 接走
-              </Typography.Text>
-            ) : null}
-            {notes.map((n) => (
-              <Typography.Text key={n} type="secondary" className="rule-note">
-                {n}
-              </Typography.Text>
-            ))}
-            {none && !req ? <Typography.Text type="secondary">—</Typography.Text> : null}
-          </div>
+          <Tooltip title={n.summary} mouseEnterDelay={0.3}>
+            <button
+              type="button"
+              className="rule-hint-btn"
+              data-testid={`rule-hints-${r.id}`}
+              aria-expanded={open}
+              aria-label={`${ordered ? "要求与遮蔽" : "要求"}：${n.summary}（${open ? "收起" : "展开"}详情）`}
+              onClick={() => setExpanded((k) => (k.includes(r.id) ? k.filter((x) => x !== r.id) : [...k, r.id]))}
+            >
+              {n.tags}
+            </button>
+          </Tooltip>
         );
       },
     },
@@ -955,6 +1010,12 @@ export default function RulesPage() {
           onRow={(r) => ({ "data-testid": `rule-row-${r.id}` }) as React.HTMLAttributes<HTMLElement>}
           rowClassName={(r) => (r.enabled ? "" : "row-disabled")}
           columns={columns}
+          secondary={(r) => notesOf(r)?.detail ?? null}
+          expandable={{
+            rowExpandable: (r) => notesOf(r) !== null,
+            expandedRowKeys: expanded,
+            onExpandedRowsChange: (keys) => setExpanded(keys as string[]),
+          }}
           pagination={{
             current: Math.min(page, Math.max(1, Math.ceil(shown.length / pageSize))),
             pageSize,

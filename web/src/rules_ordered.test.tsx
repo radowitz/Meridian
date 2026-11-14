@@ -125,6 +125,7 @@ describe("rules: one ordered list", () => {
     expect(imp).toHaveTextContent("导入 · 第 12 行");
     expect(imp).toHaveTextContent("服务组");
     expect(imp).toHaveTextContent("AI → 地区组 香港");
+    fireEvent.click(await screen.findByTestId("rule-hints-auto-a"));
     await waitFor(() => expect(screen.getByTestId("rule-shadow-auto-a")).toHaveTextContent("永远不会命中（被 第 1 条 遮蔽）"));
     const row = screen.getByTestId("rule-row-auto-a");
     fireEvent.click(within(row).getByRole("button", { name: "提前 auto-a" }));
@@ -397,6 +398,7 @@ describe("rules: remaining gaps (accept by code, subscription credentials, move 
       }),
     });
     renderAt("#/rules");
+    fireEvent.click(await screen.findByTestId("rule-hints-imp"));
     await waitFor(() => expect(screen.getByTestId("rule-shadow-imp")).toHaveTextContent("升级后变化：1 个名字以前按更长的名字归本条，现在被 第 1 条 先命中"));
     expect(screen.getByTestId("rules-upgrade-notes")).toHaveTextContent("联网检测域名不再内置直连");
     const row = screen.getByTestId("rule-row-imp");

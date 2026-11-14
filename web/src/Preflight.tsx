@@ -459,5 +459,5 @@ export function preflightOf(e: ApiError | null | undefined): PreflightRecord | n
 
 export function PreflightStatusIcon({ rec }: { rec: PreflightRecord | null | undefined }) {
   if (!rec) return null;
-  return rec.blocking ? <CloseCircleFilled style={{ color: "var(--ant-color-error, #cf1322)" }} /> : <CheckCircleFilled style={{ color: "var(--ant-color-success, #389e0d)" }} />;
+  return rec.blocking ? <CloseCircleFilled style={{ color: "var(--m-bad)" }} /> : <CheckCircleFilled style={{ color: "var(--m-ok)" }} />;
 }

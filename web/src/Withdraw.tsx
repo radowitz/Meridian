@@ -25,7 +25,7 @@ import type {
   WithdrawRunResult,
   WithdrawSet,
 } from "./types";
-import { ApiErrorAlert, DataTable, EllipsisText, Explain, Facts, Link, Mono, RowActions, Section, StatusTag, TimeText, type MoreAction, type StatusKind } from "./ui";
+import { ApiErrorAlert, DataTable, EllipsisLink, EllipsisText, Explain, Facts, Mono, RowActions, Section, StatusTag, TimeText, type MoreAction, type StatusKind } from "./ui";
 
 // ------------------------------------------------------------- labels ---
 
@@ -439,9 +439,9 @@ export function DeploymentRecords({
               kind: "flex",
               width: 200,
               render: (_, d) => (
-                <Space size={4} wrap>
-                  {d.in_topology ? <Link to={href("topology", d.node_id)}>{d.node_name || d.node_id}</Link> : <span>{d.node_name || d.node_id}</span>}
-                  <span className="mono-small muted">{d.node_id}</span>
+                <Space size={4} wrap className="cell-wrap-space">
+                  {d.in_topology ? <EllipsisLink to={href("topology", d.node_id)} text={d.node_name || d.node_id} /> : <EllipsisText text={d.node_name || d.node_id} />}
+                  <EllipsisText className="mono-small muted" text={d.node_id} />
                   {!d.in_topology ? (
                     <Tag color="orange" data-testid={`deployment-orphan-${d.node_id}`}>
                       节点已从拓扑删除
@@ -460,10 +460,8 @@ export function DeploymentRecords({
               width: 220,
               render: (_, d) => (
                 <div className="cell-stack">
-                  <div>
-                    {d.server_name ? <Link to={href("servers", d.server_id)}>{d.server_name}</Link> : <span className="mono-small">{d.server_id}</span>}{" "}
-                    <span className="mono-small">{`${d.user || "root"}@${d.address}:${d.port}`}</span>
-                  </div>
+                  {d.server_name ? <EllipsisLink to={href("servers", d.server_id)} text={d.server_name} /> : <EllipsisText className="mono-small" text={d.server_id} />}
+                  <EllipsisText className="mono-small" mono text={`${d.user || "root"}@${d.address}:${d.port}`} />
                   <EllipsisText className="mono-small muted" text={d.fingerprint} mono />
                 </div>
               ),

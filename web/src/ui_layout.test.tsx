@@ -21,11 +21,14 @@ import {
   SafetyNotice,
   StatusReason,
   StickyBar,
+  MATRIX_LAYOUT,
+  TABLE_BUDGET,
   TABLE_SCROLL,
   WideGrid,
   joinReasons,
   type DataColumn,
 } from "./ui";
+import { phoneWidth } from "./testing";
 
 const LONG = "synthetic-identifier-" + "x".repeat(120);
 
@@ -311,6 +314,96 @@ describe("DataTable", () => {
   });
 });
 
+describe("DataTable at phone width (stacked cards)", () => {
+  interface Card {
+    id: string;
+    name: string;
+    addr: string;
+    when: string;
+  }
+  const many: Card[] = Array.from({ length: 25 }, (_, i) => ({ id: `c${i}`, name: `服务器 ${i} 的名字很长很长很长`, addr: LONG, when: `${i} 天前` }));
+  const ccols: DataColumn<Card>[] = [
+    { title: "名称", dataIndex: "name", kind: "flex", width: 160 },
+    { title: "地址", dataIndex: "addr", kind: "ellipsis", width: 180, mono: true },
+    { title: "创建", dataIndex: "when", kind: "fixed", width: 100, card: "detail" },
+    { title: "操作", kind: "actions", width: 100, render: (_, r) => <button type="button">{`编辑 ${r.id}`}</button> },
+  ];
+
+  it("renders one card per row with the title, labelled key fields and the actions, no table and no pinned column", () => {
+    phoneWidth();
+    const { container } = render(
+      <DataTable<Card> rowKey="id" columns={ccols} dataSource={many.slice(0, 3)} onRow={(r) => ({ "data-testid": `row-${r.id}` }) as React.HTMLAttributes<HTMLElement>} />,
+    );
+    expect(container.querySelector("table")).toBeNull();
+    expect(container.querySelector(".ant-table-cell-fix-right")).toBeNull();
+    expect(container.querySelector(".data-table-wrap")).toHaveAttribute("data-stacked", "true");
+    const card = screen.getByTestId("row-c1");
+    expect(card).toHaveClass("data-card");
+    expect(card.querySelector(".data-card-title")).toHaveTextContent("服务器 1 的名字很长很长很长");
+    // Key field: label + value; the cut value keeps its full text and focus.
+    const field = within(card).getByText("地址").closest(".data-card-field")!;
+    expect(field.querySelector("dd .ellipsis-text")).toHaveTextContent(LONG);
+    expect(field.querySelector("dd .ellipsis-text")).toHaveAttribute("tabindex", "0");
+    // Every action is in the card's corner.
+    expect(within(card.querySelector<HTMLElement>(".data-card-actions")!).getByRole("button", { name: "编辑 c1" })).toBeInTheDocument();
+    // A detail field is not shown until the card's details are opened.
+    expect(within(card).queryByText("1 天前")).toBeNull();
+  });
+
+  it("opens details and secondary fields per card, and paginates like the table", async () => {
+    phoneWidth();
+    const { container } = render(<DataTable<Card> rowKey="id" columns={ccols} dataSource={many} pageSize={10} secondary={(r) => <span>{`次要 ${r.id}`}</span>} />);
+    expect(container.querySelectorAll(".data-card")).toHaveLength(10);
+    const first = container.querySelector<HTMLElement>(".data-card")!;
+    const toggle = within(first).getByRole("button", { name: "详情" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(first).getByText("0 天前")).toBeInTheDocument();
+    expect(within(first).getByText("次要 c0")).toBeInTheDocument();
+    // Next page: rows 11–20.
+    await userEvent.click(within(container.querySelector<HTMLElement>(".data-cards-pagination")!).getByTitle("2"));
+    expect(container.querySelector(".data-card .data-card-title")).toHaveTextContent("服务器 10 ");
+  });
+
+  it("follows a controlled page and expansion (as the rules table drives them)", async () => {
+    phoneWidth();
+    const onExpand = vi.fn();
+    const onPage = vi.fn();
+    const { container } = render(
+      <DataTable<Card>
+        rowKey="id"
+        columns={ccols}
+        dataSource={many}
+        secondary={(r) => <span>{`次要 ${r.id}`}</span>}
+        expandable={{ expandedRowKeys: ["c21"], onExpandedRowsChange: onExpand, rowExpandable: (r) => r.id !== "c22" }}
+        pagination={{ current: 3, pageSize: 10, onChange: onPage, showTotal: (t) => `共 ${t} 条` }}
+      />,
+    );
+    expect([...container.querySelectorAll(".data-card-title")].map((t) => t.textContent)).toEqual(
+      ["c20", "c21", "c22", "c23", "c24"].map((id) => many.find((m) => m.id === id)!.name),
+    );
+    expect(screen.getByText("次要 c21")).toBeInTheDocument();
+    expect(container.textContent).toContain("共 25 条");
+    // c22 cannot expand, but its detail field still has a toggle.
+    await userEvent.click(within(container.querySelectorAll<HTMLElement>(".data-card")[2]).getByRole("button", { name: "详情" }));
+    expect(screen.queryByText("次要 c22")).toBeNull();
+    expect(onExpand).toHaveBeenCalledWith(["c21", "c22"]);
+    await userEvent.click(within(container.querySelector<HTMLElement>(".data-cards-pagination")!).getByTitle("1"));
+    expect(onPage).toHaveBeenCalledWith(1, 10);
+  });
+
+  it("keeps the scrolling table when a table opts out, and at desktop width", () => {
+    phoneWidth();
+    const { container, unmount } = render(<DataTable<Card> rowKey="id" columns={ccols} dataSource={many.slice(0, 2)} stack={false} />);
+    expect(container.querySelector("table")).not.toBeNull();
+    unmount();
+    vi.restoreAllMocks();
+    const r = render(<DataTable<Card> rowKey="id" columns={ccols} dataSource={many.slice(0, 2)} />);
+    expect(r.container.querySelector(".data-card")).toBeNull();
+  });
+});
+
 describe("wide grids", () => {
   it("is a focusable, named scroll region with a hint when it overflows", async () => {
     mockOverflow(1500, 700);
@@ -344,6 +437,13 @@ describe("wide grids", () => {
     expect(within(region).getByText("已过期").closest(".grid-cell-main")).toBeInTheDocument();
     expect(within(region).getByText(LONG)).toHaveClass("grid-cell-note");
     fireEvent.scroll(region);
+  });
+});
+
+describe("unlock matrix widths", () => {
+  it("fit 9 exits next to the service column inside the grid's box at 1280", () => {
+    expect(MATRIX_LAYOUT.box).toBe(TABLE_BUDGET.section - 2);
+    expect(MATRIX_LAYOUT.firstCol + MATRIX_LAYOUT.fitExits * MATRIX_LAYOUT.exitCol).toBeLessThanOrEqual(MATRIX_LAYOUT.box);
   });
 });
 

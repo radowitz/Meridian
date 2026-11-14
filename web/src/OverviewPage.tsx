@@ -1,7 +1,7 @@
 // 概览: what state the system is in and what to do next. Every tile shows
 // real data or an explicit empty / unavailable state.
 
-import { Space, Steps, Tooltip, Typography } from "antd";
+import { Space, Steps, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { PanelStatus, RegionGroupView } from "./types";
 import * as api from "./api";
@@ -21,6 +21,8 @@ import {
   SplitStatus,
   StatusTag,
   Tile,
+  TileItem,
+  EllipsisLink,
   TimeText,
   errorTitle,
   groupLabel,
@@ -65,12 +67,15 @@ function GroupActualCell({ g, nodeName }: { g: RegionGroupView; nodeName: (id: s
   const model = g.model.observed ? `面板推算：${g.model.active ? nodeName(g.model.active) : "无可用成员"}` : `按配置应使用：${g.target ? nodeName(g.target) : "无目标"}（面板推算，无健康样本）`;
   if (a.state === "ok") {
     const who = a.active === "mmesh" ? "Mesh 备路" : a.active ? nodeName(a.active) : "无（黑洞）";
+    // The member's name is what gets cut (full text on hover / focus); the group name keeps its minimum width.
     return a.alert ? (
-      <StatusTag kind="attention" title={a.alert_message}>
+      <StatusTag kind="attention" title={`${who}：${a.alert_message ?? ""}`}>
         {who}
       </StatusTag>
     ) : (
-      <span data-testid={`groups-tile-actual-${g.id}`}>{who}</span>
+      <span data-testid={`groups-tile-actual-${g.id}`} className="group-row-actual">
+        <EllipsisText text={who} />
+      </span>
     );
   }
   const t = actualTag(a);
@@ -301,9 +306,12 @@ export default function OverviewPage() {
                     .map((s) => {
                       const r = serverReadiness(s);
                       return (
-                        <Row key={s.id} label={<Link to={href("servers", s.id)}>{s.name}</Link>}>
-                          <StatusTag kind={r.kind}>{r.label}</StatusTag>
-                        </Row>
+                        <TileItem
+                          key={s.id}
+                          testId={`servers-tile-row-${s.id}`}
+                          name={<EllipsisLink to={href("servers", s.id)} text={s.name} />}
+                          status={<StatusTag kind={r.kind}>{r.label}</StatusTag>}
+                        />
                       );
                     })}
                 </>
@@ -406,11 +414,7 @@ export default function OverviewPage() {
                     const label = groupLabel(g, d.groups);
                     return (
                       <li key={g.id} className="group-row" data-testid={`groups-tile-row-${g.id}`}>
-                        <Tooltip title={label}>
-                          <span className="group-row-name">
-                            <Link to={href("exits", g.id)}>{label}</Link>
-                          </span>
-                        </Tooltip>
+                        <EllipsisLink className="group-row-name" to={href("exits", g.id)} text={label} />
                         <Typography.Text type="secondary" className="group-row-mode">
                           {g.mode === "manual" ? "手动" : "自动"}
                           {g.is_default ? " · 默认" : ""}

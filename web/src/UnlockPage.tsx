@@ -42,6 +42,7 @@ import {
   StatusTag,
   TimeText,
   WideGrid,
+  MATRIX_LAYOUT,
   groupLabel,
   useAction,
   useApi,
@@ -600,6 +601,9 @@ function ResultDetail({ row }: { row: ProbeResultRow }) {
   );
 }
 
+/** Width of an exit column of the matrix (MATRIX_LAYOUT in ui.tsx: 9 exits fit at 1280 next to the service column). */
+const MATRIX_COL = MATRIX_LAYOUT.exitCol;
+
 function ResultsMatrix({
   rows,
   catalog,
@@ -658,7 +662,17 @@ function ResultsMatrix({
 
   return (
     <WideGrid label="服务 × 出口矩阵，可左右滚动">
-      <table className="matrix matrix-compact" data-testid="unlock-matrix">
+      <table
+        className="matrix matrix-compact"
+        data-testid="unlock-matrix"
+        style={{ tableLayout: "fixed", width: MATRIX_LAYOUT.firstCol + cols.length * MATRIX_LAYOUT.exitCol }}
+      >
+        <colgroup>
+          <col style={{ width: MATRIX_LAYOUT.firstCol }} />
+          {cols.map((c) => (
+            <col key={c.id} style={{ width: MATRIX_LAYOUT.exitCol }} />
+          ))}
+        </colgroup>
         <thead>
           <tr>
             <th rowSpan={2} className="matrix-corner">
@@ -666,7 +680,12 @@ function ResultsMatrix({
             </th>
             {groups.map((g) => (
               <th key={g.id || "none"} colSpan={g.cols.length} className="matrix-group">
-                {g.id ? <Link to={href("exits", g.id)}>{g.name}</Link> : g.name}
+                {/* Bounded by the columns it spans, so a long group name never widens them (full name on hover / focus). */}
+                <Tooltip title={g.name} trigger={["hover", "focus"]} mouseEnterDelay={0.2}>
+                  <span className="ellipsis-text matrix-group-name" tabIndex={g.id ? undefined : 0} style={{ maxWidth: g.cols.length * MATRIX_COL - 14 }} data-testid={`matrix-group-${g.id || "none"}`}>
+                    {g.id ? <Link to={href("exits", g.id)}>{g.name}</Link> : g.name}
+                  </span>
+                </Tooltip>
               </th>
             ))}
           </tr>
