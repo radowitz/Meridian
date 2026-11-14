@@ -714,6 +714,28 @@ export interface PanelStatus {
   jobs: { lists: StatusJob; unlock: StatusJob; mesh: StatusJob };
   /** A previous snapshot exists, so a rollback has something to go back to. */
   previous_available?: boolean;
+  /** Every managed node's own install state (absent from older panels). */
+  nodes?: NodeInstallState[];
+  pending_nodes?: number;
+}
+
+/** One node compared with what was last installed on it (never with another node's install). */
+export interface NodeInstallState {
+  node_id: string;
+  node_name: string;
+  role: string;
+  /** Remote: in_sync | changed | not_installed | unknown | target_changed. Gateway: the install state. */
+  state: string;
+  pending: boolean;
+  reason?: string;
+  current_bundle?: string;
+  installed_bundle?: string;
+  installed_at?: string;
+  installed_target?: { server_id: string; server_name?: string; address: string; port: number; user?: string; fingerprint: string };
+  verify?: { at: string; state: "verified" | "mismatch" | "unverified"; source: "post_install" | "preflight"; host_bundle?: string; detail?: string };
+  last_outcome?: string;
+  /** host_journal: the outcome came from the host's journal (the script's markers were missing). */
+  evidence?: string;
 }
 
 export interface TopologySaveResult {
@@ -952,6 +974,12 @@ export interface ConnectionTest {
   retry_after?: number;
   /** Login methods the server offered when the login failed. */
   offered_methods?: string[];
+  /** The failure was before anything ran on the server. */
+  not_executed?: boolean;
+  /** ...and transient (connect / banner / handshake timeout, refused before the handshake): safe to retry. */
+  safe_to_retry?: boolean;
+  /** Management channel the test used (absent: direct). */
+  channel?: ChannelMode;
   os?: string;
   kernel?: string;
   arch?: string;
@@ -959,6 +987,20 @@ export interface ConnectionTest {
 }
 
 export type AuthMethod = "password" | "key";
+
+/** How the panel reaches a server's sshd. */
+export type ChannelMode = "direct" | "tunnel" | "jump";
+
+/** Absent on a server: direct. */
+export interface ManagementChannel {
+  mode: ChannelMode;
+  /** tunnel: required (an IP the panel reaches through an established tunnel); jump: optional (as the relay reaches it). */
+  address?: string;
+  /** Defaults to the server's SSH port. */
+  port?: number;
+  /** jump: the managed relay's server. */
+  via_server_id?: string;
+}
 
 export interface ServerView {
   id: string;
@@ -977,6 +1019,8 @@ export interface ServerView {
   updated_at: string;
   migrated_from?: string;
   last_test?: ConnectionTest | null;
+  /** Management channel (absent: direct). */
+  channel?: ManagementChannel;
   /** Credential selected and host key trusted. */
   operable: boolean;
   /** Operable and the last connection test passed. */
@@ -996,6 +1040,8 @@ export interface ServerInput {
   credential_id?: string;
   tags?: string[];
   notes?: string;
+  /** {mode:"direct"} goes back to the direct connection. */
+  channel?: ManagementChannel;
 }
 
 export type ServerPatch = Partial<ServerInput>;

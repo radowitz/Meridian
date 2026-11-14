@@ -290,3 +290,24 @@ func getStatusRaw(t *testing.T, s *Server) map[string]any {
 	}
 	return m
 }
+
+type statusFull struct {
+	Install struct {
+		State string `json:"state"`
+	} `json:"install"`
+	Nodes        []nodeInstallState `json:"nodes"`
+	PendingNodes int                `json:"pending_nodes"`
+}
+
+func getStatusFull(t *testing.T, s *Server) statusFull {
+	t.Helper()
+	rr := do(s, http.MethodGet, "/api/status", nil)
+	if rr.Code != 200 {
+		t.Fatal(rr.Code, rr.Body.String())
+	}
+	var v statusFull
+	if err := json.Unmarshal(rr.Body.Bytes(), &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}

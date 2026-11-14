@@ -347,8 +347,7 @@ func TestWSSProvisionInjectsOnlyIntoTheScript(t *testing.T) {
 	sec, _ := cs.WSSSecrets()
 	ali := st.Listener("ali")
 	hub := st.Listener("hk-hub")
-	stdins := srv.Stdins()
-	last := stdins[len(stdins)-1]
+	last := lastScript(srv.Stdins())
 	for _, want := range []string{sec[ali.Cert.KeySecretID], sec[ali.Links[0].Path.SecretID], sec[hub.Link("ali-hub-wss").Path.SecretID]} {
 		if !strings.Contains(last, strings.TrimSpace(want)) {
 			t.Fatal("a WSS secret of this node did not reach the provision script")

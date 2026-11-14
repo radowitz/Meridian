@@ -51,6 +51,7 @@ const CHANGE_ACTION: Record<string, string> = {
   install: "安装",
   set: "设置",
   keep: "保留",
+  remove: "移除",
 };
 
 const BINARY_ACTION: Record<PreflightBinary["action"], { label: string; color: string }> = {
@@ -278,8 +279,10 @@ export function PreflightReport({ rec }: { rec: PreflightRecord }) {
                     <Typography.Text strong>{CHANGE_KIND[kind] ?? kind}</Typography.Text>
                     <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
                       {list.map((c, i) => (
-                        <li key={i} className="mono-small">
-                          <Tag style={{ marginRight: 6 }}>{CHANGE_ACTION[c.action] ?? c.action}</Tag>
+                        <li key={i} className="mono-small" data-change={`${c.kind}:${c.action}`}>
+                          <Tag style={{ marginRight: 6 }} color={c.action === "remove" ? "volcano" : undefined}>
+                            {CHANGE_ACTION[c.action] ?? c.action}
+                          </Tag>
                           {c.resource}
                           {c.detail ? <Typography.Text type="secondary">（{c.detail}）</Typography.Text> : null}
                         </li>

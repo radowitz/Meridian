@@ -63,6 +63,28 @@ const (
 	// PerSourcePenalties). Nothing was authenticated or run; the panel does
 	// not connect to that endpoint again for Error.RetryAfter seconds.
 	CodeRateLimited = "ssh_rate_limited"
+	// CodeBannerTimeout: the TCP connection was accepted but no SSH version
+	// line came within the handshake timeout. CodeHandshakeTimeout: the
+	// version line came, key exchange or login did not finish in time.
+	// CodeClosedBeforeBanner: the server closed the connection before its
+	// version line without saying anything (sshd's MaxStartups drop, a
+	// forwarder that could not reach the host). All three happen before
+	// anything ran on the server.
+	CodeBannerTimeout      = "ssh_banner_timeout"
+	CodeHandshakeTimeout   = "ssh_handshake_timeout"
+	CodeClosedBeforeBanner = "ssh_closed_before_banner"
+	// CodeRunTimeout: the remote command was started and did not finish in
+	// time; CodeRunInterrupted: the connection was lost while it ran (no
+	// exit status came back). In both cases the outcome is unknown.
+	CodeRunTimeout     = "run_timeout"
+	CodeRunInterrupted = "run_interrupted"
+	// CodeJumpRefused: the relay of a jump channel refused to open the
+	// forwarded connection (AllowTcpForwarding no or similar).
+	CodeJumpRefused = "jump_forward_refused"
+	// CodeChannelNotAllowed: the server's management channel cannot be used
+	// (the jump server is not a managed relay, or the relay itself is not
+	// reached directly).
+	CodeChannelNotAllowed = "channel_not_allowed"
 )
 
 // Error is every error this package returns. Msg is scrubbed of the
@@ -78,9 +100,44 @@ type Error struct {
 	// "publickey", "keyboard-interactive"). The panel only suggests a key
 	// login when "publickey" is among them.
 	Offered []string
+	// NotExecuted: the failure happened before any command was started on
+	// the server (connect, banner, handshake, login, host key, or the
+	// relay hop of a jump). SafeToRetry: in addition the failure is of a
+	// transient kind (connect timeout, banner or handshake timeout, refused
+	// or closed before the handshake, rate limited after RetryAfter), so a
+	// new attempt cannot repeat or half-repeat anything. The panel never
+	// retries by itself; it only says so.
+	NotExecuted bool
+	SafeToRetry bool
+	// Hop is "relay" when the failure is on the relay of a jump channel.
+	Hop string
 }
 
 func (e *Error) Error() string { return e.Msg }
+
+// notExecuted marks e as a failure before anything ran (retry: and of a
+// transient kind).
+func notExecuted(e *Error, retry bool) *Error {
+	e.NotExecuted = true
+	e.SafeToRetry = e.SafeToRetry || retry
+	return e
+}
+
+// retryNote is appended to the message of a transient failure before
+// execution.
+const retryNote = "。面板还没有在这台服务器上执行任何操作，可以安全重试（面板不会自动重试）"
+
+// NotExecutedOf / SafeToRetryOf read the flags of an *Error (false
+// otherwise: an error that is not ours says nothing about what ran).
+func NotExecutedOf(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.NotExecuted
+}
+
+func SafeToRetryOf(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.SafeToRetry
+}
 
 func errf(code, format string, a ...any) *Error {
 	return &Error{Code: code, Msg: fmt.Sprintf(format, a...)}
@@ -134,6 +191,10 @@ type Connector struct {
 	// one operation flow and remembers rate-limited endpoints (see Pool).
 	// Nil: every operation opens and closes its own connection.
 	Pool *Pool
+	// JumpPolicy, when set, is asked before a jump channel is used: it
+	// returns an error when via may not serve as a jump host for target
+	// (the API allows only servers of managed relay nodes).
+	JumpPolicy func(via, target model.Server) error
 }
 
 // Target is what an operation connects to: a server, optionally with the
@@ -160,6 +221,13 @@ type Result struct {
 	// Reused: the operation ran on a pooled connection opened earlier in
 	// the same flow (no new login).
 	Reused bool
+	// Channel is the management channel used (direct | tunnel | jump).
+	Channel string
+	// Markers are the lines of the command's standard output that start
+	// with "MERIDIAN_", in order (at most maxMarkers). They are collected
+	// from stdout alone, line by line, so they are never split or glued by
+	// standard error interleaving and never lost when Output is capped.
+	Markers []string
 }
 
 // Discovery is what Discover saw.
@@ -186,8 +254,8 @@ func (c *Connector) handshakeTimeout() time.Duration {
 	return 20 * time.Second
 }
 
-func (c *Connector) dial(ctx context.Context, sv model.Server) (net.Conn, error) {
-	addr := net.JoinHostPort(sv.Address, strconv.Itoa(sv.Port))
+// dialTCP opens the TCP connection of a direct or tunnel channel.
+func (c *Connector) dialTCP(ctx context.Context, addr, note string) (net.Conn, error) {
 	dctx, cancel := context.WithTimeout(ctx, c.dialTimeout())
 	defer cancel()
 	var conn net.Conn
@@ -200,9 +268,9 @@ func (c *Connector) dial(ctx context.Context, sv model.Server) (net.Conn, error)
 	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
-			return nil, errf(CodeTimeout, "连接 %s 超时", addr)
+			return nil, notExecuted(errf(CodeTimeout, "连接 %s 超时%s%s", addr, note, retryNote), true)
 		}
-		return nil, errf(CodeUnreachable, "无法连接 %s：%s", addr, plainNetErr(err))
+		return nil, notExecuted(errf(CodeUnreachable, "无法连接 %s：%s%s", addr, plainNetErr(err), note), false)
 	}
 	return conn, nil
 }
@@ -234,17 +302,24 @@ func (c *Connector) Discover(ctx context.Context, serverID string) (Discovery, e
 	if err != nil {
 		return Discovery{}, errf(CodeNotFound, "%s", err.Error())
 	}
-	ep := endpoint(sv.Address, sv.Port)
-	if left := c.Pool.cooling(ep); left > 0 {
-		return Discovery{}, rateLimitedErr(sv.Name, ep, left)
-	}
-	raw, err := c.dial(ctx, sv)
+	p, err := c.pathOf(sv)
 	if err != nil {
 		return Discovery{}, err
 	}
+	ep := p.cool
+	if left := c.Pool.cooling(ep); left > 0 {
+		return Discovery{}, rateLimitedErr(sv.Name, p.desc, left)
+	}
+	raw, relay, err := c.openPath(ctx, p, sv.Name)
+	if err != nil {
+		return Discovery{}, err
+	}
+	defer relay.close()
 	conn := newBannerConn(raw)
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(c.handshakeTimeout()))
+	wd := newWatchdog(c.handshakeTimeout(), conn)
+	defer wd.stop()
 	var seen ssh.PublicKey
 	cfg := &ssh.ClientConfig{
 		User: sv.User,
@@ -256,7 +331,8 @@ func (c *Connector) Discover(ctx context.Context, serverID string) (Discovery, e
 		},
 		Timeout: c.handshakeTimeout(),
 	}
-	sc, chans, reqs, herr := ssh.NewClientConn(conn, net.JoinHostPort(sv.Address, strconv.Itoa(sv.Port)), cfg)
+	sc, chans, reqs, herr := ssh.NewClientConn(conn, p.dial, cfg)
+	wd.stop()
 	if herr == nil {
 		// Cannot happen without auth methods; close defensively.
 		ssh.NewClient(sc, chans, reqs).Close()
@@ -265,12 +341,15 @@ func (c *Connector) Discover(ctx context.Context, serverID string) (Discovery, e
 		pre, sawSSH := conn.preBanner()
 		if !sawSSH && rateLimitLine(pre) {
 			c.Pool.rateLimited(ep)
-			return Discovery{}, rateLimitedErr(sv.Name, ep, c.Pool.cooldown())
+			return Discovery{}, rateLimitedErr(sv.Name, p.desc, c.Pool.cooldown())
 		}
-		if herr != nil && isTimeout(herr) {
-			return Discovery{}, errf(CodeTimeout, "%s 的 SSH 握手超时", sv.Name)
+		if herr != nil && (wd.fired() || isTimeout(herr)) {
+			return Discovery{}, timeoutErr(sv.Name, sawSSH, p.note())
 		}
-		return Discovery{}, errf(CodeNotSSH, "%s:%d 没有完成 SSH 密钥交换，读不到主机公钥%s", sv.Address, sv.Port, preBannerNote(pre, sawSSH))
+		if herr != nil && !sawSSH && pre == "" && closedEarly(herr) {
+			return Discovery{}, closedBeforeBannerErr(sv.Name, p.note())
+		}
+		return Discovery{}, notExecuted(errf(CodeNotSSH, "%s 没有完成 SSH 密钥交换，读不到主机公钥%s%s", p.desc, preBannerNote(pre, sawSSH), p.note()), false)
 	}
 	fp := ssh.FingerprintSHA256(seen)
 	got, oerr := c.Store.ObserveHostKey(sv.ID, seen.Type(), fp)
@@ -292,14 +371,29 @@ func codeOfCred(err error) string {
 	return ""
 }
 
-// session is one authenticated connection.
+// session is one authenticated connection. relay is the relay's own
+// session of a jump channel: it carries the forwarded TCP connection and
+// lives exactly as long as client.
 type session struct {
 	client  *ssh.Client
+	relay   *session
 	method  string
 	fp      string
 	secrets []string
 	credID  string
 	created time.Time
+}
+
+// close closes the connection and, for a jump, the relay connection under
+// it. Safe on nil.
+func (s *session) close() {
+	if s == nil {
+		return
+	}
+	if s.client != nil {
+		s.client.Close()
+	}
+	s.relay.close()
 }
 
 // endpoint is the dial address of a server.
@@ -323,6 +417,7 @@ type resolved struct {
 	credID string
 	meta   credentials.SSHCredential
 	key    poolKey
+	path   path
 }
 
 // connect checks the target, dials, verifies the host key against the
@@ -383,16 +478,27 @@ func (c *Connector) resolve(t Target) (resolved, error) {
 	if err != nil {
 		return resolved{}, errf(CodeNotFound, "服务器 %s 使用的 SSH 凭据 %s 不存在", sv.Name, credID)
 	}
-	return resolved{t: t, sv: sv, credID: credID, meta: meta, key: poolKey{ServerID: sv.ID, Address: sv.Address, Port: sv.Port, User: sv.User,
-		Fingerprint: sv.HostKey.Fingerprint, KeyType: sv.HostKey.KeyType, PinnedAt: sv.HostKey.PinnedAt, CredentialID: credID, CredentialGn: gen}}, nil
+	p, err := c.pathOf(sv)
+	if err != nil {
+		return resolved{}, err
+	}
+	k := poolKey{ServerID: sv.ID, Address: sv.Address, Port: sv.Port, User: sv.User,
+		Fingerprint: sv.HostKey.Fingerprint, KeyType: sv.HostKey.KeyType, PinnedAt: sv.HostKey.PinnedAt, CredentialID: credID, CredentialGn: gen,
+		Channel: p.mode, Dial: p.dial, Cool: p.cool}
+	if p.via != nil {
+		vk := p.via.key
+		k.ViaID, k.ViaCred, k.ViaCool = vk.ServerID, vk.CredentialID, vk.Cool
+		k.ViaKey = fmt.Sprintf("%+v", vk)
+	}
+	return resolved{t: t, sv: sv, credID: credID, meta: meta, key: k, path: p}, nil
 }
 
 // handshake dials the resolved target and authenticates.
 func (c *Connector) handshake(ctx context.Context, r resolved) (*session, error) {
 	t, sv, credID, meta := r.t, r.sv, r.credID, r.meta
-	ep := endpoint(sv.Address, sv.Port)
+	ep := r.path.cool
 	if left := c.Pool.cooling(ep); left > 0 {
-		return nil, rateLimitedErr(sv.Name, ep, left)
+		return nil, rateLimitedErr(sv.Name, r.path.desc, left)
 	}
 	s := &session{credID: credID, created: time.Now()}
 	var hostErr error
@@ -528,26 +634,31 @@ func (c *Connector) handshake(ctx context.Context, r resolved) (*session, error)
 		HostKeyAlgorithms: hostKeyAlgos(pinnedType),
 		Timeout:           c.handshakeTimeout(),
 	}
-	raw, err := c.dial(ctx, sv)
+	raw, relay, err := c.openPath(ctx, r.path, sv.Name)
 	if err != nil {
 		return nil, err
 	}
 	conn := newBannerConn(raw)
 	_ = conn.SetDeadline(time.Now().Add(c.handshakeTimeout()))
-	sc, chans, reqs, err := ssh.NewClientConn(conn, ep, cfg)
+	// A forwarded connection (jump) has no deadlines: the watchdog closes
+	// any connection whose handshake outlives the timeout.
+	wd := newWatchdog(c.handshakeTimeout(), conn)
+	sc, chans, reqs, err := ssh.NewClientConn(conn, r.path.dial, cfg)
+	wd.stop()
 	if err != nil {
 		conn.Close()
+		relay.close()
 		pre, sawSSH := conn.preBanner()
 		switch {
 		case hostErr != nil:
-			return nil, hostErr
+			return nil, notExecuted(hostErr.(*Error), false)
 		case !sawSSH && rateLimitLine(pre):
 			// Refused before the version exchange: no key was seen, no
 			// credential was read or sent.
 			c.Pool.rateLimited(ep)
-			return nil, rateLimitedErr(sv.Name, ep, c.Pool.cooldown())
+			return nil, rateLimitedErr(sv.Name, r.path.desc, c.Pool.cooldown())
 		case authErr != nil:
-			return nil, errf(CodeAuthFailed, "%s", credentials.Scrub(authErr.Error(), s.secrets...))
+			return nil, notExecuted(errf(CodeAuthFailed, "%s", credentials.Scrub(authErr.Error(), s.secrets...)), false)
 		case errors.Is(err, errProbeOnly) || strings.Contains(err.Error(), "unable to authenticate"):
 			authMu.Lock()
 			used, others := tried, append([]string(nil), offered...)
@@ -555,7 +666,7 @@ func (c *Connector) handshake(ctx context.Context, r resolved) (*session, error)
 			if !used {
 				e := errf(CodeAuthMethodUnavailable, "%s", methodUnavailableMsg(sv.Name, s.method, others))
 				e.Offered = others
-				return nil, e
+				return nil, notExecuted(e, false)
 			}
 			own := "publickey"
 			if s.method == AuthPassword {
@@ -563,16 +674,19 @@ func (c *Connector) handshake(ctx context.Context, r resolved) (*session, error)
 			}
 			e := errf(CodeAuthFailed, "%s 拒绝了 %s 的%s登录（服务器接受%s登录，但这份凭据没有通过）", sv.Name, sv.User, methodName(s.method), methodName(s.method))
 			e.Offered = append([]string{own}, others...)
-			return nil, e
-		case isTimeout(err):
-			return nil, errf(CodeTimeout, "%s 的 SSH 握手超时", sv.Name)
+			return nil, notExecuted(e, false)
+		case wd.fired() || isTimeout(err):
+			return nil, timeoutErr(sv.Name, sawSSH, r.path.note())
+		case !sawSSH && pre == "" && closedEarly(err):
+			return nil, closedBeforeBannerErr(sv.Name, r.path.note())
 		default:
-			return nil, errf(CodeUnreachable, "%s 的 SSH 握手失败：%s%s", sv.Name, credentials.Scrub(err.Error(), s.secrets...), preBannerNote(credentials.Scrub(pre, s.secrets...), sawSSH))
+			return nil, notExecuted(errf(CodeUnreachable, "%s 的 SSH 握手失败：%s%s%s", sv.Name, credentials.Scrub(err.Error(), s.secrets...), preBannerNote(credentials.Scrub(pre, s.secrets...), sawSSH), r.path.note()), false)
 		}
 	}
 	conn.stop()
 	_ = conn.SetDeadline(time.Time{})
 	s.client = ssh.NewClient(sc, chans, reqs)
+	s.relay = relay
 	return s, nil
 }
 
@@ -617,12 +731,17 @@ func methodName(m string) string {
 	return "密钥"
 }
 
+// capWriter keeps the first n bytes of the combined output. Standard
+// output and standard error are copied by two goroutines, so it is locked.
 type capWriter struct {
+	mu  sync.Mutex
 	buf bytes.Buffer
 	n   int
 }
 
 func (w *capWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if room := w.n - w.buf.Len(); room > 0 {
 		if len(p) > room {
 			w.buf.Write(p[:room])
@@ -633,15 +752,82 @@ func (w *capWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+func (w *capWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// maxMarkers bounds Result.Markers; maxMarkerLine bounds one marker line.
+const (
+	maxMarkers    = 512
+	maxMarkerLine = 4096
+)
+
+// markerWriter collects the "MERIDIAN_" lines of standard output. It sees
+// only stdout, so a line is assembled from consecutive stdout bytes even
+// when the transport splits it and stderr arrives in between.
+type markerWriter struct {
+	mu      sync.Mutex
+	line    []byte
+	over    bool
+	markers []string
+}
+
+func (w *markerWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, b := range p {
+		if b == '\n' {
+			w.flush()
+			continue
+		}
+		if len(w.line) < maxMarkerLine {
+			w.line = append(w.line, b)
+		} else {
+			w.over = true
+		}
+	}
+	return len(p), nil
+}
+
+func (w *markerWriter) flush() {
+	l := strings.TrimSpace(string(w.line))
+	if !w.over && strings.HasPrefix(l, "MERIDIAN_") && len(w.markers) < maxMarkers {
+		w.markers = append(w.markers, l)
+	}
+	w.line, w.over = w.line[:0], false
+}
+
+func (w *markerWriter) result() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.line) > 0 {
+		w.flush()
+	}
+	return append([]string(nil), w.markers...)
+}
+
 // run executes command (with stdin) on an authenticated session: a pooled
 // connection of exactly this identity when the Connector has a Pool and one
 // is idle (and fresh is false), else a new one. On success the connection
 // goes back to the pool; after any error it is closed.
 func (c *Connector) run(ctx context.Context, t Target, command string, stdin io.Reader) (res Result, err error) {
-	return c.runOn(ctx, t, command, stdin, false)
+	return c.runOn(ctx, t, command, stdin, false, nil)
 }
 
-func (c *Connector) runOn(ctx context.Context, t Target, command string, stdin io.Reader, fresh bool) (res Result, err error) {
+// followUp is a fixed, read-only command run on the same login right after
+// the main command finished (with any exit status), before the connection
+// is pooled or closed. It is not run when the main command's outcome is
+// unknown (timeout, connection lost).
+type followUp struct {
+	command string
+	max     int
+	out     string
+	ok      bool
+}
+
+func (c *Connector) runOn(ctx context.Context, t Target, command string, stdin io.Reader, fresh bool, after *followUp) (res Result, err error) {
 	r, err := c.resolve(t)
 	if err != nil {
 		// The server is not operable under any identity now (deleted,
@@ -663,7 +849,7 @@ func (c *Connector) runOn(ctx context.Context, t Target, command string, stdin i
 	}
 	if s == nil {
 		if s, err = c.handshake(ctx, r); err != nil {
-			return Result{ServerID: t.ServerID}, err
+			return Result{ServerID: t.ServerID, Channel: r.path.mode}, err
 		}
 	}
 	defer func() {
@@ -671,12 +857,13 @@ func (c *Connector) runOn(ctx context.Context, t Target, command string, stdin i
 			c.Pool.put(r.key, s)
 			return
 		}
-		s.client.Close()
+		s.close()
 	}()
-	res = Result{AuthMethod: s.method, Fingerprint: s.fp, ServerID: t.ServerID, CredentialID: s.credID, Reused: reused}
+	res = Result{AuthMethod: s.method, Fingerprint: s.fp, ServerID: t.ServerID, CredentialID: s.credID, Reused: reused, Channel: r.path.mode}
 	sess, err := s.client.NewSession()
 	if err != nil {
-		return res, errf(CodeCommandFailed, "打开 SSH 会话失败：%s", credentials.Scrub(err.Error(), s.secrets...))
+		// No channel, nothing started.
+		return res, notExecuted(errf(CodeCommandFailed, "打开 SSH 会话失败：%s", credentials.Scrub(err.Error(), s.secrets...)), false)
 	}
 	defer sess.Close()
 	max := c.MaxOutput
@@ -684,7 +871,8 @@ func (c *Connector) runOn(ctx context.Context, t Target, command string, stdin i
 		max = 1 << 20
 	}
 	out := &capWriter{n: max}
-	sess.Stdout, sess.Stderr = out, out
+	marks := &markerWriter{}
+	sess.Stdout, sess.Stderr = io.MultiWriter(out, marks), out
 	if stdin != nil {
 		sess.Stdin = stdin
 	}
@@ -694,15 +882,59 @@ func (c *Connector) runOn(ctx context.Context, t Target, command string, stdin i
 	case err = <-done:
 	case <-ctx.Done():
 		_ = sess.Signal(ssh.SIGKILL)
-		s.client.Close()
-		res.Output = credentials.Scrub(out.buf.String(), s.secrets...)
-		return res, errf(CodeTimeout, "远程执行超时：%v", ctx.Err())
+		s.close()
+		res.Output = credentials.Scrub(out.String(), s.secrets...)
+		res.Markers = scrubAll(marks.result(), s.secrets)
+		return res, errf(CodeRunTimeout, "远程执行超时（%v）：命令已经开始执行，结果不明", ctx.Err())
 	}
-	res.Output = credentials.Scrub(out.buf.String(), s.secrets...)
+	res.Output = credentials.Scrub(out.String(), s.secrets...)
+	res.Markers = scrubAll(marks.result(), s.secrets)
+	var exit *ssh.ExitError
+	finished := err == nil || errors.As(err, &exit)
+	if after != nil && finished && ctx.Err() == nil {
+		after.out, after.ok = c.followOn(ctx, s, after)
+	}
 	if err != nil {
+		if !finished {
+			// No exit status: the connection or the session went away while
+			// the command ran.
+			return res, errf(CodeRunInterrupted, "远程执行中断（没有收到退出状态）：%s；结果不明", credentials.Scrub(err.Error(), s.secrets...))
+		}
 		return res, errf(CodeCommandFailed, "远程执行失败：%s", credentials.Scrub(err.Error(), s.secrets...))
 	}
 	return res, nil
+}
+
+// followOn runs a follow-up's fixed command in a new session of s.
+func (c *Connector) followOn(ctx context.Context, s *session, f *followUp) (string, bool) {
+	fctx, cancel := context.WithTimeout(ctx, FollowUpTimeout)
+	defer cancel()
+	sess, err := s.client.NewSession()
+	if err != nil {
+		return "", false
+	}
+	defer sess.Close()
+	out := &capWriter{n: f.max}
+	sess.Stdout = out
+	done := make(chan error, 1)
+	go func() { done <- sess.Run(f.command) }()
+	select {
+	case err = <-done:
+	case <-fctx.Done():
+		_ = sess.Signal(ssh.SIGKILL)
+		return "", false
+	}
+	return credentials.Scrub(out.String(), s.secrets...), err == nil
+}
+
+// FollowUpTimeout bounds a follow-up read.
+const FollowUpTimeout = 30 * time.Second
+
+func scrubAll(in []string, secrets []string) []string {
+	for i := range in {
+		in[i] = credentials.Scrub(in[i], secrets...)
+	}
+	return in
 }
 
 // RunScript sends a panel-built script to "bash -s" on stdin, so nothing
@@ -710,6 +942,29 @@ func (c *Connector) runOn(ctx context.Context, t Target, command string, stdin i
 // process list.
 func (c *Connector) RunScript(ctx context.Context, t Target, script string) (Result, error) {
 	return c.run(ctx, t, "bash -s", strings.NewReader(script))
+}
+
+// NodeStateCommand is the fixed, read-only command that reads a remote
+// node's provision record: the journal (state, node, deployment, run,
+// leftovers) and the header of the ownership manifest (node, deployment,
+// server, bundle, installed). It takes no input and changes nothing.
+const NodeStateCommand = `{ printf 'meridian-node-state 1\n'; if [ -f /var/lib/meridian/node/journal ]; then head -c 16384 /var/lib/meridian/node/journal | head -n 200 | sed 's/^/journal /'; fi; if [ -f /var/lib/meridian/node/manifest ]; then grep -E '^(node|deployment|server|bundle|installed) ' /var/lib/meridian/node/manifest | head -n 16 | sed 's/^/manifest /'; fi; echo meridian-node-state-end; } 2>/dev/null | head -c 32769`
+
+// NodeStateMax is the largest accepted answer of NodeStateCommand.
+const NodeStateMax = 32 << 10
+
+// RunScriptAndRead sends a panel-built script like RunScript and, when the
+// script finished (exit status received, success or failure) on a live
+// connection, reads NodeStateCommand on the same login before the
+// connection is pooled or closed: no second connection, and the host's own
+// record of what the run did (committed, compensated, incomplete) even when
+// the script's markers did not reach the panel. state is "" with ok false
+// when it was not read (the script's outcome is then unknown, or the read
+// failed).
+func (c *Connector) RunScriptAndRead(ctx context.Context, t Target, script string) (res Result, state string, ok bool, err error) {
+	f := &followUp{command: NodeStateCommand, max: NodeStateMax + 1}
+	res, err = c.runOn(ctx, t, "bash -s", strings.NewReader(script), false, f)
+	return res, f.out, f.ok, err
 }
 
 // TestCommand is the fixed command of the connection test: it reads the
@@ -730,14 +985,18 @@ func (c *Connector) Test(ctx context.Context, serverID string) (model.Connection
 	defer cancel()
 	// Always a fresh login (the test is about whether logging in works);
 	// the connection then stays in the pool for the next step.
-	res, err := c.runOn(ctx, Target{ServerID: serverID}, TestCommand, nil, true)
+	res, err := c.runOn(ctx, Target{ServerID: serverID}, TestCommand, nil, true, nil)
 	ct := model.ConnectionTest{AuthMethod: res.AuthMethod, DurationMS: time.Since(start).Milliseconds()}
+	if res.Channel != model.ChannelDirect {
+		ct.Channel = res.Channel
+	}
 	if err != nil {
 		switch CodeOf(err) {
 		case CodeNotFound, CodeUntrusted, CodeNoCredential:
 			return ct, err
 		}
 		ct.Code, ct.Error, ct.RetryAfter, ct.Offered = CodeOf(err), err.Error(), RetryAfterOf(err), OfferedOf(err)
+		ct.NotExecuted, ct.SafeToRetry = NotExecutedOf(err), SafeToRetryOf(err)
 		if ct.Code == "" {
 			ct.Code = CodeCommandFailed
 		}

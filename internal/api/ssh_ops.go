@@ -44,7 +44,24 @@ func (s *Server) registerSSHOps(mux *http.ServeMux) {
 // the server's pool: one authenticated connection serves the steps of a
 // flow (sshexec.Pool for how reuse is bounded).
 func (s *Server) connector(cs *credentials.Store) *sshexec.Connector {
-	return &sshexec.Connector{Store: cs, Dial: s.SSHDial, Pool: s.sshPool()}
+	return &sshexec.Connector{Store: cs, Dial: s.SSHDial, Pool: s.sshPool(), JumpPolicy: s.jumpPolicy}
+}
+
+// jumpPolicy: a jump channel may only go through the server of a managed
+// relay node of the topology (the panel installs and pins that host). Any
+// other server, even one that would forward, is refused before anything is
+// dialed.
+func (s *Server) jumpPolicy(via, target model.Server) error {
+	t, err := s.topology()
+	if err != nil {
+		return fmt.Errorf("读不到拓扑，不能确认跳转用的服务器 %s 是受管中继：%v", via.Name, err)
+	}
+	for _, n := range t.Nodes {
+		if n.ServerID == via.ID && n.Managed && n.Role == model.RoleRelay {
+			return nil
+		}
+	}
+	return fmt.Errorf("服务器 %s 不是拓扑里受管中继节点的服务器：管理通道只能经受管中继跳转（%s 的管理通道没有使用，也没有改走直连）", via.Name, target.Name)
 }
 
 // sshPool returns the server's SSH connection pool.
@@ -170,7 +187,25 @@ func writeSSHErr(w http.ResponseWriter, err error) {
 	if ra := sshexec.RetryAfterOf(err); ra > 0 {
 		body["retry_after"] = ra
 	}
+	execFlags(body, err)
 	writeJSON(w, status, body)
+}
+
+// execFlags adds what is known about execution to an error body:
+// not_executed (the failure was before anything ran on the server) and
+// safe_to_retry (and it was transient). Absent means "not known to be
+// before execution".
+func execFlags(body map[string]any, err error) {
+	if sshexec.NotExecutedOf(err) {
+		body["not_executed"] = true
+		if sshexec.SafeToRetryOf(err) {
+			body["safe_to_retry"] = true
+		}
+	}
+	var e *sshexec.Error
+	if errors.As(err, &e) && e.Hop != "" {
+		body["hop"] = e.Hop
+	}
 }
 
 // rateLimitHeaders sets Retry-After for an ssh_rate_limited error and

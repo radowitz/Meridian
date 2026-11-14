@@ -1092,3 +1092,63 @@ func validSysctl(s string) bool {
 	}
 	return true
 }
+
+// NodeState is the answer of the fixed read-only node-state read
+// (sshexec.NodeStateCommand): the provision journal and the header of the
+// ownership manifest of a remote node, as the host records them.
+type NodeState struct {
+	// Complete: header and end line were both seen.
+	Complete bool          `json:"complete"`
+	Journal  *NodeJournal  `json:"journal,omitempty"`
+	Manifest *NodeManifest `json:"manifest,omitempty"`
+}
+
+// NodeStateHeader and NodeStateEnd frame the node-state answer.
+const (
+	NodeStateHeader = "meridian-node-state 1"
+	NodeStateEnd    = "meridian-node-state-end"
+)
+
+// ParseNodeState reads the node-state answer. Unknown lines are ignored;
+// values pass the same checks as in a preflight report.
+func ParseNodeState(text string) NodeState {
+	var st NodeState
+	jr := &NodeJournal{}
+	man := &NodeManifest{Files: map[string]string{}}
+	header, end, sawJ, sawM := false, false, false, false
+	for _, line := range strings.Split(text, "\n") {
+		line = Clean(strings.TrimRight(line, "\r"))
+		switch {
+		case line == NodeStateHeader:
+			header = true
+			continue
+		case line == NodeStateEnd:
+			end = true
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) < 2 || !header || end {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, f[0]))
+		switch f[0] {
+		case "journal":
+			sawJ = true
+			parseJournalLine(jr, f[1:], rest)
+		case "manifest":
+			sawM = true
+			parseManifestLine(man, f[1:])
+		}
+	}
+	st.Complete = header && end
+	if sawJ {
+		if jr.State == "" {
+			jr.State = "unreadable"
+		}
+		st.Journal = jr
+	}
+	if sawM {
+		st.Manifest = man
+	}
+	return st
+}

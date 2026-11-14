@@ -28,6 +28,7 @@ import type {
   InstalledDiff,
   Issue,
   Node,
+  NodeInstallState,
   PreflightRecord,
   ProvisionResult,
   ServerView,
@@ -879,10 +880,53 @@ const RECOVERY: Record<string, { mode: WithdrawMode; label: string }> = {
   withdraw_incomplete: { mode: "manifest", label: "继续撤回" },
 };
 
+const NODE_STATE: Record<string, { kind: StatusKind; label: string }> = {
+  in_sync: { kind: "ok", label: "已是最新" },
+  changed: { kind: "pending", label: "有待下发的变更" },
+  not_installed: { kind: "neutral", label: "未安装" },
+  unknown: { kind: "attention", label: "状态不明" },
+  target_changed: { kind: "attention", label: "服务器变了" },
+};
+
+/**
+ * One node's own install state: compared with what was last installed on
+ * that node (never with the gateway's snapshot or another node's install).
+ */
+export function NodeInstallTag({ st }: { st: NodeInstallState | undefined }) {
+  if (!st) return <Typography.Text type="secondary">—</Typography.Text>;
+  const v = NODE_STATE[st.state] ?? { kind: "neutral" as StatusKind, label: st.state };
+  const lines = [
+    st.reason,
+    st.installed_at ? `上次成功安装：${new Date(st.installed_at).toLocaleString()}` : "",
+    st.installed_target ? `装到：${st.installed_target.address}:${st.installed_target.port}（${st.installed_target.fingerprint}）` : "",
+    st.verify
+      ? `核对服务器上的记录（${st.verify.source === "post_install" ? "装完后" : "预检时"}）：${st.verify.state === "verified" ? "一致" : st.verify.state === "mismatch" ? "不一致" : "没读到"}${st.verify.detail ? "，" + st.verify.detail : ""}`
+      : "",
+    st.last_outcome && st.last_outcome !== "installed" ? `最近一次下发：${OUTCOME_TEXT[st.last_outcome] ?? st.last_outcome}${st.evidence === "host_journal" ? "（来自服务器 journal）" : ""}` : "",
+  ].filter(Boolean);
+  return (
+    <Tooltip title={lines.length ? <div>{lines.map((l, i) => <div key={i}>{l}</div>)}</div> : undefined}>
+      <span data-testid={`node-state-${st.node_id}`}>
+        <StatusTag kind={v.kind}>{v.label}</StatusTag>
+        {st.verify?.state === "mismatch" ? <StatusTag kind="attention">记录不一致</StatusTag> : null}
+      </span>
+    </Tooltip>
+  );
+}
+
+const OUTCOME_TEXT: Record<string, string> = {
+  installed: "已安装",
+  refused: "被服务器上的复核拒绝，没有改动",
+  compensated: "失败并已补偿",
+  left_behind: "失败，补偿有残留",
+  unknown: "结果不明",
+};
+
 function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: ServerView[] | undefined; onWithdrawn: () => void }) {
   const doc = useTopologyDoc();
   const [wd, setWd] = useState<{ node: Node; mode: WithdrawMode } | null>(null);
-  const { markApplyRequired } = useStatus();
+  const { markApplyRequired, status, refresh } = useStatus();
+  const nodeState = (id: string) => status?.nodes?.find((x) => x.node_id === id);
   const act = useAction();
   const [out, setOut] = useState<{ node: Node; title: string; res?: ProvisionResult; error?: ApiError } | null>(null);
   // The preflight dialog: every real run starts here. It shows the target,
@@ -912,6 +956,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
       async () => {
         const res = await api.provision(n.id, { dryRun: false, generateKeys: mode === "rotate", preflightId: rec.id });
         setPf(null);
+        refresh();
         setOut({ node: n, title: mode === "rotate" ? "已生成密钥并下发" : "已下发", res });
         if (mode === "rotate" && typeof res.public_key === "string" && res.public_key) {
           const pub = res.public_key;
@@ -929,6 +974,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
           return;
         }
         setPf(null);
+        refresh();
         setOut({ node: n, title: "下发失败", error: e });
       },
     );
@@ -957,7 +1003,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
   const sv = pf ? server(pf.node) : undefined;
   const first = pf ? !pf.node.public_key : false;
   const execLabel = !pf ? "" : pf.mode === "push" ? "下发" : first ? "生成密钥并下发" : "生成新密钥并下发";
-  const outBody = (out?.error?.body ?? {}) as { output?: string; leftovers?: string[]; kept?: string[]; outcome?: string };
+  const outBody = (out?.error?.body ?? {}) as { output?: string; leftovers?: string[]; kept?: string[]; outcome?: string; evidence?: string };
 
   return (
     <Section title="远端节点" id="remote">
@@ -1013,6 +1059,11 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
                 </Space>
               );
             },
+          },
+          {
+            title: "安装状态",
+            className: "nowrap",
+            render: (_, n) => <NodeInstallTag st={nodeState(n.id)} />,
           },
           {
             title: "密钥",
@@ -1178,6 +1229,20 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
         {out?.error ? (
           <>
             <ApiErrorAlert error={out.error}>{loginHelpOf(out.error) ? <LoginHelpView help={loginHelpOf(out.error)!} /> : null}</ApiErrorAlert>
+            {outBody.outcome === "compensated" ? (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                data-testid="provision-compensated"
+                message="失败并已补偿"
+                description={
+                  outBody.evidence === "host_journal"
+                    ? "面板没有收到脚本的补偿标记；这个结论来自脚本结束后在同一登录里读取的服务器 journal（这次运行的状态是已补偿）。服务器回到了这次下发之前的状态。"
+                    : "服务器回到了这次下发之前的状态。"
+                }
+              />
+            ) : null}
             {outBody.outcome === "unknown" ? (
               <Alert type="warning" showIcon style={{ marginBottom: 12 }} data-testid="provision-unknown" message="结果不明，不当作成功" description="重新预检会显示服务器上这次装机的 journal 状态。" />
             ) : null}

@@ -54,6 +54,16 @@ type poolKey struct {
 	PinnedAt     string
 	CredentialID string
 	CredentialGn int
+	// The management channel: mode, the address dialed (or forwarded to
+	// through the relay), the cooldown key, and for a jump the relay's
+	// whole identity (ViaKey) plus the parts invalidation looks for.
+	Channel string
+	Dial    string
+	Cool    string
+	ViaID   string
+	ViaCred string
+	ViaCool string
+	ViaKey  string
 }
 
 type pooled struct {
@@ -124,7 +134,7 @@ func (p *Pool) rateLimited(addr string) {
 	p.cool[addr] = p.now().Add(p.cooldown())
 	var drop []*pooled
 	for k, e := range p.idle {
-		if endpoint(k.Address, k.Port) == addr {
+		if endpoint(k.Address, k.Port) == addr || k.Cool == addr || k.ViaCool == addr {
 			drop = append(drop, e)
 			delete(p.idle, k)
 		}
@@ -133,7 +143,8 @@ func (p *Pool) rateLimited(addr string) {
 	closeAll(drop)
 }
 
-// CooldownLeft reports the cooldown left for a server's SSH endpoint.
+// CooldownLeft reports the cooldown left for a server's direct SSH
+// endpoint (address and port as dialed).
 func (p *Pool) CooldownLeft(address string, port int) time.Duration {
 	return p.cooling(endpoint(address, port))
 }
@@ -171,7 +182,7 @@ func (p *Pool) take(k poolKey) *session {
 	}
 	got.timer.Stop()
 	if !alive(got.s) {
-		got.s.client.Close()
+		got.s.close()
 		return nil
 	}
 	got.s.created = got.created
@@ -181,7 +192,7 @@ func (p *Pool) take(k poolKey) *session {
 // put keeps a connection that finished an operation without error.
 func (p *Pool) put(k poolKey, s *session) {
 	if p == nil {
-		s.client.Close()
+		s.close()
 		return
 	}
 	now := p.now()
@@ -190,7 +201,7 @@ func (p *Pool) put(k poolKey, s *session) {
 		created = now
 	}
 	if now.Sub(created) > p.maxAge() {
-		s.client.Close()
+		s.close()
 		return
 	}
 	e := &pooled{s: s, key: k, created: created, used: now}
@@ -204,7 +215,7 @@ func (p *Pool) put(k poolKey, s *session) {
 	p.mu.Unlock()
 	if old != nil {
 		old.timer.Stop()
-		old.s.client.Close()
+		old.s.close()
 	}
 }
 
@@ -217,7 +228,7 @@ func (p *Pool) expire(k poolKey, e *pooled) {
 	}
 	p.mu.Unlock()
 	if e != nil {
-		e.s.client.Close()
+		e.s.close()
 	}
 }
 
@@ -237,15 +248,16 @@ func (p *Pool) drop(match func(poolKey) bool) {
 	closeAll(out)
 }
 
-// InvalidateServer closes every idle connection to the server.
+// InvalidateServer closes every idle connection to the server, and every
+// jump connection that goes through it.
 func (p *Pool) InvalidateServer(id string) {
-	p.drop(func(k poolKey) bool { return k.ServerID == id })
+	p.drop(func(k poolKey) bool { return k.ServerID == id || k.ViaID == id })
 }
 
 // InvalidateCredential closes every idle connection authenticated with the
-// credential.
+// credential, on either hop.
 func (p *Pool) InvalidateCredential(id string) {
-	p.drop(func(k poolKey) bool { return k.CredentialID == id })
+	p.drop(func(k poolKey) bool { return k.CredentialID == id || k.ViaCred == id })
 }
 
 // CloseAll closes every idle connection (cooldowns are kept).
@@ -266,7 +278,7 @@ func closeAll(es []*pooled) {
 		if e.timer != nil {
 			e.timer.Stop()
 		}
-		e.s.client.Close()
+		e.s.close()
 	}
 }
 

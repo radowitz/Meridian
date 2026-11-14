@@ -1,6 +1,8 @@
 package provision
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"os"
 	"os/exec"
@@ -8,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/radowitz/meridian/internal/artifacts"
 	"github.com/radowitz/meridian/internal/compile"
@@ -422,17 +425,52 @@ func (sb *sandbox) run(script string, env ...string) (string, int) {
 			sb.stage(m[1], data)
 		}
 	}
-	cmd := exec.Command("bash", "-s")
-	cmd.Stdin = strings.NewReader(sb.rooted(script))
+	return sb.bash(sb.rooted(script), env)
+}
+
+// sandboxTimeout bounds one script run in the sandbox. A run that takes
+// longer is a test bug (a stub that never lets a loop end): its whole
+// process group is killed and the test fails, instead of leaving bash
+// spinning after the test binary is gone.
+const sandboxTimeout = 2 * time.Minute
+
+// bash runs script with "bash -s" in its own process group. When the run
+// ends (or times out) and when the test ends, every process of that group
+// still alive (a helper a script put in the background, a stuck loop) is
+// killed.
+func (sb *sandbox) bash(script string, env []string) (string, int) {
+	sb.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), sandboxTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-s")
+	cmd.Stdin = strings.NewReader(script)
 	cmd.Env = append([]string{"PATH=" + sb.bin + ":/usr/bin:/bin:/usr/sbin:/sbin", "SANDBOX=" + sb.root, "LC_ALL=C"}, env...)
-	out, err := cmd.CombinedOutput()
+	ownGroup(cmd)
+	cmd.WaitDelay = 5 * time.Second
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		sb.t.Fatal(err)
+	}
+	err := cmd.Wait()
+	killGroup(cmd)
+	if ctx.Err() != nil {
+		sb.t.Fatalf("sandbox script ran longer than %v and was killed (a stub that never fails?)\n%s", sandboxTimeout, tail(out.String(), 4000))
+	}
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
 		code = ee.ExitCode()
 	} else if err != nil {
 		sb.t.Fatal(err)
 	}
-	return string(out), code
+	return out.String(), code
+}
+
+func tail(s string, n int) string {
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
 }
 
 func (sb *sandbox) exists(p string) bool {

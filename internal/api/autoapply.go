@@ -15,8 +15,15 @@ package api
 //  1. in sync: the decisions the last gateway install used are recorded,
 //     no host transaction is unfinished, and compiling the stored topology
 //     with those decisions gives exactly the installed gateway files (by
-//     hash) and exactly the last applied snapshot (canonical text, every
-//     node). So the automatic install carries nothing but the decision.
+//     hash): the gateway node's own installed state (node_state.go). So the
+//     automatic install, which writes gateway files only, carries nothing
+//     but the decision. Other nodes are not compared: a remote node that
+//     was provisioned on its own (or has changes of its own still pending)
+//     changes neither the gateway's files nor what this install writes,
+//     and condition 2 refuses any decision that would change another
+//     node's files. (Before per-node state the whole applied snapshot of
+//     every node was compared, which refused with out_of_sync forever once
+//     a remote node had been provisioned separately.)
 //  2. only rule files: compiling with the new decisions differs from (1)
 //     only in gateway files of compile.DecisionFiles.
 //  3. rate: at least the minimum gap since the last automatic install,
@@ -301,10 +308,7 @@ func (s *Server) maybeAutoApply(trigger string) *autoCheck {
 		return finish(AutoOutOfSync, "网关上没有可核对的安装（未安装、已撤回或记录损坏）")
 	}
 	if d, err := ap.InstalledDiff(prev); err != nil || d == nil || !d.Empty() {
-		return finish(AutoOutOfSync, "网关上安装的文件与按上一次决定编译的结果不一致：有尚未安装的其他改动，需要人工审阅安装")
-	}
-	if canon, ok, err := ap.AppliedCanonical(); err != nil || !ok || canon != prev.Canonical() {
-		return finish(AutoOutOfSync, "上一次应用的快照与当前拓扑（按上一次决定）不一致：有尚未应用的其他改动，需要人工审阅安装")
+		return finish(AutoOutOfSync, "网关上安装的文件与按上一次决定编译的结果不一致：网关有尚未安装的其他改动，需要人工审阅安装")
 	}
 	// 2. only rule-derived gateway files.
 	next, err := s.compileWith(t, want)

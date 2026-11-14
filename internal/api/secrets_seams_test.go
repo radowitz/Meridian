@@ -89,7 +89,7 @@ func TestKeyCredentialProvisionKeepsKeyInStore(t *testing.T) {
 	}
 	secrets = append(secrets, tw.PrivateKey)
 	noSecretIn(t, "provision response", rr.Body.String(), secrets...)
-	if stdins := srv.Stdins(); !strings.Contains(stdins[len(stdins)-1], tw.PrivateKey) {
+	if !strings.Contains(lastScript(srv.Stdins()), tw.PrivateKey) {
 		t.Fatal("the generated node key did not reach the provision script")
 	}
 	for _, p := range []string{"/api/compile", "/api/diff", "/api/validate"} {

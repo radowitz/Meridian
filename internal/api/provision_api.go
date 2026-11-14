@@ -205,7 +205,8 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		if sshexec.CodeOf(err) == sshexec.CodeRateLimited {
 			// Refused before the SSH banner at the re-run: nothing ran.
 			writeJSON(w, rateLimitHeaders(w, err), map[string]any{"error": err.Error(), "code": sshexec.CodeRateLimited,
-				"retry_after": sshexec.RetryAfterOf(err), "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
+				"retry_after": sshexec.RetryAfterOf(err), "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID,
+				"not_executed": true, "safe_to_retry": true})
 			return
 		}
 		s.writeSSHErrHelp(w, cs, node.ServerID, err)
@@ -303,7 +304,8 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": ce.Msg, "code": ce.Code, "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
 		case sshexec.CodeOf(err) == sshexec.CodeRateLimited:
 			writeJSON(w, rateLimitHeaders(w, err), map[string]any{"error": err.Error(), "code": sshexec.CodeRateLimited,
-				"retry_after": sshexec.RetryAfterOf(err), "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
+				"retry_after": sshexec.RetryAfterOf(err), "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID,
+				"not_executed": true, "safe_to_retry": true})
 		default:
 			code := sshexec.CodeOf(err)
 			if code == "" {
@@ -322,11 +324,22 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	script := provision.ScriptWith(node.Name, injected, opts)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 	defer cancel()
-	res, err := s.connector(cs).RunScript(ctx, ident.target(), script)
+	// The script and, right after it ended, the host's own record of this
+	// run are read on the same login (no second connection).
+	res, stateText, stateOK, err := s.connector(cs).RunScriptAndRead(ctx, ident.target(), script)
 	out := redactRemote(res.Output, key, wssSec)
-	so := parseScriptOutcome(out)
+	// Markers come from the script's standard output alone (sshexec
+	// collects them line by line): stderr interleaving or a long output
+	// cannot break or cut them.
+	so := parseScriptOutcome(redactRemote(strings.Join(res.Markers, "\n"), key, wssSec))
+	var hostState *preflight.NodeState
+	if stateOK {
+		st := preflight.ParseNodeState(stateText)
+		hostState = &st
+	}
+	now := time.Now().UTC()
 	oc := provisionOutcome{NodeID: node.ID, ServerID: ident.ServerID, Address: ident.Address, Port: ident.Port, Fingerprint: ident.Fingerprint,
-		Run: run, Bundle: bundle, At: time.Now().UTC(), Leftovers: so.Leftovers, Kept: so.Kept, Restored: so.Restored,
+		Run: run, Bundle: bundle, At: now, Leftovers: so.Leftovers, Kept: so.Kept, Restored: so.Restored,
 		User: ident.User, CredentialID: ident.CredentialID, Deployment: fresh.Deployment, NodeName: node.Name}
 	base := map[string]any{
 		"node_id":      node.ID,
@@ -336,15 +349,43 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		"preflight_id": fresh.ID,
 		"run":          run,
 	}
+	if res.Channel != "" && res.Channel != model.ChannelDirect {
+		base["channel"] = res.Channel
+	}
+	// The script's markers did not say how it ended (the output was cut or
+	// lost, or the script exited without them) but it did end: the host's
+	// journal for this very run decides.
+	finished := err == nil || sshexec.CodeOf(err) == sshexec.CodeCommandFailed
+	if finished && !so.OK && !so.Compensated && !so.Incomplete && so.Refused == "" {
+		switch ev := evidenceOf(hostState, node.ID, fresh.Deployment, bundle, run); ev.Outcome {
+		case "compensated":
+			so.Compensated, oc.Evidence = true, "host_journal"
+			if len(so.Leftovers) == 0 {
+				so.Leftovers = ev.Leftovers
+			}
+		case "left_behind":
+			so.Incomplete, oc.Evidence = true, "host_journal"
+			so.Leftovers = ev.Leftovers
+		case "installed":
+			so.OK, oc.Evidence = true, "host_journal"
+			err = nil
+		}
+		oc.Leftovers = so.Leftovers
+		if oc.Evidence != "" {
+			base["evidence"] = oc.Evidence
+		}
+	}
 	if err == nil && so.OK {
 		oc.OK = true
 		oc.Outcome = "installed"
+		oc.Verify = verifyAgainst(hostState, node.ID, fresh.Deployment, ident.ServerID, bundle, run, "post_install", now)
 		s.saveOutcome(oc)
 		s.recordWSS(node.ID, b, true, false, "")
 		base["dry_run"] = false
 		base["outcome"] = "installed"
 		base["host_key"] = res.Fingerprint
 		base["public_key"] = pub
+		base["verify"] = oc.Verify
 		writeJSON(w, http.StatusOK, base)
 		return
 	}
@@ -374,11 +415,27 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		if so.Restored {
 			msg += "；更新前的配置已重新生效"
 		}
+		if oc.Evidence == "host_journal" {
+			msg += "（面板没有收到脚本的补偿标记，这个结论来自脚本结束后在同一登录里读取的服务器 journal：这次运行的状态是 compensated）"
+		}
 	case err == nil:
 		// Exit 0 without the success marker: never claim success.
 		code = sshexec.CodeCommandFailed
 		base["outcome"] = "unknown"
 		msg = "脚本结束了，但没有输出成功标记：结果不明，不当作成功。重新预检查看服务器上的 journal"
+	case sshexec.NotExecutedOf(err):
+		// The login of the script step failed (the connection of the
+		// preflight re-run was lost in between): nothing was sent.
+		switch code {
+		case sshexec.CodeUntrusted, sshexec.CodeMismatch, sshexec.CodeNoCredential, sshexec.CodeTargetChanged, sshexec.CodePinMismatch, sshexec.CodeChannelNotAllowed:
+			status = http.StatusConflict
+		case sshexec.CodeNotFound:
+			status = http.StatusNotFound
+		case sshexec.CodeRateLimited:
+			status = rateLimitHeaders(w, err)
+			base["retry_after"] = sshexec.RetryAfterOf(err)
+		}
+		base["outcome"] = "not_started"
 	default:
 		switch code {
 		case sshexec.CodeUntrusted, sshexec.CodeMismatch, sshexec.CodeNoCredential, sshexec.CodeTargetChanged, sshexec.CodePinMismatch:
@@ -387,18 +444,9 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		case sshexec.CodeNotFound:
 			status = http.StatusNotFound
 			base["outcome"] = "not_started"
-		case sshexec.CodeUnreachable, sshexec.CodeAuthFailed, sshexec.CodeAuthMethodUnavailable, sshexec.CodeNotSSH:
-			base["outcome"] = "not_started"
-		case sshexec.CodeRateLimited:
-			// Refused before the SSH banner: nothing was sent. With the
-			// pooled connection of the preflight re-run this happens only
-			// when that connection was lost in between.
-			status = rateLimitHeaders(w, err)
-			base["outcome"] = "not_started"
-			base["retry_after"] = sshexec.RetryAfterOf(err)
 		default:
 			base["outcome"] = "unknown"
-			msg += "。脚本可能在执行中被中断：结果不明，不当作成功；服务器上的补偿会在断线时运行，重新预检会显示它的 journal"
+			msg += "。脚本可能在执行中被中断：结果不明，不当作成功，面板也不会自动重试；服务器上的补偿会在断线时运行，重新预检会显示它的 journal"
 		}
 	}
 	switch base["outcome"] {
@@ -417,6 +465,9 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 	base["code"] = code
 	base["leftovers"] = so.Leftovers
 	base["kept"] = so.Kept
+	if base["outcome"] == "not_started" {
+		execFlags(base, err)
+	}
 	if h := s.loginHelpFor(cs, node.ServerID, code, sshexec.OfferedOf(err)); h != nil {
 		base["login_help"] = h
 	}

@@ -226,7 +226,7 @@ type PortSource struct {
 // Change is one intended change of the install.
 type Change struct {
 	Kind     string `json:"kind"`   // file | interface | listen | route | rule | nft | unit | package | sysctl | state
-	Action   string `json:"action"` // create | replace | update | bind | add | enable | install | set
+	Action   string `json:"action"` // create | replace | update | bind | add | enable | install | set | remove
 	Resource string `json:"resource"`
 	Detail   string `json:"detail,omitempty"`
 }
@@ -910,6 +910,7 @@ func (e *eval) interfaces() {
 			e.change("interface", "create", ip.Name, joinPrefixes(ip.Addresses))
 		}
 	}
+	e.staleIfaces(planned)
 	// Address overlap: what an interface of the bundle would get against
 	// addresses already configured on other interfaces.
 	for _, ip := range e.fp.Interfaces {
@@ -1284,6 +1285,47 @@ func (e *eval) ownLoAddr(a netip.Addr) bool {
 		}
 	}
 	return false
+}
+
+// staleIfaces lists the interfaces of the previous install (this node's
+// own manifest) that the new bundle no longer has: the install removes them
+// before the new ones come up (they would otherwise keep their listen
+// ports and routes). On a remote node that is what the provision script
+// does for Meridian-named interfaces (m<digits>…, mmesh); on the gateway the
+// install transaction removes every interface the installed manifest has
+// and the new one does not.
+func (e *eval) staleIfaces(planned map[string]bool) {
+	if e.out.Ownership != OwnSame {
+		return
+	}
+	mesh := false
+	for _, f := range e.fp.Files {
+		mesh = mesh || f == "/etc/meridian/mesh-sidecar.compose.yml"
+	}
+	names := append([]string(nil), e.own.Interfaces...)
+	sort.Strings(names)
+	for _, n := range names {
+		if planned[n] || (mesh && (n == "mmesh" || n == "mmesh-c")) {
+			continue
+		}
+		if !e.ctx.Gateway && !staleCandidate(n) {
+			continue
+		}
+		detail := "上一次安装的接口，这次的拓扑不再有它（链路被删除或改了编号）：安装时先删除它，再启动新的接口"
+		if !containsStr(e.r.Links, n) {
+			detail = "上一次安装的接口，这次的拓扑不再有它；主机上已经没有这个接口，只从受管清单里去掉"
+		}
+		e.change("interface", "remove", n, detail)
+	}
+}
+
+// staleCandidate: the names the provision script removes as a previous
+// install's interfaces (case m[0-9]*|mmesh).
+func staleCandidate(n string) bool {
+	if n == "mmesh" {
+		return true
+	}
+	return len(n) > 1 && n[0] == 'm' && n[1] >= '0' && n[1] <= '9'
 }
 
 // staleLoAddrs lists a previous install's transit addresses on lo that the

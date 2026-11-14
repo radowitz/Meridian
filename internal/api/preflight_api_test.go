@@ -108,6 +108,48 @@ type gateFix struct {
 	mu     sync.Mutex
 	extra  string
 	script func(stdin string) (string, uint32)
+	// host is the synthetic host's own record (journal and manifest
+	// header) that NodeStateCommand reads; hostRecord, when set, decides
+	// it from the last script and its answer instead of the default.
+	host       string
+	hostRecord func(stdin, out string, code uint32) string
+}
+
+// scriptVar reads a M_<NAME>='…' assignment of a provision script.
+func scriptVar(stdin, name string) string {
+	_, rest, ok := strings.Cut(stdin, "\n"+name+"='")
+	if !ok {
+		return ""
+	}
+	v, _, _ := strings.Cut(rest, "'")
+	return v
+}
+
+// defaultHostRecord is what a real host's journal and manifest would say
+// after the script answered out.
+func defaultHostRecord(stdin, out string, prev string) string {
+	run, node, dep, srv, bundle := scriptVar(stdin, "M_RUN"), scriptVar(stdin, "M_NODE"), scriptVar(stdin, "M_DEPLOYMENT"), scriptVar(stdin, "M_SERVER"), scriptVar(stdin, "M_BUNDLE")
+	j := func(state string) string {
+		return "journal meridian-node-journal 1\njournal state " + state + "\njournal node " + node + "\njournal deployment " + dep + "\njournal run " + run + "\n"
+	}
+	man := func() string {
+		return "manifest node " + node + "\nmanifest deployment " + dep + "\nmanifest server " + srv + "\nmanifest bundle " + bundle + "\n"
+	}
+	keepMan := ""
+	for _, l := range strings.Split(prev, "\n") {
+		if strings.HasPrefix(l, "manifest ") {
+			keepMan += l + "\n"
+		}
+	}
+	switch {
+	case strings.Contains(out, "MERIDIAN_PROVISION_OK"):
+		return j("done") + man()
+	case strings.Contains(out, "MERIDIAN_COMPENSATED"):
+		return j("compensated") + keepMan
+	case strings.Contains(out, "MERIDIAN_COMPENSATION_INCOMPLETE"):
+		return j("incomplete") + keepMan
+	}
+	return prev
 }
 
 func (f *gateFix) setExtra(e string) { f.mu.Lock(); f.extra = e; f.mu.Unlock() }
@@ -128,7 +170,21 @@ func newGateFix(t *testing.T) *gateFix {
 			return out, 0
 		}
 		if cmd == "bash -s" && strings.Contains(stdin, "echo MERIDIAN_PROVISION_OK") {
-			return script(stdin)
+			out, code := script(stdin)
+			f.mu.Lock()
+			if f.hostRecord != nil {
+				f.host = f.hostRecord(stdin, out, code)
+			} else {
+				f.host = defaultHostRecord(stdin, out, f.host)
+			}
+			f.mu.Unlock()
+			return out, code
+		}
+		if cmd == sshexec.NodeStateCommand {
+			f.mu.Lock()
+			h := f.host
+			f.mu.Unlock()
+			return "meridian-node-state 1\n" + h + "meridian-node-state-end\n", 0
 		}
 		if cmd == sshexec.TestCommand {
 			return "MERIDIAN_ARCH=x86_64\n", 0
@@ -157,6 +213,16 @@ func newGateFix(t *testing.T) *gateFix {
 		t.Fatal(rr.Body.String())
 	}
 	return f
+}
+
+// lastScript is the last provision script sent.
+func lastScript(stdins []string) string {
+	for i := len(stdins) - 1; i >= 0; i-- {
+		if strings.Contains(stdins[i], "echo MERIDIAN_PROVISION_OK") {
+			return stdins[i]
+		}
+	}
+	return ""
 }
 
 func (f *gateFix) provisionScripts() int {
@@ -294,7 +360,7 @@ func TestProvisionPreflightPlanAndGates(t *testing.T) {
 	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"outcome":"installed"`) || f.provisionScripts() != 1 {
 		t.Fatalf("pass: %d %s", rr.Code, rr.Body.String())
 	}
-	in := f.srv.Stdins()[len(f.srv.Stdins())-1]
+	in := lastScript(f.srv.Stdins())
 	if !strings.Contains(in, "M_EXPECT='none'") || !strings.Contains(in, "M_NODE='tw'") || !strings.Contains(in, "M_BUNDLE='"+rec.Bundle+"'") {
 		t.Fatal("script not bound to the preflight")
 	}
@@ -306,8 +372,8 @@ func TestProvisionPreflightPlanAndGates(t *testing.T) {
 	if rr := do(s, http.MethodPost, "/api/provision", []byte(`{"node_id":"tw"}`)); rr.Code != 200 {
 		t.Fatalf("update: %d %s", rr.Code, rr.Body.String())
 	}
-	if n := len(f.srv.Commands()) - before; n != 2 {
-		t.Fatalf("update ran %d commands, want preflight + script", n)
+	if cmds := f.srv.Commands()[before:]; len(cmds) != 3 || cmds[2] != sshexec.NodeStateCommand {
+		t.Fatalf("update ran %q, want preflight + script + the read-only node-state read", cmds)
 	}
 	// ... and is still refused when the re-run blocks.
 	f.setExtra("ipt ipv4 -P FORWARD DROP\n")

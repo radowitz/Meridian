@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/radowitz/meridian/internal/apply"
+	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/model"
@@ -266,6 +267,10 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 	if err := s.savePreflight(rec); err != nil {
 		return nil, err
 	}
+	if rep.Complete {
+		// The host's manifest is a read-back of what was installed there.
+		s.recordHostManifest(n.ID, ident, dep, rep.Manifest, now)
+	}
 	return rec, nil
 }
 
@@ -449,6 +454,25 @@ type provisionOutcome struct {
 	// Outcome is the last provision's: installed, refused, compensated,
 	// left_behind or unknown.
 	Outcome string `json:"outcome,omitempty"`
+	// Evidence says where Outcome came from when the script's own markers
+	// did not reach the panel: "host_journal" (the host's journal for this
+	// run, read on the same login right after the script ended).
+	Evidence string `json:"evidence,omitempty"`
+	// What the last successful install of this node put on the host, kept
+	// across later failed attempts on the same server: the digest of the
+	// node's files (preflight.BundleDigest, the same digest the host's
+	// manifest records as "bundle"), when, which run, and the identity it
+	// was installed to. The node's pending changes are computed against
+	// InstalledBundle, never against another node's install or the
+	// gateway's snapshot. Empty on records written before it existed until
+	// migrateOutcome or a preflight fills it.
+	InstalledBundle string          `json:"installed_bundle,omitempty"`
+	InstalledAt     *time.Time      `json:"installed_at,omitempty"`
+	InstalledRun    string          `json:"installed_run,omitempty"`
+	InstalledTarget *targetIdentity `json:"installed_target,omitempty"`
+	// Verify is the last read-back of the host's own record of the
+	// install (after the install on the same login, or by a preflight).
+	Verify *nodeVerify `json:"verify,omitempty"`
 	// Withdraw is the last withdraw / recovery of this node (withdraw.go).
 	Withdraw *withdrawRecord `json:"withdraw,omitempty"`
 }
@@ -457,6 +481,9 @@ func (s *Server) loadOutcomes() map[string]provisionOutcome {
 	out := map[string]provisionOutcome{}
 	if raw, ok, err := s.Store.Get(provisionStateKey); err == nil && ok {
 		_ = json.Unmarshal([]byte(raw), &out)
+	}
+	for k, o := range out {
+		out[k] = migrateOutcome(o)
 	}
 	return out
 }
@@ -467,6 +494,14 @@ func (s *Server) saveOutcome(o provisionOutcome) {
 	all := s.loadOutcomes()
 	if prev, ok := all[o.NodeID]; ok && prev.Installed && prev.ServerID == o.ServerID {
 		o.Installed = true
+		if !o.OK {
+			// A failed attempt leaves the previous install in place (the
+			// script compensates back to it): its record stays.
+			o.InstalledBundle, o.InstalledAt, o.InstalledRun, o.InstalledTarget = prev.InstalledBundle, prev.InstalledAt, prev.InstalledRun, prev.InstalledTarget
+			if o.Verify == nil {
+				o.Verify = prev.Verify
+			}
+		}
 	}
 	if prev, ok := all[o.NodeID]; ok && !o.OK && prev.ServerID == o.ServerID && prev.Withdraw != nil && o.Withdraw == nil {
 		// A failed provision does not erase what a withdraw left behind.
@@ -474,6 +509,9 @@ func (s *Server) saveOutcome(o provisionOutcome) {
 	}
 	if o.OK {
 		o.Installed = true
+		at := o.At
+		o.InstalledBundle, o.InstalledAt, o.InstalledRun = o.Bundle, &at, o.Run
+		o.InstalledTarget = &targetIdentity{ServerID: o.ServerID, Address: o.Address, Port: o.Port, User: o.User, Fingerprint: o.Fingerprint, CredentialID: o.CredentialID}
 	}
 	all[o.NodeID] = o
 	if b, err := json.Marshal(all); err == nil {
@@ -504,8 +542,27 @@ func (s *Server) updateOutcome(node string, f func(o *provisionOutcome)) {
 	}
 }
 
+// getProvisionState returns the provision records (nodes, by node ID) and
+// every managed node's install state (states, see node_state.go).
 func (s *Server) getProvisionState(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": s.loadOutcomes()})
+	out := map[string]any{"nodes": s.loadOutcomes()}
+	if t, err := s.topology(); err == nil {
+		b, cerr := s.compileTopo(t)
+		if cerr != nil {
+			b = nil
+		}
+		ap := s.applier(true)
+		gw := statusInstall{State: "unknown"}
+		if inst, err := ap.Installed(); err == nil {
+			gw = s.installState(ap, inst, func() (*compile.Bundle, error) { return b, cerr })
+		}
+		states := s.nodeStates(t, b, gw)
+		if states == nil {
+			states = []nodeInstallState{}
+		}
+		out["states"] = states
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // scriptOutcome reads the markers the provision script prints.
@@ -829,7 +886,9 @@ func (s *Server) loginHelpFor(cs *credentials.Store, serverID, code string, offe
 // writeSSHErrHelp is writeSSHErr plus login help for login failures.
 func (s *Server) writeSSHErrHelp(w http.ResponseWriter, cs *credentials.Store, serverID string, err error) {
 	if h := s.loginHelpFor(cs, serverID, sshexec.CodeOf(err), sshexec.OfferedOf(err)); h != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "code": sshexec.CodeOf(err), "login_help": h})
+		body := map[string]any{"error": err.Error(), "code": sshexec.CodeOf(err), "login_help": h}
+		execFlags(body, err)
+		writeJSON(w, http.StatusBadGateway, body)
 		return
 	}
 	var ce *credentials.Error

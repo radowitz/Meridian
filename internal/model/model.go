@@ -502,9 +502,55 @@ type Server struct {
 	// node's old ssh_* fields.
 	MigratedFrom string `json:"migrated_from,omitempty"`
 	// LastTest is the last "test connection" result. It is cleared when the
-	// endpoint, user, auth method or credential changes, or the credential
-	// is rotated: the old result no longer says anything about them.
+	// endpoint, user, auth method, credential or management channel
+	// changes, or the credential is rotated: the old result no longer says
+	// anything about them.
 	LastTest *ConnectionTest `json:"last_test,omitempty"`
+	// Channel is how the panel reaches this server's sshd. Nil is the
+	// direct connection to Address:Port (the only behaviour before
+	// management channels existed). The channel is transport only: the
+	// server's identity (address, port, user, credential, pinned host key)
+	// is the same whatever the channel, and every hop is authenticated with
+	// its own stored credential against its own pinned host key.
+	Channel *ManagementChannel `json:"channel,omitempty"`
+}
+
+// Management channel modes (Server.Channel.Mode).
+const (
+	// ChannelDirect: TCP from the panel to Address:Port (the default).
+	ChannelDirect = "direct"
+	// ChannelTunnel: TCP from the panel to Channel.Address (an address the
+	// panel's host reaches through an already established tunnel, for
+	// example the node's tunnel address), port Channel.Port or Port.
+	ChannelTunnel = "tunnel"
+	// ChannelJump: an SSH connection to the managed relay ViaServerID (its
+	// own credential and pinned key), a direct-tcpip channel from there to
+	// Channel.Address (default Address) and Channel.Port (default Port),
+	// and this server's own SSH session inside that channel. The panel does
+	// both handshakes; no key or agent is forwarded to the relay.
+	ChannelJump = "jump"
+)
+
+// ManagementChannel is the operator's explicit choice of path. There is no
+// fallback from one path to another: a channel that is down is reported as
+// such.
+type ManagementChannel struct {
+	Mode string `json:"mode"`
+	// Address (tunnel: required; jump: optional) is an IP address, never a
+	// name (nothing is resolved on the way).
+	Address string `json:"address,omitempty"`
+	// Port defaults to the server's SSH port.
+	Port int `json:"port,omitempty"`
+	// ViaServerID (jump) is the relay's server.
+	ViaServerID string `json:"via_server_id,omitempty"`
+}
+
+// ChannelMode is the effective mode of a possibly nil channel.
+func (c *ManagementChannel) ChannelMode() string {
+	if c == nil || c.Mode == "" {
+		return ChannelDirect
+	}
+	return c.Mode
 }
 
 // ConnectionTest is the outcome of the fixed, read-only "test connection"
@@ -523,11 +569,19 @@ type ConnectionTest struct {
 	RetryAfter int `json:"retry_after,omitempty"`
 	// Offered are the login methods the server offered when the login
 	// failed (auth_failed / auth_method_unavailable), as far as known.
-	Offered    []string `json:"offered_methods,omitempty"`
-	OS         string   `json:"os,omitempty"`
-	Kernel     string   `json:"kernel,omitempty"`
-	Arch       string   `json:"arch,omitempty"`
-	DurationMS int64    `json:"duration_ms"`
+	Offered []string `json:"offered_methods,omitempty"`
+	// NotExecuted: the failure happened before anything ran on the server
+	// (connection, banner, handshake, login); SafeToRetry: and it is of a
+	// transient kind (connect/banner/handshake timeout, refused before the
+	// handshake), so trying again cannot repeat or half-repeat anything.
+	NotExecuted bool `json:"not_executed,omitempty"`
+	SafeToRetry bool `json:"safe_to_retry,omitempty"`
+	// Channel is the management channel the test used (direct when empty).
+	Channel    string `json:"channel,omitempty"`
+	OS         string `json:"os,omitempty"`
+	Kernel     string `json:"kernel,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
 }
 
 func (t Topology) NodeByID(id string) (Node, bool) {

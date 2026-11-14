@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
@@ -33,6 +34,20 @@ type Server struct {
 	commands     []string
 	stdins       []string
 	handler      func(cmd, stdin string) (string, uint32)
+	// stream, when set, answers exec requests instead of handler, writing
+	// standard output and standard error itself (interleaving tests).
+	stream func(cmd, stdin string, stdout, stderr io.Writer) uint32
+	// forward allows direct-tcpip channels (a relay for jump tests): only
+	// to 127.0.0.1, recorded in forwards.
+	forward  bool
+	forwards []string
+	// requests records every channel and request type a client asked for
+	// (to prove, for example, that no agent forwarding was requested).
+	requests []string
+	// silent: accept TCP and never answer (banner timeout); stall: send the
+	// version line and then nothing (handshake timeout); hangup: close
+	// before the version line without a word.
+	silent, stall, hangup bool
 	// refuse, when set, is written to every new connection before the SSH
 	// version line, and the connection is closed (OpenSSH's
 	// PerSourcePenalties answer: "Not allowed at this time").
@@ -97,6 +112,44 @@ func (s *Server) Close() {
 // with PerSourcePenalties answering "Not allowed at this time". An empty
 // line restores normal service.
 func (s *Server) RefuseBeforeBanner(line string) { s.mu.Lock(); s.refuse = line; s.mu.Unlock() }
+
+// AllowForwarding makes the server accept direct-tcpip channels to
+// 127.0.0.1 (a relay in jump tests).
+func (s *Server) AllowForwarding(on bool) { s.mu.Lock(); s.forward = on; s.mu.Unlock() }
+
+// Forwards are the host:port targets of accepted direct-tcpip channels.
+func (s *Server) Forwards() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.forwards...)
+}
+
+// Requests are the channel types and request types clients asked for.
+func (s *Server) Requests() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.requests...)
+}
+
+// Silent makes the server accept connections and never send anything
+// (an SSH banner timeout on the client).
+func (s *Server) Silent(on bool) { s.mu.Lock(); s.silent = on; s.mu.Unlock() }
+
+// Stall makes the server send its version line and then nothing (a
+// handshake timeout on the client).
+func (s *Server) Stall(on bool) { s.mu.Lock(); s.stall = on; s.mu.Unlock() }
+
+// HangUp makes the server close every new connection before its version
+// line without sending anything (sshd's MaxStartups drop).
+func (s *Server) HangUp(on bool) { s.mu.Lock(); s.hangup = on; s.mu.Unlock() }
+
+// SetStreamHandler answers exec requests by writing to stdout and stderr
+// directly (nil restores SetHandler's answers).
+func (s *Server) SetStreamHandler(h func(cmd, stdin string, stdout, stderr io.Writer) uint32) {
+	s.mu.Lock()
+	s.stream = h
+	s.mu.Unlock()
+}
 
 // Accepted is the number of TCP connections accepted so far.
 func (s *Server) Accepted() int { s.mu.Lock(); defer s.mu.Unlock(); return s.accepted }
@@ -230,6 +283,7 @@ func (s *Server) handle(c net.Conn) {
 	}
 	s.conns[c] = struct{}{}
 	refuse, stopped := s.refuse, s.stopped
+	silent, stall, hangup := s.silent, s.stall, s.hangup
 	s.mu.Unlock()
 	if stopped {
 		c.Close()
@@ -244,6 +298,16 @@ func (s *Server) handle(c net.Conn) {
 		_, _ = c.Write([]byte(refuse + "\r\n"))
 		return
 	}
+	if hangup {
+		return
+	}
+	if silent || stall {
+		if stall {
+			_, _ = c.Write([]byte("SSH-2.0-sshtest-stall\r\n"))
+		}
+		_, _ = io.Copy(io.Discard, c)
+		return
+	}
 	conn, chans, reqs, err := ssh.NewServerConn(c, s.config())
 	if err != nil {
 		return
@@ -252,8 +316,20 @@ func (s *Server) handle(c net.Conn) {
 	s.logins++
 	s.mu.Unlock()
 	defer conn.Close()
-	go ssh.DiscardRequests(reqs)
+	go func() {
+		for r := range reqs {
+			s.note("global " + r.Type)
+			if r.WantReply {
+				_ = r.Reply(false, nil)
+			}
+		}
+	}()
 	for nc := range chans {
+		s.note("channel " + nc.ChannelType())
+		if nc.ChannelType() == "direct-tcpip" {
+			s.forwardChannel(nc)
+			continue
+		}
 		if nc.ChannelType() != "session" {
 			_ = nc.Reject(ssh.UnknownChannelType, "only sessions")
 			continue
@@ -266,9 +342,60 @@ func (s *Server) handle(c net.Conn) {
 	}
 }
 
+func (s *Server) note(what string) {
+	s.mu.Lock()
+	s.requests = append(s.requests, what)
+	s.mu.Unlock()
+}
+
+// forwardChannel serves a direct-tcpip channel to 127.0.0.1 when allowed.
+func (s *Server) forwardChannel(nc ssh.NewChannel) {
+	var p struct {
+		Host       string
+		Port       uint32
+		OriginHost string
+		OriginPort uint32
+	}
+	s.mu.Lock()
+	allowed := s.forward
+	s.mu.Unlock()
+	if !allowed {
+		_ = nc.Reject(ssh.Prohibited, "forwarding disabled")
+		return
+	}
+	if err := ssh.Unmarshal(nc.ExtraData(), &p); err != nil || p.Host != "127.0.0.1" {
+		_ = nc.Reject(ssh.Prohibited, "loopback only")
+		return
+	}
+	addr := net.JoinHostPort(p.Host, strconv.Itoa(int(p.Port)))
+	up, err := net.Dial("tcp", addr)
+	if err != nil {
+		_ = nc.Reject(ssh.ConnectionFailed, err.Error())
+		return
+	}
+	ch, creqs, err := nc.Accept()
+	if err != nil {
+		up.Close()
+		return
+	}
+	s.mu.Lock()
+	s.forwards = append(s.forwards, addr)
+	s.mu.Unlock()
+	go ssh.DiscardRequests(creqs)
+	go func() {
+		_, _ = io.Copy(up, ch)
+		up.Close()
+	}()
+	go func() {
+		_, _ = io.Copy(ch, up)
+		ch.Close()
+	}()
+}
+
 func (s *Server) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	defer ch.Close()
 	for req := range reqs {
+		s.note("request " + req.Type)
 		if req.Type != "exec" {
 			if req.WantReply {
 				_ = req.Reply(req.Type == "env", nil)
@@ -285,10 +412,16 @@ func (s *Server) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		s.mu.Lock()
 		s.commands = append(s.commands, p.Cmd)
 		s.stdins = append(s.stdins, string(in))
-		h := s.handler
+		h, stream := s.handler, s.stream
 		s.mu.Unlock()
-		out, code := h(p.Cmd, string(in))
-		_, _ = ch.Write([]byte(out))
+		var code uint32
+		if stream != nil {
+			code = stream(p.Cmd, string(in), ch, ch.Stderr())
+		} else {
+			var out string
+			out, code = h(p.Cmd, string(in))
+			_, _ = ch.Write([]byte(out))
+		}
 		var st [4]byte
 		binary.BigEndian.PutUint32(st[:], code)
 		_, _ = ch.SendRequest("exit-status", false, st[:])

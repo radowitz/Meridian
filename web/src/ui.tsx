@@ -228,6 +228,13 @@ export const ERROR_TEXT: Record<string, string> = {
   target_changed: "服务器的地址、指纹或凭据与固定的不一致",
   unreachable: "连不上这台服务器",
   timeout: "连接超时",
+  ssh_banner_timeout: "连上了，但服务器没有发出 SSH 版本行（超时）",
+  ssh_handshake_timeout: "SSH 握手超时",
+  ssh_closed_before_banner: "服务器在 SSH 握手之前就断开了连接",
+  run_timeout: "远端执行超时，结果不明",
+  run_interrupted: "远端执行中连接断开，结果不明",
+  jump_forward_refused: "中继不允许转发到这台服务器",
+  channel_not_allowed: "这个管理通道不能使用",
   not_ssh: "对端不是 SSH 服务",
   auth_failed: "SSH 登录被拒绝：服务器不接受这份凭据",
   auth_method_unavailable: "服务器不接受这种登录方式",
@@ -386,6 +393,33 @@ export function RateLimitNote({ seconds }: { seconds: number }) {
   );
 }
 
+/**
+ * What is known about execution after a failed SSH operation: the failure
+ * was before anything ran on the server (not_executed) and, when transient
+ * (safe_to_retry: connect, banner or handshake timeout, refused before the
+ * handshake), that trying again cannot repeat anything. Nothing is shown
+ * when execution may have started: then the outcome is what the operation
+ * itself reports, and nothing is retried automatically.
+ */
+export function ExecNote({ notExecuted, safeToRetry }: { notExecuted?: boolean; safeToRetry?: boolean }) {
+  if (!notExecuted) return null;
+  return (
+    <span data-testid="exec-note" style={{ display: "block", marginTop: 8 }}>
+      {safeToRetry ? (
+        <>
+          <Typography.Text strong>没有执行任何操作，可以安全重试。</Typography.Text>
+          连接在登录或执行之前就失败了（超时或握手前被拒绝），服务器上什么都没有改；面板不会自动重试。
+        </>
+      ) : (
+        <>
+          <Typography.Text strong>没有执行任何操作。</Typography.Text>
+          失败发生在登录或执行之前，服务器上什么都没有改；按上面的原因处理后再试。
+        </>
+      )}
+    </span>
+  );
+}
+
 export function errorTitle(e: ApiError): string {
   if (e.code && ERROR_TEXT[e.code]) return ERROR_TEXT[e.code];
   if (e.status === 401) return ERROR_TEXT.unauthorized;
@@ -450,10 +484,11 @@ export function ApiErrorAlert({
       onClose={onClose}
       message={title}
       description={
-        showMessage || error.inUseBy.length > 0 || children || retryAfterOf(error) > 0 ? (
+        showMessage || error.inUseBy.length > 0 || children || retryAfterOf(error) > 0 || error.body?.not_executed === true ? (
           <div className="error-body">
             {showMessage ? <div>{error.message}</div> : null}
             {retryAfterOf(error) > 0 ? <RateLimitCountdown error={error} /> : null}
+            <ExecNote notExecuted={error.body?.not_executed === true} safeToRetry={error.body?.safe_to_retry === true && retryAfterOf(error) === 0} />
             {error.inUseBy.length > 0 ? (
               <div style={{ marginTop: 8 }}>
                 <Typography.Text type="secondary">引用者：</Typography.Text>

@@ -1689,3 +1689,58 @@ func TestFootprintDNSSplitListen(t *testing.T) {
 		}
 	}
 }
+
+// An update lists the previous install's interfaces that the new bundle no
+// longer has as "remove" changes: on the gateway every one the installed
+// manifest names (the install transaction removes them), on a remote node
+// the Meridian-named ones its own manifest names (the provision script
+// removes them). Seen on a real gateway: the install removed them correctly
+// but the reviewed plan did not say so.
+func TestUpdateListsRemovedInterfaces(t *testing.T) {
+	files := nodeFiles(t, "gw")
+	fp := FootprintOf(files)
+	planned := map[string]bool{}
+	for _, i := range fp.Interfaces {
+		planned[i.Name] = true
+	}
+	if planned["m77"] || planned["m78"] {
+		t.Fatal("pick interface names the example does not plan")
+	}
+	owned := &Owned{Files: map[string]string{"/etc/wireguard/m02.conf": ""}, Interfaces: []string{"m02", "m77", "m78"}}
+	r := fixture(t, "clean-debian13.txt", fp, nil, "link m02\nlink m77\n")
+	ev := Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
+	removed := map[string]string{}
+	for _, c := range ev.Changes {
+		if c.Kind == "interface" && c.Action == "remove" {
+			removed[c.Resource] = c.Detail
+		}
+	}
+	if len(removed) != 2 || !strings.Contains(removed["m77"], "先删除") || !strings.Contains(removed["m78"], "已经没有") {
+		t.Fatalf("gateway removals %v", removed)
+	}
+	if _, ok := removed["m02"]; ok {
+		t.Fatal("a planned interface listed as removed")
+	}
+	// No previous install: nothing to remove.
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true})
+	for _, c := range ev.Changes {
+		if c.Action == "remove" && c.Kind == "interface" {
+			t.Fatalf("first install lists a removal: %+v", c)
+		}
+	}
+}
+
+func TestRemoteUpdateListsRemovedInterfaces(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "tw"))
+	man := "manifest-begin\nmanifest node tw\nmanifest deployment dep-test\nmanifest iface m14\nmanifest iface m77\nmanifest iface wg9\nmanifest-end\n"
+	ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "link m14\nlink m77\n"+man), fp, remote("tw"))
+	var removed []string
+	for _, c := range ev.Changes {
+		if c.Kind == "interface" && c.Action == "remove" {
+			removed = append(removed, c.Resource)
+		}
+	}
+	if ev.Ownership != OwnSame || strings.Join(removed, ",") != "m77" {
+		t.Fatalf("%s removals %v", ev.Ownership, removed)
+	}
+}

@@ -27,7 +27,7 @@ import type { ApiError } from "./api";
 import { CredentialCreateDrawer, kindLabel } from "./CredentialsPage";
 import { href, useRouter } from "./state";
 import { LoginHelpView } from "./Preflight";
-import type { AuthMethod, LoginHelp, SSHCredentialView, ServerInput, ServerPatch, ServerView } from "./types";
+import type { AuthMethod, ChannelMode, LoginHelp, ManagementChannel, SSHCredentialView, ServerInput, ServerPatch, ServerView } from "./types";
 import {
   ERROR_TEXT,
   RowActions,
@@ -49,6 +49,7 @@ import {
   useConfirmDanger,
   type StatusKind,
   noteRateLimited,
+  ExecNote,
   RateLimitNote,
   retryAfterOf,
   useServerCooldown,
@@ -93,12 +94,49 @@ interface FormValues {
   credential_id?: string;
   tags?: string[];
   notes?: string;
+  channel_mode: ChannelMode;
+  channel_address?: string;
+  channel_port?: number | null;
+  channel_via?: string;
+}
+
+/** The management channel in words, for lists and details. */
+export function channelText(s: ServerView, servers: ServerView[] = []): string {
+  const ch = s.channel;
+  if (!ch || ch.mode === "direct") return "直连";
+  const port = ch.port || s.port;
+  if (ch.mode === "tunnel") return `经隧道地址 ${ch.address}:${port}`;
+  const via = servers.find((x) => x.id === ch.via_server_id);
+  return `经中继 ${via?.name ?? ch.via_server_id} 跳转到 ${ch.address || s.address}:${port}`;
+}
+
+function channelOf(v: FormValues): ManagementChannel {
+  switch (v.channel_mode) {
+    case "tunnel":
+      return { mode: "tunnel", address: (v.channel_address ?? "").trim(), ...(v.channel_port ? { port: v.channel_port } : {}) };
+    case "jump":
+      return {
+        mode: "jump",
+        via_server_id: v.channel_via ?? "",
+        ...((v.channel_address ?? "").trim() ? { address: (v.channel_address ?? "").trim() } : {}),
+        ...(v.channel_port ? { port: v.channel_port } : {}),
+      };
+    default:
+      return { mode: "direct" };
+  }
+}
+
+function sameChannel(a: ManagementChannel | undefined, b: ManagementChannel): boolean {
+  const norm = (c: ManagementChannel | undefined) =>
+    !c || c.mode === "direct" ? "direct" : JSON.stringify([c.mode, c.address ?? "", c.port ?? 0, c.via_server_id ?? ""]);
+  return norm(a) === norm(b);
 }
 
 function ServerFormDrawer({
   open,
   server,
   creds,
+  servers,
   onClose,
   onSaved,
   onCredCreated,
@@ -106,6 +144,7 @@ function ServerFormDrawer({
   open: boolean;
   server: ServerView | null;
   creds: SSHCredentialView[];
+  servers: ServerView[];
   onClose: () => void;
   onSaved: (s: ServerView, created: boolean) => void;
   onCredCreated: (c: SSHCredentialView) => void;
@@ -117,6 +156,11 @@ function ServerFormDrawer({
   const [fieldHandled, setFieldHandled] = useState(false);
   const [newCred, setNewCred] = useState(false);
   const auth = Form.useWatch("auth", form) ?? server?.auth ?? "key";
+  const channelMode: ChannelMode = Form.useWatch("channel_mode", form) ?? server?.channel?.mode ?? "direct";
+  // A jump goes through a server that is itself reached directly (one hop).
+  const viaOptions = servers
+    .filter((x) => x.id !== server?.id && (!x.channel || x.channel.mode === "direct"))
+    .map((x) => ({ value: x.id, label: `${x.name}${x.node ? `（${x.node.name || x.node.id}）` : ""}` }));
   const options = creds
     .filter((c) => c.kind === credKindFor(auth))
     .map((c) => ({ value: c.id, label: `${c.name} · ${kindLabel(c)}` }));
@@ -131,8 +175,12 @@ function ServerFormDrawer({
         credential_id: server.credential_id || undefined,
         tags: server.tags ?? [],
         notes: server.notes,
+        channel_mode: server.channel?.mode ?? "direct",
+        channel_address: server.channel?.address,
+        channel_port: server.channel?.port ?? null,
+        channel_via: server.channel?.via_server_id,
       }
-    : { name: "", address: "", port: 22, user: "root", auth: "key", tags: [] };
+    : { name: "", address: "", port: 22, user: "root", auth: "key", tags: [], channel_mode: "direct" };
 
   async function save() {
     let v: FormValues;
@@ -142,7 +190,7 @@ function ServerFormDrawer({
       return;
     }
     setFieldHandled(false);
-    const fields = ["name", "address", "port", "user", "auth", "credential_id", "tags", "notes"];
+    const fields = ["name", "address", "port", "user", "auth", "credential_id", "tags", "notes", "channel"];
     const onError = (e: ApiError) => {
       if (e.code === "in_use") setRefused(e);
       else setFieldHandled(showFieldError(form, e, fields));
@@ -157,6 +205,7 @@ function ServerFormDrawer({
         credential_id: v.credential_id ?? "",
         tags: v.tags ?? [],
         notes: v.notes ?? "",
+        ...(v.channel_mode && v.channel_mode !== "direct" ? { channel: channelOf(v) } : {}),
       };
       const res = await act.run(() => api.createServer(input), "save", onError);
       if (res) onSaved(res.server, true);
@@ -171,6 +220,8 @@ function ServerFormDrawer({
     if ((v.credential_id ?? "") !== (server.credential_id ?? "")) patch.credential_id = v.credential_id ?? "";
     if (JSON.stringify(v.tags ?? []) !== JSON.stringify(server.tags ?? [])) patch.tags = v.tags ?? [];
     if ((v.notes ?? "") !== (server.notes ?? "")) patch.notes = v.notes ?? "";
+    const ch = channelOf(v);
+    if (!sameChannel(server.channel, ch)) patch.channel = ch;
     if (Object.keys(patch).length === 0) {
       onClose();
       return;
@@ -184,7 +235,7 @@ function ServerFormDrawer({
     const consequences: string[] = [];
     if (endpoint && server.host_key.state !== "unknown")
       consequences.push("改地址或端口会清除已固定的主机指纹，保存后要重新获取并核对指纹。");
-    if ((endpoint || login) && server.last_test) consequences.push("连接测试结果会被清除，需要重新测试。");
+    if ((endpoint || login || patch.channel) && server.last_test) consequences.push("连接测试结果会被清除，需要重新测试。");
     if (consequences.length > 0) {
       confirm({
         title: "保存这些修改？",
@@ -267,6 +318,56 @@ function ServerFormDrawer({
             <Button onClick={() => setNewCred(true)}>新建</Button>
           </Space.Compact>
         </Form.Item>
+        <Form.Item
+          name="channel_mode"
+          label="管理通道"
+          extra="面板怎样连到这台服务器的 SSH。只走你选的这一条：它不通时面板如实报告，不会自动改走直连或别的通道。每一跳都用面板保存的凭据和已固定的主机指纹，不转发密钥或 agent。经隧道地址和经中继跳转还没有在真实主机上验证过。"
+        >
+          <Radio.Group
+            optionType="button"
+            options={[
+              { value: "direct", label: "直连" },
+              { value: "tunnel", label: "经隧道地址" },
+              { value: "jump", label: "经中继跳转" },
+            ]}
+          />
+        </Form.Item>
+        {channelMode === "tunnel" ? (
+          <Space.Compact block>
+            <Form.Item
+              name="channel_address"
+              label="隧道地址"
+              style={{ flex: 1 }}
+              extra="面板所在网关经已建立的隧道能到达的这台服务器的地址（IP，不接受主机名）"
+              rules={[{ required: true, message: "请填写隧道地址（IP）" }]}
+            >
+              <Input className="mono" placeholder="例如 10.66.50.2" />
+            </Form.Item>
+            <Form.Item name="channel_port" label="端口" style={{ width: 120 }}>
+              <InputNumber min={1} max={65535} style={{ width: "100%" }} placeholder="同上" />
+            </Form.Item>
+          </Space.Compact>
+        ) : null}
+        {channelMode === "jump" ? (
+          <>
+            <Form.Item
+              name="channel_via"
+              label="经哪台中继"
+              extra="只能是拓扑里受管中继节点的服务器，而且它本身是直连的。中继只转发加密的字节，不在它上面执行任何东西。"
+              rules={[{ required: true, message: "请选择中继服务器" }]}
+            >
+              <Select placeholder="选择中继服务器" options={viaOptions} aria-label="中继服务器" />
+            </Form.Item>
+            <Space.Compact block>
+              <Form.Item name="channel_address" label="中继看到的地址（可选）" style={{ flex: 1 }} extra="空着就用上面的地址">
+                <Input className="mono" placeholder="IP" />
+              </Form.Item>
+              <Form.Item name="channel_port" label="端口" style={{ width: 120 }}>
+                <InputNumber min={1} max={65535} style={{ width: "100%" }} placeholder="同上" />
+              </Form.Item>
+            </Space.Compact>
+          </>
+        ) : null}
         <Form.Item name="tags" label="标签">
           <Select mode="tags" tokenSeparators={[",", " "]} placeholder="例如 hk、出口" />
         </Form.Item>
@@ -601,6 +702,7 @@ function ServerFlow({
                         { key: "arch", label: "架构", children: lt.arch || "—" },
                         { key: "auth", label: "登录方式", children: lt.auth_method ? authLabel(lt.auth_method) : "—" },
                         { key: "ms", label: "耗时", children: `${lt.duration_ms} ms` },
+                        ...(lt.channel ? [{ key: "ch", label: "管理通道", children: lt.channel === "tunnel" ? "经隧道地址" : "经中继跳转" }] : []),
                       ]}
                     />
                   ) : (
@@ -612,6 +714,7 @@ function ServerFlow({
                         <>
                           <div>{lt.error}</div>
                           {lt.code === "ssh_rate_limited" ? <RateLimitNote seconds={cooldown} /> : null}
+                          <ExecNote notExecuted={lt.not_executed} safeToRetry={lt.safe_to_retry && lt.code !== "ssh_rate_limited"} />
                           <Typography.Text type="secondary">
                             <TimeText value={lt.at} />
                           </Typography.Text>
@@ -654,6 +757,7 @@ function ServerFlow({
 
 function ServerDetail({
   server,
+  servers,
   creds,
   onClose,
   onChanged,
@@ -662,6 +766,7 @@ function ServerDetail({
   onCredCreated,
 }: {
   server: ServerView | undefined;
+  servers: ServerView[];
   creds: SSHCredentialView[];
   onClose: () => void;
   onChanged: (s: ServerView) => void;
@@ -702,6 +807,7 @@ function ServerDetail({
             items={[
               ["ID", <Mono copy>{server.id}</Mono>],
               ["连接", <Mono copy>{`${server.user}@${server.address}:${server.port}`}</Mono>],
+              ["管理通道", server.channel && server.channel.mode !== "direct" ? <Space size={4} wrap><span>{channelText(server, servers)}</span><Tag>未经实机验证</Tag></Space> : "直连"],
               ["节点", server.node ? <Link to={href("topology", server.node.id)}>{server.node.name || server.node.id}</Link> : <Typography.Text type="secondary">拓扑里还没有节点使用它</Typography.Text>],
               ...(server.tags?.length ? ([["标签", <Space size={4} wrap>{server.tags.map((t) => <Tag key={t}>{t}</Tag>)}</Space>]] as [string, ReactNode][]) : []),
               ...(server.notes ? ([["备注", server.notes]] as [string, ReactNode][]) : []),
@@ -823,7 +929,18 @@ export default function ServersPage() {
               onRow={(s) => ({ "data-testid": `server-row-${s.id}` }) as HTMLAttributes<HTMLElement>}
               columns={[
                 { title: "名称", className: "cell-name", render: (_, s) => <Link to={href("servers", s.id)}>{s.name}</Link> },
-                { title: "地址", className: "nowrap", render: (_, s) => <Mono>{`${s.user}@${s.address}:${s.port}`}</Mono> },
+                {
+                  title: "地址",
+                  className: "nowrap",
+                  render: (_, s) => (
+                    <Space size={4}>
+                      <Mono>{`${s.user}@${s.address}:${s.port}`}</Mono>
+                      {s.channel && s.channel.mode !== "direct" ? (
+                        <Tag title={channelText(s, list)}>{s.channel.mode === "tunnel" ? "经隧道" : "经中继"}</Tag>
+                      ) : null}
+                    </Space>
+                  ),
+                },
                 {
                   title: "登录",
                   className: "nowrap",
@@ -902,6 +1019,7 @@ export default function ServersPage() {
 
       <ServerDetail
         server={selected}
+        servers={servers.data?.servers ?? []}
         creds={credList}
         onClose={() => navigate(href("servers"))}
         onChanged={upsert}
@@ -914,6 +1032,7 @@ export default function ServersPage() {
         open={form.open}
         server={form.server}
         creds={credList}
+        servers={servers.data?.servers ?? []}
         onClose={() => setForm({ open: false, server: null })}
         onCredCreated={addCred}
         onSaved={(s, created) => {

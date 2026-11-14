@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"net/http"
 	"time"
@@ -20,18 +18,23 @@ import (
 // payloads (no Mesh plan, no probe catalog, no job items):
 //
 //   - is the host agent reachable right now (one health call, short timeout);
-//   - does the stored topology compile, and does it equal what is INSTALLED
-//     on the host (compared with the installed manifest's canonical hash,
-//     not with the applied snapshot: an apply without install updates the
-//     snapshot but not the host);
+//   - does the stored topology compile, and do the gateway's files equal
+//     what is INSTALLED on the gateway (compared with the installed
+//     manifest's file hashes, not with the applied snapshot: an apply
+//     without install updates the snapshot but not the host, and remote
+//     nodes are not part of the gateway's install);
+//   - every managed node's own install state (nodes, node_state.go): each
+//     remote node against what was last installed on it, so installing one
+//     remote node on its own does not make the others, or the gateway,
+//     look pending;
 //   - is a host transaction unfinished;
 //   - the running / last state of the lists job, the unlock probe job and
 //     the Mesh deployment.
 //
 // install.state:
 //
-//	in_sync        stored topology compiles to exactly the installed text
-//	changed        compiles, differs from the installed text
+//	in_sync        the gateway's files compile to exactly the installed ones
+//	changed        compiles, the gateway's files differ from the installed ones
 //	not_installed  nothing of Meridian is installed on this host
 //	invalid        the stored topology does not compile (draft with errors)
 //	unknown        installed, but the manifest carries no canonical hash
@@ -86,7 +89,11 @@ type statusView struct {
 	// something to go back to.
 	PreviousAvailable bool               `json:"previous_available"`
 	Pending           *apply.PendingView `json:"pending"`
-	Jobs              struct {
+	// Nodes is every managed node's install state; PendingNodes counts the
+	// rows with pending true.
+	Nodes        []nodeInstallState `json:"nodes"`
+	PendingNodes int                `json:"pending_nodes"`
+	Jobs         struct {
 		Lists  statusJob `json:"lists"`
 		Unlock statusJob `json:"unlock"`
 		Mesh   statusJob `json:"mesh"`
@@ -117,7 +124,21 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.PreviousAvailable = ap.PreviousAvailable()
-	v.Install = s.installState(ap, inst, func() (*compile.Bundle, error) { return s.compileTopo(t) })
+	var built *compile.Bundle
+	v.Install = s.installState(ap, inst, func() (*compile.Bundle, error) {
+		b, err := s.compileTopo(t)
+		built = b
+		return b, err
+	})
+	v.Nodes = s.nodeStates(t, built, v.Install)
+	if v.Nodes == nil {
+		v.Nodes = []nodeInstallState{}
+	}
+	for _, n := range v.Nodes {
+		if n.Pending {
+			v.PendingNodes++
+		}
+	}
 
 	v.Jobs.Lists = statusJob{State: "none"}
 	if j := s.currentListsJob(); j != nil {
@@ -235,8 +256,11 @@ func (s *Server) installState(ap apply.Applier, inst apply.Manifest, build func(
 	case inst.Canonical == "":
 		out.State = "unknown"
 	default:
-		sum := sha256.Sum256([]byte(canon))
-		if hex.EncodeToString(sum[:]) == inst.Canonical {
+		// The gateway's own files against its installed manifest (hashes of
+		// the redacted bodies on both sides). Only the gateway's files: a
+		// remote node provisioned on its own changes the canonical text of
+		// the whole topology, never the gateway's install.
+		if d, err := ap.InstalledDiff(b); err == nil && d != nil && d.Empty() {
 			out.State = "in_sync"
 		} else {
 			out.State = "changed"

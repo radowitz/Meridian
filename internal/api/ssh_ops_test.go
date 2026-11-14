@@ -129,8 +129,10 @@ func TestServerReadinessAndProvisionOverPassword(t *testing.T) {
 	if strings.Contains(rr.Body.String(), tw.PrivateKey) || strings.Contains(rr.Body.String(), pw) {
 		t.Fatal("secret in provision response")
 	}
-	cmds, stdins := srv.Commands(), srv.Stdins()
-	if cmds[len(cmds)-1] != "bash -s" || !strings.Contains(stdins[len(stdins)-1], tw.PrivateKey) {
+	// The script on stdin, then the read-only node-state read on the same
+	// login.
+	cmds := srv.Commands()
+	if cmds[len(cmds)-2] != "bash -s" || cmds[len(cmds)-1] != sshexec.NodeStateCommand || !strings.Contains(lastScript(srv.Stdins()), tw.PrivateKey) {
 		t.Fatal("script with the injected key was not sent on stdin")
 	}
 

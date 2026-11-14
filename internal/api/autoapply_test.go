@@ -259,3 +259,61 @@ func TestAutoApplyFailureCompensatedNoLoop(t *testing.T) {
 		t.Fatalf("after the back-off: %+v", c)
 	}
 }
+
+// A change that only touches a remote node's files (that node provisioned
+// on its own, or still pending there) does not make the gateway out of
+// sync: condition 1 compares the gateway node's own installed files. Before
+// per-node state it compared the applied snapshot of every node and
+// refused with out_of_sync forever after a separate remote provision.
+func TestAutoApplyIgnoresOtherNodesChanges(t *testing.T) {
+	r := newAutoRig(t, true, nil)
+	t0, _ := r.s.topology()
+	before, err := r.s.compileTopo(t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.s.Store.Update(func(tp *model.Topology) (bool, error) {
+		for i := range tp.Nodes {
+			if tp.Nodes[i].ID == "us" {
+				tp.Nodes[i].WANInterface = "ens9"
+				return true, nil
+			}
+		}
+		t.Fatal("no node us")
+		return false, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t1, _ := r.s.topology()
+	after, err := r.s.compileTopo(t1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gwSame, usChanged := true, false
+	for p, body := range after.Files {
+		if strings.HasPrefix(p, "nodes/gw/") && before.Files[p] != body {
+			gwSame = false
+		}
+		if strings.HasPrefix(p, "nodes/us/") && before.Files[p] != body {
+			usChanged = true
+		}
+	}
+	if !gwSame || !usChanged || before.Canonical() == after.Canonical() {
+		t.Fatalf("the synthetic change must touch node us only (gateway same %v, us changed %v)", gwSame, usChanged)
+	}
+	r.decide(t, "auto-openai", "us", "us", "us-2")
+	if c := r.run(t); c == nil || c.Code != AutoApplied || *r.activated != 2 {
+		t.Fatalf("got %+v (activated %d)", c, *r.activated)
+	}
+	// The gateway is in sync again; node us still has its own pending change
+	// (status per node), the automatic install did not touch it.
+	v := getStatusFull(t, r.s)
+	if v.Install.State != "in_sync" {
+		t.Fatalf("gateway %+v", v.Install)
+	}
+	for _, n := range v.Nodes {
+		if n.NodeID == "us" && !n.Pending {
+			t.Fatalf("node us %+v", n)
+		}
+	}
+}

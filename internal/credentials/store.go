@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -718,6 +719,8 @@ type ServerInput struct {
 	CredentialID string   `json:"credential_id"`
 	Tags         []string `json:"tags"`
 	Notes        string   `json:"notes"`
+	// Channel is the management channel (nil or mode direct: direct).
+	Channel *model.ManagementChannel `json:"channel"`
 }
 
 type ServerPatch struct {
@@ -729,6 +732,9 @@ type ServerPatch struct {
 	CredentialID *string   `json:"credential_id"`
 	Tags         *[]string `json:"tags"`
 	Notes        *string   `json:"notes"`
+	// Channel replaces the management channel ({"mode":"direct"} goes back
+	// to the direct connection).
+	Channel *model.ManagementChannel `json:"channel"`
 }
 
 func (i *index) checkServer(sv *model.Server) error {
@@ -795,7 +801,94 @@ func (i *index) checkServer(sv *model.Server) error {
 	if sv.HostKey.State == "" {
 		sv.HostKey.State = model.HostKeyUnknown
 	}
+	return i.checkChannel(sv)
+}
+
+// checkChannel normalises and validates a server's management channel. A
+// direct channel is stored as nil (so a server without a channel looks
+// exactly as before). A tunnel channel needs an IP address; a jump channel
+// needs another existing server that is itself reached directly (one hop,
+// no chains, no cycles).
+func (i *index) checkChannel(sv *model.Server) error {
+	ch := sv.Channel
+	if ch == nil {
+		return nil
+	}
+	c := *ch
+	c.Mode = strings.TrimSpace(c.Mode)
+	c.Address = strings.TrimSpace(c.Address)
+	c.ViaServerID = strings.TrimSpace(c.ViaServerID)
+	if c.Port != 0 && (c.Port < 1 || c.Port > 65535) {
+		return errf(CodeInvalid, "channel.port", "管理通道的端口应在 1–65535")
+	}
+	switch c.Mode {
+	case "", model.ChannelDirect:
+		if c.Address != "" || c.Port != 0 || c.ViaServerID != "" {
+			return errf(CodeInvalid, "channel", "直连不需要通道地址、端口或中继")
+		}
+		sv.Channel = nil
+		return nil
+	case model.ChannelTunnel:
+		if c.ViaServerID != "" {
+			return errf(CodeInvalid, "channel.via_server_id", "经隧道地址管理不经过中继；要经中继跳转请选「跳转」")
+		}
+		if err := checkChannelAddr(c.Address, true); err != nil {
+			return err
+		}
+	case model.ChannelJump:
+		if c.Address != "" {
+			if err := checkChannelAddr(c.Address, false); err != nil {
+				return err
+			}
+		}
+		if c.ViaServerID == "" {
+			return errf(CodeInvalid, "channel.via_server_id", "跳转需要选择一台受管中继服务器")
+		}
+		if c.ViaServerID == sv.ID {
+			return errf(CodeInvalid, "channel.via_server_id", "服务器不能经自己跳转")
+		}
+		n := i.server(c.ViaServerID)
+		if n < 0 {
+			return errf(CodeNotFound, "channel.via_server_id", "跳转用的服务器 %s 不存在", c.ViaServerID)
+		}
+		if i.Servers[n].Channel.ChannelMode() != model.ChannelDirect {
+			return errf(CodeInvalid, "channel.via_server_id", "跳转用的服务器 %s 自己也经通道管理；只支持一跳（中继必须是直连的）", i.Servers[n].Name)
+		}
+	default:
+		return errf(CodeInvalid, "channel.mode", "管理通道只能是 direct、tunnel 或 jump")
+	}
+	sv.Channel = &c
 	return nil
+}
+
+// checkChannelAddr: an IP literal (no name: nothing is resolved on the
+// way), not unspecified, multicast or broadcast.
+func checkChannelAddr(s string, required bool) error {
+	if s == "" {
+		if required {
+			return errf(CodeInvalid, "channel.address", "经隧道地址管理需要填写这台服务器的隧道地址（IP）")
+		}
+		return nil
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil || a.Zone() != "" {
+		return errf(CodeInvalid, "channel.address", "通道地址应为 IP 地址（不接受主机名）")
+	}
+	if a.IsUnspecified() || a.IsMulticast() || (a.Is4() && a == netip.AddrFrom4([4]byte{255, 255, 255, 255})) {
+		return errf(CodeInvalid, "channel.address", "通道地址不能是未指定、组播或广播地址")
+	}
+	return nil
+}
+
+// ChannelUsers lists the servers whose jump channel goes through id.
+func (i *index) channelUsers(id string) []model.Server {
+	var out []model.Server
+	for _, sv := range i.Servers {
+		if sv.Channel != nil && sv.Channel.Mode == model.ChannelJump && sv.Channel.ViaServerID == id {
+			out = append(out, sv)
+		}
+	}
+	return out
 }
 
 // Servers lists the servers, sorted by name.
@@ -826,7 +919,7 @@ func (s *Store) CreateServer(in ServerInput) (model.Server, error) {
 	now := s.now()
 	sv := model.Server{ID: newID("srv"), Name: in.Name, Address: in.Address, Port: in.Port, User: in.User, Auth: in.Auth,
 		CredentialID: in.CredentialID, Tags: in.Tags, Notes: in.Notes, HostKey: model.HostKey{State: model.HostKeyUnknown},
-		CreatedAt: now, UpdatedAt: now}
+		CreatedAt: now, UpdatedAt: now, Channel: in.Channel}
 	if err := next.checkServer(&sv); err != nil {
 		return model.Server{}, err
 	}
@@ -880,8 +973,22 @@ func (s *Store) UpdateServer(id string, p ServerPatch) (model.Server, error) {
 	if p.Notes != nil {
 		sv.Notes = *p.Notes
 	}
+	if p.Channel != nil {
+		ch := *p.Channel
+		sv.Channel = &ch
+	}
 	if err := next.checkServer(&sv); err != nil {
 		return model.Server{}, err
+	}
+	if sv.Channel.ChannelMode() != model.ChannelDirect {
+		if users := next.channelUsers(id); len(users) > 0 {
+			return model.Server{}, errf(CodeInvalid, "channel", "服务器 %s 是 %s 的跳转中继，中继本身必须直连；先改掉那些服务器的通道", old.Name, users[0].Name)
+		}
+	}
+	if !sameChannel(sv.Channel, old.Channel) {
+		// The channel is transport, not identity: a deployment pin and the
+		// host key stay; the last connection test was over the old path.
+		sv.LastTest = nil
 	}
 	repointed := sv.Address != old.Address || sv.Port != old.Port || sv.User != old.User || sv.Auth != old.Auth || sv.CredentialID != old.CredentialID
 	if repointed {
@@ -917,8 +1024,22 @@ func (s *Store) DeleteServer(id string) error {
 	if refs := s.deploymentRefsServer(&s.idx, id); len(refs) > 0 {
 		return &Error{Code: CodeInUse, InUse: refs, Msg: fmt.Sprintf("服务器 %s 被未撤回完的部署固定，撤回需要它；先撤回再删除", next.Servers[n].Name)}
 	}
+	if users := next.channelUsers(id); len(users) > 0 {
+		var refs []Ref
+		for _, u := range users {
+			refs = append(refs, Ref{Kind: "server", ID: u.ID, Name: u.Name})
+		}
+		return &Error{Code: CodeInUse, InUse: refs, Msg: fmt.Sprintf("服务器 %s 是其它服务器的跳转中继；先改掉它们的管理通道再删除", next.Servers[n].Name)}
+	}
 	next.Servers = append(next.Servers[:n], next.Servers[n+1:]...)
 	return s.commit(next, nil)
+}
+
+func sameChannel(a, b *model.ManagementChannel) bool {
+	if a.ChannelMode() == model.ChannelDirect || b.ChannelMode() == model.ChannelDirect {
+		return a.ChannelMode() == b.ChannelMode()
+	}
+	return *a == *b
 }
 
 var fpRe = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)

@@ -102,7 +102,9 @@ func rateLimitedErr(name, addr string, retry time.Duration) *Error {
 	if secs < 1 {
 		secs = 1
 	}
-	return &Error{Code: CodeRateLimited, RetryAfter: secs, Msg: fmt.Sprintf(
+	// Refused before the version exchange: nothing was authenticated or run,
+	// and after RetryAfter a new attempt is safe.
+	return &Error{Code: CodeRateLimited, RetryAfter: secs, NotExecuted: true, SafeToRetry: true, Msg: fmt.Sprintf(
 		"%s（%s）暂时拒绝来自面板这个来源地址的连接：SSH 握手之前它只回了一行「Not allowed at this time」就断开了。"+
 			"这是 OpenSSH 的按来源限速（PerSourcePenalties）：短时间内来自同一地址的连接太多，或有连接没有完成登录（例如只读取主机指纹、端口扫描），都会让它暂时拒绝这个地址；经端口转发到达的服务器上，所有连接都来自转发器的同一个地址。"+
 			"这不是密码、密钥或主机指纹的问题，面板没有尝试登录。等一会儿再试：面板在 %d 秒内不会再连接这台服务器，之后仍被拒绝时再多等几分钟（限速时间会累积，最长约 10 分钟）。",

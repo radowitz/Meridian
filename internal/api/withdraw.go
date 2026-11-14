@@ -118,7 +118,8 @@ func (o provisionOutcome) onHost() bool {
 		return true
 	case "":
 		// Records from before the outcome was stored.
-		return o.Code == codeProvisionLeftovers || o.Code == sshexec.CodeCommandFailed || o.Code == sshexec.CodeTimeout
+		return o.Code == codeProvisionLeftovers || o.Code == sshexec.CodeCommandFailed || o.Code == sshexec.CodeTimeout ||
+			o.Code == sshexec.CodeRunTimeout || o.Code == sshexec.CodeRunInterrupted
 	}
 	return false
 }
@@ -523,7 +524,9 @@ func (s *Server) postWithdraw(w http.ResponseWriter, r *http.Request) {
 		rec.State, rec.Code = withdrawStateRecoverInc, codeRecoveryIncomplete
 		rec.Message = "补偿没有全部完成：下面列出了留在服务器上的东西，可以再次恢复"
 		status = http.StatusBadGateway
-	case err != nil && notStarted(sshexec.CodeOf(err)):
+	case err != nil && (notStarted(sshexec.CodeOf(err)) || sshexec.NotExecutedOf(err)):
+		// Nothing ran (connect, banner or handshake failure included): the
+		// record says so instead of "unknown".
 		rec.State, rec.Code, rec.Message = withdrawStateNotStarted, sshexec.CodeOf(err), err.Error()
 		status = http.StatusBadGateway
 		if c := sshexec.CodeOf(err); c == sshexec.CodeTargetChanged || c == sshexec.CodePinMismatch || c == sshexec.CodeMismatch || c == sshexec.CodeUntrusted {

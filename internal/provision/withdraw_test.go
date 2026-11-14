@@ -44,6 +44,10 @@ exit 0`)
   "link del "*) [ "$FAIL_IPDEL" = 1 ] && exit 1; rm -f "$SANDBOX/link-$3" ;;
   -4\ rule\ del\ lookup\ *|-6\ rule\ del\ lookup\ *) f="$SANDBOX/rule${1#-}-$5"; [ -f "$f" ] || exit 2; rm -f "$f" ;;
   -4\ route\ del\ blackhole\ *|-6\ route\ del\ blackhole\ *) f="$SANDBOX/bh-$(printf '%s' "$5" | tr '/:' '__')"; [ -f "$f" ] || exit 2; rm -f "$f" ;;
+  # Like the real command: deleting a rule or route that is not tracked
+  # here fails ("No such file or directory"). Answering 0 made the routes
+  # script's "while ip rule del …; do :; done" spin forever.
+  *"rule del "*|*"route del "*) exit 2 ;;
 esac
 exit 0`)
 }
@@ -51,17 +55,7 @@ exit 0`)
 func (sb *sandbox) runRaw(script string, env ...string) (string, int) {
 	sb.t.Helper()
 	script = strings.Replace(script, "M_ROOT=''", "M_ROOT='"+sb.root+"'", 1)
-	cmd := exec.Command("bash", "-s")
-	cmd.Stdin = strings.NewReader(script)
-	cmd.Env = append([]string{"PATH=" + sb.bin + ":/usr/bin:/bin:/usr/sbin:/sbin", "SANDBOX=" + sb.root, "LC_ALL=C"}, env...)
-	out, err := cmd.CombinedOutput()
-	code := 0
-	if ee, ok := err.(*exec.ExitError); ok {
-		code = ee.ExitCode()
-	} else if err != nil {
-		sb.t.Fatal(err)
-	}
-	return string(out), code
+	return sb.bash(script, env)
 }
 
 func (sb *sandbox) touch(names ...string) {
