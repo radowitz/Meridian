@@ -930,6 +930,18 @@ export default function ServersPage() {
                 <Facts
                   items={[
                     [
+                      "登录",
+                      s.credential ? (
+                        <Space size={4} wrap key="l">
+                          <span>{authLabel(s.auth)}</span>
+                          <Link to={href("keys", s.credential.id)}>{s.credential.name}</Link>
+                        </Space>
+                      ) : (
+                        <SplitStatus key="l" kind="attention" label={`未选择 · ${authLabel(s.auth)}`} />
+                      ),
+                    ],
+                    ["节点", s.node ? <Link key="n" to={href("topology", s.node.id)}>{s.node.name || s.node.id}</Link> : "—"],
+                    [
                       "最近测试",
                       s.last_test ? (
                         <Space size={4} key="t">
@@ -951,7 +963,7 @@ export default function ServersPage() {
                 {
                   title: "地址",
                   kind: "flex",
-                  width: 200,
+                  width: 220,
                   render: (_, s) => (
                     <Space size={4} className="cell-nowrap-flex">
                       <Mono ellipsis>{`${s.user}@${s.address}:${s.port}`}</Mono>
@@ -962,20 +974,6 @@ export default function ServersPage() {
                   ),
                 },
                 {
-                  title: "登录",
-                  kind: "flex",
-                  width: 150,
-                  render: (_, s) =>
-                    s.credential ? (
-                      <Space size={4} wrap>
-                        <span>{authLabel(s.auth)}</span>
-                        <Link to={href("keys", s.credential.id)}>{s.credential.name}</Link>
-                      </Space>
-                    ) : (
-                      <SplitStatus kind="attention" label={`未选择 · ${authLabel(s.auth)}`} />
-                    ),
-                },
-                {
                   title: "主机指纹",
                   kind: "fixed",
                   width: 110,
@@ -983,13 +981,6 @@ export default function ServersPage() {
                     const st = HOST_KEY_STATUS[s.host_key.state] ?? HOST_KEY_STATUS.unknown;
                     return <StatusTag kind={st.kind} title={s.host_key.fingerprint || s.host_key.seen_fingerprint}>{st.label}</StatusTag>;
                   },
-                },
-                {
-                  title: "节点",
-                  kind: "flex",
-                  width: 110,
-                  render: (_, s) =>
-                    s.node ? <Link to={href("topology", s.node.id)}>{s.node.name || s.node.id}</Link> : <Typography.Text type="secondary">—</Typography.Text>,
                 },
                 {
                   title: "状态",

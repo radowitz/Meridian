@@ -404,6 +404,8 @@ type deployResp struct {
 		Steps       []deployStepView  `json:"steps"`
 		Skipped     []planSkip        `json:"skipped"`
 		Preflight   *preflightRecord  `json:"preflight"`
+		Summary     *runSummary       `json:"summary"`
+		Events      []deployEvent     `json:"events"`
 		Extra       map[string]string `json:"-"`
 	} `json:"run"`
 	Plan            *deployPlan `json:"plan"`
@@ -532,6 +534,15 @@ func TestDeployRunHappyPath(t *testing.T) {
 	}
 	if out.Run.State != runDone {
 		t.Fatalf("run %s", out.Run.State)
+	}
+	// Every step was installed and checked in this run: the full statement.
+	if sm := out.Run.Summary; sm == nil || !sm.AllChecked || len(sm.Adopted)+len(sm.InSync) != 0 || !strings.Contains(sm.Text, "健康检查通过") {
+		t.Fatalf("summary %+v", out.Run.Summary)
+	}
+	for _, st := range out.Run.Steps {
+		if st.Completion != completionInstalled {
+			t.Fatalf("%s completion %q", st.NodeID, st.Completion)
+		}
 	}
 	// Every node is now in sync: nothing to plan, no new run.
 	if p := f.get(t).Plan; len(p.Steps) != 0 {
@@ -1014,5 +1025,60 @@ func TestDeployPlanUnverifiedInSyncNodeGetsStep(t *testing.T) {
 	f.preflight(t, run, "sg", http.StatusOK)
 	if st := f.step(t, "sg"); st.Phase != phaseDone || st.Outcome != "adopted" || st.Evidence != "host_record" || f.scripts("sg") != 0 {
 		t.Fatalf("adopt: %+v scripts %d", st, f.scripts("sg"))
+	}
+}
+
+// A run that ends with installed and adopted steps: the completion state,
+// the event and the status never claim a health check for the adopted one.
+func TestDeployRunSummaryWithAdoptedStep(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	f.preflight(t, run, "sg", http.StatusOK)
+	f.install(t, run, "sg", http.StatusOK)
+	// tw's host already holds the content: adopted, not installed.
+	tw := f.step(t, "tw")
+	f.mu.Lock()
+	f.extra["tw"] = "manifest-begin\nmanifest node tw\nmanifest deployment " + mustDeployment(t, f.s) + "\nmanifest server " + f.sid["tw"] +
+		"\nmanifest bundle " + tw.PlanBundle + "\nmanifest-end\njournal-begin\njournal state done\njournal run run-z\njournal-end\n"
+	f.mu.Unlock()
+	f.preflight(t, run, "tw", http.StatusOK)
+	if st := f.step(t, "tw"); st.Phase != phaseDone || st.Completion != completionAdopted || f.scripts("tw") != 0 {
+		t.Fatalf("tw %+v", st)
+	}
+	f.preflight(t, run, "gw", http.StatusOK)
+	out := f.install(t, run, "gw", http.StatusOK)
+	if out.Run.State != runDone {
+		t.Fatalf("run %s", out.Run.State)
+	}
+	sm := out.Run.Summary
+	if sm == nil || sm.AllChecked || len(sm.Installed) != 2 || len(sm.Adopted) != 1 || sm.Adopted[0] != tw.NodeName {
+		t.Fatalf("summary %+v", sm)
+	}
+	if !strings.Contains(sm.Text, "没有重新检查健康："+tw.NodeName) || strings.Contains(sm.Text, "全部") {
+		t.Fatalf("summary text %q", sm.Text)
+	}
+	last := out.Run.Events[len(out.Run.Events)-1].Text
+	if !strings.Contains(last, "采纳") || strings.Contains(last, "安装和健康检查通过") || strings.Contains(last, "全部 ") {
+		t.Fatalf("event %q", last)
+	}
+	// Stored: a restarted panel reads the same statement.
+	s2 := &Server{Store: f.s.Store, DataDir: f.s.DataDir}
+	s2.deployMu.Lock()
+	r := s2.loadRunLocked()
+	s2.deployMu.Unlock()
+	if r.Summary == nil || r.Summary.AllChecked || len(r.Summary.Adopted) != 1 {
+		t.Fatalf("stored %+v", r.Summary)
+	}
+}
+
+// Only adopted steps: nothing is described as installed or health-checked.
+func TestDeploySummaryAllAdopted(t *testing.T) {
+	r := &deployRun{Steps: []deployStep{
+		{planStep: planStep{NodeID: "a", NodeName: "甲"}, Phase: phaseDone, Completion: completionAdopted},
+		{planStep: planStep{NodeID: "b", NodeName: "乙"}, Phase: phaseDone, Completion: completionInSync},
+	}}
+	completeRun(r, time.Now())
+	if r.Summary.AllChecked || len(r.Summary.Installed) != 0 || !strings.Contains(r.Summary.Text, "没有节点在这次运行中安装") || strings.Contains(r.Summary.Text, "健康检查通过") {
+		t.Fatalf("%+v", r.Summary)
 	}
 }

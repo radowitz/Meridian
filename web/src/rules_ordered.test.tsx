@@ -5,7 +5,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { moveInList } from "./RulesPage";
-import { fakeApi, renderAt, webStorageDump } from "./testing";
+import { fakeApi, renderAt, tableBudgets, webStorageDump } from "./testing";
 import type { ImportPreview, Rule, Topology } from "./types";
 
 afterEach(() => {
@@ -210,6 +210,10 @@ describe("rules: import from mihomo", () => {
     await userEvent.click(within(drawer).getByRole("button", { name: btn("预览") }));
     const pv = await within(drawer).findByTestId("import-preview");
     expect(pv).toHaveTextContent("1 条阻止确认");
+    // The import drawer's tables fit its body (1100 px drawer) at 1280.
+    const over = tableBudgets(drawer).filter((t) => t.width > t.budget);
+    expect(over, over.map((t) => `${t.name} in ${t.container}: ${t.width} > ${t.budget}`).join("; ")).toEqual([]);
+    expect(tableBudgets(drawer).length).toBeGreaterThanOrEqual(3);
     expect(within(pv).getByTestId("import-row-3")).toHaveTextContent("服务组 AI（地区组 美国）");
     expect(within(drawer).getByRole("button", { name: btn("确认导入") })).toBeDisabled();
     await userEvent.click(within(drawer).getByRole("checkbox", { name: "接受 第4行 keyword_expanded" }));

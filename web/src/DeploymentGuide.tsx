@@ -40,10 +40,24 @@ const OUTCOME: Record<string, string> = {
   not_started: "没有执行",
 };
 
+/** How a done step became done (stored per step by the server). */
+export function completionOf(st: DeployStep): "installed" | "adopted" | "in_sync" | "" {
+  if (st.phase !== "done") return "";
+  if (st.completion) return st.completion;
+  if (st.outcome === "installed") return "installed";
+  return st.evidence === "panel_record" ? "in_sync" : "adopted";
+}
+
+const COMPLETION_TAG: Record<"installed" | "adopted" | "in_sync", { kind: StatusKind; label: string }> = {
+  installed: { kind: "ok", label: "已安装 · 健康检查通过" },
+  adopted: { kind: "unverified", label: "已采纳记录 · 未重新检查健康" },
+  in_sync: { kind: "unverified", label: "已一致 · 本次未执行" },
+};
+
 const RUN_STATE: Record<DeployRun["state"], { kind: StatusKind; label: string }> = {
   active: { kind: "running", label: "进行中" },
   stopped: { kind: "failed", label: "已停下" },
-  done: { kind: "ok", label: "全部装好" },
+  done: { kind: "ok", label: "全部步骤完成" },
   cancelled: { kind: "neutral", label: "已取消" },
 };
 
@@ -84,7 +98,7 @@ function Limits({ limits }: { limits: DeployView["limits"] }) {
         showIcon
         style={{ marginBottom: 12 }}
         data-testid="deploy-limits"
-        message="「已装好」只说明安装成功、服务已启动、健康检查通过，不是端到端验证"
+        message="「已安装」只说明这次运行里安装成功、服务已启动、健康检查通过；「已采纳」的节点没有重新执行、没有重新检查健康。两者都不是端到端验证"
         description={
           <Collapse
             size="small"
@@ -260,18 +274,56 @@ function HealthView({ st }: { st: DeployStep }) {
           </Typography.Text>
         </div>
       ))}
+      {completionOf(st) !== "installed" ? <StatusTag kind="unverified">健康未重新检查</StatusTag> : null}
       <StatusTag kind="unverified">端到端未验证</StatusTag>
     </div>
   );
 }
 
 function PhaseTag({ st, plain }: { st: DeployStep; plain?: boolean }) {
-  const p = PHASE[st.phase] ?? { kind: "neutral" as StatusKind, label: st.phase };
-  const label = st.phase === "done" && st.outcome === "adopted" ? "已在服务器上" : p.label;
+  const c = completionOf(st);
+  const p = c ? COMPLETION_TAG[c] : (PHASE[st.phase] ?? { kind: "neutral" as StatusKind, label: st.phase });
   return (
-    <span data-testid={plain ? undefined : `deploy-phase-${st.node_id}`} data-phase={st.phase}>
-      <StatusTag kind={p.kind}>{label}</StatusTag>
+    <span data-testid={plain ? undefined : `deploy-phase-${st.node_id}`} data-phase={st.phase} data-completion={c || undefined}>
+      <StatusTag kind={p.kind}>{p.label}</StatusTag>
     </span>
+  );
+}
+
+/**
+ * The finished run, from the per-step completion: only the nodes installed
+ * in this run are described as health-checked; adopted ones are named.
+ */
+function DoneSummary({ run }: { run: DeployRun }) {
+  const names = (c: string) => run.steps.filter((s) => completionOf(s) === c).map((s) => s.node_name || s.node_id);
+  const installed = names("installed");
+  const adopted = names("adopted");
+  const inSync = names("in_sync");
+  const all = installed.length > 0 && adopted.length === 0 && inSync.length === 0;
+  return (
+    <Alert
+      type={all ? "success" : "info"}
+      showIcon
+      style={{ marginBottom: 8 }}
+      data-testid="deploy-done"
+      message={
+        all
+          ? `全部 ${installed.length} 个节点都在这次运行中安装：服务已启动、健康检查通过`
+          : installed.length > 0
+            ? `全部步骤完成：${installed.length} 个节点在这次运行中安装并通过健康检查，${adopted.length + inSync.length} 个节点没有重新检查健康`
+            : `全部步骤完成：没有节点在这次运行中安装，${adopted.length + inSync.length} 个节点没有重新检查健康`
+      }
+      description={
+        <>
+          {installed.length > 0 && !all ? <div data-testid="deploy-done-installed">安装并通过健康检查：{installed.join("、")}</div> : null}
+          {adopted.length > 0 ? (
+            <div data-testid="deploy-done-adopted">依据服务器上的安装记录采纳（没有重新执行、没有重新检查健康，服务现在是否在运行没有核实）：{adopted.join("、")}</div>
+          ) : null}
+          {inSync.length > 0 ? <div data-testid="deploy-done-insync">在引导之外已装好、读回记录一致（这次没有执行、没有重新检查健康）：{inSync.join("、")}</div> : null}
+          <div>这还不是端到端验证：到「防泄露」页做验收、到「解锁」页跑探测，实际执行过的才算通过。</div>
+        </>
+      }
+    />
   );
 }
 
@@ -411,7 +463,7 @@ function RunView({
           <StatusTag kind={rs.kind}>{rs.label}</StatusTag>
         </span>
         <Typography.Text type="secondary">
-          {done} / {run.steps.length} 已装好 · 开始于 <TimeText value={run.created_at} />
+          {done} / {run.steps.length} 已完成 · 开始于 <TimeText value={run.created_at} />
         </Typography.Text>
         {open ? (
           <Button size="small" onClick={onCancel} disabled={!!busy || !!run.in_flight} data-testid="deploy-cancel">
@@ -459,16 +511,7 @@ function RunView({
           }
         />
       ) : null}
-      {run.state === "done" ? (
-        <Alert
-          type="success"
-          showIcon
-          style={{ marginBottom: 8 }}
-          data-testid="deploy-done"
-          message="全部节点已装好：安装成功、服务已启动、健康检查通过"
-          description="这还不是端到端验证：到「防泄露」页做验收、到「解锁」页跑探测，实际执行过的才算通过。"
-        />
-      ) : null}
+      {run.state === "done" ? <DoneSummary run={run} /> : null}
       <DataTable
         size="small"
         rowKey="node_id"
@@ -488,7 +531,7 @@ function RunView({
               </Space>
             ),
           },
-          { title: "状态", kind: "fixed", width: 132, render: (_, s) => <PhaseTag st={s} /> },
+          { title: "状态", kind: "flex", width: 210, render: (_, s) => <PhaseTag st={s} /> },
           {
             title: "说明",
             kind: "flex",

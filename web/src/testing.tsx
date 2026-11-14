@@ -5,6 +5,7 @@
 import { render } from "@testing-library/react";
 import { vi } from "vitest";
 import App from "./App";
+import { TABLE_BUDGET } from "./ui";
 import type { PanelStatus } from "./types";
 
 export interface FakeRequest {
@@ -189,4 +190,53 @@ export function webStorageDump(): string {
     }
   }
   return out.join("\n");
+}
+
+// ------------------------------------------------------ table budgets ---
+
+/**
+ * The width a DataTable's container really has at a 1280 px viewport
+ * (TABLE_BUDGET in ui.tsx, measured in a browser), from where the table sits
+ * in the DOM: the page, a drawer or dialog body, minus each Section card,
+ * nested card, Collapse body and expanded table row around it.
+ */
+export function tableBudgetOf(wrap: HTMLElement): { budget: number; container: string } {
+  const drawer = wrap.closest<HTMLElement>(".ant-drawer-content-wrapper");
+  const modal = wrap.closest<HTMLElement>(".ant-modal");
+  const outer = drawer ?? modal;
+  let budget: number = TABLE_BUDGET.page;
+  let container = "page";
+  if (drawer) {
+    budget = parseInt(drawer.style.width || "378", 10) - TABLE_BUDGET.drawerPadding;
+    container = `drawer ${drawer.style.width}`;
+  } else if (modal) {
+    budget = parseInt(modal.style.width || "520", 10) - TABLE_BUDGET.modalPadding;
+    container = `dialog ${modal.style.width || "520px"}`;
+  }
+  for (let a = wrap.parentElement; a && a !== outer && a !== document.body; a = a.parentElement) {
+    if (a.classList.contains("section")) {
+      budget -= TABLE_BUDGET.sectionInset;
+      container += " > section";
+    } else if (a.classList.contains("wss-listener")) {
+      budget -= TABLE_BUDGET.cardInset;
+      container += " > card";
+    } else if (a.classList.contains("ant-collapse-content-box")) {
+      budget -= TABLE_BUDGET.collapseInset;
+      container += " > collapse";
+    } else if (a.classList.contains("ant-table-expanded-row")) {
+      budget -= TABLE_BUDGET.expandedRowInset;
+      container += " > expanded row";
+    }
+  }
+  return { budget, container };
+}
+
+/** Every rendered DataTable: its declared minimum width (scroll.x) against its container's budget. */
+export function tableBudgets(root: ParentNode = document): { name: string; container: string; budget: number; width: number }[] {
+  return [...root.querySelectorAll<HTMLElement>(".data-table-wrap")].map((wrap) => {
+    const table = wrap.querySelector<HTMLTableElement>(".ant-table-content > table, .ant-table-body > table, table")!;
+    const heads = [...wrap.querySelectorAll("thead th")].map((th) => th.textContent?.trim()).filter(Boolean);
+    const { budget, container } = tableBudgetOf(wrap);
+    return { name: heads.slice(0, 3).join("/"), container, budget, width: parseInt(table.style.width, 10) || 0 };
+  });
 }

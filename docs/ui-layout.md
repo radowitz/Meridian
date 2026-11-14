@@ -245,7 +245,7 @@ server login "未选择 · 密码", node key "还没有 · 第一次装机".
 | Rules: import drawer | mapping, services, rule-sets, ordered preview (行 / 原文 ellipsis / 映射为 / 状态 / 说明 / 删除), 50 per page | Preview notes after the first | "确认之前不写入任何东西" alert; blocking status. |
 | Rules: rule-sets, service groups, tester, sniffing | Rule-sets: 名称 (+ auth tag), URL ellipsis, 状态 (+ 部分生效 tag, errors), 使用, 操作 (立即更新 + menu); secondary: URL, format, counts, unsupported, used by. Sniff decisions: 时间, 原目的地址, 判断依据, 规则, 目标, 结果; secondary: 来源 | Section intros | Sniff fail-closed sentence (`SafetyNotice`); coverage (by name / by address / costs) as three short lists. |
 | Lists | Report: 名单, 结果, 生效来源, 版本时间, 条数, 尝试; secondary: 文件, 丢弃 | — | Source option cards unchanged. |
-| Servers | 名称, 地址 (one line, full text on focus), 登录, 主机指纹, 节点, 状态, 操作; secondary: 最近测试, fingerprint, channel | — | — |
+| Servers | 名称, 地址 (one line, full text on focus), 主机指纹, 状态, 操作; secondary: 登录, 节点, 最近测试, fingerprint, channel | — | — |
 | Keys | SSH: 名称, 种类, 指纹 (ellipsis), 创建, 最近轮换, 使用者, 操作; SOCKS likewise | — | "不可查看" next to 已设置. |
 | Cloudflare / Mesh | Accounts: 名称, Account ID (ellipsis + copy), Token, 权限检查 (`SplitStatus`), Mesh, 绑定部署, 操作; checks and permission tables with widths; Mesh readiness: tag 未就绪 + "还需：…" text; pinned hosts with ellipsis | — | "写权限未确认" alert. |
 | Remote access | Devices: 设备, 模式, 地址 (ellipsis), 状态, 密钥, 启用, 操作 | — | Router command is a `CommandBlock` (one line, scrolls in its box). |
@@ -253,6 +253,52 @@ server login "未选择 · 密码", node key "还没有 · 第一次装机".
 | Unlock | Matrix: compact cells (one word per family, grade as "*", expiry as a clock icon; full label in title + hidden text; detail drawer), exit header names cut with tooltip, `WideGrid` (frozen first column, scroll hint), filters by region group / exit / service / family; catalog 服务, 能告诉你什么, 检测的平台, 地址族, 规则; state, history, owner candidate tables with widths; coverage: 地区 96, 项目 ellipsis, 脚本 ellipsis, 结果 (tag + adapter / reason), 说明 flex (wraps), filters by section and by implemented / not | Legend descriptions, schedule details, routing details, catalog intro | Validation notice; launcher fail-closed note; "自动选择未在真实平台和真实网关上验证" and "自动安装未在真实网关上验证" (`SafetyNotice unverified`); coverage "只在合成样本上测过" (`SafetyNotice`). |
 | Leak checks | 检查 flex, 状态 132, 说明 flex; all rows on one page (no item can hide on page 2) | — | Every status tag (未执行 / 待人工签收). |
 | WSS | Links: 链路, 拨号端, 路径, 操作; parties: 一端, 已安装, 下次下发 | — | — (border colour now uses the theme variable, was a light-only fallback). |
+
+
+### Table width budget
+
+At 1280 px with the sidebar expanded, the space a table really has was
+measured in a browser and is stated once as `TABLE_BUDGET` in `ui.tsx`:
+1016 px directly in the page; 974 px inside a `Section` (42 px of padding and
+border); a drawer or dialog body is its width minus 48 px; a bordered card
+inside a section takes 26 px more, a Collapse body 34 px, an expanded table
+row 32 px. **Rule:** a `DataTable`'s minimum width — the sum of its declared
+column widths (flex columns count their minimum, 160 by default), plus 48 px
+for the expand column when rows expand (`secondary` or `expandable`) — must
+not exceed its container's budget. `tableMinWidth(columns, expandable)`
+computes it (it is the table's `scroll.x`). When a table does not fit, move
+secondary columns into the expandable row rather than shrinking key columns.
+
+`web/src/table_budget.test.tsx` renders the pages with synthetic rows (long
+names, addresses and notes) and checks every rendered DataTable against the
+budget of where it sits in the DOM (`tableBudgets()` in `testing.tsx`);
+`layout_pages.test.tsx` and `rules_ordered.test.tsx` do the same for the rules,
+unlock and import-drawer tables.
+
+| Table | Container | Budget | Min width |
+|---|---|---|---|
+| Rules | page | 1016 | 970 |
+| Servers (login, node, last test, fingerprint, channel in the expandable row) | page | 1016 (kept within 974) | 748 |
+| SSH keys | page | 1016 | 950 |
+| SOCKS credentials | section | 974 | 910 |
+| Remote devices | section | 974 | 906 |
+| Cloudflare accounts (+ expand) | section | 974 | 938 |
+| Permission checks | expanded row in a section | 942 | 710 |
+| Token how-to permissions | collapse in a section | 940 | 540 |
+| Mesh readiness / pinned hosts | section | 974 | 794 / 820 |
+| Deploy remote nodes | section | 974 | 822 |
+| Binaries | collapse in a section | 940 | 800 |
+| Guide plan / run | section | 974 | 718 / 778 |
+| Deployment records (+ expand) | section | 974 | 788 |
+| WSS links / parties | card in a section | 948 | 658 / 540 |
+| Lists report (+ expand) / configured | section | 974 | 838 / 480 |
+| Rule-sets (+ expand) / service groups | section | 974 | 848 / 740 |
+| Sniff decisions (+ expand) | section | 974 | 898 |
+| Import drawer: mapping / services / rule-sets / rows | section in a 1100 px drawer | 1010 | 660 / 760 / 740 / 932 |
+| Unlock catalog / services / history / coverage / candidates | section | 974 | 788 / 760 / 826 / 806 / 580 |
+| Result detail parts (+ expand) | 560 px drawer | 512 | 448 |
+| Relay sharing (exits page) | section | 974 | 920 |
+| Leak checks | section | 974 | 672 |
 
 ### Rules table pagination
 

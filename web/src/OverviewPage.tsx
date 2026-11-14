@@ -265,7 +265,10 @@ export default function OverviewPage() {
                 <Row label="部署引导">
                   <Link to={href("deploy") + "?section=guide"}>
                     <span data-testid="overview-deploy-run">
-                      <StatusTag kind={status.deploy_run.state === "stopped" ? "failed" : "running"}>
+                      <StatusTag
+                        kind={status.deploy_run.state === "stopped" ? "failed" : "running"}
+                        title={`已完成 ${status.deploy_run.done}/${status.deploy_run.total}：这次运行中安装并通过健康检查 ${status.deploy_run.installed ?? 0} 个，依据记录采纳、没有重新检查健康 ${status.deploy_run.adopted ?? 0} 个`}
+                      >
                         {status.deploy_run.state === "stopped" ? "已停下" : "进行中"} {status.deploy_run.done}/{status.deploy_run.total}
                       </StatusTag>
                     </span>

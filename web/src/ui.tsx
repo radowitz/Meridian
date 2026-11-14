@@ -1461,6 +1461,42 @@ export interface DataColumn<T> extends Omit<TableColumnType<T>, "width" | "fixed
 
 const FLEX_MIN = 160;
 
+/** Width antd gives the expand-icon column of a table with an expandable row. */
+export const EXPAND_COL = 48;
+
+/**
+ * Width a table really has at a 1280 px viewport with the sidebar expanded
+ * (216 px) and the content padding (24 px each side), measured in a real
+ * browser on the local panel: the content column is 1016 px; a table directly
+ * in the page gets all of it; a Section card takes 2 × 20 px padding + 2 × 1 px
+ * border (974 px inside). Drawers and dialogs: their width minus 2 × 24 px body
+ * padding. Smaller insets: a bordered card inside a section (WSS listener,
+ * 2 × 12 + 2), a Collapse panel body (2 × 16 + 2) and an expanded table row
+ * (2 × 16). The sum of a DataTable's declared minimum column widths (see
+ * tableMinWidth) must not exceed the width of its container, or the table
+ * scrolls at 1280 (docs/ui-layout.md, "Table width budget").
+ */
+export const TABLE_BUDGET = {
+  viewport: 1280,
+  page: 1016,
+  section: 974,
+  sectionInset: 42,
+  drawerPadding: 48,
+  modalPadding: 48,
+  cardInset: 26,
+  collapseInset: 34,
+  expandedRowInset: 32,
+} as const;
+
+/**
+ * The minimum width a DataTable forces: fixed / ellipsis / actions widths,
+ * flex minimums (default 160) and the expand column when rows expand. This is
+ * the table's `scroll.x`, so it is what has to fit its container.
+ */
+export function tableMinWidth<T>(columns: DataColumn<T>[], expandable: boolean): number {
+  return columns.reduce((n, c) => n + (c.width ?? ((c.kind ?? "flex") === "flex" ? FLEX_MIN : 120)), 0) + (expandable ? EXPAND_COL : 0);
+}
+
 function prepareColumns<T extends object>(columns: DataColumn<T>[]): { cols: TableColumnType<T>[]; minWidth: number } {
   let minWidth = 0;
   const cols = columns.map((c): TableColumnType<T> => {
@@ -1558,7 +1594,7 @@ export function DataTable<T extends object>({
         {...rest}
         className={["data-table", rest.className ?? ""].filter(Boolean).join(" ")}
         columns={cols}
-        scroll={{ x: minWidth + (secondary ? 48 : 0) }}
+        scroll={{ x: minWidth + (secondary || expandable?.expandedRowRender ? EXPAND_COL : 0) }}
         pagination={pagination ?? (rows > pageSize ? { pageSize, showSizeChanger: true, hideOnSinglePage: true } : false)}
         expandable={secondary ? { expandedRowRender: (r) => <div className="row-secondary">{secondary(r)}</div>, ...expandable } : expandable}
       />

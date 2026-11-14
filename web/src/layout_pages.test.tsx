@@ -14,7 +14,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { autoLayout, LAYOUT } from "./TopologyPage";
 import { RULES_PAGE_SIZE } from "./RulesPage";
-import { fakeApi, panelStatus, renderAt } from "./testing";
+import { fakeApi, panelStatus, renderAt, tableBudgets } from "./testing";
 import type {
   CoverageItem,
   GroupActualView,
@@ -281,6 +281,14 @@ const UNLOCK_API = {
 
 // ------------------------------------------------------------- helpers ---
 
+/** Every rendered DataTable fits its container at 1280 (TABLE_BUDGET, see table_budget.test.tsx). */
+function expectTablesWithinBudget(min: number) {
+  const tables = tableBudgets();
+  expect(tables.length).toBeGreaterThanOrEqual(min);
+  const over = tables.filter((t) => t.width > t.budget);
+  expect(over, over.map((t) => `${t.name} in ${t.container}: ${t.width} > ${t.budget}`).join("; ")).toEqual([]);
+}
+
 /** No safety notice (role="note" / data-safety) sits inside a collapsed explanation. */
 function expectNoSafetyInsideCollapsed() {
   expect(document.querySelectorAll(".explain-more [data-safety], .explain-more .safety-notice, .explain-pop [data-safety]")).toHaveLength(0);
@@ -389,6 +397,8 @@ describe("rules page with 165 rules", () => {
     await waitFor(() => expect(rsTable.querySelectorAll("tbody tr.ant-table-row")).toHaveLength(20));
     expect(rsTable.querySelector(".ant-pagination")).not.toBeNull();
     expect(rsTable.querySelector("td.col-ellipsis .ellipsis-text")).toHaveTextContent("https://rules.example.org/sets/very/long/path/RuleSet1.list");
+    // Rules table (page), service groups and rule-sets (sections) fit their containers at 1280.
+    expectTablesWithinBudget(3);
   });
 });
 
@@ -447,6 +457,8 @@ describe("unlock page with 41 adapters and 9 exits", () => {
       expect(rows.every((r) => r.textContent?.startsWith("日本"))).toBe(true);
     });
     expect(within(cov).getByRole("note")).toHaveAttribute("data-safety", "unverified");
+    // Catalog, coverage (and the other unlock tables that have rows) fit their sections at 1280.
+    expectTablesWithinBudget(2);
   });
 });
 

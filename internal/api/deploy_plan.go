@@ -114,9 +114,9 @@ var deployLimits = struct {
 	Independent  []string `json:"independent"`
 }{
 	Proves: []string{
-		"网关：meridian-host 的安装事务已提交——文件写入、接口与防火墙激活、服务启动，事务里的健康检查通过",
-		"远端节点：装机脚本完成激活并写下清单，面板在同一登录里读回服务器上的记录，与装上去的内容一致（读回失败、不完整或不一致时这一步是「结果不明」，不算装好）",
-		"「已在服务器上（采纳）」：预检完整读到的服务器记录（网关是安装清单）已经是这份内容；没有重新执行，也没有重新做健康检查",
+		"在这次运行中实际安装的网关：meridian-host 的安装事务已提交——文件写入、接口与防火墙激活、服务启动，事务里的健康检查通过",
+		"在这次运行中实际下发的远端节点：装机脚本完成激活并写下清单，面板在同一登录里读回服务器上的记录，与装上去的内容一致（读回失败、不完整或不一致时这一步是「结果不明」，不算装好）",
+		"「已在服务器上（采纳）」：预检完整读到的服务器记录（网关是安装清单）已经是这份内容；没有重新执行，也没有重新检查健康——服务现在是否在运行没有核实",
 	},
 	DoesNotProve: []string{
 		"隧道真的握手、流量真的经出口出去（端到端连通）",
@@ -610,6 +610,19 @@ type deployHealth struct {
 type deployStep struct {
 	planStep
 	Phase string `json:"phase"`
+	// Completion (done steps only) says how the step became done:
+	//   installed — installed in this run, and the activation / health
+	//               result was read back (remote: verify = verified;
+	//               gateway: the committed host transaction with its
+	//               health checks);
+	//   adopted   — the host's install record (remote manifest, gateway
+	//               installed manifest) already held this content: nothing
+	//               was executed and health was NOT re-checked;
+	//   in_sync   — already installed and verified outside this run
+	//               (the panel's verified record): nothing was executed
+	//               and health was not re-checked.
+	// Only "installed" steps may be described as health-checked.
+	Completion string `json:"completion,omitempty"`
 	// The reviewed preflight the operator confirms, and what it was bound
 	// to: the node's bundle digest and the server identity it ran against.
 	PreflightID   string          `json:"preflight_id,omitempty"`
@@ -656,6 +669,91 @@ type deployRun struct {
 	Notes           []string      `json:"notes,omitempty"`
 	StopReason      string        `json:"stop_reason,omitempty"`
 	Events          []deployEvent `json:"events,omitempty"`
+	// Summary is the completion statement of a finished run, computed from
+	// the steps' Completion (never from their wording).
+	Summary *runSummary `json:"summary,omitempty"`
+}
+
+const (
+	completionInstalled = "installed"
+	completionAdopted   = "adopted"
+	completionInSync    = "in_sync"
+)
+
+// completionOf is a done step's Completion; steps stored before the field
+// existed fall back on their stored outcome and evidence codes.
+func completionOf(st deployStep) string {
+	switch {
+	case st.Phase != phaseDone:
+		return ""
+	case st.Completion != "":
+		return st.Completion
+	case st.Outcome == "installed":
+		return completionInstalled
+	case st.Evidence == "panel_record":
+		return completionInSync
+	}
+	return completionAdopted
+}
+
+// runSummary says how the steps of a finished run became done. Installed
+// are the only nodes the run installed and health-checked.
+type runSummary struct {
+	// AllChecked: every step was installed and health-checked in this run.
+	AllChecked bool     `json:"all_checked"`
+	Installed  []string `json:"installed"`
+	Adopted    []string `json:"adopted"`
+	InSync     []string `json:"in_sync"`
+	Text       string   `json:"text"`
+}
+
+func summarize(r *deployRun) *runSummary {
+	sum := &runSummary{Installed: []string{}, Adopted: []string{}, InSync: []string{}}
+	total := 0
+	for _, st := range r.Steps {
+		if st.Phase != phaseDone {
+			continue
+		}
+		total++
+		name := st.NodeName
+		if name == "" {
+			name = st.NodeID
+		}
+		switch completionOf(st) {
+		case completionInstalled:
+			sum.Installed = append(sum.Installed, name)
+		case completionInSync:
+			sum.InSync = append(sum.InSync, name)
+		default:
+			sum.Adopted = append(sum.Adopted, name)
+		}
+	}
+	sum.AllChecked = total > 0 && len(sum.Installed) == total
+	if sum.AllChecked {
+		sum.Text = fmt.Sprintf("全部 %d 个节点都在这次运行中安装：服务已启动、健康检查通过（端到端验证另做）", total)
+		return sum
+	}
+	var parts []string
+	if len(sum.Installed) > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个节点在这次运行中安装并通过健康检查：%s", len(sum.Installed), strings.Join(sum.Installed, "、")))
+	} else {
+		parts = append(parts, "没有节点在这次运行中安装")
+	}
+	if len(sum.Adopted) > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个节点依据服务器上的安装记录采纳，没有重新执行、没有重新检查健康：%s", len(sum.Adopted), strings.Join(sum.Adopted, "、")))
+	}
+	if len(sum.InSync) > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个节点在引导之外已装好、读回记录一致，这次没有执行、没有重新检查健康：%s", len(sum.InSync), strings.Join(sum.InSync, "、")))
+	}
+	sum.Text = strings.Join(parts, "；") + "。没有重新检查的节点，服务现在是否在运行没有核实（端到端验证另做）"
+	return sum
+}
+
+// completeRun ends a run whose steps are all done, with its summary.
+func completeRun(r *deployRun, now time.Time) {
+	r.State = runDone
+	r.Summary = summarize(r)
+	r.event(now, "", "全部步骤完成："+r.Summary.Text)
 }
 
 func (r *deployRun) open() bool { return r != nil && (r.State == runActive || r.State == runStopped) }
@@ -1085,8 +1183,7 @@ func (s *Server) finishStep(runID, node string, f func(run *deployRun, st *deplo
 		}
 	}
 	if run.State == runActive && run.current() < 0 {
-		run.State = runDone
-		run.event(now, "", "全部节点已装好（安装和健康检查通过；端到端验证另做）")
+		completeRun(run, now)
 	}
 	run.UpdatedAt = now
 	s.saveRunLocked(run)
@@ -1174,7 +1271,7 @@ func (s *Server) postDeployPreflight(w http.ResponseWriter, r *http.Request) {
 		if ns, ok := l.states[st.NodeID]; ok && verifiedInSync(n, ns) {
 			run = s.finishStep(runID, st.NodeID, func(run *deployRun, st *deployStep, now time.Time) {
 				clearAttempt(st)
-				st.Phase, st.Outcome, st.Evidence = phaseDone, "adopted", "panel_record"
+				st.Phase, st.Outcome, st.Evidence, st.Completion = phaseDone, "adopted", "panel_record", completionInSync
 				st.Message = "这个节点已经与上一次成功安装的内容一致（在引导之外装好的，读回的服务器记录也一致）：不重做"
 				run.event(now, st.NodeID, "已一致，跳过")
 			})
@@ -1238,7 +1335,7 @@ func (s *Server) deployRemotePreflight(ctx context.Context, runID string, st dep
 			(h.Server == "" || h.Server == rec.Target.ServerID) && h.Bundle == rec.Bundle && (h.JournalState == "" || h.JournalState == "done") {
 			s.adoptRemote(step.NodeID, rec)
 			clearAttempt(step)
-			step.Phase, step.Outcome, step.Evidence = phaseDone, "adopted", "host_record"
+			step.Phase, step.Outcome, step.Evidence, step.Completion = phaseDone, "adopted", "host_record", completionAdopted
 			step.PreflightID, step.ReviewBundle, step.ReviewTarget = rec.ID, rec.Bundle, rec.Target
 			step.Health = &deployHealth{Source: "host_record", Committed: true, Verify: verifyOK,
 				Detail: "服务器上的安装记录（清单）已经是这份内容" + map[bool]string{true: "（运行 " + h.JournalRun + " 的 journal 为 done）", false: ""}[h.JournalRun != ""] + "：没有重新执行，也没有重新做健康检查"}
@@ -1286,7 +1383,7 @@ func (s *Server) deployGatewayPreflight(ctx context.Context, runID string, st de
 			if d, err := ap.InstalledDiff(b); err == nil && d != nil && d.Empty() && !inst.Empty() && !inst.Withdrawn() {
 				s.finishStep(runID, st.NodeID, func(run *deployRun, step *deployStep, now time.Time) {
 					clearAttempt(step)
-					step.Phase, step.Outcome, step.Evidence = phaseDone, "adopted", "installed_manifest"
+					step.Phase, step.Outcome, step.Evidence, step.Completion = phaseDone, "adopted", "installed_manifest", completionAdopted
 					step.Message = "网关上安装的文件已经是这份内容（按安装清单的哈希比较）：不重做"
 					step.Health = &deployHealth{Source: "host_record", Committed: true, Detail: "依据网关的安装清单；没有重新执行，也没有重新做健康检查"}
 					if run.State == runStopped {
@@ -1412,7 +1509,7 @@ func (s *Server) deployRemoteInstall(ctx context.Context, runID string, st deplo
 				stopAt(run, step, phaseUnknown, fmt.Sprintf("%s：脚本报告成功，但没有读回服务器上的安装记录（%s）：不当作完成。不用盲目重装——「重新核对」会再读一次记录，内容已经在就直接采纳", step.NodeName, detail), now)
 				return
 			}
-			step.Phase = phaseDone
+			step.Phase, step.Completion = phaseDone, completionInstalled
 			step.Message = "已下发：脚本完成激活，读回的服务器记录与装上去的内容一致"
 			run.event(now, step.NodeID, "已下发")
 		case outcome == "refused" || outcome == "compensated" || outcome == "left_behind":
@@ -1481,7 +1578,7 @@ func (s *Server) deployGatewayInstall(ctx context.Context, runID string, st depl
 				stopAt(run, step, phaseUnknown, "网关：安装的回答里没有已提交的事务报告：结果不明，不当作完成；「重新核对」会按安装清单比较", now)
 				return
 			}
-			step.Phase = phaseDone
+			step.Phase, step.Completion = phaseDone, completionInstalled
 			step.Message = "已安装到网关：事务已提交，服务已启动，健康检查通过"
 			run.event(now, step.NodeID, "已安装到网关")
 			return
@@ -1666,8 +1763,8 @@ func (s *Server) postDeployReplan(w http.ResponseWriter, r *http.Request) {
 	if !stopped {
 		run.State, run.StopReason = runActive, ""
 	}
-	if run.current() < 0 {
-		run.State = runDone
+	if run.current() < 0 && run.State != runDone {
+		completeRun(run, now)
 	}
 	run.event(now, "", fmt.Sprintf("按当前拓扑重新计划：%d 个步骤，保留预检 %d 个，预检作废 %d 个", len(steps), len(kept), len(reset)))
 	s.saveRunLocked(run)
@@ -1710,6 +1807,11 @@ type deployStatus struct {
 	Current string `json:"current,omitempty"`
 	Done    int    `json:"done"`
 	Total   int    `json:"total"`
+	// Installed: done steps installed and health-checked in this run;
+	// Adopted: done steps adopted from a record (not executed, health
+	// not re-checked), including those already in sync.
+	Installed int `json:"installed"`
+	Adopted   int `json:"adopted"`
 }
 
 func (s *Server) deployStatusOf() *deployStatus {
@@ -1723,6 +1825,11 @@ func (s *Server) deployStatusOf() *deployStatus {
 	for _, st := range r.Steps {
 		if st.Phase == phaseDone {
 			ds.Done++
+			if completionOf(st) == completionInstalled {
+				ds.Installed++
+			} else {
+				ds.Adopted++
+			}
 		}
 	}
 	if i := r.current(); i >= 0 {

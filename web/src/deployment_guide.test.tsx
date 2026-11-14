@@ -185,4 +185,39 @@ describe("deployment guide", () => {
     expect(screen.getByTestId("deploy-preflight")).toBeDisabled();
     expect(api.find("POST /api/deploy/runs/deploy-1/preflight")).toHaveLength(0);
   });
+
+  it("does not claim a health check for adopted nodes when a run finishes", async () => {
+    fakeApi({
+      "GET /api/deploy": () =>
+        view(
+          run(
+            [
+              step("dc1", { phase: "done", outcome: "installed", completion: "installed", health: { source: "remote_script", committed: true, verify: "verified" } }),
+              step("dc2", { phase: "done", outcome: "adopted", evidence: "host_record", completion: "adopted", health: { source: "host_record", committed: true } }),
+              step("gw", { phase: "done", outcome: "installed", completion: "installed", health: { source: "gateway_transaction", committed: true } }),
+            ],
+            { state: "done" },
+          ),
+        ),
+    });
+    show();
+    const done = await screen.findByTestId("deploy-done");
+    expect(done).toHaveTextContent("2 个节点在这次运行中安装并通过健康检查");
+    expect(done).not.toHaveTextContent("全部 3 个节点");
+    expect(screen.getByTestId("deploy-done-adopted")).toHaveTextContent("没有重新检查健康");
+    expect(screen.getByTestId("deploy-done-adopted")).toHaveTextContent("dc2");
+    expect(screen.getByTestId("deploy-phase-dc2")).toHaveTextContent("未重新检查健康");
+    expect(screen.getByTestId("deploy-phase-dc1")).toHaveTextContent("健康检查通过");
+    expect(screen.getByTestId("deploy-health-dc2")).toHaveTextContent("健康未重新检查");
+  });
+
+  it("keeps the full statement when every node was installed and checked", async () => {
+    fakeApi({
+      "GET /api/deploy": () =>
+        view(run([step("dc1", { phase: "done", outcome: "installed", completion: "installed" }), step("gw", { phase: "done", outcome: "installed", completion: "installed" })], { state: "done" })),
+    });
+    show();
+    expect(await screen.findByTestId("deploy-done")).toHaveTextContent("全部 2 个节点都在这次运行中安装：服务已启动、健康检查通过");
+    expect(screen.queryByTestId("deploy-done-adopted")).toBeNull();
+  });
 });

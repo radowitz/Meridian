@@ -718,7 +718,7 @@ export interface PanelStatus {
   nodes?: NodeInstallState[];
   pending_nodes?: number;
   /** The open run of the ordered deployment guide (active or stopped); absent when none. */
-  deploy_run?: { id: string; state: DeployRunState; current?: string; done: number; total: number };
+  deploy_run?: { id: string; state: DeployRunState; current?: string; done: number; total: number; installed?: number; adopted?: number };
 }
 
 /** One node compared with what was last installed on it (never with another node's install). */
@@ -2403,6 +2403,8 @@ export interface DeployHealth {
 
 export interface DeployStep extends DeployPlanStep {
   phase: DeployPhase;
+  /** Done steps: installed (and health-checked) in this run, adopted from the host's record, or already verified in sync. */
+  completion?: "installed" | "adopted" | "in_sync";
   preflight_id?: string;
   review_bundle?: string;
   review_target?: PreflightTarget;
@@ -2454,6 +2456,8 @@ export interface DeployRun {
   in_flight?: string;
   /** The current step's reviewed preflight. */
   preflight?: PreflightRecord;
+  /** A finished run's statement, from the per-step completion. */
+  summary?: { all_checked: boolean; installed: string[]; adopted: string[]; in_sync: string[]; text: string };
   /** Nodes not in sync now that are not steps of this run (a re-plan adds them). */
   pending_outside?: string[];
 }
