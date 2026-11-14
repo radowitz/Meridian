@@ -57,7 +57,7 @@ import {
 } from "react";
 import * as api from "./api";
 import { RouterProvider, StatusProvider, TopologyProvider, href, useRouter, useStatus } from "./state";
-import { ApiErrorAlert, Link, PendingInstallIndicator, StatusTag, errorTitle } from "./ui";
+import { ApiErrorAlert, CommandBlock, Link, PendingInstallIndicator, StatusTag, errorTitle } from "./ui";
 
 // ==================================================================== theme ===
 
@@ -226,9 +226,12 @@ function TokenScreen({ onUnlocked, error }: { onUnlocked: () => void; error: api
           <Form.Item name="token" label="面板口令" rules={[{ required: true, message: "请输入面板口令" }]}>
             <Input.Password autoComplete="off" autoFocus aria-label="面板口令" />
           </Form.Item>
-          <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            口令在网关的数据目录里：<code>docker compose exec meridian cat /var/lib/meridian/panel.token</code>
-          </Typography.Paragraph>
+          <div className="token-hint">
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              口令在网关的数据目录里：
+            </Typography.Text>
+            <CommandBlock label="读取面板口令的命令，可左右滚动">docker compose exec meridian cat /var/lib/meridian/panel.token</CommandBlock>
+          </div>
           <Button type="primary" htmlType="submit" loading={busy} block>
             进入
           </Button>

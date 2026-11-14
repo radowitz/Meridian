@@ -23,15 +23,19 @@ import {
   Empty,
   Input,
   Modal,
+  Popover,
   Skeleton,
   Space,
+  Table,
   Tag,
   Tooltip,
   Typography,
   type FormInstance,
   type InputRef,
+  type TableColumnType,
+  type TableProps,
 } from "antd";
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ApiError, isApiError } from "./api";
 import { href, useOptionalRouter, useRouter, useStatus, useTopologyDoc, useUnsavedGuard } from "./state";
 import type { Issue, Ref } from "./types";
@@ -77,8 +81,24 @@ export function StatusTag({ kind, children, title }: { kind: StatusKind; childre
 
 // ============================================================== page layout ===
 
-/** Header of every page: title, one sentence of purpose, primary action on the right. */
-export function PageHeader({ title, description, extra }: { title: ReactNode; description?: ReactNode; extra?: ReactNode }) {
+/**
+ * Header of every page: title, one sentence of purpose, actions on the right.
+ * The action area wraps (and may itself fill the row on narrow screens), so
+ * it can never widen the page. `menu` puts the secondary actions behind a
+ * "更多操作" dropdown at every width; keep the one primary action in `extra`.
+ */
+export function PageHeader({
+  title,
+  description,
+  extra,
+  menu,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  extra?: ReactNode;
+  menu?: MoreAction[];
+}) {
+  const items = (menu ?? []).filter(Boolean);
   return (
     <div className="page-header">
       <div className="page-header-text">
@@ -87,15 +107,44 @@ export function PageHeader({ title, description, extra }: { title: ReactNode; de
         </Typography.Title>
         {description ? <Typography.Text type="secondary">{description}</Typography.Text> : null}
       </div>
-      {extra ? <div className="page-header-extra">{extra}</div> : null}
+      {extra || items.length > 0 ? (
+        <div className="page-header-extra" data-testid="page-header-actions">
+          {extra}
+          {items.length > 0 ? (
+            <Dropdown
+              trigger={["click"]}
+              menu={{
+                items: items.map((m) => ({ key: m.key, label: m.label, icon: m.icon, danger: m.danger, disabled: m.disabled })),
+                onClick: ({ key }) => items.find((m) => m.key === key)?.onClick(),
+              }}
+            >
+              <Button icon={<EllipsisOutlined />} aria-label="更多操作">
+                更多
+              </Button>
+            </Dropdown>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-export function Page({ title, description, extra, children }: { title: ReactNode; description?: ReactNode; extra?: ReactNode; children: ReactNode }) {
+export function Page({
+  title,
+  description,
+  extra,
+  menu,
+  children,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  extra?: ReactNode;
+  menu?: MoreAction[];
+  children: ReactNode;
+}) {
   return (
     <div className="page">
-      <PageHeader title={title} description={description} extra={extra} />
+      <PageHeader title={title} description={description} extra={extra} menu={menu} />
       {children}
     </div>
   );
@@ -671,25 +720,86 @@ export function RefList({ refs, empty = "无", onNavigate }: { refs: Ref[] | nul
 
 // ============================================================ text helpers ===
 
-/** Identifiers, addresses, fingerprints, keys: monospace, optional copy button. */
-export function Mono({ children, copy, block, ellipsis }: { children: string | null | undefined; copy?: boolean; block?: boolean; ellipsis?: boolean }) {
+/**
+ * The one way to show identifiers, paths, addresses, fingerprints, keys and
+ * commands: monospace, and never wider than its container.
+ *
+ * - default: inline, may break anywhere (`overflow-wrap: anywhere`)
+ * - `ellipsis`: one line, cut with "…"; the full text is a tooltip that also
+ *   opens on keyboard focus
+ * - `block`: its own box, wraps (configuration text, public keys)
+ * - `block` + `scroll`: its own box that scrolls sideways inside itself and
+ *   never splits across lines (commands). The box is keyboard focusable.
+ *   `label` names it for screen readers.
+ */
+export function Mono({
+  children,
+  copy,
+  block,
+  ellipsis,
+  scroll,
+  label,
+}: {
+  children: string | null | undefined;
+  copy?: boolean;
+  block?: boolean;
+  ellipsis?: boolean;
+  scroll?: boolean;
+  label?: string;
+}) {
   if (!children) return <Typography.Text type="secondary">—</Typography.Text>;
-  if (block) {
+  if (block || scroll) {
     return (
-      <div className="mono-block">
-        <code>{children}</code>
+      <div className={scroll ? "mono-block mono-block-scroll" : "mono-block"}>
+        <code
+          className={scroll ? "mono-scroll" : undefined}
+          {...(scroll ? { tabIndex: 0, role: "group", "aria-label": label ?? "命令，可左右滚动" } : {})}
+        >
+          {children}
+        </code>
         {copy ? <CopyButton text={children} /> : null}
       </div>
     );
   }
+  if (ellipsis) {
+    return (
+      <span className="mono-ellipsis-wrap">
+        <EllipsisText text={children} mono />
+        {copy ? <CopyButton text={children} /> : null}
+      </span>
+    );
+  }
   return (
-    <Typography.Text
-      className="mono"
-      copyable={copy ? { text: children, tooltips: ["复制", "已复制"] } : false}
-      ellipsis={ellipsis ? { tooltip: children } : false}
-    >
+    <Typography.Text className="mono" copyable={copy ? { text: children, tooltips: ["复制", "已复制"] } : false}>
       {children}
     </Typography.Text>
+  );
+}
+
+/** A command the user copies: `<Mono block scroll copy>` with a fixed name. */
+export function CommandBlock({ children, label }: { children: string; label?: string }) {
+  return (
+    <Mono block scroll copy label={label}>
+      {children}
+    </Mono>
+  );
+}
+
+/**
+ * One line of text cut with "…" when it does not fit. The full text is a
+ * tooltip that opens on hover and on keyboard focus (the span is focusable).
+ * Use it in `ellipsis` table columns and anywhere text must stay one line.
+ */
+export function EllipsisText({ text, mono, className }: { text: ReactNode; mono?: boolean; className?: string }) {
+  const plain = typeof text === "string" || typeof text === "number" ? String(text) : null;
+  const cls = ["ellipsis-text", mono ? "mono" : "", className ?? ""].filter(Boolean).join(" ");
+  if (plain === null || plain === "") return <span className={cls}>{text}</span>;
+  return (
+    <Tooltip title={plain} trigger={["hover", "focus"]} mouseEnterDelay={0.2}>
+      <span className={cls} tabIndex={0}>
+        {plain}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -889,7 +999,8 @@ export function useConfirmDanger() {
 // =================================================================== tables ===
 
 /**
- * Table props every list in the panel uses: the table is as wide as its
+ * LEGACY (kept so pages not yet migrated behave as before; new work uses
+ * <DataTable>, see docs/ui-layout.md). Table props: the table is as wide as its
  * content and scrolls sideways inside its own box when the page is narrower
  * (never clipping columns). Give the name column `className: "cell-name"`
  * (no wrapping), long free text `className: "cell-text"` with a width, and
@@ -933,17 +1044,40 @@ export function RowActions({ children, more, label }: { children?: ReactNode; mo
 
 // ================================================================ misc bits ===
 
-/** Key/value rows for detail drawers. */
-export function Facts({ items }: { items: [ReactNode, ReactNode][] }) {
+/** One Facts row: [label, value] or [label, value, "stacked"] to put a long value on its own line. */
+export type FactItem = [ReactNode, ReactNode] | [ReactNode, ReactNode, "stacked"];
+
+/**
+ * Key/value rows. The label column is at least `labelMin` px wide and never
+ * wraps; the value cell may shrink to nothing and breaks long text inside
+ * itself, so a long value can no longer squeeze the label. A row marked
+ * "stacked" (or all rows with `stacked`) puts the value on its own line
+ * under the label.
+ */
+export function Facts({ items, stacked, labelMin }: { items: FactItem[]; stacked?: boolean; labelMin?: number }) {
   return (
-    <dl className="facts">
-      {items.map(([k, v], i) => (
-        <div key={i} className="fact">
+    <dl className={stacked ? "facts facts-stacked" : "facts"} style={labelMin ? ({ "--m-fact-label": `${labelMin}px` } as CSSProperties) : undefined}>
+      {items.map(([k, v, mode], i) => (
+        <div key={i} className={mode === "stacked" ? "fact fact-stacked" : "fact"}>
           <dt>{k}</dt>
           <dd>{v}</dd>
         </div>
       ))}
     </dl>
+  );
+}
+
+/**
+ * One "label: value" row for tiles and cards (what the overview's local Row
+ * was). Same rules as Facts: the label never wraps and keeps its width, the
+ * value wraps inside its own cell. `stacked` puts the value under the label.
+ */
+export function KV({ label, children, stacked }: { label: ReactNode; children: ReactNode; stacked?: boolean }) {
+  return (
+    <div className={stacked ? "kv kv-stacked" : "kv"}>
+      <span className="kv-label">{label}</span>
+      <span className="kv-value">{children}</span>
+    </div>
   );
 }
 
@@ -1087,7 +1221,7 @@ export function TopologyDocBar() {
   useUnsavedGuard(doc.dirty, "拓扑有未保存的修改，离开后会丢失。");
   const errors = doc.issues.filter((i) => i.severity === "error");
   return (
-    <div className="doc-bar">
+    <div className="doc-bar sticky-bar">
       <Space wrap>
         {doc.dirty ? <StatusTag kind="attention">有未保存的修改</StatusTag> : <Typography.Text type="secondary">拓扑已保存</Typography.Text>}
       </Space>
@@ -1115,6 +1249,304 @@ export function TopologyDocBar() {
         </Button>
       </Space>
       {act.error ? <ApiErrorAlert error={act.error} onClose={act.clear} style={{ width: "100%", marginTop: 12, marginBottom: 0 }} /> : null}
+    </div>
+  );
+}
+
+// ===================================================== layout primitives ===
+// The global layout rules live in styles.css and here; docs/ui-layout.md is
+// the reference (rules, recipes, migration notes, browser-only checks).
+
+/**
+ * The breakpoints of the panel, stated once. CSS cannot read these, so the
+ * media queries in styles.css repeat them as max-width values (marked
+ * "BREAKPOINT" there): desktop-xl >= 1440, desktop >= 1280 (every table shows
+ * its key columns without sideways scrolling from here up), laptop 1024
+ * (max-width 1279 and down: secondary columns move into the expandable row),
+ * tablet 768 (max-width 1023 / 767: one-column grids, header actions fill
+ * the row), phone 390 (max-width 479: tables scroll in their box or become
+ * cards, buttons keep a 32 px touch height).
+ */
+export const BREAKPOINTS = { desktopXL: 1440, desktop: 1280, laptop: 1024, tablet: 768, phone: 390 } as const;
+
+/**
+ * A toolbar that sticks under the top bar as ONE continuous opaque area: its
+ * top is the top bar's height (--m-topbar-h) minus the border pixel, and its
+ * background is opaque, so no table row shows through between the two.
+ */
+export function StickyBar({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={["sticky-bar", className ?? ""].filter(Boolean).join(" ")}>{children}</div>;
+}
+
+/**
+ * Explanatory prose. A short summary is always visible; the rest is behind a
+ * "了解更多" toggle (`mode="inline"`, default) or a click popover
+ * (`mode="popover"`). Collapsing is what this component is FOR, so never put
+ * a safety statement (未验证, 失败关闭, 需要人工签收) in `children`: use
+ * <SafetyNotice>, which has no collapsed state at all.
+ */
+export function Explain({
+  summary,
+  children,
+  mode = "inline",
+  defaultOpen = false,
+  label = "了解更多",
+}: {
+  summary: ReactNode;
+  children?: ReactNode;
+  mode?: "inline" | "popover";
+  defaultOpen?: boolean;
+  label?: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const id = useId();
+  if (!children) {
+    return (
+      <div className="explain">
+        <span className="explain-summary">{summary}</span>
+      </div>
+    );
+  }
+  if (mode === "popover") {
+    return (
+      <div className="explain explain-popover">
+        <span className="explain-summary">{summary}</span>{" "}
+        <Popover trigger="click" content={<div className="explain-pop">{children}</div>}>
+          <button type="button" className="explain-toggle">
+            {label}
+          </button>
+        </Popover>
+      </div>
+    );
+  }
+  return (
+    <div className="explain">
+      <span className="explain-summary">{summary}</span>{" "}
+      <button type="button" className="explain-toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen((o) => !o)}>
+        {open ? "收起" : label}
+      </button>
+      <div id={id} className="explain-more" hidden={!open}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+export type SafetyKind = "unverified" | "failclosed" | "signoff";
+
+const SAFETY: Record<SafetyKind, { status: StatusKind; label: string }> = {
+  unverified: { status: "unverified", label: "未验证" },
+  failclosed: { status: "attention", label: "失败关闭" },
+  signoff: { status: "signoff", label: "待人工签收" },
+};
+
+/**
+ * A safety-relevant notice: not verified, fail-closed, needs a human
+ * sign-off. Always fully visible; there is deliberately no collapse, summary
+ * or popover prop. Keep the wording short, but do not drop it.
+ */
+export function SafetyNotice({ kind, title, children }: { kind: SafetyKind; title?: ReactNode; children?: ReactNode }) {
+  const k = SAFETY[kind];
+  return (
+    <div className={`safety-notice safety-${kind}`} role="note" data-safety={kind}>
+      <StatusTag kind={k.status}>{k.label}</StatusTag>
+      <div className="safety-text">
+        {title ? <div className="safety-title">{title}</div> : null}
+        {children ? <div>{children}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A short status tag plus ONE line of reason. The reason is not part of the
+ * tag and repeats nothing: empty, duplicate and already-contained reasons
+ * (also when equal to the label) are dropped, the rest joined with "；".
+ * One line, cut with "…" with the full text on hover/focus; `wrap` lets it
+ * wrap (use it where the reason is itself safety-relevant).
+ */
+export function StatusReason({
+  kind,
+  label,
+  reason,
+  wrap,
+}: {
+  kind: StatusKind;
+  label?: ReactNode;
+  reason?: string | (string | null | undefined)[] | null;
+  wrap?: boolean;
+}) {
+  const text = joinReasons(reason, typeof label === "string" ? label : STATUS[kind].label);
+  return (
+    <div className="status-reason" data-status={kind}>
+      <StatusTag kind={kind}>{label}</StatusTag>
+      {text ? wrap ? <span className="status-reason-text wrap">{text}</span> : <EllipsisText className="status-reason-text" text={text} /> : null}
+    </div>
+  );
+}
+
+/** Reasons without blanks, duplicates, parts of a longer reason, or the label itself; joined with "；". */
+export function joinReasons(reason: string | (string | null | undefined)[] | null | undefined, label?: string): string {
+  const list = (Array.isArray(reason) ? reason : [reason]).map((r) => (r ?? "").trim()).filter((r) => r !== "" && r !== label);
+  const uniq = list.filter((r, i) => list.indexOf(r) === i);
+  return uniq.filter((r) => !uniq.some((o) => o !== r && o.includes(r))).join("；");
+}
+
+// -------------------------------------------------------------------- tables
+
+/**
+ * How a column takes width (docs/ui-layout.md):
+ * - fixed: exactly `width` px, never wraps (ids, counts, times, tags)
+ * - flex: takes the remaining width, at least `width` px (default 160), wraps normally
+ * - ellipsis: `width` px, one line cut with "…"; the full text is a
+ *   keyboard-reachable tooltip
+ * - actions: `width` px, pinned right with an opaque background
+ */
+export type ColKind = "fixed" | "flex" | "ellipsis" | "actions";
+
+export interface DataColumn<T> extends Omit<TableColumnType<T>, "width" | "fixed" | "ellipsis"> {
+  kind?: ColKind;
+  width?: number;
+  /** Render the value in monospace (ellipsis columns). */
+  mono?: boolean;
+}
+
+const FLEX_MIN = 160;
+
+function prepareColumns<T extends object>(columns: DataColumn<T>[]): { cols: TableColumnType<T>[]; minWidth: number } {
+  let minWidth = 0;
+  const cols = columns.map((c): TableColumnType<T> => {
+    const { kind = "flex", width, mono, render, className, ...rest } = c;
+    const cls = (extra: string) => [className, extra].filter(Boolean).join(" ");
+    if (kind === "flex") {
+      const min = width ?? FLEX_MIN;
+      minWidth += min;
+      return { ...rest, render, className: cls("col-flex"), onCell: (r, i) => ({ ...(rest.onCell?.(r, i) ?? {}), style: { minWidth: min } }) };
+    }
+    const w = width ?? 120;
+    minWidth += w;
+    if (kind === "fixed") return { ...rest, render, width: w, className: cls("col-fixed") };
+    if (kind === "actions") return { ...rest, render, width: w, fixed: "right", className: cls("col-actions") };
+    return {
+      ...rest,
+      width: w,
+      ellipsis: { showTitle: false },
+      className: cls("col-ellipsis"),
+      render: (value, record, index) => {
+        const node = render ? render(value, record, index) : value;
+        return typeof node === "string" || typeof node === "number" ? <EllipsisText text={node} mono={mono} /> : (node as ReactNode);
+      },
+    };
+  });
+  return { cols, minWidth };
+}
+
+/**
+ * Whether the scroll container `selector` (inside `ref`; omit it to measure the
+ * ref itself) scrolls sideways and whether it is at its end, for the hint.
+ */
+export function useScrollHint(ref: { current: HTMLElement | null }, selector?: string) {
+  const [state, setState] = useState({ overflow: false, atEnd: false });
+  useEffect(() => {
+    const root = ref.current;
+    const el = selector ? root?.querySelector<HTMLElement>(selector) : root;
+    if (!el) return;
+    const measure = () => {
+      const overflow = el.scrollWidth > el.clientWidth + 2;
+      const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 2;
+      setState((o) => (o.overflow === overflow && o.atEnd === atEnd ? o : { overflow, atEnd }));
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+      ro?.disconnect();
+    };
+  });
+  return state;
+}
+
+function ScrollHint({ overflow, atEnd }: { overflow: boolean; atEnd: boolean }) {
+  if (!overflow) return null;
+  return (
+    <div className={atEnd ? "scroll-hint at-end" : "scroll-hint"} role="note">
+      {atEnd ? "已到最右" : "还有更多列，可左右滚动 →"}
+    </div>
+  );
+}
+
+/**
+ * The panel's table: antd Table with explicit column width classes (see
+ * ColKind), an expandable row for secondary fields, pagination past
+ * `pageSize` rows, and a visible hint when it scrolls inside its box.
+ * Replaces `scroll={TABLE_SCROLL}`: the table is as wide as the sum of its
+ * column widths (at least its container) instead of "max-content".
+ */
+export function DataTable<T extends object>({
+  columns,
+  secondary,
+  pageSize = 20,
+  pagination,
+  expandable,
+  ...rest
+}: Omit<TableProps<T>, "columns" | "scroll"> & {
+  columns: DataColumn<T>[];
+  /** Secondary fields, shown in an expandable row. */
+  secondary?: (record: T) => ReactNode;
+  pageSize?: number;
+}) {
+  const wrap = useRef<HTMLDivElement>(null);
+  const { cols, minWidth } = useMemo(() => prepareColumns(columns), [columns]);
+  const hint = useScrollHint(wrap, ".ant-table-content");
+  const rows = (rest.dataSource ?? []).length;
+  return (
+    <div className="data-table-wrap" ref={wrap} data-overflow={hint.overflow ? "true" : "false"}>
+      <Table<T>
+        size="middle"
+        {...rest}
+        className={["data-table", rest.className ?? ""].filter(Boolean).join(" ")}
+        columns={cols}
+        scroll={{ x: minWidth + (secondary ? 48 : 0) }}
+        pagination={pagination ?? (rows > pageSize ? { pageSize, showSizeChanger: true, hideOnSinglePage: true } : false)}
+        expandable={secondary ? { expandedRowRender: (r) => <div className="row-secondary">{secondary(r)}</div>, ...expandable } : expandable}
+      />
+      <ScrollHint {...hint} />
+    </div>
+  );
+}
+
+/**
+ * Wrapper for wide grids (unlock matrix, coverage table): the grid scrolls
+ * inside this box, its first column stays frozen (opaque), and a hint says
+ * there is more to the right. Put a `<table>` inside; cells hold <GridCell>.
+ * The box is focusable so the keyboard can scroll it.
+ */
+export function WideGrid({ children, label }: { children: ReactNode; label: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const hint = useScrollHint(box);
+  return (
+    <div className="wide-grid" data-overflow={hint.overflow ? "true" : "false"}>
+      <div className="wide-grid-scroll" ref={box} tabIndex={0} role="region" aria-label={label}>
+        {children}
+      </div>
+      <ScrollHint {...hint} />
+    </div>
+  );
+}
+
+/**
+ * A compact grid cell: the result on one line (chips never wrap), an optional
+ * one-line note under it, cut with "…" and readable on hover/focus.
+ */
+export function GridCell({ children, note }: { children: ReactNode; note?: string | null }) {
+  return (
+    <div className="grid-cell">
+      <div className="grid-cell-main">{children}</div>
+      {note ? <EllipsisText className="grid-cell-note" text={note} /> : null}
     </div>
   );
 }

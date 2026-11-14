@@ -4,6 +4,8 @@
 
 :root,
 [data-theme="light"] {
+  /* Height of the sticky top bar; sticky toolbars stick at exactly this offset. */
+  --m-topbar-h: 56px;
   --m-bg: #f4f6f9;
   --m-surface: #ffffff;
   --m-surface-2: #f7f8fa;
@@ -60,7 +62,7 @@ body { min-height: 100vh; }
 code, .mono, .mono-small {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
-.mono { font-size: 12.5px; word-break: break-all; }
+.mono { font-size: 12.5px; overflow-wrap: anywhere; word-break: break-all; }
 .mono-small { font-size: 11.5px; }
 code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-radius: 4px; }
 
@@ -89,6 +91,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 
 .topbar {
   display: flex; align-items: center; gap: 12px;
+  height: var(--m-topbar-h) !important; background: var(--m-surface);
   border-bottom: 1px solid var(--m-border);
   position: sticky; top: 0; z-index: 20;
   line-height: normal;
@@ -101,7 +104,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .pending-install { margin-right: 8px; }
 
 .content { padding: 24px; min-width: 0; }
-.page { max-width: 1320px; margin: 0 auto; }
+.page { max-width: 1320px; margin: 0 auto; min-width: 0; }
 
 @media (max-width: 991px) {
   .content { padding: 16px; }
@@ -117,8 +120,11 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
   display: flex; justify-content: space-between; align-items: flex-start;
   gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
 }
-.page-header-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 760px; }
-.page-header-extra { display: flex; gap: 8px; flex-wrap: wrap; }
+.page-header-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 760px; overflow-wrap: anywhere; }
+/* The action area wraps inside the header and is never wider than it, so it cannot widen the page. */
+.page-header-extra { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.page-header > .page-header-text { flex: 1 1 320px; }
+.page-header > .page-header-extra { flex: 0 1 auto; }
 
 .section {
   background: var(--m-surface);
@@ -144,12 +150,31 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
   flex: 1; background: none; padding: 0; white-space: pre-wrap; word-break: break-all; font-size: 12px; line-height: 1.6;
 }
 
+/* Commands: the box scrolls sideways inside itself, never splits and never widens its card. */
+.mono-block { min-width: 0; max-width: 100%; }
+.mono-block-scroll code.mono-scroll { white-space: pre; word-break: normal; overflow-wrap: normal; overflow-x: auto; min-width: 0; padding-bottom: 2px; }
+.mono-block-scroll code.mono-scroll:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px; }
+.mono-ellipsis-wrap { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; vertical-align: bottom; }
+.ellipsis-text { display: inline-block; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.ellipsis-text:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 1px; border-radius: 2px; }
+
 .time-text { white-space: nowrap; }
 
-.facts { margin: 0; display: grid; grid-template-columns: minmax(96px, max-content) 1fr; gap: 8px 16px; }
+/* Key/value rows: the label column never wraps and never shrinks below its
+   minimum; the value cell has min-width 0 and breaks long text inside itself. */
+.facts { --m-fact-label: 96px; margin: 0; display: grid; grid-template-columns: minmax(var(--m-fact-label), max-content) minmax(0, 1fr); gap: 8px 16px; }
 .fact { display: contents; }
-.fact dt { color: var(--m-text-2); }
-.fact dd { margin: 0; min-width: 0; word-break: break-word; }
+.fact dt { color: var(--m-text-2); white-space: nowrap; word-break: keep-all; min-width: var(--m-fact-label); }
+.fact dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.fact-stacked, .facts-stacked .fact { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.facts-stacked { display: flex; flex-direction: column; gap: 8px; }
+.fact-stacked dt, .facts-stacked .fact dt { min-width: 0; }
+
+.kv { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 12px; min-width: 0; }
+.kv-label { flex: none; white-space: nowrap; word-break: keep-all; color: var(--m-text-2); }
+.kv-value { flex: 0 1 auto; min-width: 0; text-align: right; overflow-wrap: anywhere; }
+.kv-stacked { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 2px; }
+.kv-stacked .kv-value { text-align: left; }
 
 .tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-bottom: 16px; }
 .tile {
@@ -162,16 +187,45 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .tile-title a:hover { color: var(--m-accent); }
 .tile-body { font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
 .tile-metric { font-size: 22px; font-weight: 650; line-height: 1.2; }
-.tile-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.tile-row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; min-width: 0; }
 .tile-more { margin-top: 4px; font-size: 13px; }
 
 .status-tag { margin-inline-end: 4px; }
 
 .doc-bar {
   display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
-  background: var(--m-surface); border: 1px solid var(--m-border); border-radius: 8px;
-  padding: 10px 14px; margin-bottom: 16px; position: sticky; top: 64px; z-index: 10;
+  padding: 10px 14px; margin-bottom: 16px;
 }
+
+/* One continuous opaque sticky area with the top bar: the bar sticks at the
+   top bar's exact height (minus its border pixel) and is fully opaque, so
+   there is no gap between the two for a row to show through. */
+.sticky-bar {
+  position: sticky; top: calc(var(--m-topbar-h) - 1px); z-index: 10;
+  background: var(--m-surface); border: 1px solid var(--m-border); border-radius: 8px;
+  box-shadow: 0 6px 8px -6px rgba(0, 0, 0, 0.18);
+}
+[data-theme="dark"] .sticky-bar { box-shadow: 0 6px 8px -6px rgba(0, 0, 0, 0.6); }
+
+/* Explanations and safety notices. */
+.explain { font-size: 13px; color: var(--m-text-2); line-height: 1.6; min-width: 0; overflow-wrap: anywhere; }
+.explain-toggle { border: 0; background: none; padding: 0; color: var(--m-accent); cursor: pointer; font: inherit; white-space: nowrap; }
+.explain-toggle:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px; border-radius: 2px; }
+.explain-more { margin-top: 6px; }
+.explain-more[hidden] { display: none; }
+.explain-pop { max-width: min(360px, 80vw); overflow-wrap: anywhere; }
+.safety-notice {
+  display: flex; gap: 10px; align-items: flex-start; border-radius: 8px; padding: 8px 12px; margin: 8px 0;
+  border: 1px solid var(--m-warn-border); background: var(--m-warn-bg); font-size: 13px; line-height: 1.5; min-width: 0;
+}
+.safety-notice .ant-tag { flex: none; margin-inline-end: 0; }
+.safety-text { min-width: 0; overflow-wrap: anywhere; }
+.safety-title { font-weight: 600; }
+.safety-unverified { border-color: var(--m-info-border); background: var(--m-info-bg); }
+.status-reason { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.status-reason .ant-tag { flex: none; margin-inline-end: 0; }
+.status-reason-text { flex: 1 1 auto; min-width: 0; color: var(--m-text-2); font-size: 13px; }
+.status-reason-text.wrap { overflow-wrap: anywhere; }
 
 .step-body { margin: 4px 0 16px; }
 .option-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
@@ -423,3 +477,87 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .installed-files { list-style: none; padding: 0; margin: 0 0 8px; }
 .installed-files li { display: flex; gap: 6px; align-items: center; padding: 2px 0; overflow-wrap: anywhere; }
 .cell-note { font-size: 12px; white-space: normal; max-width: 260px; overflow-wrap: anywhere; }
+
+
+/* ============================================================ global rules
+   Text inside tags, badges, buttons, table headers, tabs and segmented
+   controls stays on one line everywhere (CJK would otherwise break between
+   any two characters). Long running text belongs in a value cell, not in
+   one of these. */
+.ant-tag, .ant-badge-status-text, .ant-btn, .ant-tabs-tab, .ant-segmented-item-label,
+.ant-table-wrapper .ant-table-thead > tr > th, .cat-chip, .explain-toggle {
+  white-space: nowrap; word-break: keep-all;
+}
+.ant-tag { max-width: 100%; }
+.ant-segmented { max-width: 100%; overflow-x: auto; }
+
+/* ============================================================ shared tables
+   DataTable (ui.tsx): column width classes. Widths come from the column
+   definitions (fixed / flex / ellipsis / actions), the table is at least as
+   wide as their sum and scrolls inside .data-table-wrap otherwise. */
+.data-table-wrap { position: relative; min-width: 0; max-width: 100%; }
+.data-table .col-fixed { white-space: nowrap; word-break: keep-all; }
+.data-table .col-flex { white-space: normal; overflow-wrap: anywhere; word-break: normal; }
+.data-table .col-ellipsis { max-width: 0; }
+.data-table td.col-actions, .data-table th.col-actions { white-space: nowrap; text-align: right; background: var(--m-surface) !important; }
+.data-table th.col-actions { background: var(--m-surface-2) !important; }
+.data-table .ant-table-cell-fix-right-first::after, .data-table .ant-table-cell-fix-right-last::after { box-shadow: inset -10px 0 8px -8px rgba(0, 0, 0, 0.18); }
+.data-table .ant-table-expanded-row > td { background: var(--m-surface-2); }
+.row-secondary { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 6px 24px; font-size: 13px; min-width: 0; }
+.scroll-hint {
+  margin-top: 6px; font-size: 12px; color: var(--m-text-2); text-align: right;
+}
+.scroll-hint.at-end { opacity: 0.6; }
+
+/* Wide grids: unlock matrix, coverage table. First column frozen and opaque. */
+.wide-grid { position: relative; min-width: 0; max-width: 100%; }
+.wide-grid-scroll { overflow-x: auto; max-width: 100%; border: 1px solid var(--m-border); border-radius: 8px; background: var(--m-surface); }
+.wide-grid-scroll:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px; }
+.wide-grid-scroll table { border-collapse: separate; border-spacing: 0; min-width: 100%; font-size: 12px; }
+.wide-grid-scroll th, .wide-grid-scroll td { padding: 6px 8px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--m-border); border-right: 1px solid var(--m-border); min-width: 104px; }
+.wide-grid-scroll thead th { background: var(--m-surface-2); font-weight: 600; white-space: nowrap; }
+.wide-grid-scroll th:first-child, .wide-grid-scroll td:first-child {
+  position: sticky; left: 0; z-index: 1; min-width: 132px; background: var(--m-surface); white-space: nowrap;
+  box-shadow: 2px 0 4px -2px rgba(0, 0, 0, 0.15);
+}
+.wide-grid-scroll thead th:first-child { background: var(--m-surface-2); z-index: 2; }
+.grid-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.grid-cell-main { display: flex; flex-wrap: wrap; gap: 4px; white-space: nowrap; }
+.grid-cell-note { color: var(--m-text-2); font-size: 11px; max-width: 160px; }
+
+/* The unlock matrix (not yet on WideGrid): the same cell rules, so a result
+   chip such as 已过期 is never squeezed into a vertical strip. */
+.matrix th, .matrix td { min-width: 104px; }
+.matrix .cat-chip { white-space: nowrap; word-break: keep-all; }
+.matrix-service, .matrix-corner { min-width: 132px !important; }
+.matrix-cell { min-width: 0; }
+
+/* ============================================================ breakpoints
+   BREAKPOINT desktop-xl 1440 / desktop 1280 / laptop 1024 / tablet 768 /
+   phone 390; see BREAKPOINTS in ui.tsx and docs/ui-layout.md. */
+@media (max-width: 1279px) {
+  .tile-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+}
+@media (max-width: 1023px) {
+  .section { padding: 14px 16px; }
+  .group-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767px) {
+  .page-header { flex-direction: column; align-items: stretch; gap: 10px; }
+  .page-header > .page-header-text { flex: 0 1 auto; max-width: none; }
+  .page-header-extra { width: 100%; }
+  .page-header-extra > * { max-width: 100%; }
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+  .facts .fact { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; }
+  .facts .fact dt { min-width: 0; }
+  .sticky-bar { padding: 8px 10px; }
+  .row-secondary { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 479px) {
+  .content { padding: 12px; }
+  .section { padding: 12px; }
+  .tile-grid { grid-template-columns: minmax(0, 1fr); }
+  .ant-btn { min-height: 32px; }
+  .token-card { padding: 20px; }
+}
+.token-hint { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; min-width: 0; }

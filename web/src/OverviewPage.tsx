@@ -24,6 +24,7 @@ import {
   groupLabel,
   useApi,
   type ApiState,
+  KV,
 } from "./ui";
 
 /** Tile body for one API: skeleton text, error or the content. */
@@ -41,12 +42,11 @@ function TileData<T>({ state, children }: { state: ApiState<T>; children: (d: T)
   return <>{children(state.data)}</>;
 }
 
-function Row({ label, children }: { label: ReactNode; children: ReactNode }) {
+function Row({ label, children, stacked }: { label: ReactNode; children: ReactNode; stacked?: boolean }) {
   return (
-    <div className="tile-row">
-      <Typography.Text type="secondary">{label}</Typography.Text>
-      <span>{children}</span>
-    </div>
+    <KV label={label} stacked={stacked}>
+      {children}
+    </KV>
   );
 }
 
@@ -351,7 +351,7 @@ export default function OverviewPage() {
               d.groups.length === 0 ? (
                 <>
                   {d.carrying?.mode === "dual" ? (
-                    <Row label="承载枢纽">
+                    <Row label="承载枢纽" stacked>
                       <CarryingLine c={d.carrying} />
                     </Row>
                   ) : null}
@@ -360,7 +360,7 @@ export default function OverviewPage() {
               ) : (
                 <>
                 {d.carrying?.mode === "dual" ? (
-                  <Row label="承载枢纽">
+                  <Row label="承载枢纽" stacked>
                     <CarryingLine c={d.carrying} />
                   </Row>
                 ) : null}
