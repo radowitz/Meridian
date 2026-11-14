@@ -90,6 +90,7 @@ func (p *prefixIndex) lookup(a netip.Addr) int {
 // Compile indexes rules (in list order) with tail. quicAt is the number of
 // rules above the QUIC switch row (-1: no switch).
 func Compile(rules []Rule, tail Tail, quicAt int) *Compiled {
+	rules = effectiveRules(rules)
 	c := &Compiled{rules: rules, exact: map[string]int{}, suffix: map[string]int{}, sub: map[string]int{}, geoip: -1, dom: map[string]bool{}, tail: tail, quicAt: quicAt}
 	var kws []string
 	var kwIdx []int
@@ -437,9 +438,15 @@ type SnapshotTail struct {
 	DefaultMark     uint32 `json:"default_mark"`
 }
 
-// MarshalJSON of Source keeps the manifest kinds.
+// MarshalJSON of Source keeps the manifest kinds; a rule-set's exclusions
+// are "exclude" in MarshalEntries form (absent without exclusions, so a
+// snapshot without them is the same text as before they existed).
 func (s Source) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]string{"kind": string(s.Kind), "value": s.Value})
+	m := map[string]string{"kind": string(s.Kind), "value": s.Value}
+	if len(s.Exclude) > 0 {
+		m["exclude"] = string(MarshalEntries(s.Exclude))
+	}
+	return json.Marshal(m)
 }
 
 // UnmarshalJSON of Source.
@@ -449,6 +456,19 @@ func (s *Source) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	s.Kind, s.Value = SourceKind(m["kind"]), m["value"]
+	if x, ok := m["exclude"]; ok {
+		if s.Kind != SrcRuleSet {
+			return fmt.Errorf("exclusions on a %s source", s.Kind)
+		}
+		es, err := UnmarshalEntries([]byte(x))
+		if err != nil {
+			return fmt.Errorf("exclusions of %s: %w", s.Value, err)
+		}
+		if len(es) > MaxExclusions {
+			return fmt.Errorf("exclusions of %s: too many", s.Value)
+		}
+		s.Exclude = es
+	}
 	return nil
 }
 
@@ -499,7 +519,8 @@ func LoadSnapshot(b []byte, r Reader, china []netip.Prefix) (*Compiled, error) {
 				if err != nil && !errors.Is(err, fs.ErrNotExist) {
 					return nil, err
 				}
-				more = x
+				// The same derivation as the host's derive step.
+				more = ApplyExclusions(x, src.Exclude).Entries
 			}
 			es = append(es, more...)
 		}

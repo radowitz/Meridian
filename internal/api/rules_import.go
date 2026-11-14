@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/mihomo"
@@ -536,7 +537,8 @@ func (s *Server) refList(t model.Topology) ([]model.Rule, []ordered.Rule, []stri
 		}
 		if r.MatchType == model.MatchRuleSet {
 			if es, ok := s.activeEntries(r.RuleSet); ok {
-				content[r.RuleSet] = es
+				// The effective entries, by the derivation the gateway uses.
+				content[r.RuleSet] = ordered.ApplyExclusions(es, compile.RuleSetExclusions(t, r.RuleSet)).Entries
 			} else {
 				notes = append(notes, "规则「"+r.Name+"」的规则集还没有内容（什么都不匹配）")
 			}

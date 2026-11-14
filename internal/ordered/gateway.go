@@ -106,6 +106,8 @@ type Gateway struct {
 	Chain   []Link
 	Default string
 	China   []netip.Prefix
+	// CIDR are the derived rule-set address sets (Derived.CIDR), by set.
+	CIDR    map[string][]netip.Prefix
 	learned map[string]map[netip.Addr]bool
 }
 
@@ -133,6 +135,11 @@ func (g *Gateway) Classify(addr netip.Addr) Match {
 		for _, s := range l.Sets {
 			if g.learned[s][addr] {
 				hit = true
+			}
+			for _, p := range g.CIDR[s] {
+				if p.Contains(addr) {
+					hit = true
+				}
 			}
 		}
 		for _, p := range l.Static {
@@ -210,6 +217,18 @@ func Plan(rules []Rule, tail Tail) (Manifest, []Link, MemReader) {
 		set := ManifestSet{Name: name}
 		var static []netip.Prefix
 		var dyn []Entry
+		if len(r.Exclude) > 0 {
+			// A rule with exclusions is a rule-set: all its entries are the
+			// set's content, its exclusions travel in the manifest and
+			// Derive applies them (CIDRs into the set's address sets).
+			id := fmt.Sprintf("rs-%d", i)
+			rd.RuleSets[id] = r.Entries
+			set.AddRuleSet(id, r.Exclude)
+			set.CIDR4, set.CIDR6 = name+"c", name+"c6"
+			m.Sets = append(m.Sets, set)
+			chain = append(chain, Link{Sets: []string{name, set.CIDR4, set.CIDR6}, China: r.GeoIPCN, Target: r.Target, Index: i})
+			continue
+		}
 		for _, e := range r.Entries {
 			switch e.Kind {
 			case Exact:
@@ -251,5 +270,5 @@ func NewGateway(d Derived, chain []Link, tail Tail) (*Gateway, error) {
 			}
 		}
 	}
-	return &Gateway{DNS: dm, Chain: chain, Default: tail.Default, China: tail.China}, nil
+	return &Gateway{DNS: dm, Chain: chain, Default: tail.Default, China: tail.China, CIDR: d.CIDR}, nil
 }

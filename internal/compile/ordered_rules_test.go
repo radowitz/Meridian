@@ -1,6 +1,7 @@
 package compile
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/netip"
@@ -12,6 +13,8 @@ import (
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/ordered"
+	"github.com/radowitz/meridian/internal/ruleset"
+	"github.com/radowitz/meridian/internal/sniff"
 )
 
 // The gateway as the rendered text describes it: the manifest derived on
@@ -559,5 +562,328 @@ func TestRuleSetAddressSetsAreDeclared(t *testing.T) {
 		if !strings.Contains(nft, "  set "+name+" {") {
 			t.Errorf("the derive batch fills set %s, which the gateway ruleset does not declare", name)
 		}
+	}
+}
+
+// exclusionLines is the stored form of exclusions (model.RuleSet.Exclude).
+func exclusionLines(es []ordered.Entry) []string {
+	var out []string
+	for _, e := range es {
+		out = append(out, ruleset.ExclusionLine(e))
+	}
+	return out
+}
+
+// TestRuleSetExclusionsRenderedMatchReference: generated rule lists made
+// mostly of rule-sets with exclusions (equal to an entry, broader, narrower,
+// keyword, covering/equal/narrower CIDRs, stale), shadowing between the
+// sets and later sets that list excluded names exactly, compiled for the
+// example gateway. For every probe — names that hit an excluded entry, sit
+// beside one, sit under a narrower exclusion or fall to a later set — the
+// mark from the rendered artefacts (manifest derived on the "host" with its
+// exclusion lines, SmartDNS longest-key model, nft classify chain with the
+// derived address sets) and the decision from decide.json equal the strict
+// first-match reference with the exclusions applied by definition
+// (ordered.Reference, Rule.Exclude).
+func TestRuleSetExclusionsRenderedMatchReference(t *testing.T) {
+	rng := rand.New(rand.NewSource(1114))
+	names := []string{"example.net", "a.example.net", "b.a.example.net", "c.example.net", "d.c.example.net", "example.org", "x.example.org", "y.x.example.org", "cn.example.org"}
+	cidrs := []string{"198.51.100.0/24", "198.51.100.0/25", "198.51.100.64/26", "198.51.100.96/27", "203.0.113.0/24", "203.0.113.64/26"}
+	groups := []string{"us", "hk", "jp", "tw"}
+	china := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
+	entry := func() ordered.Entry {
+		switch rng.Intn(7) {
+		case 0, 1:
+			return ordered.Entry{Kind: ordered.Suffix, Value: names[rng.Intn(len(names))]}
+		case 2, 3:
+			return ordered.Entry{Kind: ordered.Exact, Value: names[rng.Intn(len(names))]}
+		case 4:
+			return ordered.Entry{Kind: ordered.Sub, Value: names[rng.Intn(len(names))]}
+		}
+		return ordered.Entry{Kind: ordered.CIDR, Prefix: netip.MustParsePrefix(cidrs[rng.Intn(len(cidrs))])}
+	}
+	cases, probes, changed := 0, 0, 0
+	for iter := 0; iter < 300; iter++ {
+		var rules []model.Rule
+		var ref, raw []ordered.Rule
+		rd := ordered.MemReader{RuleSets: map[string][]ordered.Entry{}, Geo: map[string][]string{"cn": {"cn.example.org"}}}
+		var rsets []model.RuleSet
+		for i, n := 0, 2+rng.Intn(5); i < n; i++ {
+			id := fmt.Sprintf("r-%d", i)
+			var r model.Rule
+			var es, excl []ordered.Entry
+			if rng.Intn(4) == 0 {
+				v := names[rng.Intn(len(names))]
+				r = rr(id, model.MatchDomain, v, "")
+				es = []ordered.Entry{{Kind: ordered.Exact, Value: v}}
+			} else {
+				rsID := fmt.Sprintf("rs-%d", i)
+				r = rr(id, model.MatchRuleSet, "", "")
+				r.RuleSet = rsID
+				for k := 1 + rng.Intn(5); k > 0; k-- {
+					es = append(es, entry())
+				}
+				for k := rng.Intn(4); k > 0; k-- {
+					switch rng.Intn(4) {
+					case 0:
+						excl = append(excl, es[rng.Intn(len(es))])
+					case 1:
+						excl = append(excl, ordered.Entry{Kind: ordered.Keyword, Value: []string{"a.ex", "x.ex", "org"}[rng.Intn(3)]})
+					default:
+						excl = append(excl, entry())
+					}
+				}
+				// The panel stores (and compile reads) the classical form.
+				stored := exclusionLines(excl)
+				excl = ruleset.ExclusionEntries(stored)
+				rsets = append(rsets, model.RuleSet{ID: rsID, Name: rsID, URL: "https://example.org/" + rsID + ".list", Exclude: stored})
+				rd.RuleSets[rsID] = es
+			}
+			switch rng.Intn(5) {
+			case 0:
+				r.TargetAction = model.ActionDirect
+			case 1:
+				r.TargetAction = model.ActionReject
+			default:
+				r.TargetGroup = groups[rng.Intn(len(groups))]
+			}
+			rules = append(rules, r)
+			ref = append(ref, ordered.Rule{ID: id, Entries: es, Exclude: excl})
+			raw = append(raw, ordered.Rule{ID: id, Entries: es})
+		}
+		topo := orderedTopo(rules)
+		topo.RuleSets = rsets
+		b, err := Compile(topo)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		exits, gps := plans(t, topo)
+		markOf := map[string]uint32{}
+		for _, rp := range planRules(topo, exits, gps, nil) {
+			markOf[rp.Rule.ID] = rp.Mark
+		}
+		for i := range ref {
+			ref[i].Target = fmt.Sprint(markOf[ref[i].ID])
+			raw[i].Target = ref[i].Target
+		}
+		g := parseRendered(t, b, rd)
+		dec, err := ordered.LoadSnapshot([]byte(b.File("nodes/gw"+DecidePath)), rd, china)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tail := ordered.Tail{Domestic: []string{"cn.example.org"}, China: china, DirectTarget: fmt.Sprint(markDomestic), Default: fmt.Sprint(g.def)}
+		learned := map[string]map[netip.Addr]bool{}
+		next := 0
+		addr := func() netip.Addr {
+			next++
+			switch next % 4 {
+			case 0, 2:
+				return netip.AddrFrom4([4]byte{198, 51, 100, byte(next)})
+			case 1:
+				return netip.AddrFrom4([4]byte{203, 0, 113, byte(next)})
+			}
+			return netip.AddrFrom4([4]byte{100, 70, byte(next), 1})
+		}
+		var all []string
+		for _, n := range names {
+			all = append(all, n, "zz."+n)
+		}
+		for _, n := range append(all, "", "", "", "") {
+			q := ordered.Query{Name: n, Addr: addr()}
+			want := ordered.Reference(ref, tail, q)
+			if ordered.Reference(raw, tail, q).Target != want.Target {
+				changed++
+			}
+			got := g.classify(learned, n, q.Addr, china)
+			if fmt.Sprint(got) != want.Target {
+				for i, r := range ref {
+					t.Logf("rule %d %s %s mark=%s entries=%v exclude=%v", i, rules[i].ID, rules[i].MatchType, r.Target, r.Entries, r.Exclude)
+				}
+				t.Fatalf("probe %+v: rendered mark %#x, reference rule %d (%s) %s", q, got, want.Index, want.Target, want.Reason)
+			}
+			if d := dec.Decide(ordered.Request{Name: q.Name, Addr: q.Addr}); d.Mark != got {
+				t.Fatalf("probe %+v: Decide on decide.json mark %#x (%s), rendered gateway %#x", q, d.Mark, d.Reason, got)
+			}
+			probes++
+		}
+		cases++
+	}
+	if changed < probes/40 {
+		t.Fatalf("exclusions changed only %d of %d decisions", changed, probes)
+	}
+	t.Logf("%d compiled lists, %d probes (%d decided differently because of exclusions): rendered gateway == decide.json == reference", cases, probes, changed)
+}
+
+// TestRuleSetExclusionsCompileCheck compiles a list of more rule-set rules
+// than the set-name collision threshold, with and without exclusions, with
+// the forwarder on, and checks the two places names are derived agree:
+// every nft set is declared exactly once; every set the manifest names
+// (domain-set and address sets) is declared by the resolver config and the
+// ruleset; the manifest and decide.json carry the same rule-sets with the
+// same exclusions in the same order; the forwarder accepts the compiled
+// pair. Exclusions change the manifest, decide.json and the forwarder's
+// target file (which pins decide.json's digest) and nothing else.
+func TestRuleSetExclusionsCompileCheck(t *testing.T) {
+	build := func(withExcl bool) (model.Topology, ordered.MemReader) {
+		topo := sniffOn(defaults.Example())
+		rd := ordered.MemReader{RuleSets: map[string][]ordered.Entry{}}
+		var targets []string
+		for _, g := range topo.Groups {
+			targets = append(targets, g.ID)
+		}
+		for i := 0; i < 24; i++ {
+			id := fmt.Sprintf("rs-%d", i)
+			r := rr(fmt.Sprintf("r-%d", i), model.MatchRuleSet, "", targets[i%len(targets)])
+			r.RuleSet = id
+			if i == 3 {
+				r.Domains = []string{"own.example.org"}
+			}
+			topo.Rules = append(topo.Rules, r)
+			rs := model.RuleSet{ID: id, Name: id, URL: "https://example.org/" + id + ".list"}
+			if withExcl && i%3 == 0 {
+				rs.Exclude = []string{"DOMAIN-SUFFIX,big" + fmt.Sprint(i) + ".example", "IP-CIDR,198.51.100.0/26", "DOMAIN-KEYWORD,ads", "DOMAIN,gone.example"}
+				if i == 3 {
+					// Would remove the rule's own name if it applied to it.
+					rs.Exclude = append(rs.Exclude, "DOMAIN-SUFFIX,example.org")
+				}
+			}
+			topo.RuleSets = append(topo.RuleSets, rs)
+			rd.RuleSets[id] = []ordered.Entry{
+				{Kind: ordered.Suffix, Value: fmt.Sprintf("s%d.example", i)},
+				{Kind: ordered.Suffix, Value: fmt.Sprintf("big%d.example", i)},
+				{Kind: ordered.Exact, Value: fmt.Sprintf("x.big%d.example", i)},
+				{Kind: ordered.CIDR, Prefix: netip.MustParsePrefix("198.51.100.0/24")},
+				{Kind: ordered.CIDR, Prefix: netip.MustParsePrefix(fmt.Sprintf("2001:db8:%x::/48", i+1))},
+			}
+		}
+		topo.RulesOrdered = true
+		return topo, rd
+	}
+	plainTopo, _ := build(false)
+	topo, rd := build(true)
+	plain := mustCompile(t, plainTopo)
+	b := mustCompile(t, topo)
+	gw := "nodes/gw/"
+	manifestPath := gw + strings.TrimPrefix(lists.ManifestPath, "/")
+	decidePath := gw + strings.TrimPrefix(DecidePath, "/")
+	targetsPath := gw + strings.TrimPrefix(SniffTargetsPath, "/")
+	for k, v := range b.Files {
+		if plain.Files[k] != v && k != manifestPath && k != decidePath && k != targetsPath {
+			t.Errorf("exclusions changed %s", k)
+		}
+	}
+	if len(plain.Files) != len(b.Files) {
+		t.Fatal("exclusions changed the file set")
+	}
+	if strings.Contains(plain.File(manifestPath), "exclude-") || strings.Contains(plain.File(decidePath), "exclude") {
+		t.Fatal("exclusion text without exclusions")
+	}
+	nft := b.File(gw + "etc/nftables.d/meridian.nft")
+	declared := map[string]int{}
+	for _, m := range regexp.MustCompile(`(?m)^  set (\S+) \{`).FindAllStringSubmatch(nft, -1) {
+		declared[m[1]]++
+	}
+	for n, c := range declared {
+		if c != 1 {
+			t.Errorf("set %s declared %d times", n, c)
+		}
+	}
+	conf := b.File(gw + "etc/smartdns/smartdns.conf")
+	m, err := ordered.ParseManifest([]byte(b.File(manifestPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type rsRef struct{ id, excl string }
+	var fromManifest []rsRef
+	for _, s := range m.Sets {
+		if s.Name != "gs_cn" && !strings.Contains(conf, "domain-set -name "+s.Name+" ") {
+			t.Errorf("manifest set %s has no domain-set in the resolver config", s.Name)
+		}
+		for _, n := range []string{s.CIDR4, s.CIDR6} {
+			if n != "" && declared[n] != 1 {
+				t.Errorf("manifest address set %s declared %d times", n, declared[n])
+			}
+		}
+		for _, src := range s.Srcs {
+			if src.Kind == ordered.SrcRuleSet {
+				fromManifest = append(fromManifest, rsRef{src.Value, string(ordered.MarshalEntries(src.Exclude))})
+			}
+		}
+	}
+	var snap ordered.Snapshot
+	if err := json.Unmarshal([]byte(b.File(decidePath)), &snap); err != nil {
+		t.Fatal(err)
+	}
+	var fromSnapshot []rsRef
+	for _, r := range snap.Rules {
+		for _, src := range r.Sources {
+			if src.Kind == ordered.SrcRuleSet {
+				fromSnapshot = append(fromSnapshot, rsRef{src.Value, string(ordered.MarshalEntries(src.Exclude))})
+			}
+		}
+	}
+	if fmt.Sprint(fromManifest) != fmt.Sprint(fromSnapshot) || len(fromManifest) != 24 {
+		t.Fatalf("manifest and decide.json disagree:\n%v\n%v", fromManifest, fromSnapshot)
+	}
+	withExcl := 0
+	for _, x := range fromManifest {
+		if x.excl != "\n" {
+			withExcl++
+		}
+	}
+	if withExcl != 8 {
+		t.Fatalf("%d rule-sets carry exclusions", withExcl)
+	}
+	d, err := ordered.Derive(m, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range d.CIDR {
+		if declared[name] != 1 {
+			t.Errorf("the derive batch fills set %s, declared %d times", name, declared[name])
+		}
+	}
+	// The exclusions took effect on the host's output: rule r-0's
+	// domain-set has no big0.example key, its IPv4 address set lost
+	// 198.51.100.0/26 (r-1 has no exclusions, but r-0 owns its address
+	// range already: list order).
+	exits, gps := plans(t, topo)
+	setOf := map[string]rulePlan{}
+	for _, rp := range planRules(topo, exits, gps, nil) {
+		setOf[rp.Rule.ID] = rp
+	}
+	r0, r1, r3 := setOf["r-0"], setOf["r-1"], setOf["r-3"]
+	if strings.Contains(strings.Join(d.Files[r0.Set4], " "), "big0.example") || !strings.Contains(strings.Join(d.Files[r1.Set4], " "), "big1.example") {
+		t.Fatalf("%s %v %s %v", r0.Set4, d.Files[r0.Set4], r1.Set4, d.Files[r1.Set4])
+	}
+	if fmt.Sprint(d.CIDR[r0.CIDR4]) != "[198.51.100.64/26 198.51.100.128/25]" {
+		t.Fatalf("%s %v", r0.CIDR4, d.CIDR[r0.CIDR4])
+	}
+	// Rule r-3's own explicit name is not a rule-set entry: no exclusion
+	// touches it.
+	if !strings.Contains(strings.Join(d.Files[r3.Set4], " "), "own.example.org") {
+		t.Fatalf("%s %v", r3.Set4, d.Files[r3.Set4])
+	}
+	// The forwarder accepts the compiled pair and decides with the
+	// exclusions applied.
+	var tf sniff.TargetsFile
+	if err := json.Unmarshal([]byte(b.File(targetsPath)), &tf); err != nil {
+		t.Fatal(err)
+	}
+	c, err := ordered.LoadSnapshot([]byte(b.File(decidePath)), rd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sniff.New(sniff.Config{}).Install(c, tf.Targets); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.Decide(ordered.Request{Name: "q.big0.example", Addr: netip.MustParseAddr("100.70.0.1")}); d.ID == "r-0" {
+		t.Fatalf("excluded name decided by its set: %+v", d)
+	}
+	if d := c.Decide(ordered.Request{Name: "q.big1.example", Addr: netip.MustParseAddr("100.70.0.1")}); d.ID != "r-1" {
+		t.Fatalf("%+v", d)
+	}
+	if d := c.Decide(ordered.Request{Name: "q.own.example.org", Addr: netip.MustParseAddr("100.70.0.1")}); d.ID != "r-3" {
+		t.Fatalf("the rule's own name was excluded: %+v", d)
 	}
 }

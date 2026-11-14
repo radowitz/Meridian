@@ -49,6 +49,7 @@ type keyIndex struct {
 
 // Analyze computes RuleAnalysis for every rule of an ordered list.
 func Analyze(rules []Rule) []RuleAnalysis {
+	rules = effectiveRules(rules)
 	ix := keyIndex{suffix: map[string]int{}, exact: map[string]int{}, sub: map[string]int{}, below: map[string][]int{}, cidr: map[netip.Prefix]int{}}
 	out := make([]RuleAnalysis, len(rules))
 	for i, r := range rules {

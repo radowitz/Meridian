@@ -149,6 +149,12 @@ type Rule struct {
 	Target string
 	// Entries in any order; all of them sit at this rule's position.
 	Entries []Entry
+	// Exclude are exclusions of the entries (a rule-set's exclusions, see
+	// exclude.go): Reference applies the definition literally, Compile,
+	// Analyze and Plan use ApplyExclusions. The panel and the gateway pass
+	// rule-set content already through ApplyExclusions and leave this
+	// empty (so a rule's own explicit names are never excluded).
+	Exclude []Entry
 	// GeoIPCN matches China destination addresses (Tail.China).
 	GeoIPCN bool
 	// Mark is the data-plane mark of the target (Decide reports it);
@@ -246,7 +252,7 @@ func Reference(rules []Rule, tail Tail, q Query) Match {
 			continue
 		}
 		for _, e := range r.Entries {
-			if e.Matches(q) {
+			if e.Matches(q) && !excludedFor(r.Exclude, e, q) {
 				return Match{Index: i, Target: r.Target, Entry: e, Reason: reason(e)}
 			}
 		}

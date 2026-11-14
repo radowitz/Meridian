@@ -172,6 +172,38 @@ export interface RuleSet {
   interval_sec?: number;
   allow_lan?: boolean;
   origin?: string;
+  /** Entries removed from the set's effective entries (stored classical form, e.g. "DOMAIN-SUFFIX,example.com"). */
+  exclude?: string[];
+}
+
+/** What one exclusion did to the active content (docs/architecture.md「规则集的排除条目」). */
+export interface RuleSetExclusionItem {
+  line: string;
+  removed: number;
+  trimmed?: number;
+  /** A remaining entry that still covers it: its names keep matching the set. */
+  inside?: string;
+  /** Nothing in the active content corresponds to it (a notice, not an error). */
+  stale?: boolean;
+  notice?: string;
+}
+
+export interface RuleSetExclusions {
+  /** False before the first download: only the lines are known. */
+  checked: boolean;
+  fetched?: number;
+  effective?: number;
+  removed?: number;
+  stale?: number;
+  inside?: number;
+  items: RuleSetExclusionItem[];
+}
+
+/** One refused exclusion line (422 code "bad_exclude"). */
+export interface ExclusionLineError {
+  line: number;
+  text?: string;
+  error: string;
 }
 
 export interface RuleSetStatus {
@@ -204,6 +236,8 @@ export interface RuleSetView {
   candidates: { source: string; url: string }[];
   /** Metadata of the subscription credential; the material is write-only. */
   auth?: RuleSetAuthView | null;
+  /** The effect of the exclusions (only when the set has any). */
+  exclusions?: RuleSetExclusions;
 }
 
 export interface RuleSetAuthView {

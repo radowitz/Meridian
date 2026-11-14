@@ -39,6 +39,11 @@ func checkRuleSetsAndServices(t model.Topology) []Issue {
 		if rs.IntervalSec != 0 && (rs.IntervalSec < 3600 || rs.IntervalSec > 30*86400) {
 			bad("interval_sec", "更新间隔要在 1 小时到 30 天之间。")
 		}
+		if len(rs.Exclude) > rulesorder.MaxExclusions {
+			bad("exclude", fmt.Sprintf("排除条目最多 %d 条。", rulesorder.MaxExclusions))
+		} else if errs := ruleset.CheckStoredExclusions(rs.Exclude, rs.Format); len(errs) > 0 {
+			bad("exclude", fmt.Sprintf("排除条目第 %d 行「%s」：%s。", errs[0].Line, errs[0].Text, errs[0].Error))
+		}
 	}
 	sids := map[string]bool{}
 	defaults := 0

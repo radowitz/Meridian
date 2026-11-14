@@ -308,6 +308,84 @@ describe("rules: remaining gaps (accept by code, subscription credentials, move 
     expect(webStorageDump()).not.toContain(token);
   });
 
+  it("shows a rule-set's exclusions with effective counts and notices, edits them with per-line errors and sends them on create", async () => {
+    const lines = ["DOMAIN-SUFFIX,big.example", "DOMAIN,gone.example"];
+    const view = (exclude: string[]) => ({
+      rule_set: { id: "rs-v", name: "Video", url: "https://rules.example.org/video.list", exclude },
+      status: { state: "ok", counts: { suffix: 4, exact: 2 } },
+      used_by: [{ rule_id: "m1", name: "m1", position: 1 }],
+      candidates: [],
+      auth: null,
+      exclusions: exclude.length
+        ? {
+            checked: true,
+            fetched: 6,
+            effective: 4,
+            removed: 2,
+            stale: 1,
+            items: [
+              { line: lines[0], removed: 2 },
+              { line: lines[1], removed: 0, stale: true, notice: "规则集里已经没有与它对应的条目" },
+            ],
+          }
+        : undefined,
+    });
+    let current = lines;
+    const api = fakeApi({
+      ...ORDERED_DEFAULTS,
+      "GET /api/topology": () => topo(),
+      "GET /api/rule-sets": () => ({ rule_sets: [view(current)], formats: ["surge-list"] }),
+      "PATCH /api/rule-sets/:id": (req) => {
+        const body = req.body as { exclude: string[] };
+        if (body.exclude.includes("DOMAIN,a.video.example")) {
+          return {
+            __status: 422,
+            body: {
+              error: "排除条目有 2 行不能用，没有保存",
+              code: "bad_exclude",
+              field: "exclude",
+              lines: [
+                { line: 3, text: "PROCESS-NAME,x.exe", error: "PROCESS-NAME 类条目网关不执行，不能用作排除" },
+                { line: 4, text: "DOMAIN,a.video.example", error: "仍被规则集里的「DOMAIN-SUFFIX,video.example」覆盖" },
+              ],
+            },
+          };
+        }
+        current = body.exclude;
+        return view(current);
+      },
+      "POST /api/rule-sets": () => view([]),
+    });
+    renderAt("#/rules");
+    expect(await screen.findByTestId("rs-excl-rs-v")).toHaveTextContent("生效 4/6");
+    expect(screen.getByTestId("rs-excl-notice-rs-v")).toHaveTextContent("1 条排除需留意");
+    await rowMenuItem("Video", "排除条目");
+    const dlg = await screen.findByRole("dialog");
+    const box = within(dlg).getByLabelText("排除条目") as HTMLTextAreaElement;
+    expect(box.value).toBe(lines.join("\n"));
+    fireEvent.change(box, { target: { value: lines.join("\n") + "\nPROCESS-NAME,x.exe\nDOMAIN,a.video.example" } });
+    await userEvent.click(within(dlg).getByRole("button", { name: btn("保存") }));
+    const errs = await within(dlg).findByTestId("exclusion-errors");
+    expect(errs.querySelectorAll("li")).toHaveLength(2);
+    expect(errs).toHaveTextContent("第 3 行「PROCESS-NAME,x.exe」");
+    expect(errs).toHaveTextContent("第 4 行「DOMAIN,a.video.example」：仍被规则集里的「DOMAIN-SUFFIX,video.example」覆盖");
+    // The dialog stays open with the text; fixing it saves.
+    fireEvent.change(box, { target: { value: "DOMAIN-SUFFIX,big.example\n\n" } });
+    await userEvent.click(within(dlg).getByRole("button", { name: btn("保存") }));
+    await waitFor(() => expect(api.find("PATCH /api/rule-sets/rs-v")).toHaveLength(2));
+    expect(api.find("PATCH /api/rule-sets/rs-v")[1].body).toEqual({ exclude: ["DOMAIN-SUFFIX,big.example"] });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // Create sends the exclusions as lines.
+    await userEvent.click(screen.getByRole("button", { name: btn("按 URL 添加") }));
+    const add = await screen.findByRole("dialog");
+    fireEvent.change(within(add).getByLabelText("名称"), { target: { value: "Ads" } });
+    fireEvent.change(within(add).getByLabelText("URL"), { target: { value: "https://rules.example.org/ads.list" } });
+    fireEvent.change(within(add).getByLabelText("排除条目"), { target: { value: "DOMAIN-SUFFIX,keep.example\n" } });
+    await userEvent.click(within(add).getByRole("button", { name: btn("添加并下载") }));
+    await waitFor(() => expect(api.find("POST /api/rule-sets")).toHaveLength(1));
+    expect((api.find("POST /api/rule-sets")[0].body as { exclude?: string[] }).exclude).toEqual(["DOMAIN-SUFFIX,keep.example"]);
+  });
+
   it("moves a rule to a typed position and shows the upgrade difference and DNS change notes", async () => {
     fakeApi({
       ...ORDERED_DEFAULTS,

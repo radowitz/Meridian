@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/hostexec"
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
@@ -241,7 +242,7 @@ func (s *Server) ruleSetView(t model.Topology, rs model.RuleSet, st map[string]*
 	if ruleset.HasSecret(rs.URL) {
 		rs.URL = ruleset.Redact(rs.URL)
 	}
-	return map[string]any{
+	v := map[string]any{
 		"rule_set":   rs,
 		"status":     status,
 		"used_by":    users,
@@ -249,6 +250,77 @@ func (s *Server) ruleSetView(t model.Topology, rs model.RuleSet, st map[string]*
 		// Metadata of the subscription credential (never the material).
 		"auth": s.ruleSetAuthView(rs.ID),
 	}
+	if len(rs.Exclude) > 0 {
+		v["exclusions"] = s.exclusionPreview(t, rs)
+	}
+	return v
+}
+
+// ExclusionItem is one exclusion in a rule-set's view.
+type ExclusionItem struct {
+	Line string `json:"line"`
+	// Removed entries of the active content, Trimmed CIDR entries cut.
+	Removed int `json:"removed"`
+	Trimmed int `json:"trimmed,omitempty"`
+	// Inside: a remaining entry still covers the exclusion (its names keep
+	// matching the set); Stale: nothing in the active content corresponds
+	// to it (a notice, not an error).
+	Inside string `json:"inside,omitempty"`
+	Stale  bool   `json:"stale,omitempty"`
+	Notice string `json:"notice,omitempty"`
+}
+
+// ExclusionPreview is the effect of a rule-set's exclusions on its active
+// content, computed with the same function the gateway uses
+// (ordered.ApplyExclusions via compile.RuleSetExclusions).
+type ExclusionPreview struct {
+	// Checked: the active content was read (false before the first
+	// download; then the counts are absent).
+	Checked bool `json:"checked"`
+	// Fetched entries of the active content, Effective after the
+	// exclusions (a cut CIDR entry can become several prefixes).
+	Fetched   int             `json:"fetched,omitempty"`
+	Effective int             `json:"effective,omitempty"`
+	Removed   int             `json:"removed,omitempty"`
+	Items     []ExclusionItem `json:"items"`
+	// Stale counts exclusions without a counterpart; Inside those a wider
+	// entry still covers.
+	Stale  int `json:"stale,omitempty"`
+	Inside int `json:"inside,omitempty"`
+}
+
+func insideNotice(in ordered.Entry) string {
+	return "仍被规则集里的「" + ruleset.ExclusionLine(in) + "」覆盖：这些名字照样命中这条规则。网关的解析器按最长后缀选规则，不能在一个后缀条目里挖掉一部分；请排除整个「" + ruleset.ExclusionLine(in) + "」，或在这条规则之前加一条规则指定这些名字的去向"
+}
+
+const staleNotice = "规则集里已经没有与它对应的条目（更新后不再起作用；可以删掉，留着也无害）"
+
+func (s *Server) exclusionPreview(t model.Topology, rs model.RuleSet) ExclusionPreview {
+	excl := compile.RuleSetExclusions(t, rs.ID)
+	p := ExclusionPreview{Items: []ExclusionItem{}}
+	es, ok := s.activeEntries(rs.ID)
+	if !ok {
+		for _, x := range excl {
+			p.Items = append(p.Items, ExclusionItem{Line: ruleset.ExclusionLine(x)})
+		}
+		return p
+	}
+	res := ordered.ApplyExclusions(es, excl)
+	p.Checked, p.Fetched, p.Effective, p.Removed = true, len(es), len(res.Entries), res.Removed
+	for _, st := range res.Stats {
+		it := ExclusionItem{Line: ruleset.ExclusionLine(st.Exclusion), Removed: st.Removed, Trimmed: st.Trimmed}
+		switch {
+		case st.Inside != nil:
+			it.Inside = ruleset.ExclusionLine(*st.Inside)
+			it.Notice = insideNotice(*st.Inside)
+			p.Inside++
+		case st.Stale():
+			it.Stale, it.Notice = true, staleNotice
+			p.Stale++
+		}
+		p.Items = append(p.Items, it)
+	}
+	return p
 }
 
 func sourceMode(rs model.RuleSet) string {
@@ -284,6 +356,75 @@ type ruleSetBody struct {
 	AllowLAN    *bool   `json:"allow_lan"`
 	// Auth (write-only) stores or rotates the subscription credential.
 	Auth *authBody `json:"auth,omitempty"`
+	// Exclude replaces the exclusions (one entry per line, written as the
+	// set's entries are; stored in the classical form).
+	Exclude *[]string `json:"exclude,omitempty"`
+}
+
+// exclusions parses b.Exclude for rs (after b's other fields are applied)
+// with the set's format (explicit, else detected by the last download, else
+// unknown). An exclusion that is new and that a remaining entry of the
+// active content still covers is refused: it would remove nothing (see
+// ordered.ApplyExclusions). It writes the 422 itself and returns false.
+func (s *Server) exclusions(w http.ResponseWriter, t model.Topology, rs model.RuleSet, lines []string) ([]string, bool) {
+	prev, existing := t.RuleSetByID(rs.ID)
+	// The active content (and the format detected from it) is this set's
+	// only while its URL stays the same.
+	same := existing && prev.URL == rs.URL
+	format := rs.Format
+	if format == "" && same {
+		if st := s.loadRSStatus()[rs.ID]; st != nil && st.Digest != "" {
+			format = st.Format
+		}
+	}
+	if len(lines) > 2*ordered.MaxExclusions {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": fmt.Sprintf("排除条目最多 %d 条", ordered.MaxExclusions), "code": "bad_exclude", "field": "exclude"})
+		return nil, false
+	}
+	var errs []ruleset.ExclusionError
+	var es []ordered.Entry
+	lineOf := map[ordered.Entry]int{}
+	for i, l := range lines {
+		e, bad := ruleset.ParseExclusions([]string{l}, format)
+		for _, x := range bad {
+			x.Line = i + 1
+			errs = append(errs, x)
+		}
+		if len(e) == 1 {
+			if _, dup := lineOf[e[0]]; !dup {
+				lineOf[e[0]] = i + 1
+				es = append(es, e[0])
+			}
+		}
+	}
+	if len(es) > ordered.MaxExclusions {
+		errs = append(errs, ruleset.ExclusionError{Line: len(lines), Error: fmt.Sprintf("排除条目最多 %d 条", ordered.MaxExclusions)})
+	}
+	old := map[string]bool{}
+	for _, l := range prev.Exclude {
+		old[l] = true
+	}
+	if content, ok := s.activeEntries(rs.ID); ok && same && len(errs) == 0 {
+		res := ordered.ApplyExclusions(content, es)
+		for _, st := range res.Stats {
+			if st.Inside != nil && !old[ruleset.ExclusionLine(st.Exclusion)] {
+				errs = append(errs, ruleset.ExclusionError{Line: lineOf[st.Exclusion], Text: strings.TrimSpace(lines[lineOf[st.Exclusion]-1]), Error: insideNotice(*st.Inside)})
+			}
+		}
+	}
+	if len(errs) > 0 {
+		sort.SliceStable(errs, func(i, j int) bool { return errs[i].Line < errs[j].Line })
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": fmt.Sprintf("排除条目有 %d 行不能用，没有保存", len(errs)), "code": "bad_exclude", "field": "exclude", "lines": errs})
+		return nil, false
+	}
+	out := make([]string, 0, len(es))
+	for _, e := range es {
+		out = append(out, ruleset.ExclusionLine(e))
+	}
+	if len(out) == 0 {
+		out = nil
+	}
+	return out, true
 }
 
 // checkBody refuses a URL that carries a credential (it belongs in auth)
@@ -370,6 +511,18 @@ func (s *Server) createRuleSet(w http.ResponseWriter, r *http.Request) {
 	if rs.Source == "" {
 		rs.Source = sourceMode(rs)
 	}
+	if b.Exclude != nil {
+		cur, err := s.topology()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		ex, ok := s.exclusions(w, cur, rs, *b.Exclude)
+		if !ok {
+			return
+		}
+		rs.Exclude = ex
+	}
 	rs.ID = "rs-" + randHex(5)
 	t, issues, err := s.saveTopologyChecked(func(t *model.Topology) error {
 		t.RuleSets = append(t.RuleSets, rs)
@@ -415,6 +568,25 @@ func (s *Server) patchRuleSet(w http.ResponseWriter, r *http.Request) {
 	if !b.check(w) {
 		return
 	}
+	var exclude []string
+	if b.Exclude != nil {
+		cur, err := s.topology()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		rs, ok := cur.RuleSetByID(id)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "规则集不存在"})
+			return
+		}
+		b.apply(&rs)
+		ex, ok := s.exclusions(w, cur, rs, *b.Exclude)
+		if !ok {
+			return
+		}
+		exclude = ex
+	}
 	var out model.RuleSet
 	var oldURL string
 	t, issues, err := s.saveTopologyChecked(func(t *model.Topology) error {
@@ -422,6 +594,9 @@ func (s *Server) patchRuleSet(w http.ResponseWriter, r *http.Request) {
 			if t.RuleSets[i].ID == id {
 				oldURL = t.RuleSets[i].URL
 				b.apply(&t.RuleSets[i])
+				if b.Exclude != nil {
+					t.RuleSets[i].Exclude = exclude
+				}
 				out = t.RuleSets[i]
 				return nil
 			}

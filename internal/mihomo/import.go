@@ -899,7 +899,9 @@ func (b *builder) finish() {
 		}
 		for _, old := range t.RuleSets {
 			if old.ID == sv.ID {
-				rs.Source, rs.AllowLAN, rs.IntervalSec = old.Source, old.AllowLAN, old.IntervalSec
+				// The operator's settings of an existing set survive a
+				// re-import, its exclusions included.
+				rs.Source, rs.AllowLAN, rs.IntervalSec, rs.Exclude = old.Source, old.AllowLAN, old.IntervalSec, old.Exclude
 				if old.Format != "" {
 					rs.Format = old.Format
 				}
@@ -937,7 +939,12 @@ func (b *builder) finish() {
 	}
 	content := map[string][]ordered.Entry{}
 	for id, c := range plan.ActivateSets {
-		content[id] = c.Entries
+		// An existing set keeps its exclusions (finish copies them).
+		var excl []ordered.Entry
+		if rs, ok := t.RuleSetByID(id); ok {
+			excl = ruleset.ExclusionEntries(rs.Exclude)
+		}
+		content[id] = ordered.ApplyExclusions(c.Entries, excl).Entries
 	}
 	var refs []ordered.Rule
 	var refIDs []string

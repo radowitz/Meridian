@@ -57,6 +57,14 @@ type RuleSet struct {
 	// link-local and this host's own addresses stay refused.
 	AllowLAN bool   `json:"allow_lan,omitempty"`
 	Origin   string `json:"origin,omitempty"`
+	// Exclude are entries removed from the set's effective entries, in the
+	// stored classical form ("DOMAIN-SUFFIX,example.com", "DOMAIN,x",
+	// "DOMAIN-WILDCARD,*.x", "DOMAIN-KEYWORD,x", "IP-CIDR,p", "IP-CIDR6,p";
+	// internal/ruleset ExclusionLine). A name or address the set matched
+	// only through an excluded entry falls through to later rules; the
+	// semantics are in internal/ordered/exclude.go. They belong to the
+	// definition, so a subscription update keeps them.
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 // ServiceGroup is a switchable target between rules and the data plane

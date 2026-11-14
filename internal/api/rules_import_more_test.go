@@ -2,12 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/validate"
 )
 
 func previewUntil(t *testing.T, s *Server, body map[string]any, ok func(map[string]any) bool) map[string]any {
@@ -240,4 +242,206 @@ func TestImportProviderURLSecret(t *testing.T) {
 	for _, h := range grepTree(t, s.DataDir, tok) {
 		t.Fatalf("token in %s", h)
 	}
+}
+
+// ruleSetViewByID lists the rule-sets until id is in the answer (a read can
+// meet the store busy with the background fetch's status write).
+func ruleSetViewByID(t *testing.T, s *Server, id string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rr := do(s, http.MethodGet, "/api/rule-sets", nil)
+		var l struct {
+			RuleSets []map[string]any `json:"rule_sets"`
+		}
+		if rr.Code == http.StatusOK && json.Unmarshal(rr.Body.Bytes(), &l) == nil {
+			for _, x := range l.RuleSets {
+				if x["rule_set"].(map[string]any)["id"] == id {
+					return x
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("rule-set %s not listed: %d %s", id, rr.Code, rr.Body.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Exclusions: set on create and edit in the set's notation, stored in the
+// classical form, refused per line, shown with their effect; a subscription
+// update keeps them (a failed one keeps the old content); the tester uses
+// the effective entries.
+func TestRuleSetExclusions(t *testing.T) {
+	s, f := importServer(t)
+	const url = "https://rules.example.org/video.list"
+	f.mu.Lock()
+	f.body[url] = "DOMAIN-SUFFIX,video.example\nDOMAIN-SUFFIX,big.example\nDOMAIN,x.big.example\nDOMAIN-SUFFIX,huge.example\nDOMAIN-KEYWORD,adword\nIP-CIDR,198.51.100.0/24\n"
+	f.mu.Unlock()
+	// Refused lines come back one by one, nothing is stored.
+	rr := do(s, http.MethodPost, "/api/rule-sets", []byte(`{"name":"Video","url":"`+url+`","format":"surge-list","exclude":["DOMAIN-SUFFIX,big.example","PROCESS-NAME,x.exe","big.example","DOMAIN,bad..example"]}`))
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	var bad struct {
+		Code  string `json:"code"`
+		Lines []struct {
+			Line  int    `json:"line"`
+			Text  string `json:"text"`
+			Error string `json:"error"`
+		} `json:"lines"`
+	}
+	json.Unmarshal(rr.Body.Bytes(), &bad)
+	if bad.Code != "bad_exclude" || len(bad.Lines) != 3 || bad.Lines[0].Line != 2 || bad.Lines[1].Line != 3 || bad.Lines[2].Line != 4 {
+		t.Fatalf("%s", rr.Body.String())
+	}
+	if tp, _ := s.topology(); len(tp.RuleSets) != 0 {
+		t.Fatal("stored despite refused lines")
+	}
+	rr = do(s, http.MethodPost, "/api/rule-sets", []byte(`{"name":"Video","url":"`+url+`","format":"surge-list","exclude":["domain-suffix,Big.example","","# note","DOMAIN-SUFFIX,huge.example","IP-CIDR,198.51.100.0/26","DOMAIN,gone.example"]}`))
+	if rr.Code != 201 {
+		t.Fatal(rr.Body.String())
+	}
+	var v struct {
+		RuleSet model.RuleSet `json:"rule_set"`
+	}
+	json.Unmarshal(rr.Body.Bytes(), &v)
+	id := v.RuleSet.ID
+	if fmt.Sprint(v.RuleSet.Exclude) != "[DOMAIN-SUFFIX,big.example DOMAIN-SUFFIX,huge.example IP-CIDR,198.51.100.0/26 DOMAIN,gone.example]" {
+		t.Fatalf("stored %v", v.RuleSet.Exclude)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var view map[string]any
+	for {
+		view = ruleSetViewByID(t, s, id)
+		if ex, ok := view["exclusions"].(map[string]any); ok && ex["checked"] == true {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no preview: %v", view)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ex := view["exclusions"].(map[string]any)
+	// 6 fetched; big.example + x.big.example + huge.example removed; the
+	// /24 becomes a /26 and a /25.
+	if ex["fetched"] != float64(6) || ex["effective"] != float64(4) || ex["removed"] != float64(3) || ex["stale"] != float64(1) {
+		t.Fatalf("preview %v", ex)
+	}
+	items := ex["items"].([]any)
+	if it := items[0].(map[string]any); it["removed"] != float64(2) {
+		t.Fatalf("item %v", it)
+	}
+	if it := items[2].(map[string]any); it["trimmed"] != float64(1) {
+		t.Fatalf("item %v", it)
+	}
+	if it := items[3].(map[string]any); it["stale"] != true || it["notice"] == "" {
+		t.Fatalf("item %v", it)
+	}
+	// A narrower exclusion that a remaining entry still covers is refused
+	// when it is added; the existing ones stay acceptable.
+	rr = do(s, http.MethodPatch, "/api/rule-sets/"+id, []byte(`{"exclude":["DOMAIN-SUFFIX,big.example","DOMAIN-SUFFIX,huge.example","IP-CIDR,198.51.100.0/26","DOMAIN,gone.example","DOMAIN,a.video.example"]}`))
+	if rr.Code != http.StatusUnprocessableEntity || !strings.Contains(rr.Body.String(), "DOMAIN-SUFFIX,video.example") || !strings.Contains(rr.Body.String(), `"line":5`) {
+		t.Fatalf("narrower: %d %s", rr.Code, rr.Body.String())
+	}
+	// The rule using it, and a later rule listing an excluded name exactly.
+	s.Store.Update(func(tp *model.Topology) (bool, error) {
+		tp.Rules = append([]model.Rule{
+			{ID: "video", Name: "video", Enabled: true, Manual: true, MatchType: model.MatchRuleSet, RuleSet: id, TargetGroup: "jp"},
+			{ID: "later", Name: "later", Enabled: true, Manual: true, MatchType: model.MatchDomain, MatchValue: "x.big.example", TargetGroup: "us"},
+		}, tp.Rules...)
+		return true, nil
+	})
+	test := func(body, wantRule string) {
+		t.Helper()
+		rr := do(s, http.MethodPost, "/api/rules/test", []byte(body))
+		if rr.Code != 200 {
+			t.Fatal(rr.Body.String())
+		}
+		var out struct {
+			Rule *struct {
+				ID string `json:"id"`
+			} `json:"rule"`
+		}
+		json.Unmarshal(rr.Body.Bytes(), &out)
+		got := ""
+		if out.Rule != nil {
+			got = out.Rule.ID
+		}
+		if got != wantRule {
+			t.Fatalf("%s: rule %q, want %q (%s)", body, got, wantRule, rr.Body.String())
+		}
+	}
+	test(`{"name":"a.video.example"}`, "video")
+	test(`{"name":"x.big.example"}`, "later")
+	test(`{"name":"o.big.example"}`, "")
+	test(`{"address":"198.51.100.9"}`, "")
+	test(`{"address":"198.51.100.99"}`, "video")
+	// An update with new content keeps the exclusions; the one that no
+	// longer corresponds to anything is a notice, the others still apply.
+	f.mu.Lock()
+	f.body[url] = "DOMAIN-SUFFIX,video.example\nDOMAIN-SUFFIX,big.example\nDOMAIN,gone.example\n"
+	f.mu.Unlock()
+	do(s, http.MethodPost, "/api/rule-sets/"+id+"/update", nil)
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		view = ruleSetViewByID(t, s, id)
+		ex = view["exclusions"].(map[string]any)
+		if ex["fetched"] == float64(3) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("update not active: %v", view)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if ex["effective"] != float64(1) || ex["stale"] != float64(2) || len(view["rule_set"].(map[string]any)["exclude"].([]any)) != 4 {
+		t.Fatalf("after update %v", view)
+	}
+	// A failed update keeps the active content and the exclusions.
+	f.mu.Lock()
+	delete(f.body, url)
+	f.mu.Unlock()
+	do(s, http.MethodPost, "/api/rule-sets/"+id+"/update", nil)
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if x := s.loadRSStatus()[id]; x != nil && x.LastError != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no failure recorded")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	view = ruleSetViewByID(t, s, id)
+	if ex := view["exclusions"].(map[string]any); ex["fetched"] != float64(3) || ex["effective"] != float64(1) {
+		t.Fatalf("after failed update %v", view)
+	}
+	test(`{"name":"q.big.example"}`, "")
+	// Clearing them.
+	rr = do(s, http.MethodPatch, "/api/rule-sets/"+id, []byte(`{"exclude":[]}`))
+	if rr.Code != 200 || strings.Contains(rr.Body.String(), `"exclusions"`) {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+	test(`{"name":"q.big.example"}`, "video")
+	// A topology carrying exclusions not in the stored form, or of a kind
+	// the set's format cannot hold, does not validate.
+	tp, _ := s.topology()
+	for _, ex := range [][]string{{"big.example"}, {"DOMAIN-SUFFIX,Big.example"}} {
+		x := tp
+		x.RuleSets = append([]model.RuleSet(nil), tp.RuleSets...)
+		x.RuleSets[0].Exclude = ex
+		if !hasIssue(validateIssues(x), "bad_rule_set") {
+			t.Errorf("exclusions %v validated", ex)
+		}
+	}
+}
+
+func hasIssue(is []validate.Issue, code string) bool {
+	for _, i := range is {
+		if i.Code == code {
+			return true
+		}
+	}
+	return false
 }

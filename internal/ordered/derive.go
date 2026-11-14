@@ -25,11 +25,22 @@ import (
 //	ruleset rs-ads        # /var/lib/meridian/geosite/rulesets/rs-ads.txt
 //	cidr4 r0c             # IPv4 entries of this set's rule-sets: nft set r0c
 //	cidr6 r0c6
+//	set r1
+//	ruleset rs-video
+//	exclude-suffix ads.example.com   # exclusions of the rule-set above
+//	exclude-cidr 198.51.100.0/26
 //	set gs_cn
 //	geosite cn
 //
 // Sets appear in list order; the last one is the built-in domestic list.
+// "exclude-<kind> <value>" lines (kind exact, suffix, sub, keyword, cidr)
+// follow a ruleset line and are that rule-set's exclusions
+// (model.RuleSet.Exclude): Derive applies them with ApplyExclusions. A
+// manifest without exclusions is the same text as before they existed.
 const ManifestHeader = "# meridian ordered domain sources v1"
+
+// ExcludePrefix starts a manifest exclusion line.
+const ExcludePrefix = "exclude-"
 
 // SourceKind is the kind of one manifest source line.
 type SourceKind string
@@ -46,6 +57,8 @@ const (
 type Source struct {
 	Kind  SourceKind
 	Value string
+	// Exclude are the exclusions of a ruleset source (ApplyExclusions).
+	Exclude []Entry
 }
 
 // ManifestSet is one rule (or the domestic list) in list order.
@@ -78,6 +91,9 @@ func (m Manifest) Render() string {
 		fmt.Fprintf(&sb, "set %s\n", s.Name)
 		for _, src := range s.Sources() {
 			fmt.Fprintf(&sb, "%s %s\n", src.Kind, src.Value)
+			for _, x := range src.Exclude {
+				fmt.Fprintf(&sb, "%s%s %s\n", ExcludePrefix, x.Kind, entryValue(x))
+			}
 		}
 		if s.CIDR4 != "" {
 			fmt.Fprintf(&sb, "cidr4 %s\n", s.CIDR4)
@@ -94,6 +110,44 @@ func (s ManifestSet) Sources() []Source { return s.Srcs }
 
 // Add appends a source.
 func (s *ManifestSet) Add(k SourceKind, v string) { s.Srcs = append(s.Srcs, Source{Kind: k, Value: v}) }
+
+// AddRuleSet appends a ruleset source with its exclusions.
+func (s *ManifestSet) AddRuleSet(id string, exclude []Entry) {
+	s.Srcs = append(s.Srcs, Source{Kind: SrcRuleSet, Value: id, Exclude: exclude})
+}
+
+func entryValue(e Entry) string {
+	if e.Kind == CIDR {
+		return e.Prefix.String()
+	}
+	return e.Value
+}
+
+// ParseEntry reads one entry in its stored form (kind and value, as
+// MarshalEntries writes them), strictly.
+func ParseEntry(kind, v string) (Entry, error) {
+	switch Kind(kind) {
+	case Exact, Suffix, Sub:
+		d, ok := NormDomain(v)
+		if !ok || d != v {
+			return Entry{}, errors.New("bad domain")
+		}
+		return Entry{Kind: Kind(kind), Value: d}, nil
+	case Keyword:
+		k, ok := NormKeyword(v)
+		if !ok || k != v {
+			return Entry{}, errors.New("bad keyword")
+		}
+		return Entry{Kind: Keyword, Value: k}, nil
+	case CIDR:
+		pr, err := netip.ParsePrefix(v)
+		if err != nil || pr != pr.Masked() || pr.Addr().Is4In6() || pr.Addr().Zone() != "" {
+			return Entry{}, errors.New("bad cidr")
+		}
+		return Entry{Kind: CIDR, Prefix: pr}, nil
+	}
+	return Entry{}, errors.New("unknown kind")
+}
 
 // ParseManifest parses and checks a manifest completely; anything unknown is
 // an error (the host never guesses).
@@ -114,6 +168,25 @@ func ParseManifest(b []byte) (Manifest, error) {
 			return m, fmt.Errorf("manifest line %d: want two fields", i+2)
 		}
 		k, v := f[0], f[1]
+		if strings.HasPrefix(k, ExcludePrefix) {
+			if len(m.Sets) == 0 {
+				return m, fmt.Errorf("manifest line %d: exclusion before any set", i+2)
+			}
+			s := &m.Sets[len(m.Sets)-1]
+			if len(s.Srcs) == 0 || s.Srcs[len(s.Srcs)-1].Kind != SrcRuleSet {
+				return m, fmt.Errorf("manifest line %d: exclusion not after a ruleset line", i+2)
+			}
+			e, err := ParseEntry(strings.TrimPrefix(k, ExcludePrefix), v)
+			if err != nil {
+				return m, fmt.Errorf("manifest line %d: %v", i+2, err)
+			}
+			src := &s.Srcs[len(s.Srcs)-1]
+			if len(src.Exclude) >= MaxExclusions {
+				return m, fmt.Errorf("manifest line %d: too many exclusions", i+2)
+			}
+			src.Exclude = append(src.Exclude, e)
+			continue
+		}
 		if k == "set" {
 			if !setNameRe.MatchString(v) || names[v] {
 				return m, fmt.Errorf("manifest line %d: bad or repeated set %q", i+2, v)
@@ -266,7 +339,7 @@ func Derive(m Manifest, r Reader) (Derived, error) {
 					}
 					return d, fmt.Errorf("ruleset %s: %w", src.Value, err)
 				}
-				for _, e := range es {
+				for _, e := range ApplyExclusions(es, src.Exclude).Entries {
 					switch e.Kind {
 					case Exact, Suffix, Sub:
 						keys = append(keys, e)

@@ -340,12 +340,31 @@ chnroute 来自 gaoyifan/china-operator-ip（MIT），geosite 分类来自 v2fly
 
 ### 规则集
 
-`rule_sets`：`{id, name, url, format, behavior, source, interval_sec, allow_lan, origin}`，由 `/api/rule-sets` 管理（拓扑保存保留这个块）。视图另带 `auth`（订阅认证的元数据 `{kind, secret_set, updated_at}` 或 `null`，从不带内容）。
+`rule_sets`：`{id, name, url, format, behavior, source, interval_sec, allow_lan, origin, exclude}`，由 `/api/rule-sets` 管理（拓扑保存保留这个块）。视图另带 `auth`（订阅认证的元数据 `{kind, secret_set, updated_at}` 或 `null`，从不带内容），有排除条目时另带 `exclusions`（见下面「规则集的排除条目」）。
 
 - 格式（先看内容，再看扩展名；可手动指定）：Clash/mihomo 的 yaml（`payload:`，classical / domain / ipcidr）和 text 形式；Surge `.list`（`TYPE,值[,选项…]`，`#` 与 `//` 注释，附带的策略字段忽略并计数）；Surge DOMAIN-SET（`example.com` 只是这个名字，`.example.com` 是名字和下级）。domain 行为里 `+.x` = 名字和下级，`.x` = 只有下级（SmartDNS `*.x`），`x` = 只有这个名字，`*.x`（恰好一级）不能表达，计为不支持。Surge `DOMAIN-WILDCARD,*.x` = 所有下级，其它通配不支持。`.mrs` 二进制规则集识别出来并拒绝。BOM、CRLF、大小写混用的类型都接受。
 - 能执行的：`DOMAIN`、`DOMAIN-SUFFIX`、子域名条目、`IP-CIDR`/`IP-CIDR6`（`no-resolve` 计数，没有影响）。`DOMAIN-KEYWORD` 保留但不执行。其它（`PROCESS-NAME`、`USER-AGENT`、`URL-REGEX`、`IP-ASN`、`GEOIP`、端口、逻辑规则……）按类型计数；不会让整个规则集失败，但规则页和预览显示「只部分生效」和数字。
 - 下载在面板里进行（`internal/ruleset`）：URL 里能找到 GitHub 原始文件时（也包括 `https://<加速前缀>/https://raw.githubusercontent.com/…` 这种），按名单的下载策略试 jsDelivr（国内源）/ raw.githubusercontent.com（海外源），最后试原 URL；`source: url` 只用原 URL。上限 16 MiB、50 万条、60 秒；不用环境里的代理；最多 5 次重定向且只允许 http/https；**每次建立连接时**检查目的地址（所以重定向后的地址也查）：拒绝回环、链路本地、组播、未指定、本机任何接口地址，以及私网（RFC 1918、100.64/10、fc00::/7）——后者在规则集打开 `allow_lan` 时允许。**网关自身和内部的地址即使打开 `allow_lan` 也拒绝**（`gatewayDeny`，从拓扑算出：网关的局域网地址、每条隧道链路的地址和自动分配的 /30、/64 块、中转网段 `transit_v4/v6_prefix`、远程接入地址池）；局域网里别的主机（例如放名单的 NAS）仍由 `allow_lan` 决定。导入 mihomo 时的预下载同样带这份拒绝列表、不允许局域网源。内容只当数据解析，从不执行。测试：`TestFetchRedirectToPrivateRefused`、`TestAddrAllowedDeny`、`TestGatewayDeny`。
 - 启用：解析成功才把规范化内容（`ordered.MarshalEntries`）原子写到 `/var/lib/meridian/geosite/rulesets/<id>.txt`（宿主共享目录），然后请宿主执行器做一次 `rules`（只重做 derive、装载 CIDR 批次、按需重启 SmartDNS，不下载）。失败时旧版本不动。新版本里网关执行不了的条目比当前版本多（关键词或不支持的条目增多）时**暂缓**，状态显示原因，要操作者「启用暂缓的版本」。按 `interval_sec`（默认 24 小时）自动更新：每 10 分钟检查一次，上次尝试（成功或失败）距今超过间隔的就下载（`dueRuleSets`，`TestDueRuleSets`）。被规则使用的规则集不能删除（返回使用它的规则，`TestRuleSetLifecycle`）。
+
+#### 规则集的排除条目
+
+订阅一个公开规则集、但其中个别条目（例如两个很宽的后缀）不该跟着这条规则走时，在规则集上写**排除条目**（`exclude`），不必放弃订阅、改写成手工规则。
+
+- **写法**：和规则集条目一样，一行一条，经同一个解析器（`ruleset.ParseExclusions`）：任何规则集都可以写带类型的行（`DOMAIN-SUFFIX,example.com`、`DOMAIN,a.example.com`、`DOMAIN-WILDCARD,*.example.com`、`DOMAIN-KEYWORD,ads`、`IP-CIDR,198.51.100.0/24`、`IP-CIDR6,…`）；域名或地址列表格式的规则集还可以写它自己的写法（Clash domain 的 `+.x` / `.x` / `x`，Surge DOMAIN-SET 的 `.x` / `x`，ipcidr 的地址段）。格式按规则集指定的格式，没有指定就用上次下载识别出的格式；两者都没有时只接受带类型的行和地址段（`.x` 在不同格式里意思不同）。规则集自己的解析器会拒绝或不执行的写法（错误的名字、`*.x` 恰好一级、其它通配、`PROCESS-NAME` 等）、这种格式不会有的条目类型（domain 列表里的关键词或地址段、ipcidr 列表里的域名、DOMAIN-SET 里的子域名通配）都被拒绝，接口按行返回（`422 {code: "bad_exclude", lines: [{line, text, error}]}`），规则页逐行显示。保存为统一的带类型写法（`ruleset.ExclusionLine`），最多 500 条；拓扑校验拒绝不是这种写法的条目。
+- **语义**（`internal/ordered/exclude.go`）：排除条目把它**覆盖**的条目（它匹配的名字或地址包含这条条目匹配的全部）从规则集的有效条目里去掉；地址段排除还把它的地址从包含它的地址段条目里挖掉。只经被去掉的条目（或被挖掉的地址）才命中这个规则集的名字或地址，不再命中这条规则，落到后面的规则（以及国内名单、中国地址、默认组）。逐项：
+  - 排除等于某条条目：去掉它。
+  - 排除比条目宽（后缀 `example.com`）：去掉它下面的所有条目——完整域名 `a.example.com`、后缀 `b.example.com`、子域名通配 `*.c.example.com`；`example.com` 下面的名字不再经这个规则集的任何条目命中（关键词条目除外，见下）。后面的规则集逐条列出的名字（例如 `x.example.com`）照常按那条规则走。
+  - 排除比条目窄（条目是后缀 `example.com`，排除 `a.example.com`）：**不提供**。网关的解析器（SmartDNS）按最长后缀选规则，无法在一个后缀条目里挖掉一部分、让它落到后面的规则或默认组；只在嗅探路径上生效会让两条路径不一致。所以这种排除什么都不去掉：添加时被拒绝（错误里写明覆盖它的条目和替代做法：排除整个后缀，或在这条规则之前加一条规则指定这些名字的去向）；规则集更新后才变成这样的，预览里标出「仍被某条条目覆盖」。子域名通配排除 `*.example.com` 对后缀条目 `example.com` 同样如此。
+  - 关键词排除 `ads`：去掉值里含这个词的域名条目（它们匹配的名字都含这个词）和含这个词的关键词条目；不去掉剩下的后缀条目下面恰好含这个词的名字。
+  - 关键词条目（例如 `DOMAIN-KEYWORD,exam`）不会被域名排除去掉（它还匹配别处的名字）。嗅探路径按子串执行关键词条目，解析器路径不执行（见上面「关键词」）——这是关键词条目本来就有的差别，排除没有增加新的差别：域名排除被关键词条目覆盖时（排除 `example.com`、条目 `exam`），预览标出「仍被覆盖」。
+  - 地址段：排除包含或等于条目时去掉条目；排除在条目里面时只挖掉排除的部分（`198.51.100.0/24` 排除 `198.51.100.0/26` 后是 `198.51.100.64/26` 和 `198.51.100.128/25`），每条路径都精确。
+  - 域名排除不影响地址段条目，地址段排除不影响域名条目：名字被排除、但地址落在这个规则集的地址段里的连接仍命中它（这是「去掉条目」的定义，不是按连接取反）。
+  - 排除只作用于规则集的内容，不作用于这条规则自己的显式域名（`domains`）。
+- **唯一的推导**：`ordered.ApplyExclusions(内容, 排除)` 是有效条目的唯一来源（被覆盖的条目去掉，地址段按排除切开）。编译器把排除条目写进有序来源清单 `order.conf`（`ruleset <id>` 下面的 `exclude-<种类> <值>` 行）和 `decide.json`（规则集来源的 `exclude` 字段），二者都由 `compile.RuleSetExclusions` 从拓扑取得；网关上的 `meridian lists-derive`（`ordered.Derive`：解析器的 domain-set 和 nft 地址集合 `r<n>c`/`r<n>c6`）、转发服务（`ordered.LoadSnapshot`）、面板的规则测试和遮蔽分析（`refList`）、导入预览都调用它。没有排除条目时两份文件与以前逐字节相同。排除条目是安装清单里的数据：改了之后要安装才在网关上生效（宿主不需要新能力，`lists-derive` 读的就是安装写下的清单）；预览和规则测试立刻按新的排除计算。旧版本的 `meridian` 读到带排除行的清单会拒绝（未知行），`meridian-up.sh` 因此在打开转发之前停止——失败关闭。
+- **证明**：`ordered.Reference` 带 `Rule.Exclude` 时逐字执行上面的定义；`TestApplyExclusionsEqualsDefinition`（生成的列表，排除与条目相等、更宽、更窄、关键词、地址段，规则互相遮蔽）证明定义 = `ApplyExclusions` = `Compile/Decide` = `decide.json` = 网关模型（清单的排除行 → `Derive` → SmartDNS 最长后缀模型 → nft 分类链）；`TestExclusionFallsThroughToLaterRuleSet` 是上面的动机场景；`TestCoversAgreesWithMatches` 用名字全集核对「覆盖」；`TestRuleSetExclusionsRenderedMatchReference` 对真实编译出的网关文件做同样的比较；`TestRuleSetExclusionsCompileCheck` 编译 24 条规则集规则（越过集合重名的门槛）并检查每个集合只声明一次、清单与解析器配置和 nft 声明的集合一致、清单与 `decide.json` 带同样的规则集和排除、转发服务接受编出的一对、没有排除的规则集编出的文件不变；`TestRuleSetExclusions`（接口：逐行拒绝、更窄的排除被拒、预览数字、更新保留、更新失败保留旧版、规则测试）。
+- **预览**（规则集视图的 `exclusions`）：`{checked, fetched, effective, removed, stale, inside, items: [{line, removed, trimmed, inside, stale, notice}]}`——当前生效内容的条目数、排除后的有效条目数（切开的地址段可能多于一条）、每条排除去掉 / 切开了几条；`stale` 表示当前内容里已经没有与它对应的条目（提示，不是错误，排除照样保留）。还没下载过时 `checked: false`，只列出排除条目。
+- **订阅更新**：排除属于规则集的定义（拓扑），下载只换内容文件，所以更新后排除照样生效；失败保留旧版、原子启用、暂缓机制都不变。重新导入 mihomo 配置时已有规则集的排除保留。下载的安全边界（SSRF 规则、认证、大小限制）没有改变。
 
 ### 规则集合的订阅认证
 

@@ -197,3 +197,85 @@ func TestFetchRedirectToPrivateRefused(t *testing.T) {
 }
 
 var _ = ordered.Exact
+
+// Exclusions are parsed by the set's own grammar and stored in the
+// classical form.
+func TestParseExclusions(t *testing.T) {
+	lines := func(es []ordered.Entry) string {
+		var out []string
+		for _, e := range es {
+			out = append(out, ExclusionLine(e))
+		}
+		return strings.Join(out, " | ")
+	}
+	type tc struct {
+		format string
+		in     []string
+		want   string
+		errs   []int
+	}
+	for _, c := range []tc{
+		// Classical lines work in a classical list, any case, options ignored.
+		{FormatSurgeList, []string{"DOMAIN-SUFFIX,Example.COM", "domain,a.example.org", "DOMAIN-KEYWORD,ads", "IP-CIDR,198.51.100.7/24,no-resolve", "IP-CIDR6,2001:db8::/32", "DOMAIN-WILDCARD,*.w.example", "# comment", "", "DOMAIN-SUFFIX,example.com,Proxy"},
+			"DOMAIN-SUFFIX,example.com | DOMAIN,a.example.org | DOMAIN-KEYWORD,ads | IP-CIDR,198.51.100.0/24 | IP-CIDR6,2001:db8::/32 | DOMAIN-WILDCARD,*.w.example", nil},
+		// What the set's parser refuses or does not execute is refused.
+		{FormatClashClassical, []string{"PROCESS-NAME,x.exe", "DOMAIN-SUFFIX,bad..example", "AND,((DOMAIN,a.example))", "DOMAIN-WILDCARD,a*b.example", "example.com", "DOMAIN,ok.example"},
+			"DOMAIN,ok.example", []int{1, 2, 3, 4, 5}},
+		// A Clash domain list: its own notation, and classical lines of the
+		// kinds it can hold.
+		{FormatClashDomain, []string{"+.example.com", ".sub.example", "exact.example", "*.one.example", "DOMAIN-SUFFIX,x.example", "DOMAIN-KEYWORD,ads", "198.51.100.0/24"},
+			"DOMAIN-SUFFIX,example.com | DOMAIN-WILDCARD,*.sub.example | DOMAIN,exact.example | DOMAIN-SUFFIX,x.example", []int{4, 6, 7}},
+		// Surge DOMAIN-SET: ".x" is the suffix, no sub kind.
+		{FormatSurgeDomainSet, []string{".example.com", "exact.example", "DOMAIN-WILDCARD,*.w.example", "+.x.example"},
+			"DOMAIN-SUFFIX,example.com | DOMAIN,exact.example", []int{3, 4}},
+		// An address list holds addresses only.
+		{FormatClashIPCIDR, []string{"198.51.100.0/24", "2001:db8::1", "DOMAIN,a.example", "IP-CIDR,203.0.113.0/24"},
+			"IP-CIDR,198.51.100.0/24 | IP-CIDR6,2001:db8::1/128 | IP-CIDR,203.0.113.0/24", []int{3}},
+		// Unknown format: classical lines and bare addresses only (".x"
+		// means different things in different domain lists).
+		{FormatAuto, []string{".example.com", "DOMAIN-SUFFIX,example.com", "198.51.100.0/24", "example.org"},
+			"DOMAIN-SUFFIX,example.com | IP-CIDR,198.51.100.0/24", []int{1, 4}},
+	} {
+		es, errs := ParseExclusions(c.in, c.format)
+		if got := lines(es); got != c.want {
+			t.Errorf("%s: %s\nwant %s", c.format, got, c.want)
+		}
+		var at []int
+		for _, e := range errs {
+			at = append(at, e.Line)
+			if e.Error == "" || e.Text == "" {
+				t.Errorf("%s: empty error %+v", c.format, e)
+			}
+		}
+		if fmt.Sprint(at) != fmt.Sprint(c.errs) && !(len(at) == 0 && len(c.errs) == 0) {
+			t.Errorf("%s: errors at %v (%v), want %v", c.format, at, errs, c.errs)
+		}
+	}
+	// Repeats are dropped; the stored form reads back to the same entries.
+	es, errs := ParseExclusions([]string{"DOMAIN,a.example", "domain,A.example."}, FormatSurgeList)
+	if len(es) != 1 || len(errs) != 0 {
+		t.Fatalf("%v %v", es, errs)
+	}
+	stored := []string{"DOMAIN-SUFFIX,example.com", "DOMAIN-WILDCARD,*.w.example", "IP-CIDR6,2001:db8::/32", "DOMAIN-KEYWORD,ads"}
+	if back := ExclusionEntries(stored); lines(back) != strings.Join(stored, " | ") {
+		t.Fatalf("stored form: %s", lines(back))
+	}
+	if errs := CheckStoredExclusions(stored, ""); len(errs) != 0 {
+		t.Fatalf("%v", errs)
+	}
+	for _, bad := range [][]string{{"domain-suffix,example.com"}, {".example.com"}, {""}, {"IP-CIDR,198.51.100.7/24"}} {
+		if errs := CheckStoredExclusions(bad, ""); len(errs) == 0 {
+			t.Errorf("stored %q accepted", bad)
+		}
+	}
+	if errs := CheckStoredExclusions([]string{"DOMAIN-KEYWORD,ads"}, FormatClashDomain); len(errs) == 0 {
+		t.Error("keyword exclusion accepted for a domain list")
+	}
+	many := make([]string, ordered.MaxExclusions+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("DOMAIN,h%d.example", i)
+	}
+	if _, errs := ParseExclusions(many, ""); len(errs) == 0 {
+		t.Error("too many exclusions accepted")
+	}
+}

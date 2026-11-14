@@ -10,6 +10,7 @@ import (
 	"github.com/radowitz/meridian/internal/lists"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/ordered"
+	"github.com/radowitz/meridian/internal/ruleset"
 )
 
 // SmartDNSSharedDirs are the host directories the gateway SmartDNS config
@@ -389,6 +390,17 @@ const (
 	domesticSet = "gs_cn"
 )
 
+// RuleSetExclusions are the exclusions of rule-set id as the manifest and
+// decide.json carry them (both from this one function, applied on the host
+// by ordered.ApplyExclusions); nil without any.
+func RuleSetExclusions(t model.Topology, id string) []ordered.Entry {
+	rs, ok := t.RuleSetByID(id)
+	if !ok || len(rs.Exclude) == 0 {
+		return nil
+	}
+	return ruleset.ExclusionEntries(rs.Exclude)
+}
+
 // hasDomainSource: the rule matches names (it has a domain-set).
 func hasDomainSource(r model.Rule) bool {
 	if len(r.Domains) > 0 {
@@ -411,7 +423,7 @@ func hasDomainSource(r model.Rule) bool {
 // the rule domain-sets from (/etc/meridian/rules/order.conf, see
 // internal/ordered): one set per rule with names, in list order, then the
 // built-in domestic list.
-func renderRuleManifest(rules []rulePlan) string {
+func renderRuleManifest(t model.Topology, rules []rulePlan) string {
 	var m ordered.Manifest
 	for _, rp := range rules {
 		if rp.QUIC || !hasDomainSource(rp.Rule) {
@@ -436,7 +448,7 @@ func renderRuleManifest(rules []rulePlan) string {
 		case model.MatchKeyword:
 			set.Add(ordered.SrcKeyword, sanitize(r.ID))
 		case model.MatchRuleSet:
-			set.Add(ordered.SrcRuleSet, r.RuleSet)
+			set.AddRuleSet(r.RuleSet, RuleSetExclusions(t, r.RuleSet))
 		}
 		// Explicit names of a rule match the name and everything under it.
 		for _, d := range r.Domains {
@@ -725,7 +737,7 @@ func renderDecideSnapshot(t model.Topology, rules []rulePlan, def target) string
 			}
 			sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcKeyword, Value: sanitize(r.ID)})
 		case model.MatchRuleSet:
-			sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcRuleSet, Value: r.RuleSet})
+			sr.Sources = append(sr.Sources, ordered.Source{Kind: ordered.SrcRuleSet, Value: r.RuleSet, Exclude: RuleSetExclusions(t, r.RuleSet)})
 		}
 		for _, d := range r.Domains {
 			if d, ok := ordered.NormDomain(strings.TrimPrefix(d, ".")); ok {

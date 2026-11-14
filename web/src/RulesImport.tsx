@@ -9,7 +9,7 @@
 import { Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
-import type { ImportPreview, ImportRequest, ImportRow, RuleRef, RuleSetAuthInput, RuleSetView, RuleTestResult, ServiceGroup, Topology } from "./types";
+import type { ExclusionLineError, ImportPreview, ImportRequest, ImportRow, RuleRef, RuleSetAuthInput, RuleSetView, RuleTestResult, ServiceGroup, Topology } from "./types";
 import { ApiErrorAlert, DataTable, Explain, RowActions, Section, StatusTag, TimeText, groupLabel, useConfirmDanger } from "./ui";
 
 /** Panel targets a service group or a mapping can point at. */
@@ -488,15 +488,49 @@ function counts(m?: Record<string, number>) {
   return m && Object.keys(m).length ? Object.entries(m).map(([k, v]) => `${k} ${v}`).join("，") : "—";
 }
 
+/** The exclusion textarea's lines (blank lines are dropped by the panel too). */
+function exclusionLines(text?: string): string[] {
+  return (text ?? "").split("\n").map((l) => l.trim()).filter((l) => l !== "");
+}
+
+/** The per-line errors of a refused exclusion list (422 "bad_exclude"), else null. */
+export function exclusionErrors(e: unknown): string[] | null {
+  if (!(e instanceof api.ApiError) || e.code !== "bad_exclude") return null;
+  const lines = (e.body as { lines?: ExclusionLineError[] }).lines;
+  if (!Array.isArray(lines) || lines.length === 0) return [e.message];
+  return lines.map((l) => (l.text ? `第 ${l.line} 行「${l.text}」：${l.error}` : `第 ${l.line} 行：${l.error}`));
+}
+
+const EXCLUDE_HELP =
+  "一行一条，写法与规则集条目相同：DOMAIN-SUFFIX,example.com、DOMAIN,a.example.com、DOMAIN-KEYWORD,词、IP-CIDR,198.51.100.0/24；域名或地址列表格式的规则集也可以写它自己的写法（+.example.com、.example.com、地址段）。被排除的条目不参与这条规则的匹配，落到后面的规则。";
+
+/** The exclusion summary of a rule-set (status column and expanded row). */
+function exclusionSummary(r: RuleSetView): string {
+  const ex = r.exclusions;
+  const n = r.rule_set.exclude?.length ?? 0;
+  if (!ex || !n) return "";
+  if (!ex.checked) return `排除 ${n} 条（还没有下载，生效数量未知）`;
+  return `排除 ${n} 条：下载 ${ex.fetched ?? 0} 条，生效 ${ex.effective ?? 0} 条`;
+}
+
 /** Subscribed rule-sets: add by URL, status, update now, used-by. */
 export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChanged: () => void }) {
   const [data, setData] = useState<RuleSetView[] | null>(null);
   const [formats, setFormats] = useState<string[]>([]);
   const [error, setError] = useState<api.ApiError | null>(null);
   const [adding, setAdding] = useState(false);
-  const [form] = Form.useForm<{ name: string; url: string; format?: string; source: "url" | "policy"; interval_h?: number; allow_lan?: boolean } & AuthFields>();
+  const [form] = Form.useForm<{ name: string; url: string; format?: string; source: "url" | "policy"; interval_h?: number; allow_lan?: boolean; exclude_text?: string } & AuthFields>();
   const [authFor, setAuthFor] = useState<RuleSetView | null>(null);
   const [authForm] = Form.useForm<AuthFields>();
+  const [exclFor, setExclFor] = useState<RuleSetView | null>(null);
+  const [exclText, setExclText] = useState("");
+  const [exclErrors, setExclErrors] = useState<string[] | null>(null);
+  const [addExclErrors, setAddExclErrors] = useState<string[] | null>(null);
+  const openExclusions = (r: RuleSetView) => {
+    setExclFor(r);
+    setExclText((r.rule_set.exclude ?? []).join("\n"));
+    setExclErrors(null);
+  };
   const confirm = useConfirmDanger();
   const load = () =>
     api
@@ -548,6 +582,21 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
             <div className="kv-line"><span className="muted">格式</span> {r.status.format ?? (r.rule_set.format || "自动识别")}</div>
             <div className="kv-line"><span className="muted">条目</span> {counts(r.status.counts)}</div>
             <div className="kv-line"><span className="muted">不能执行</span> {counts(r.status.unsupported)}</div>
+            {r.exclusions ? (
+              <div className="kv-line" data-testid={`rs-excl-detail-${r.rule_set.id}`}>
+                <span className="muted">排除</span> {exclusionSummary(r)}
+                {r.exclusions.removed ? `，去掉 ${r.exclusions.removed} 条` : ""}
+                <ul className="cell-small" style={{ margin: "2px 0 0", paddingLeft: 18 }}>
+                  {r.exclusions.items.map((it) => (
+                    <li key={it.line}>
+                      <span className="mono">{it.line}</span>
+                      {r.exclusions!.checked ? ` — 去掉 ${it.removed} 条${it.trimmed ? `，切开 ${it.trimmed} 条地址段` : ""}` : ""}
+                      {it.notice ? <Typography.Text type="warning" className="cell-small">{`（${it.notice}）`}</Typography.Text> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <div className="kv-line"><span className="muted">使用</span> {r.used_by.length ? r.used_by.map((u) => `第 ${u.position} 条 ${u.name}`).join("、") : "—"}</div>
             {r.status.applied ? <div className="kv-line"><span className="muted">生效</span> {r.status.applied}</div> : null}
           </>
@@ -586,6 +635,22 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
                     </Tooltip>
                   ) : null}
                 </span>
+                {r.exclusions ? (
+                  <span className="cell-tags">
+                    <Tooltip title={`${exclusionSummary(r)}。修改后在部署页安装才在网关上生效；规则测试立即按新的排除计算。`}>
+                      <Tag data-testid={`rs-excl-${r.rule_set.id}`}>
+                        {r.exclusions.checked ? `生效 ${r.exclusions.effective ?? 0}/${r.exclusions.fetched ?? 0}` : `排除 ${r.rule_set.exclude?.length ?? 0} 条`}
+                      </Tag>
+                    </Tooltip>
+                    {(r.exclusions.stale ?? 0) + (r.exclusions.inside ?? 0) > 0 ? (
+                      <Tooltip title={r.exclusions.items.filter((it) => it.notice).map((it) => `${it.line}：${it.notice}`).join("；")}>
+                        <Tag color="orange" data-testid={`rs-excl-notice-${r.rule_set.id}`}>
+                          {(r.exclusions.stale ?? 0) + (r.exclusions.inside ?? 0)} 条排除需留意
+                        </Tag>
+                      </Tooltip>
+                    ) : null}
+                  </span>
+                ) : null}
                 {r.status.fetched_at ? <TimeText value={r.status.fetched_at} /> : null}
                 {r.status.last_error ? <Typography.Text type="danger" className="cell-small">{r.status.last_error}</Typography.Text> : null}
                 {r.status.held ? <Typography.Text type="warning" className="cell-small">{r.status.held.reason}</Typography.Text> : null}
@@ -601,6 +666,7 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
               <RowActions
                 label={r.rule_set.name}
                 more={[
+                  { key: "exclude", label: r.rule_set.exclude?.length ? `排除条目（${r.rule_set.exclude.length}）` : "排除条目", disabled: dirty, onClick: () => openExclusions(r) },
                   { key: "auth", label: r.auth ? "更换认证" : "设置认证", onClick: () => setAuthFor(r) },
                   ...(r.auth ? [{ key: "clear", label: "清除认证", onClick: () => void act(() => api.clearRuleSetAuth(r.rule_set.id)) }] : []),
                   ...(r.status.held ? [{ key: "held", label: "启用暂缓的版本", onClick: () => void act(() => api.activateHeldRuleSet(r.rule_set.id)) }] : []),
@@ -633,8 +699,10 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
         onCancel={() => setAdding(false)}
         onOk={async () => {
           const v = await form.validateFields();
-          await act(() =>
-            api.createRuleSet({
+          const exclude = exclusionLines(v.exclude_text);
+          setAddExclErrors(null);
+          try {
+            await api.createRuleSet({
               name: v.name,
               url: v.url,
               format: v.format || "",
@@ -642,8 +710,20 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
               interval_sec: v.interval_h ? v.interval_h * 3600 : 0,
               allow_lan: !!v.allow_lan,
               auth: authInput(v),
-            }),
-          );
+              ...(exclude.length ? { exclude } : {}),
+            });
+          } catch (e) {
+            const lines = exclusionErrors(e);
+            if (lines) {
+              // Keep the dialog open with the refused lines under the field.
+              setAddExclErrors(lines);
+              return;
+            }
+            await act(() => Promise.reject(e));
+            setAdding(false);
+            return;
+          }
+          await act(() => Promise.resolve());
           setAdding(false);
           form.resetFields();
         }}
@@ -674,7 +754,62 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
           <Form.Item name="allow_lan" valuePropName="checked" extra="默认拒绝解析到局域网、回环、链路本地或本机地址的 URL（包括重定向后的）。">
             <Checkbox>允许局域网地址的下载源</Checkbox>
           </Form.Item>
+          <Form.Item
+            name="exclude_text"
+            label="排除条目（可选）"
+            extra={EXCLUDE_HELP}
+            validateStatus={addExclErrors ? "error" : undefined}
+            help={addExclErrors ? <ExclusionErrorList lines={addExclErrors} /> : undefined}
+          >
+            <Input.TextArea aria-label="排除条目" className="mono" autoSize={{ minRows: 2, maxRows: 8 }} placeholder="DOMAIN-SUFFIX,example.com" />
+          </Form.Item>
         </Form>
+      </Modal>
+      <Modal
+        title={`排除条目：${exclFor?.rule_set.name ?? ""}`}
+        open={exclFor !== null}
+        destroyOnHidden
+        onCancel={() => setExclFor(null)}
+        okText="保存"
+        onOk={async () => {
+          if (!exclFor) return;
+          setExclErrors(null);
+          try {
+            await api.updateRuleSetDef(exclFor.rule_set.id, { exclude: exclusionLines(exclText) });
+          } catch (e) {
+            const lines = exclusionErrors(e);
+            if (lines) {
+              setExclErrors(lines);
+              return;
+            }
+            await act(() => Promise.reject(e));
+            setExclFor(null);
+            return;
+          }
+          await act(() => Promise.resolve());
+          setExclFor(null);
+        }}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          {EXCLUDE_HELP} 排除一个后缀会去掉规则集里它下面的全部条目；更新规则集时排除保留，已不存在的排除只作提示。修改后在部署页安装才在网关上生效。
+        </Typography.Paragraph>
+        <Form layout="vertical">
+          <Form.Item label="排除条目" validateStatus={exclErrors ? "error" : undefined} help={exclErrors ? <ExclusionErrorList lines={exclErrors} /> : undefined}>
+            <Input.TextArea
+              aria-label="排除条目"
+              className="mono"
+              autoSize={{ minRows: 4, maxRows: 14 }}
+              value={exclText}
+              onChange={(e) => setExclText(e.target.value)}
+              placeholder="DOMAIN-SUFFIX,example.com"
+            />
+          </Form.Item>
+        </Form>
+        {exclFor?.exclusions?.checked ? (
+          <Typography.Paragraph type="secondary" className="cell-small">
+            当前：{exclusionSummary(exclFor)}。
+          </Typography.Paragraph>
+        ) : null}
       </Modal>
       <Modal
         title={`订阅认证：${authFor?.rule_set.name ?? ""}`}
@@ -699,6 +834,17 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
         </Form>
       </Modal>
     </Section>
+  );
+}
+
+/** The refused exclusion lines, one per line (shown under the field). */
+function ExclusionErrorList({ lines }: { lines: string[] }) {
+  return (
+    <ul data-testid="exclusion-errors" style={{ margin: 0, paddingLeft: 18 }}>
+      {lines.map((l) => (
+        <li key={l}>{l}</li>
+      ))}
+    </ul>
   );
 }
 
