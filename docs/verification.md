@@ -786,6 +786,16 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
   - `MERIDIAN_GOST_BIN=… MERIDIAN_SMARTDNS_BIN=… … -test.run TestExternalExitRealBinaries`（root、nft）：固定版本 gost 的透明转发、认证失败、SOCKS 下线、重定向器下线、没有 UDP 套接字；固定版本 SmartDNS 的解析组经 SOCKS 回答、SOCKS 不通时失败、从不用承载节点自己的上游。
 - [ ] 实机人工签收：真实的 NAT 挂靠出口和中继出口、真实的路由器和它的 SOCKS、真实双枢纽切换下的回程、动态域名端点的重新解析——都没有做过。
 
+## 按顺序部署引导（自动化回归；没有对真实主机执行过）
+
+`go test ./internal/api -run 'Deploy|TopologyVersion'`（本地 SSH 替身 `sshtest`、模拟的宿主预检和激活；不连接任何远端主机）：
+
+- 顺序：嵌套出口 → 中继出口 → 出口 → 备用枢纽 → 主枢纽（IX）→ 两台中继 → 网关；外部 SOCKS 出口没有步骤；没有变化的节点不改变其余节点的顺序（`TestDeployOrderNestedRelaysHubs`）。管理通道：经中继跳转的节点先于中继，经别的节点主机端口转发的节点被提前并写明原因，经隧道管理的警告（含网关未装时隧道不存在），矛盾的通道按基本顺序并说明（`TestDeployOrderManagementChannels`）。拓扑版本不受画布位置、私钥和远程接入影响（`TestTopologyVersionIgnoresPositionsKeysAndRemoteAccess`）。
+- 运行：没有变化的节点跳过；不按顺序、没有审阅过的预检都被拒绝；逐台预检、审阅、确认、下发、读回健康结果，网关最后；每台服务器的登录不超过单节点流程的两次；全部一致后不能再开始（`TestDeployRunHappyPath`）。补偿后停下、下一台不能开始、不重新核对不能重装、核对后再确认成功（`TestDeployRunStopsOnCompensationAndRecovers`）。结果不明后停下，核对时服务器记录显示内容已装上就采纳、不重跑脚本，节点状态变为一致（`TestDeployRunUnknownThenAdoptsHostRecord`）。拓扑保存使运行过期、拒绝安装、重新计划保留未受影响的预检并作废受影响的（`TestDeployPlanInvalidatedByTopologyChange`）；服务器身份（凭据）变化使确认失效并写明原因（`TestDeployConfirmationInvalidatedByIdentityChange`）。不能同时开始两个运行、执行中的一步挡住其它动作（`TestDeployNoDoubleStart`）。面板重启时执行中的下发显示为结果不明并停下、被打断的预检回到待预检，且持久化（`TestDeployRestartWithStepInFlight`）。限速时等待 `retry_after`、期间不连接（`TestDeployRespectsRetryAfter`）。与无人值守解锁自动安装互斥、网关激活失败补偿后停下再恢复（`TestDeployGatewayAndUnattendedInstall`）。状态栏的 `deploy_run`（`TestDeployRunInStatus`）。
+- 界面（`web/src/deployment_guide.test.tsx`，内存里的假 API）：计划的顺序、原因和跳过原因，开始时带上看到的计划版本；只用审阅过的预检确认一台；停下时只提供重新核对；过期时说明原因并重新计划；限速时倒计时、不发请求。「已装好不是端到端验证」和远程接入是独立资源的说明都看得见。
+
+**未验证**：真实服务器上按这个顺序的一次完整部署；经隧道管理的节点在自己安装时会话是否被切断；真实 sshd 限速下的倒计时是否足够；运行期间面板真实重启。这些要由主会话在真实环境里执行并留下不含私密信息的记录后才算数。
+
 ## 跨模块契约在哪里测试
 
 都是本地测试（假宿主、进程内 SSH 服务器、假 Cloudflare，不连接任何远端），属于「自动化回归」。

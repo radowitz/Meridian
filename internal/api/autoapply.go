@@ -29,9 +29,11 @@ package api
 //  3. rate: at least the minimum gap since the last automatic install,
 //     fewer than the daily cap in the last 24 hours, and not the same
 //     decisions that failed within the back-off (autoBackoff).
-//  4. nothing else running: the gateway node lock (preflight, provision,
-//     withdraw) is free and no host transaction holds or has left its lock;
-//     otherwise it is deferred to the next evaluation, never queued.
+//  4. nothing else running: no run of the ordered deployment guide is open
+//     (active or stopped), the gateway node lock (preflight, provision,
+//     withdraw, a guide step) is free and no host transaction holds or has
+//     left its lock; otherwise it is deferred to the next evaluation, never
+//     queued.
 //  5. preflight: the host preflight, run now for this bundle under the
 //     node lock, has no blocking finding.
 //
@@ -290,10 +292,19 @@ func (s *Server) maybeAutoApply(trigger string) *autoCheck {
 		return finish(AutoDailyCap, fmt.Sprintf("最近 24 小时已自动安装 %d 次，达到上限 %d", recent, cfg.dailyMax))
 	}
 	// 4. nothing else running; hold the gateway node lock from here on.
-	if !s.lockNode(localNodeID) {
-		return finish(AutoBusy, "网关正在预检、装机或撤回，推迟到下一次评估")
+	// An open run of the ordered deployment guide (deploy_plan.go) counts
+	// as running until it is done or cancelled: the two never interleave.
+	if id := s.deployRunOpen(); id != "" {
+		return finish(AutoBusy, "按顺序部署引导 "+id+" 还没有结束（进行中，或停在某个节点等待处理）：自动安装推迟到它完成或被取消")
 	}
-	defer s.unlockNode(localNodeID)
+	if !s.lockNode(localNodeID) {
+		return finish(AutoBusy, "网关正在预检、装机或撤回（可能是按顺序部署引导的一步），推迟到下一次评估")
+	}
+	s.autoInstalling.Store(true)
+	defer func() {
+		s.autoInstalling.Store(false)
+		s.unlockNode(localNodeID)
+	}()
 	ap := s.applier(true)
 	if busy, err := ap.Busy(); err != nil || busy {
 		return finish(AutoBusy, "有宿主事务正在进行或没有完成，推迟到下一次评估")

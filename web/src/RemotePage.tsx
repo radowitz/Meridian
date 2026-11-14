@@ -713,6 +713,14 @@ export default function RemotePage() {
               type="info"
               showIcon
               style={{ marginBottom: 16 }}
+              data-testid="remote-independent"
+              message="远程接入是独立的资源：保存拓扑、按顺序部署引导都不会打开、关闭或改动这里的开关和设备"
+              description="只有这一页能改它。这里的改动和别的改动一样，要「安装到网关」（或部署引导里网关那一步）之后才在网关上生效。"
+            />
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
               message="手机在外网（蜂窝或别人的 Wi-Fi）能否真的连回来，面板验证不了"
               description="面板只能生成配置和读网关上的握手记录。路由器转发、运营商是否放行 UDP、DDNS 是否指向正确的地址，都要你用手机在外网实际连一次才算验证。"
             />

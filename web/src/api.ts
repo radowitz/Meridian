@@ -32,6 +32,7 @@ import type {
   CloudflareAccountsView,
   CloudflareRequirements,
   DiffResult,
+  DeployView,
   HostKeyDiscovery,
   HostReport,
   HostStatus,
@@ -296,6 +297,22 @@ export function provision(nodeId: string, opts: { dryRun?: boolean; generateKeys
     ...(opts.preflightId ? { preflight_id: opts.preflightId } : {}),
   });
 }
+
+// ---------------------------------------------- ordered deployment guide ---
+
+/** The plan (nodes to install, in order, with reasons) and the open or last run. */
+export const getDeploy = () => request<DeployView>("GET", "/api/deploy");
+/** Starts a run of the plan the operator looked at (refused when the topology changed since). */
+export const startDeploy = (topologyVersion?: string) =>
+  request<DeployView>("POST", "/api/deploy/runs", topologyVersion ? { topology_version: topologyVersion } : {});
+/** Read-only preflight of the run's current node (also the re-check after a failure). */
+export const deployPreflight = (runId: string, nodeId: string) =>
+  request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/preflight`, { node_id: nodeId });
+/** The operator's confirmation of one node: installs it with exactly the reviewed preflight. */
+export const deployInstall = (runId: string, nodeId: string, preflightId: string) =>
+  request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/install`, { node_id: nodeId, preflight_id: preflightId });
+export const deployReplan = (runId: string) => request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/replan`, {});
+export const deployCancel = (runId: string) => request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/cancel`, {});
 
 /** Read-only preflight of a remote node's server over the pinned SSH channel. */
 export const provisionPreflight = (nodeId: string) =>

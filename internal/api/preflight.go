@@ -121,7 +121,37 @@ type preflightRecord struct {
 	Host         hostSummary         `json:"host"`
 	Footprint    preflight.Footprint `json:"footprint"`
 	NotChecked   []string            `json:"not_checked"`
+	// HostRecord (remote) is what the host's own install record says: the
+	// manifest header and the journal state. The ordered deployment guide
+	// reads it before retrying a node, so content that is already there is
+	// adopted instead of installed again. No secret: names and digests.
+	HostRecord *hostRecord `json:"host_record,omitempty"`
 	preflight.Evaluation
+}
+
+// hostRecord is the header of a remote node's manifest and its journal.
+type hostRecord struct {
+	Node         string `json:"node,omitempty"`
+	Deployment   string `json:"deployment,omitempty"`
+	Server       string `json:"server,omitempty"`
+	Bundle       string `json:"bundle,omitempty"`
+	Installed    int64  `json:"installed,omitempty"`
+	JournalState string `json:"journal_state,omitempty"`
+	JournalRun   string `json:"journal_run,omitempty"`
+}
+
+func hostRecordOf(r preflight.Report) *hostRecord {
+	if !r.Complete || (r.Manifest == nil && r.Journal == nil) {
+		return nil
+	}
+	h := &hostRecord{}
+	if m := r.Manifest; m != nil {
+		h.Node, h.Deployment, h.Server, h.Bundle, h.Installed = m.Node, m.Deployment, m.Server, m.Bundle, m.Installed
+	}
+	if j := r.Journal; j != nil {
+		h.JournalState, h.JournalRun = j.State, j.Run
+	}
+	return h
 }
 
 func preflightKey(node string) string { return "preflight/" + node }
@@ -263,7 +293,7 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 	}
 	rec := &preflightRecord{ID: "pf-" + randHex(8), Kind: "remote", NodeID: n.ID, NodeName: n.Name, Role: string(n.Role), Target: &ident,
 		Deployment: dep, Bundle: preflight.BundleDigest(files), FirstInstall: first, At: now, ExpiresAt: now.Add(preflightTTL),
-		Host: summaryOf(rep), Footprint: fp, NotChecked: notChecked, Evaluation: ev}
+		Host: summaryOf(rep), Footprint: fp, NotChecked: notChecked, Evaluation: ev, HostRecord: hostRecordOf(rep)}
 	if err := s.savePreflight(rec); err != nil {
 		return nil, err
 	}
@@ -751,6 +781,20 @@ func (s *Server) gateGatewayInstall(w http.ResponseWriter, r *http.Request, file
 		return false
 	}
 	defer s.unlockNode(localNodeID)
+	return s.gateGatewayInstallLocked(w, r.Context(), files, reviewedID)
+}
+
+// gateGatewayInstallLocked is gateGatewayInstall for a caller that already
+// holds the gateway node lock (the ordered deployment guide keeps it until
+// the host transaction has ended).
+func (s *Server) gateGatewayInstallLocked(w http.ResponseWriter, ctx context.Context, files map[string]string, reviewedID string) bool {
+	if !s.gatewayGateActive() {
+		return true
+	}
+	if s.hostPreflighter() == nil {
+		writeCoded(w, http.StatusServiceUnavailable, codeHostUnavailable, "宿主执行通道不支持安装前预检（meridian-host 未运行、不可用或版本过旧），拒绝安装；宿主上没有写入任何文件", nil)
+		return false
+	}
 	inst, err := s.applier(true).Installed()
 	if err != nil {
 		writeCoded(w, http.StatusInternalServerError, codeHostStateMalformed, err.Error(), nil)
@@ -768,9 +812,9 @@ func (s *Server) gateGatewayInstall(w http.ResponseWriter, r *http.Request, file
 		writeCoded(w, http.StatusConflict, codePreflightRequired, "第一次安装到网关前（或撤回之后重新安装前）必须先做安装前预检并审阅结果（POST /api/host/preflight），再带上 preflight_id 安装", nil)
 		return false
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	pctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	fresh, err := s.runHostPreflight(ctx, files)
+	fresh, err := s.runHostPreflight(pctx, files)
 	if err != nil {
 		writeHostPreflightErr(w, err)
 		return false

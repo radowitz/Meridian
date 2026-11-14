@@ -93,7 +93,10 @@ type statusView struct {
 	// rows with pending true.
 	Nodes        []nodeInstallState `json:"nodes"`
 	PendingNodes int                `json:"pending_nodes"`
-	Jobs         struct {
+	// DeployRun is the open run of the ordered deployment guide (active or
+	// stopped), absent when none.
+	DeployRun *deployStatus `json:"deploy_run,omitempty"`
+	Jobs      struct {
 		Lists  statusJob `json:"lists"`
 		Unlock statusJob `json:"unlock"`
 		Mesh   statusJob `json:"mesh"`
@@ -139,6 +142,7 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 			v.PendingNodes++
 		}
 	}
+	v.DeployRun = s.deployStatusOf()
 
 	v.Jobs.Lists = statusJob{State: "none"}
 	if j := s.currentListsJob(); j != nil {

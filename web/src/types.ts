@@ -717,6 +717,8 @@ export interface PanelStatus {
   /** Every managed node's own install state (absent from older panels). */
   nodes?: NodeInstallState[];
   pending_nodes?: number;
+  /** The open run of the ordered deployment guide (active or stopped); absent when none. */
+  deploy_run?: { id: string; state: DeployRunState; current?: string; done: number; total: number };
 }
 
 /** One node compared with what was last installed on it (never with another node's install). */
@@ -2350,4 +2352,117 @@ export interface SniffView {
     recent?: { record_names: boolean; connections: SniffRecord[] | null } | null;
     read_at?: string;
   };
+}
+
+// ------------------------------------------------- ordered deployment guide ---
+
+export type DeployRunState = "active" | "stopped" | "done" | "cancelled";
+/** pending | preflighting | review | blocked | installing | done | failed | unknown */
+export type DeployPhase = "pending" | "preflighting" | "review" | "blocked" | "installing" | "done" | "failed" | "unknown";
+
+export interface DeployPlanStep {
+  node_id: string;
+  node_name: string;
+  role: string;
+  kind: "remote" | "gateway";
+  /** Why the node is at this position. */
+  reason: string;
+  warnings?: string[];
+  /** The node's install state when planned (node state codes). */
+  plan_state: string;
+  plan_state_reason?: string;
+  plan_bundle?: string;
+  plan_target?: PreflightTarget;
+}
+
+export interface DeploySkip {
+  node_id: string;
+  node_name: string;
+  role: string;
+  /** in_sync | done_in_run | external | unmanaged */
+  kind: string;
+  why: string;
+}
+
+export interface DeployPlan {
+  topology_version: string;
+  steps: DeployPlanStep[];
+  skipped: DeploySkip[];
+  notes?: string[];
+}
+
+export interface DeployHealth {
+  /** gateway_transaction | remote_script | host_record */
+  source: string;
+  committed: boolean;
+  steps?: { name: string; ok: boolean; skipped?: boolean; detail?: string }[];
+  warnings?: string[];
+  verify?: string;
+  detail?: string;
+}
+
+export interface DeployStep extends DeployPlanStep {
+  phase: DeployPhase;
+  preflight_id?: string;
+  review_bundle?: string;
+  review_target?: PreflightTarget;
+  review_expires?: string;
+  /** installed | refused | compensated | left_behind | unknown | interrupted | not_started | adopted */
+  outcome?: string;
+  code?: string;
+  message?: string;
+  evidence?: string;
+  run?: string;
+  health?: DeployHealth;
+  leftovers?: string[];
+  not_executed?: boolean;
+  safe_to_retry?: boolean;
+  retry_at?: string;
+  invalidated?: string;
+  attempts: number;
+  started_at?: string;
+  finished_at?: string;
+  position: number;
+  current: boolean;
+  in_flight: boolean;
+  current_bundle?: string;
+  current_target?: PreflightTarget;
+  /** Live differences from what the plan or the review was bound to. */
+  changes?: string[];
+  confirmation_valid: boolean;
+  can_preflight: boolean;
+  can_install: boolean;
+  /** Seconds until the server's rate limit ends (the guide does not connect before). */
+  wait_seconds?: number;
+}
+
+export interface DeployRun {
+  id: string;
+  state: DeployRunState;
+  created_at: string;
+  updated_at: string;
+  topology_version: string;
+  steps: DeployStep[];
+  skipped: DeploySkip[];
+  notes?: string[];
+  stop_reason?: string;
+  events?: { at: string; node?: string; text: string }[];
+  stale: boolean;
+  stale_reason?: string;
+  affected?: string[];
+  current?: string;
+  in_flight?: string;
+  /** The current step's reviewed preflight. */
+  preflight?: PreflightRecord;
+  /** Nodes not in sync now that are not steps of this run (a re-plan adds them). */
+  pending_outside?: string[];
+}
+
+export interface DeployView {
+  limits: { proves: string[]; does_not_prove: string[]; independent: string[] };
+  run: DeployRun | null;
+  plan?: DeployPlan;
+  topology_version?: string;
+  plan_error?: string;
+  plan_error_code?: string;
 }

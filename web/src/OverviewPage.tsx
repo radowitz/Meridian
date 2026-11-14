@@ -243,6 +243,17 @@ export default function OverviewPage() {
                   <StatusTag kind="neutral">未安装</StatusTag>
                 )}
               </Row>
+              {status.deploy_run ? (
+                <Row label="部署引导">
+                  <Link to={href("deploy") + "?section=guide"}>
+                    <span data-testid="overview-deploy-run">
+                      <StatusTag kind={status.deploy_run.state === "stopped" ? "failed" : "running"}>
+                        {status.deploy_run.state === "stopped" ? "已停下" : "进行中"} {status.deploy_run.done}/{status.deploy_run.total}
+                      </StatusTag>
+                    </span>
+                  </Link>
+                </Row>
+              ) : null}
               <Row label="安装事务">
                 {status.pending ? <StatusTag kind="failed" title={status.pending.error}>{`未完成（${status.pending.phase}）`}</StatusTag> : <span>无</span>}
               </Row>

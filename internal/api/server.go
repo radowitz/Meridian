@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/radowitz/meridian/internal/apply"
@@ -139,6 +140,16 @@ type Server struct {
 
 	provMu   sync.Mutex
 	provBusy map[string]bool
+
+	// deployMu guards the stored run of the ordered deployment guide
+	// (deploy_plan.go); deployBoot identifies this panel process, so an
+	// in-flight step stored by another (a restart) is shown as
+	// interrupted, never as done. autoInstalling is set while the
+	// unattended unlock install holds the gateway node lock.
+	deployMu       sync.Mutex
+	deployBoot     string
+	deployBootOnce sync.Once
+	autoInstalling atomic.Bool
 }
 
 // localNodeID is the node whose files an install writes on this host.
@@ -191,6 +202,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerWSS(mux)
 	s.registerRuleSets(mux)
 	s.registerRulesImport(mux)
+	s.registerDeploy(mux)
 	if s.WebDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.WebDir)))
 	}
@@ -496,6 +508,10 @@ type applyBody struct {
 	// PreflightID is the reviewed install pre-check (POST /api/host/preflight).
 	// Required for the first install; the check is re-run before any install.
 	PreflightID string `json:"preflight_id,omitempty"`
+	// gated (never decoded): the caller holds the gateway node lock and has
+	// run the preflight gate for this install itself (the ordered
+	// deployment guide, deploy_plan.go).
+	gated bool
 }
 
 // Error codes of POST /api/apply, POST /api/rollback and POST /api/host/recover.
@@ -591,7 +607,7 @@ func (s *Server) applyGateway(w http.ResponseWriter, r *http.Request, body apply
 			// runs before the gateway key is generated or anything is
 			// written: blocking findings, a stale or changed review, or a
 			// first install without one are refused here.
-			if err == nil && auto == nil && !s.gateGatewayInstall(w, r, provision.FilesFor(pb.Files, localNodeID), body.PreflightID) {
+			if err == nil && auto == nil && !body.gated && !s.gateGatewayInstall(w, r, provision.FilesFor(pb.Files, localNodeID), body.PreflightID) {
 				return
 			}
 		}

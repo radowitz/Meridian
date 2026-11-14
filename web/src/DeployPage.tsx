@@ -37,6 +37,7 @@ import type {
   WithdrawMode,
 } from "./types";
 import { DeploymentRecords, GatewayWithdraw, WithdrawDialog } from "./Withdraw";
+import { DeploymentGuide } from "./DeploymentGuide";
 import { roleLabel } from "./types";
 import { WSSPanel } from "./WSS";
 import {
@@ -1008,7 +1009,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
   return (
     <Section title="远端节点" id="remote">
       <Typography.Paragraph>
-        推荐顺序：先在这里给每个远端节点「生成密钥并下发」（第一次装机），再「安装到网关」——网关的配置要用到每个对端的公钥，缺了会被拒绝安装。以后改了拓扑，也是先对受影响的远端节点「下发」，再「安装到网关」：可切换地区组的解析走组的隧道地址（fd66::53:…），只有已经下发新配置的出口才会应答，网关先装的话组内的名字在出口更新前解析不了（不会改问国内或别的出口）。
+        要一次处理所有待变更的节点，用上面的「按顺序部署待变更节点」：它按同样的顺序逐台预检、确认、下发。单独处理时的推荐顺序：先在这里给每个远端节点「生成密钥并下发」（第一次装机），再「安装到网关」——网关的配置要用到每个对端的公钥，缺了会被拒绝安装。以后改了拓扑，也是先对受影响的远端节点「下发」，再「安装到网关」：可切换地区组的解析走组的隧道地址（fd66::53:…），只有已经下发新配置的出口才会应答，网关先装的话组内的名字在出口更新前解析不了（不会改问国内或别的出口）。
       </Typography.Paragraph>
       {keyless.length > 0 ? (
         <Alert
@@ -1450,7 +1451,7 @@ export default function DeployPage() {
   const { route } = useRouter();
   useEffect(() => {
     const sec = route.query.get("section");
-    if (sec === "remote" || sec === "deployments") {
+    if (sec === "remote" || sec === "deployments" || sec === "guide") {
       const t = window.setTimeout(() => document.getElementById(sec)?.scrollIntoView?.({ behavior: "smooth" }), 200);
       return () => window.clearTimeout(t);
     }
@@ -1460,6 +1461,7 @@ export default function DeployPage() {
   const servers = useApi(() => api.listServers(), []);
   const nodeName = (id: string) => doc.topo?.nodes.find((n) => n.id === id)?.name ?? id;
   const remote = (doc.topo?.nodes ?? []).filter((n) => n.managed && n.role !== "gateway");
+  const { refresh } = useStatus();
 
   return (
     <Page
@@ -1485,6 +1487,13 @@ export default function DeployPage() {
         />
       ) : null}
       <PendingChanges nodeName={nodeName} />
+      <DeploymentGuide
+        onChanged={() => {
+          refresh();
+          void host.reload();
+          void deployments.reload();
+        }}
+      />
       <InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} />
       <RemoteNodes nodes={remote} servers={servers.data?.servers} onWithdrawn={() => void deployments.reload()} />
       <WSSPanel nodeName={nodeName} />

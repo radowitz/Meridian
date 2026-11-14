@@ -90,6 +90,12 @@ export const DEFAULTS: Record<string, Handler> = {
     rules: [],
   }),
   "GET /api/upstream": () => ({ mode: "single", known: false, source: "topology" }),
+  "GET /api/deploy": () => ({
+    limits: { proves: ["安装事务已提交"], does_not_prove: ["端到端连通"], independent: ["远程接入是独立资源"] },
+    run: null,
+    plan: { topology_version: "v0", steps: [], skipped: [] },
+    topology_version: "v0",
+  }),
   "GET /api/sniff": () => ({
     setting: { enabled: false, ports: [80, 443], ech_public_names: ["cloudflare-ech.com"], record_names: false },
     listen_port: 5358,
