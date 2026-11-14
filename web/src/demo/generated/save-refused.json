@@ -1,0 +1,30 @@
+{
+ "anchor": "2026-01-01T00:00:00Z",
+ "base": "healthy",
+ "generator": "internal/api/demo_fixtures_test.go (MERIDIAN_DEMO_FIXTURES=write go test ./internal/api -run 'TestDemoFixtures$' -count=1)",
+ "responses": {
+  "PUT /api/topology": {
+   "body": {
+    "code": "independent_resource_changed",
+    "error": "整份拓扑保存不能修改独立资源：服务组（service_groups，用 /api/service-groups）。没有保存任何内容。如果你没有改它们，说明这份文档是在它们被各自的接口修改之前读取的：重新读取拓扑后再改，或在请求里省略这些字段。",
+    "fields": [
+     {
+      "endpoint": "/api/service-groups",
+      "field": "service_groups",
+      "items": [
+       "svc01"
+      ],
+      "methods": [
+       "POST /api/service-groups",
+       "PATCH /api/service-groups/{id}",
+       "DELETE /api/service-groups/{id}"
+      ],
+      "resource": "服务组"
+     }
+    ]
+   },
+   "status": 409
+  }
+ },
+ "scenario": "save-refused"
+}

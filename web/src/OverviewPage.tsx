@@ -145,7 +145,8 @@ export default function OverviewPage() {
   // Peers an install refuses until they have a public key: managed nodes get
   // one from their first provisioning, unmanaged ones (IX …) from the topology.
   const keyless = managed ? managed.filter((n) => !n.public_key) : null;
-  const keylessUnmanaged = doc.topo?.nodes.filter((n) => n.role !== "gateway" && !n.managed && !n.public_key) ?? [];
+  // External SOCKS exits have no key of their own (the carrier holds the tunnel).
+  const keylessUnmanaged = doc.topo?.nodes.filter((n) => n.role !== "gateway" && !n.managed && !n.external && !n.public_key) ?? [];
   const steps: { title: string; done: Done; text: ReactNode; to: string }[] = [
     {
       title: "添加 SSH 密钥",

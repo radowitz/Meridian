@@ -8,12 +8,29 @@
 // hidden labels) that lie outside the horizontally scrolling box around them
 // while that box is not their containing block (they then widen every
 // ancestor's scroll area, up to the document).
-window.__audit = async function (width, pages, wait) {
+//
+// The demo preview (web/README.md「演示预览」, synthetic data only) is
+// audited the same way: open the demo (npm run demo:serve) and paste this
+// file into its console, then pass the scenario and theme:
+//   await __audit(1280, ["", "rules"], 1500, { scenario: "degraded", theme: "dark" })
+//   await __auditDemo({ widths: [1440, 1280, 1024, 768, 390] })   // all pages × scenarios × themes
+// opts.url points the iframe at another origin/path of the panel or the
+// demo (default: this page's origin and path). The demo's own marker bar
+// and watermark ([data-demo-chrome]) are not audited.
+window.__AUDIT_PAGES = ["", "topology", "exits", "rules", "lists", "servers", "keys", "cloudflare", "remote", "deploy", "unlock", "leak"];
+window.__audit = async function (width, pages, wait, opts) {
+  opts = opts || {};
+  pages = pages || window.__AUDIT_PAGES;
   let f = document.getElementById('__af');
-  if (!f) { f = document.createElement('iframe'); f.id = '__af'; f.style.cssText = 'position:fixed;left:0;top:0;height:1000px;border:0;z-index:99999;background:#fff'; document.body.appendChild(f); }
+  if (!f) { f = document.createElement('iframe'); f.id = '__af'; f.style.cssText = 'position:fixed;left:0;top:0;height:1000px;border:0;z-index:2147483647;background:#fff'; document.body.appendChild(f); }
   f.style.width = width + 'px';
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  if (!f.src) { f.src = location.origin + '/#/'; await new Promise(r => { f.onload = r }); await sleep(1500); }
+  // The page to load: the panel (or the demo) at this origin and path, with the demo's scenario and theme.
+  const q = new URLSearchParams();
+  if (opts.scenario) q.set('scenario', opts.scenario);
+  if (opts.theme) q.set('theme', opts.theme);
+  const want = (opts.url || location.origin + location.pathname) + (q.toString() ? '?' + q : '');
+  if (f.dataset.base !== want) { f.dataset.base = want; f.src = want + '#/'; await new Promise(r => { f.onload = r }); await sleep(1500); }
   const out = {};
   for (const p of pages) {
     f.contentWindow.location.hash = '#/' + p; await sleep(wait || 1500);
@@ -27,7 +44,7 @@ window.__audit = async function (width, pages, wait) {
     const hScrollAnc = el => { for (let a = el.parentElement; a && a !== D.body; a = a.parentElement) { if (/(auto|scroll)/.test(W.getComputedStyle(a).overflowX)) return a; } return null; };
     const seen = new Set(); const push = (k, arr, el, extra) => { const key = k + desc(el) + txt(el); if (seen.has(key) || arr.length >= 12) return; seen.add(key); arr.push(desc(el) + ' «' + txt(el) + '»' + (extra ? ' ' + extra : '')); };
     for (const el of D.body.querySelectorAll('*')) {
-      if (el.closest('svg,.react-flow,.ant-tooltip,.ant-select-dropdown,.ant-dropdown')) continue;
+      if (el.closest('svg,.react-flow,.ant-tooltip,.ant-select-dropdown,.ant-dropdown,[data-demo-chrome]')) continue;
       const s0 = W.getComputedStyle(el);
       if (s0.position === 'absolute' && s0.display !== 'none') {
         // Its containing block is el.offsetParent; if that is outside the scrolling box, the box does not clip it.
@@ -50,3 +67,32 @@ window.__audit = async function (width, pages, wait) {
   return out;
 };
 window.__fmt = (o, keys) => Object.entries(o).filter(([k]) => !keys || keys.includes(k)).map(([k, v]) => k + ': ox=' + v.ox + '\n' + ['spill', 'hscroll', 'beyond', 'outCard', 'wrap', 'squeeze', 'absOut'].filter(c => v[c].length).map(c => '  ' + c + ':\n    ' + v[c].join('\n    ')).join('\n')).join('\n');
+// The whole demo matrix: pages × scenarios × themes × widths. Scenarios
+// default to the demo's own list (window.__meridianDemo in the iframe).
+// Returns { "<scenario>/<theme>/<width>": { "<page>": result } }.
+window.__auditDemo = async function (o) {
+  o = o || {};
+  const widths = o.widths || [1440, 1280, 1024, 768, 390];
+  const themes = o.themes || ['light', 'dark'];
+  const pages = o.pages || window.__AUDIT_PAGES;
+  let scenarios = o.scenarios;
+  if (!scenarios) {
+    await window.__audit(widths[0], [''], o.wait, { url: o.url, scenario: 'healthy', theme: themes[0] });
+    const d = document.getElementById('__af').contentWindow.__meridianDemo;
+    if (!d) throw new Error('not a demo preview: open the demo (npm run demo:serve) or pass o.url');
+    scenarios = d.scenarios;
+  }
+  const out = {};
+  for (const sc of scenarios) for (const th of themes) for (const w of widths) {
+    out[sc + '/' + th + '/' + w] = await window.__audit(w, pages, o.wait, { url: o.url, scenario: sc, theme: th });
+    const gaps = document.getElementById('__af').contentWindow.__meridianDemo?.gaps || [];
+    if (gaps.length) out[sc + '/' + th + '/' + w].__gaps = gaps.slice();
+  }
+  window.__lastDemo = out;
+  return out;
+};
+// Only the combinations with findings.
+window.__fmtDemo = o => Object.entries(o).map(([k, r]) => {
+  const body = window.__fmt(Object.fromEntries(Object.entries(r).filter(([p, v]) => p !== '__gaps' && (v.ox > 0 || ['spill', 'hscroll', 'beyond', 'outCard', 'wrap', 'squeeze', 'absOut'].some(c => v[c].length)))));
+  return body || r.__gaps ? '== ' + k + (r.__gaps ? ' (requests the demo could not answer: ' + r.__gaps.join(', ') + ')' : '') + '\n' + body : '';
+}).filter(Boolean).join('\n');

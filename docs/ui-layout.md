@@ -386,3 +386,58 @@ boxes that scroll (`hscroll`), elements beyond the viewport (`beyond`) or their
 card (`outCard`), labels/tags/buttons that wrap (`wrap`) and text squeezed into
 a one-character column (`squeeze`). It is a manual tool, not part of the test
 suite or the bundle.
+
+### Demo preview
+
+The "everything works" states (agent ok, relays sharing, hub read, groups
+with an actual member, deployment guide runs, sniff running, Mesh deployed)
+cannot be produced by a local panel without a host agent and real servers.
+The demo preview renders the real shell and pages on responses generated
+from the Go handlers on a synthetic gateway of real size (web/README.md
+「演示预览」 has the scenario list, where the data comes from and how it is
+kept apart from production). It is a development and acceptance tool:
+nothing seen in it counts as verified on a real host, and the checks in
+"Checks only a real browser can prove" stay unverified until they are run
+in a real browser.
+
+Build and serve it (offline; no external resource):
+
+```sh
+npm --prefix web run demo:build
+npm --prefix web run demo:serve        # http://127.0.0.1:4174/  (or any static server on web/dist-demo)
+```
+
+URL scheme: `/?scenario=<id>&theme=light|dark#/<page>` — scenarios
+`healthy`, `degraded`, `unavailable`, `deploy-running`,
+`deploy-rate-limited`, `deploy-compensated`, `deploy-unknown`,
+`deploy-done`, `preflight-blocked`, `save-refused`; no `theme` follows the
+system. The red bar at the bottom ("演示数据", scenario and theme pickers)
+and the faint watermark are always there; they are marked
+`[data-demo-chrome]` and skipped by the audit. The bar adds its own height plus
+8 px (44 px on a wide window; more where it wraps) of bottom padding to the
+page (height only, widths are unchanged).
+
+Audit on the demo: open the demo, paste `web/tools/ui-audit.js` into its
+console, then
+
+```js
+// one scenario, theme and width
+const r = await __audit(1280, ["", "exits", "deploy"], 1500, { scenario: "degraded", theme: "dark" });
+console.log(__fmt(r));
+// the matrix: all pages × scenarios × themes × widths (defaults: every page,
+// the demo's scenarios, light and dark, 1440/1280/1024/768/390). At 1.5 s
+// per page the full matrix takes about half an hour; narrow it with
+// scenarios / themes / widths / pages.
+const m = await __auditDemo({ scenarios: ["healthy", "degraded"], widths: [1280, 390] });
+console.log(__fmtDemo(m)); // only the combinations with findings, and any request the demo could not answer
+```
+
+`opts.url` points the iframe at another origin or path (for example the
+demo's dev server, `http://127.0.0.1:5174/demo.html`). On the real panel
+`__audit(width, pages, wait)` behaves as before.
+
+The demo's own tests (`web/src/demo/*.test.tsx`) prove in jsdom that every
+endpoint of `api.ts` is answered in every scenario and that every page
+renders in the main scenarios without the error boundary; they say nothing
+about widths, wrapping or overlap.
+

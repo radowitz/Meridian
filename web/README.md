@@ -7,6 +7,7 @@ npm ci
 npm run dev      # 开发服务器，/api 代理到 127.0.0.1:8787（make run）
 npm run build    # tsc --noEmit && vite build → dist/
 npm test         # vitest + Testing Library + jsdom，对着内存里的假 API
+npm run demo:build && npm run demo:serve   # 演示预览（合成数据，见下面「演示预览」）→ dist-demo/
 ```
 
 ## 面板约定
@@ -83,3 +84,74 @@ npm test         # vitest + Testing Library + jsdom，对着内存里的假 API
 | `#/leak` | `LeakPage` | 四组检查；集成和人工两组无论接口返回什么都固定显示「未执行」/「待人工签收」 |
 
 测试：`panel.test.tsx`（资源页、名单、顶栏）和 `pages.test.tsx`（上面这些页面的关键交互）。
+
+## 演示预览（只用于开发和验收）
+
+用合成数据驱动**真实的外壳和页面**，在浏览器里查看「一切正常」「降级」「不可用」和引导部署各状态的界面——这些状态在没有宿主代理、真实服务器和出口的本机面板上看不到。它是开发和验收工具：**在演示里看到的任何东西都不算在真实主机上验证过**。
+
+### 构建与打开
+
+```sh
+npm run demo:build        # tsc --noEmit && vite build --config vite.demo.config.ts → web/dist-demo/
+npm run demo:serve        # vite preview：http://127.0.0.1:4174/（只是静态文件服务）
+# 或任何静态文件服务器，例如：python3 -m http.server 4174 --bind 127.0.0.1 --directory dist-demo
+npm run demo:dev          # 开发时：vite 开发服务器 http://127.0.0.1:5174/demo.html（改页面即时生效）
+```
+
+完全离线可用：页面、字体、数据都在 `dist-demo/` 里，没有任何外部资源；演示里的 `fetch` 被替换，`/api/*` 由浏览器内的演示 API 回答，其他地址一律拒绝，不发出任何网络请求。`file://` 直接打开时浏览器会拦截模块脚本，请用静态服务器。
+
+### 选择场景、主题和页面
+
+地址：`/?scenario=<场景>&theme=light|dark#/<页面>`（不带 `theme` 时跟随系统；页面就是面板自己的哈希路由）。页面底部固定的红色条（「演示数据」）上也能切换场景和主题；页面上还有淡淡的「演示数据 · 合成场景」水印，标签页标题以「【演示】」开头——截图不会被误认为真实面板。这条红色条为了不挡住内容，给页面底部加了与它等高的留白（宽窗口约 44 px，窄窗口折行时更高；只影响高度，不影响宽度）。
+
+| 场景 `scenario=` | 显示什么 |
+| --- | --- |
+| `healthy` | 宿主通道正常，已安装且与拓扑一致；两台国内中继按测得的质量分担（6:4）；主枢纽状态刚读过，七个地区组都有实际成员；全部服务器已测试连接（一台闲置服务器的指纹待确认）；解锁结果新鲜；嗅探服务运行中、有最近的决定；名单已更新；Mesh 备路已部署；远程接入三台设备 |
+| `degraded` | 备用枢纽承载（`on_backup`），一台中继不通、另一台因丢包被剔除；香港机房 1 健康检查失败（组切到机房 2）；规则集 `rs07` 下载失败、保留旧版；英国出口的解锁结果三天前、已过期；备用枢纽和香港机房 2 有待安装的改动；两个枢纽的报告都已过时；一台服务器连接测试超时；一台远程设备三天没有握手 |
+| `unavailable` | 第一次运行：没有宿主执行通道，什么都没装，没有服务器、密钥和账户（拓扑是同一份合成拓扑） |
+| `deploy-running` | 引导部署进行中：第一个出口已安装，第二个正在下发 |
+| `deploy-rate-limited` | 服务器在 SSH 横幅前拒绝了面板的地址：这一步等待 `retry_after`（60 秒） |
+| `deploy-compensated` | 一个出口装机失败并已补偿，运行停止 |
+| `deploy-unknown` | 一个出口的回答无法读取：结果不明，运行停止 |
+| `deploy-done` | 运行完成：四个节点在本次运行中安装，一个依据服务器上的安装记录采纳 |
+| `preflight-blocked` | 「部署」页的网关预检返回阻断项（FORWARD DROP、53 端口被占用、Docker） |
+| `save-refused` | 整份拓扑保存被服务端以 `independent_resource_changed` 拒绝（任何「保存」都返回这条真实的拒绝） |
+
+每个场景都含有规则集排除项已不存在（`rs03` 的 `removed-upstream.example`）的提示。
+
+### 数据从哪里来
+
+`src/demo/generated/*.json` 全部由 Go 的真实处理函数生成，不是手写的：`internal/api/demo_fixtures_test.go` 用合成拓扑（14 个节点：两台中继、主备枢纽、经中继出口的嵌套出口、外部 SOCKS 出口、九个出口；七个地区组；166 条有序规则——手工、导入、非手工；56 个规则集；14 个服务组；全部 41 个检测适配器在九个出口上的结果）和现有的测试替身（应答健康的宿主代理、假预检、进程内的 SSH 替身、假下载器/探测/上游/嗅探/远程接入/名单运行时、内存里的 Cloudflare 与 Mesh）启动 API，调用面板用到的每个读接口，按场景写出回答。地址只用文档地址段和私有网段，名字只用 `example`。重新生成（在仓库根目录，确定性：两次运行之间文件不变）：
+
+```sh
+npm --prefix web run demo:fixtures
+# 即：MERIDIAN_DEMO_FIXTURES=write go test ./internal/api -run 'TestDemoFixtures$' -count=1
+```
+
+生成器把时间换成相对固定锚点的偏移（演示加载时再平移到「现在」，相对时间保持不变），把随机值（ID、密钥、指纹、摘要）换成形状相同的固定值，把证书正文换成一行占位（它的长度每次都不一样）。不带环境变量时 `go test ./...` 会在内存里重新生成一遍，并检查提交的文件和处理函数现在的回答结构一致（字段与类型）：后端改了回答结构而没有重新生成，测试就失败。
+
+### 演示里的操作
+
+只读：读接口返回生成的回答；面板为显示状态发的只读 POST（比较、校验、分配、网关预检、规则测试——只有生成过的几个示例名字）也返回生成的回答；「读取枢纽状态」返回已存的状态。**所有修改都不执行**：返回 403 `demo_read_only`「演示模式下不执行……」，由面板统一的错误提示显示。没有定时器假装长时间的操作。
+
+### 与生产隔离
+
+- 生产入口 `index.html` → `src/main.tsx` 不导入 `src/demo/` 下的任何模块；生产面板没有任何运行时开关、URL 参数、环境变量或路由能到达演示数据。
+- 演示有自己的入口 `demo.html`、自己的构建配置 `vite.demo.config.ts` 和输出目录 `dist-demo/`（已加入 `.gitignore`、`.dockerignore`）；`npm run build` 的输出 `dist/` 与演示无关。
+- Go 二进制只服务 `MERIDIAN_WEB_DIR`（`web/dist`），Docker 镜像只复制 `web/dist`。
+- 自动检查：`src/demo/demo.test.tsx` 的 isolation 测试（生产入口的导入图、生产 HTML 与构建配置、Dockerfile 与 Go 源码、存在时的 `dist/` 内容）。
+- 手工检查：
+
+```sh
+npm --prefix web run build
+grep -rlE "MERIDIAN-DEMO-PREVIEW|演示数据|demo_read_only|__meridianDemo" web/dist   # 没有输出
+grep -n "COPY --from=web" deploy/Dockerfile                                       # 只有 web/dist
+grep -rn "dist-demo" --include=*.go cmd internal                                  # 没有输出
+```
+
+### 测试与布局检测
+
+- `src/demo/demo.test.tsx`：`api.ts` 的每个接口都在演示路由表里，并且在每个场景里都有回答（生成的回答、未知对象的 404，或明确的演示拒绝），没有未处理的请求；标记条；隔离。约 2 秒。
+- `src/demo/demo_pages_{healthy,degraded,unavailable,states}.test.tsx`：每个页面在三个主场景里各渲染一次、部分场景改变的页面在该场景里渲染一次，不出现页面错误边界、没有演示答不了的请求（`testkit.tsx`）。四个文件并行，单条最慢的是解锁页（约 11–13 秒，41 个适配器 × 9 个出口的矩阵），其余 0.5–4 秒。
+- 布局检测脚本 `tools/ui-audit.js` 可以直接对演示运行，见 `docs/ui-layout.md`「Demo preview」。
+

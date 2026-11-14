@@ -1,0 +1,1965 @@
+{
+ "anchor": "2026-01-01T00:00:00Z",
+ "base": "healthy",
+ "generator": "internal/api/demo_fixtures_test.go (MERIDIAN_DEMO_FIXTURES=write go test ./internal/api -run 'TestDemoFixtures$' -count=1)",
+ "responses": {
+  "POST /api/host/preflight": {
+   "body": {
+    "preflight": {
+     "at": "2026-01-01T00:00:00Z",
+     "binaries": [
+      {
+       "action": "install",
+       "arch": "x86_64",
+       "detail": "经 SSH 传输 0 MB，主机上校验 SHA-256 后安装",
+       "name": "wstunnel",
+       "path": "/usr/local/sbin/meridian-wstunnel",
+       "sha256": "3e1f1b7d5472aa03b664f4f42b9291f02794ad2067e07aff830a3a8b8d3307a6",
+       "size": 50,
+       "transfer": true,
+       "version": "1.0-test"
+      }
+     ],
+     "blocking": true,
+     "bundle": "f185d983bcc644d9298c2e7f08e8dd9dff042a67948cb05ff055c77a11dec760",
+     "changes": [
+      {
+       "action": "install",
+       "detail": "wstunnel 1.0-test（x86_64，sha256 3e1f1b7d5472）",
+       "kind": "binary",
+       "resource": "/usr/local/sbin/meridian-wstunnel"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/iproute2/rt_tables.d/meridian.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/forwarding.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/path-quality.json"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/rules/decide.json"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/rules/order.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/sniff/targets.json"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/wss/client-gw-ali.env"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/wss/client-gw-ali.trust.pem"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/wss/client-gw-hk5.env"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/meridian/wss/client-gw-hk5.trust.pem"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/nftables.d/meridian-guard.nft"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/nftables.d/meridian.nft"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/smartdns/smartdns.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/sysctl.d/99-meridian.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/systemd/system/meridian-failover.service"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/systemd/system/meridian-sniff.service"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/systemd/system/wstunnel-client-gw-ali.service"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/systemd/system/wstunnel-client-gw-hk5.service"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/wireguard/m02.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/wireguard/m02w.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/wireguard/m03.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/wireguard/m04.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/etc/wireguard/mra.conf"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/usr/local/sbin/meridian-failover.sh"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/usr/local/sbin/meridian-routes.sh"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/usr/local/sbin/meridian-sniff-user.sh"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/usr/local/sbin/meridian-up.sh"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/usr/local/sbin/meridian-update-chnroute.sh"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/usr/local/sbin/meridian-update-geosite.sh"
+      },
+      {
+       "action": "create",
+       "detail": "已安装的清单里有，但主机上已不存在：安装会重新写入",
+       "kind": "file",
+       "resource": "/usr/local/sbin/meridian-verify.sh"
+      },
+      {
+       "action": "create",
+       "detail": "10.66.3.1/30, fd66:0:0:3::1/64",
+       "kind": "interface",
+       "resource": "m02"
+      },
+      {
+       "action": "create",
+       "detail": "10.66.102.1/30, fd66:0:0:82::1/64",
+       "kind": "interface",
+       "resource": "m02w"
+      },
+      {
+       "action": "create",
+       "detail": "10.66.4.1/30, fd66:0:0:4::1/64",
+       "kind": "interface",
+       "resource": "m03"
+      },
+      {
+       "action": "create",
+       "detail": "10.66.5.1/30, fd66:0:0:5::1/64",
+       "kind": "interface",
+       "resource": "m04"
+      },
+      {
+       "action": "create",
+       "detail": "10.67.0.1/24, fd67::1/64",
+       "kind": "interface",
+       "resource": "mra"
+      },
+      {
+       "action": "bind",
+       "detail": "smartdns",
+       "kind": "listen",
+       "resource": "tcp [::]:53"
+      },
+      {
+       "action": "bind",
+       "detail": "smartdns",
+       "kind": "listen",
+       "resource": "tcp [::]:853"
+      },
+      {
+       "action": "bind",
+       "detail": "wstunnel-client-gw-ali.service",
+       "kind": "listen",
+       "resource": "udp 127.0.0.1:52002"
+      },
+      {
+       "action": "bind",
+       "detail": "wstunnel-client-gw-hk5.service",
+       "kind": "listen",
+       "resource": "udp 127.0.0.1:52004"
+      },
+      {
+       "action": "bind",
+       "detail": "mra",
+       "kind": "listen",
+       "resource": "udp [::]:51820"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "blackhole 10.66.0.0/16"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "blackhole fd66::/48"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "203.0.113.10/32 dev eth0"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "203.0.113.11/32 dev eth0"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "203.0.113.30/32 dev eth0"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "10.66.1.2/32 dev m02"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "10.66.1.2/32 dev m02w"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "10.66.2.2/32 dev m03"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "10.67.0.0/24 dev mra"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "blackhole 10.67.0.0/24"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "fd67::/64 dev mra"
+      },
+      {
+       "action": "add",
+       "detail": "main 表",
+       "kind": "route",
+       "resource": "blackhole fd67::/64"
+      },
+      {
+       "action": "add",
+       "detail": "meridian_domestic",
+       "kind": "route",
+       "resource": "table 100"
+      },
+      {
+       "action": "add",
+       "detail": "meridian_foreign",
+       "kind": "route",
+       "resource": "table 102"
+      },
+      {
+       "action": "add",
+       "detail": "meridian_share_backup",
+       "kind": "route",
+       "resource": "table 109"
+      },
+      {
+       "action": "add",
+       "detail": "meridian_share_r1",
+       "kind": "route",
+       "resource": "table 111"
+      },
+      {
+       "action": "add",
+       "detail": "meridian_share_r2",
+       "kind": "route",
+       "resource": "table 112"
+      },
+      {
+       "action": "add",
+       "detail": "meridian_east",
+       "kind": "route",
+       "resource": "table 150"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17000: fwmark 0x4d72 lookup main"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17000: fwmark 0x4d72 lookup main"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17150: fwmark 0xfe0000/0xff0000 lookup 109"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17150: fwmark 0xfe0000/0xff0000 lookup 109"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17151: fwmark 0x10000/0xff0000 lookup 111"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17151: fwmark 0x10000/0xff0000 lookup 111"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17152: fwmark 0x20000/0xff0000 lookup 112"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17152: fwmark 0x20000/0xff0000 lookup 112"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17200: fwmark 0x101 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17600: fwmark 0x101 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17200: fwmark 0x101 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17600: fwmark 0x101 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17201: fwmark 0x102 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17601: fwmark 0x102 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17201: fwmark 0x102 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17601: fwmark 0x102 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17202: fwmark 0x103 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17602: fwmark 0x103 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17202: fwmark 0x103 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17602: fwmark 0x103 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17203: fwmark 0x104 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17603: fwmark 0x104 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17203: fwmark 0x104 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17603: fwmark 0x104 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17204: fwmark 0x105 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17604: fwmark 0x105 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17204: fwmark 0x105 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17604: fwmark 0x105 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17205: fwmark 0x106 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17605: fwmark 0x106 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17205: fwmark 0x106 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17605: fwmark 0x106 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17206: fwmark 0x107 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17606: fwmark 0x107 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17206: fwmark 0x107 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17606: fwmark 0x107 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17207: fwmark 0x108 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17607: fwmark 0x108 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17207: fwmark 0x108 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17607: fwmark 0x108 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17208: fwmark 0x109 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17608: fwmark 0x109 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17208: fwmark 0x109 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17608: fwmark 0x109 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17209: fwmark 0x10a lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17609: fwmark 0x10a unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17209: fwmark 0x10a lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17609: fwmark 0x10a unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17210: fwmark 0x10b lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17610: fwmark 0x10b unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17210: fwmark 0x10b lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17610: fwmark 0x10b unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17211: fwmark 0x10c lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17611: fwmark 0x10c unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17211: fwmark 0x10c lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17611: fwmark 0x10c unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17212: fwmark 0x10d lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17612: fwmark 0x10d unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17212: fwmark 0x10d lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17612: fwmark 0x10d unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17213: fwmark 0x10e lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17613: fwmark 0x10e unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17213: fwmark 0x10e lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17613: fwmark 0x10e unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17214: fwmark 0x10f lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17614: fwmark 0x10f unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17214: fwmark 0x10f lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17614: fwmark 0x10f unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17215: fwmark 0x110 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17615: fwmark 0x110 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17215: fwmark 0x110 lookup 102"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17615: fwmark 0x110 unreachable"
+      },
+      {
+       "action": "add",
+       "detail": "IPv4",
+       "kind": "rule",
+       "resource": "17100: fwmark 0x64 lookup 100"
+      },
+      {
+       "action": "add",
+       "detail": "IPv6",
+       "kind": "rule",
+       "resource": "17100: fwmark 0x64 lookup 100"
+      },
+      {
+       "action": "create",
+       "kind": "nft",
+       "resource": "inet meridian"
+      },
+      {
+       "action": "create",
+       "kind": "nft",
+       "resource": "inet meridian_guard"
+      },
+      {
+       "action": "set",
+       "detail": "全局（影响所有接口），当前未知",
+       "kind": "sysctl",
+       "resource": "net.ipv4.conf.all.accept_redirects"
+      },
+      {
+       "action": "set",
+       "detail": "全局（影响所有接口），当前未知",
+       "kind": "sysctl",
+       "resource": "net.ipv4.conf.all.rp_filter"
+      },
+      {
+       "action": "set",
+       "detail": "全局（影响所有接口），当前未知",
+       "kind": "sysctl",
+       "resource": "net.ipv4.conf.all.send_redirects"
+      },
+      {
+       "action": "set",
+       "detail": "全局（影响所有接口），当前未知",
+       "kind": "sysctl",
+       "resource": "net.ipv4.conf.default.rp_filter"
+      },
+      {
+       "action": "set",
+       "detail": "全局（影响所有接口），当前未知",
+       "kind": "sysctl",
+       "resource": "net.ipv4.conf.default.send_redirects"
+      },
+      {
+       "action": "set",
+       "detail": "全局（影响所有接口），当前未知",
+       "kind": "sysctl",
+       "resource": "net.ipv6.conf.all.accept_redirects"
+      },
+      {
+       "action": "set",
+       "detail": "全局（影响所有接口），当前未知",
+       "kind": "sysctl",
+       "resource": "net.ipv6.conf.default.accept_redirects"
+      },
+      {
+       "action": "set",
+       "detail": "只在这些接口：eth0 m02 m02w m03 m04 mra（受管隧道接口和拓扑里的网卡）；Docker、WARP 等其它接口不改",
+       "kind": "sysctl",
+       "resource": "rp_filter=2、send_redirects=0、accept_redirects=0"
+      },
+      {
+       "action": "enable",
+       "kind": "unit",
+       "resource": "meridian-failover.service"
+      },
+      {
+       "action": "enable",
+       "kind": "unit",
+       "resource": "meridian-sniff.service"
+      },
+      {
+       "action": "enable",
+       "kind": "unit",
+       "resource": "wstunnel-client-gw-ali.service"
+      },
+      {
+       "action": "enable",
+       "kind": "unit",
+       "resource": "wstunnel-client-gw-hk5.service"
+      }
+     ],
+     "counts": {
+      "blocking": 2,
+      "info": 6,
+      "warning": 0
+     },
+     "deployment": "dep-adbc4b6d9f427eb5",
+     "expires_at": "2026-01-01T00:10:00Z",
+     "file_changes": {
+      "added": [],
+      "basis": "installed_manifest",
+      "changed": [],
+      "not_compared": [],
+      "removed": [],
+      "summary": "没有文件变化：这次安装写入的 30 个文件与已安装的内容相同。",
+      "unchanged": [
+       "/etc/iproute2/rt_tables.d/meridian.conf",
+       "/etc/meridian/forwarding.conf",
+       "/etc/meridian/path-quality.json",
+       "/etc/meridian/rules/decide.json",
+       "/etc/meridian/rules/order.conf",
+       "/etc/meridian/sniff/targets.json",
+       "/etc/meridian/wss/client-gw-ali.env",
+       "/etc/meridian/wss/client-gw-ali.trust.pem",
+       "/etc/meridian/wss/client-gw-hk5.env",
+       "/etc/meridian/wss/client-gw-hk5.trust.pem",
+       "/etc/nftables.d/meridian-guard.nft",
+       "/etc/nftables.d/meridian.nft",
+       "/etc/smartdns/smartdns.conf",
+       "/etc/sysctl.d/99-meridian.conf",
+       "/etc/systemd/system/meridian-failover.service",
+       "/etc/systemd/system/meridian-sniff.service",
+       "/etc/systemd/system/wstunnel-client-gw-ali.service",
+       "/etc/systemd/system/wstunnel-client-gw-hk5.service",
+       "/etc/wireguard/m02.conf",
+       "/etc/wireguard/m02w.conf",
+       "/etc/wireguard/m03.conf",
+       "/etc/wireguard/m04.conf",
+       "/etc/wireguard/mra.conf",
+       "/usr/local/sbin/meridian-failover.sh",
+       "/usr/local/sbin/meridian-routes.sh",
+       "/usr/local/sbin/meridian-sniff-user.sh",
+       "/usr/local/sbin/meridian-up.sh",
+       "/usr/local/sbin/meridian-update-chnroute.sh",
+       "/usr/local/sbin/meridian-update-geosite.sh",
+       "/usr/local/sbin/meridian-verify.sh"
+      ]
+     },
+     "findings": [
+      {
+       "action": "出口解析器的端口固定为 53/853，只绑定隧道地址；占用者绑定了通配地址或同一个隧道地址。让占用者只绑定它自己需要的地址（例如 127.0.0.53），或换一台服务器，然后重新预检。面板不会停掉别的服务。",
+       "code": "port_in_use",
+       "message": "出口解析器（SmartDNS）（smartdns）要绑定 udp [::]:53，但 udp 0.0.0.0:53 已被进程 dnsmasq占用。",
+       "resource": "udp [::]:53",
+       "severity": "blocking"
+      },
+      {
+       "action": "这一版面板不会替你改 Docker、ufw、firewalld 或别的防火墙的规则和策略。只有在 FORWARD 的 DROP 来自 iptables 的默认策略、主机上有 Docker 的 DOCKER-USER 链（FORWARD 先跳到它）、没有 ufw / firewalld、也没有别的 nft 表丢弃转发时，面板才会在 DOCKER-USER 里加只匹配隧道接口（m02、m02w、m03、m04、mra）的放行规则。按上面的原因处理（例如停用 ufw / firewalld 或把隧道接口的转发加进它们的放行规则），或换一台没有这类策略的服务器，然后重新预检。",
+       "code": "forward_policy_drop",
+       "message": "ipv4 转发会被丢弃：iptables filter 表 FORWARD 策略 DROP（Docker 在运行，这通常是 Docker 设置的）。Meridian 自己的 nft 转发链是 policy accept，但不能救回被别的表丢掉的包；从隧道进来、经 WAN 网卡转发出去的流量会被丢弃，节点装上也不通。面板不能在这台主机上安全地共存：网关不使用这套共存规则（deploy/debian/install.sh 让 Docker 不碰 iptables；网关上出现 FORWARD DROP 说明 daemon.json 没有按安装文档设置）。",
+       "resource": "ipv4 FORWARD",
+       "severity": "blocking"
+      },
+      {
+       "code": "existing_install",
+       "message": "网关上已有 Meridian 安装（受管清单 31 个文件）：这次是更新，清单里的接口、表和服务按安装事务替换。",
+       "severity": "info"
+      },
+      {
+       "code": "gateway_dns_runtime",
+       "message": "网关解析器是宿主上的 smartdns.service，安装后由 meridian-host 重启它。",
+       "resource": "smartdns.service",
+       "severity": "info"
+      },
+      {
+       "code": "artifact_plan",
+       "message": "wstunnel 1.0-test（x86_64）：经 SSH 传输 0 MB，主机上校验 SHA-256 后安装。",
+       "resource": "/usr/local/sbin/meridian-wstunnel",
+       "severity": "info"
+      },
+      {
+       "code": "docker_present",
+       "message": "Docker 在运行（可能有 host 网络的容器占用端口；端口冲突已在上面检查）。",
+       "resource": "docker",
+       "severity": "info"
+      },
+      {
+       "code": "host_summary",
+       "message": "主机：Debian GNU/Linux 13 (trixie)，x86_64，内核 6.12.12-amd64。",
+       "resource": "host",
+       "severity": "info"
+      },
+      {
+       "code": "sysctl_scope",
+       "message": "内核参数：只改受管接口（eth0 m02 m02w m03 m04 mra）上的 rp_filter / ICMP 重定向，其它接口（Docker、WARP、你自己的）不碰。会改的全局参数：net.ipv4.conf.all.accept_redirects、net.ipv4.conf.all.rp_filter、net.ipv4.conf.all.send_redirects、net.ipv4.conf.default.rp_filter、net.ipv4.conf.default.send_redirects、net.ipv6.conf.all.accept_redirects、net.ipv6.conf.default.accept_redirects。内核对 rp_filter 取 max(all, 接口)：受管接口设为 2 后不论 all 是多少都是宽松模式；这台是网关，all/default 也设为 2（当前 net.ipv4.conf.all.rp_filter=—）。转发（ip_forward / all.forwarding）是全局开关，见上一项；第一次装机失败时，补偿把这些键恢复成装机前读到的值；撤回不改运行中的值（Docker 等也依赖转发），重启后不再设置。",
+       "resource": "sysctl",
+       "severity": "info"
+      }
+     ],
+     "first_install": false,
+     "footprint": {
+      "binaries": [
+       "wstunnel"
+      ],
+      "dns": true,
+      "docker": false,
+      "files": [
+       "/etc/iproute2/rt_tables.d/meridian.conf",
+       "/etc/meridian/forwarding.conf",
+       "/etc/meridian/path-quality.json",
+       "/etc/meridian/rules/decide.json",
+       "/etc/meridian/rules/order.conf",
+       "/etc/meridian/sniff/targets.json",
+       "/etc/meridian/wss/client-gw-ali.env",
+       "/etc/meridian/wss/client-gw-ali.trust.pem",
+       "/etc/meridian/wss/client-gw-hk5.env",
+       "/etc/meridian/wss/client-gw-hk5.trust.pem",
+       "/etc/nftables.d/meridian-guard.nft",
+       "/etc/nftables.d/meridian.nft",
+       "/etc/smartdns/smartdns.conf",
+       "/etc/sysctl.d/99-meridian.conf",
+       "/etc/systemd/system/meridian-failover.service",
+       "/etc/systemd/system/meridian-sniff.service",
+       "/etc/systemd/system/wstunnel-client-gw-ali.service",
+       "/etc/systemd/system/wstunnel-client-gw-hk5.service",
+       "/etc/wireguard/m02.conf",
+       "/etc/wireguard/m02w.conf",
+       "/etc/wireguard/m03.conf",
+       "/etc/wireguard/m04.conf",
+       "/etc/wireguard/mra.conf",
+       "/usr/local/sbin/meridian-failover.sh",
+       "/usr/local/sbin/meridian-routes.sh",
+       "/usr/local/sbin/meridian-sniff-user.sh",
+       "/usr/local/sbin/meridian-up.sh",
+       "/usr/local/sbin/meridian-update-chnroute.sh",
+       "/usr/local/sbin/meridian-update-geosite.sh",
+       "/usr/local/sbin/meridian-verify.sh"
+      ],
+      "forward4": true,
+      "forward6": true,
+      "fw_rules": [],
+      "fwmarks": [
+       "0x00000000",
+       "0x10000",
+       "0x101",
+       "0x102",
+       "0x103",
+       "0x104",
+       "0x105",
+       "0x106",
+       "0x107",
+       "0x108",
+       "0x109",
+       "0x10a",
+       "0x10b",
+       "0x10c",
+       "0x10d",
+       "0x10e",
+       "0x10f",
+       "0x110",
+       "0x20000",
+       "0x4d72",
+       "0x64",
+       "0x65",
+       "0xfe0000"
+      ],
+      "interfaces": [
+       {
+        "addresses": [
+         "10.66.3.1/30",
+         "fd66:0:0:3::1/64"
+        ],
+        "name": "m02"
+       },
+       {
+        "addresses": [
+         "10.66.102.1/30",
+         "fd66:0:0:82::1/64"
+        ],
+        "name": "m02w"
+       },
+       {
+        "addresses": [
+         "10.66.4.1/30",
+         "fd66:0:0:4::1/64"
+        ],
+        "name": "m03"
+       },
+       {
+        "addresses": [
+         "10.66.5.1/30",
+         "fd66:0:0:5::1/64"
+        ],
+        "name": "m04"
+       },
+       {
+        "addresses": [
+         "10.67.0.1/24",
+         "fd67::1/64"
+        ],
+        "listen_port": 51820,
+        "name": "mra"
+       }
+      ],
+      "listens": [
+       {
+        "addr": "::",
+        "owner": "smartdns",
+        "port": 53,
+        "proto": "udp",
+        "wildcard": true
+       },
+       {
+        "addr": "::",
+        "owner": "smartdns",
+        "port": 53,
+        "proto": "tcp",
+        "wildcard": true
+       },
+       {
+        "addr": "::",
+        "owner": "smartdns",
+        "port": 853,
+        "proto": "tcp",
+        "wildcard": true
+       },
+       {
+        "addr": "127.0.0.1",
+        "owner": "wstunnel-client-gw-ali.service",
+        "port": 52002,
+        "proto": "udp",
+        "wildcard": false
+       },
+       {
+        "addr": "127.0.0.1",
+        "owner": "wstunnel-client-gw-hk5.service",
+        "port": 52004,
+        "proto": "udp",
+        "wildcard": false
+       },
+       {
+        "addr": "::",
+        "owner": "mra",
+        "port": 51820,
+        "proto": "udp",
+        "wildcard": true
+       }
+      ],
+      "lo_addrs": [
+       "10.66.200.2/32",
+       "10.66.200.10/32",
+       "fd66:0:0:ff::a/128",
+       "10.66.200.11/32",
+       "fd66:0:0:ff::b/128",
+       "10.66.200.12/32",
+       "fd66:0:0:ff::c/128",
+       "10.66.200.13/32",
+       "fd66:0:0:ff::d/128",
+       "10.66.200.14/32",
+       "fd66:0:0:ff::e/128",
+       "10.66.200.15/32",
+       "fd66:0:0:ff::f/128",
+       "10.66.200.16/32",
+       "fd66:0:0:ff::10/128",
+       "10.66.200.17/32",
+       "fd66:0:0:ff::11/128",
+       "10.66.200.18/32",
+       "fd66:0:0:ff::12/128",
+       "10.66.200.19/32",
+       "fd66:0:0:ff::13/128",
+       "10.66.200.20/32",
+       "fd66:0:0:ff::14/128",
+       "10.66.200.21/32",
+       "fd66:0:0:ff::15/128",
+       "10.66.200.22/32",
+       "fd66:0:0:ff::16/128",
+       "10.66.200.23/32",
+       "fd66:0:0:ff::17/128",
+       "10.66.200.24/32",
+       "fd66:0:0:ff::18/128",
+       "10.66.200.25/32",
+       "fd66:0:0:ff::19/128"
+      ],
+      "lo_nets": [
+       "10.66.200.0/24",
+       "fd66:0:0:ff::/64"
+      ],
+      "mesh": false,
+      "nft_tables": [
+       "inet meridian",
+       "inet meridian_guard"
+      ],
+      "packages": [
+       {
+        "command": "wg",
+        "package": "wireguard-tools"
+       },
+       {
+        "command": "nft",
+        "package": "nftables"
+       },
+       {
+        "command": "ip",
+        "package": "iproute2"
+       }
+      ],
+      "route_table_names": {
+       "100": "meridian_domestic",
+       "102": "meridian_foreign",
+       "109": "meridian_share_backup",
+       "111": "meridian_share_r1",
+       "112": "meridian_share_r2",
+       "150": "meridian_east"
+      },
+      "route_tables": [
+       100,
+       102,
+       109,
+       111,
+       112,
+       150
+      ],
+      "routes": [
+       {
+        "blackhole": true,
+        "dst": "0.0.0.0/0",
+        "family": 4,
+        "metric": 32767,
+        "table": 102
+       },
+       {
+        "blackhole": true,
+        "dst": "::/0",
+        "family": 6,
+        "metric": 32767,
+        "table": 102
+       },
+       {
+        "blackhole": true,
+        "dst": "10.66.0.0/16",
+        "family": 4,
+        "metric": 32767
+       },
+       {
+        "blackhole": true,
+        "dst": "fd66::/48",
+        "family": 6,
+        "metric": 32767
+       },
+       {
+        "dev": "eth0",
+        "dst": "203.0.113.10/32",
+        "family": 4
+       },
+       {
+        "dev": "eth0",
+        "dst": "203.0.113.11/32",
+        "family": 4
+       },
+       {
+        "dev": "eth0",
+        "dst": "203.0.113.30/32",
+        "family": 4
+       },
+       {
+        "dev": "eth0",
+        "dst": "192.168.77.0/24",
+        "family": 4,
+        "table": 100
+       },
+       {
+        "dev": "eth0",
+        "dst": "0.0.0.0/0",
+        "family": 4,
+        "table": 100
+       },
+       {
+        "blackhole": true,
+        "dst": "0.0.0.0/0",
+        "family": 4,
+        "metric": 32767,
+        "table": 100
+       },
+       {
+        "dev": "eth0",
+        "dst": "2001:db8:77::/64",
+        "family": 6,
+        "table": 100
+       },
+       {
+        "dev": "eth0",
+        "dst": "::/0",
+        "family": 6,
+        "table": 100
+       },
+       {
+        "blackhole": true,
+        "dst": "::/0",
+        "family": 6,
+        "metric": 32767,
+        "table": 100
+       },
+       {
+        "dev": "eth0",
+        "dst": "2001:db8:77::/64",
+        "family": 6,
+        "table": 102
+       },
+       {
+        "dev": "eth0",
+        "dst": "192.168.77.0/24",
+        "family": 4,
+        "table": 102
+       },
+       {
+        "dev": "m02",
+        "dst": "10.66.1.2/32",
+        "family": 4,
+        "metric": 10
+       },
+       {
+        "dev": "m02w",
+        "dst": "10.66.1.2/32",
+        "family": 4,
+        "metric": 11
+       },
+       {
+        "dev": "m03",
+        "dst": "10.66.2.2/32",
+        "family": 4,
+        "metric": 12
+       },
+       {
+        "dev": "mra",
+        "dst": "10.67.0.0/24",
+        "family": 4
+       },
+       {
+        "blackhole": true,
+        "dst": "10.67.0.0/24",
+        "family": 4,
+        "metric": 32767
+       },
+       {
+        "dev": "mra",
+        "dst": "fd67::/64",
+        "family": 6
+       },
+       {
+        "blackhole": true,
+        "dst": "fd67::/64",
+        "family": 6,
+        "metric": 32767
+       },
+       {
+        "dev": "mra",
+        "dst": "10.67.0.0/24",
+        "family": 4,
+        "table": 100
+       },
+       {
+        "blackhole": true,
+        "dst": "10.67.0.0/24",
+        "family": 4,
+        "metric": 32767,
+        "table": 100
+       },
+       {
+        "dev": "mra",
+        "dst": "fd67::/64",
+        "family": 6,
+        "table": 100
+       },
+       {
+        "blackhole": true,
+        "dst": "fd67::/64",
+        "family": 6,
+        "metric": 32767,
+        "table": 100
+       }
+      ],
+      "rules": [
+       {
+        "family": 4,
+        "fwmark": "0x4d72",
+        "priority": 17000,
+        "selector": "fwmark 0x4d72 lookup main",
+        "table": "main"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x4d72",
+        "priority": 17000,
+        "selector": "fwmark 0x4d72 lookup main",
+        "table": "main"
+       },
+       {
+        "family": 4,
+        "fwmark": "0xfe0000/0xff0000",
+        "priority": 17150,
+        "selector": "fwmark 0xfe0000/0xff0000 lookup 109",
+        "table": "109"
+       },
+       {
+        "family": 6,
+        "fwmark": "0xfe0000/0xff0000",
+        "priority": 17150,
+        "selector": "fwmark 0xfe0000/0xff0000 lookup 109",
+        "table": "109"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10000/0xff0000",
+        "priority": 17151,
+        "selector": "fwmark 0x10000/0xff0000 lookup 111",
+        "table": "111"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10000/0xff0000",
+        "priority": 17151,
+        "selector": "fwmark 0x10000/0xff0000 lookup 111",
+        "table": "111"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x20000/0xff0000",
+        "priority": 17152,
+        "selector": "fwmark 0x20000/0xff0000 lookup 112",
+        "table": "112"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x20000/0xff0000",
+        "priority": 17152,
+        "selector": "fwmark 0x20000/0xff0000 lookup 112",
+        "table": "112"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x101",
+        "priority": 17200,
+        "selector": "fwmark 0x101 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x101",
+        "priority": 17600,
+        "selector": "fwmark 0x101 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x101",
+        "priority": 17200,
+        "selector": "fwmark 0x101 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x101",
+        "priority": 17600,
+        "selector": "fwmark 0x101 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x102",
+        "priority": 17201,
+        "selector": "fwmark 0x102 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x102",
+        "priority": 17601,
+        "selector": "fwmark 0x102 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x102",
+        "priority": 17201,
+        "selector": "fwmark 0x102 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x102",
+        "priority": 17601,
+        "selector": "fwmark 0x102 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x103",
+        "priority": 17202,
+        "selector": "fwmark 0x103 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x103",
+        "priority": 17602,
+        "selector": "fwmark 0x103 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x103",
+        "priority": 17202,
+        "selector": "fwmark 0x103 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x103",
+        "priority": 17602,
+        "selector": "fwmark 0x103 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x104",
+        "priority": 17203,
+        "selector": "fwmark 0x104 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x104",
+        "priority": 17603,
+        "selector": "fwmark 0x104 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x104",
+        "priority": 17203,
+        "selector": "fwmark 0x104 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x104",
+        "priority": 17603,
+        "selector": "fwmark 0x104 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x105",
+        "priority": 17204,
+        "selector": "fwmark 0x105 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x105",
+        "priority": 17604,
+        "selector": "fwmark 0x105 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x105",
+        "priority": 17204,
+        "selector": "fwmark 0x105 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x105",
+        "priority": 17604,
+        "selector": "fwmark 0x105 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x106",
+        "priority": 17205,
+        "selector": "fwmark 0x106 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x106",
+        "priority": 17605,
+        "selector": "fwmark 0x106 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x106",
+        "priority": 17205,
+        "selector": "fwmark 0x106 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x106",
+        "priority": 17605,
+        "selector": "fwmark 0x106 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x107",
+        "priority": 17206,
+        "selector": "fwmark 0x107 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x107",
+        "priority": 17606,
+        "selector": "fwmark 0x107 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x107",
+        "priority": 17206,
+        "selector": "fwmark 0x107 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x107",
+        "priority": 17606,
+        "selector": "fwmark 0x107 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x108",
+        "priority": 17207,
+        "selector": "fwmark 0x108 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x108",
+        "priority": 17607,
+        "selector": "fwmark 0x108 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x108",
+        "priority": 17207,
+        "selector": "fwmark 0x108 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x108",
+        "priority": 17607,
+        "selector": "fwmark 0x108 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x109",
+        "priority": 17208,
+        "selector": "fwmark 0x109 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x109",
+        "priority": 17608,
+        "selector": "fwmark 0x109 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x109",
+        "priority": 17208,
+        "selector": "fwmark 0x109 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x109",
+        "priority": 17608,
+        "selector": "fwmark 0x109 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10a",
+        "priority": 17209,
+        "selector": "fwmark 0x10a lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10a",
+        "priority": 17609,
+        "selector": "fwmark 0x10a unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10a",
+        "priority": 17209,
+        "selector": "fwmark 0x10a lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10a",
+        "priority": 17609,
+        "selector": "fwmark 0x10a unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10b",
+        "priority": 17210,
+        "selector": "fwmark 0x10b lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10b",
+        "priority": 17610,
+        "selector": "fwmark 0x10b unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10b",
+        "priority": 17210,
+        "selector": "fwmark 0x10b lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10b",
+        "priority": 17610,
+        "selector": "fwmark 0x10b unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10c",
+        "priority": 17211,
+        "selector": "fwmark 0x10c lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10c",
+        "priority": 17611,
+        "selector": "fwmark 0x10c unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10c",
+        "priority": 17211,
+        "selector": "fwmark 0x10c lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10c",
+        "priority": 17611,
+        "selector": "fwmark 0x10c unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10d",
+        "priority": 17212,
+        "selector": "fwmark 0x10d lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10d",
+        "priority": 17612,
+        "selector": "fwmark 0x10d unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10d",
+        "priority": 17212,
+        "selector": "fwmark 0x10d lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10d",
+        "priority": 17612,
+        "selector": "fwmark 0x10d unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10e",
+        "priority": 17213,
+        "selector": "fwmark 0x10e lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10e",
+        "priority": 17613,
+        "selector": "fwmark 0x10e unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10e",
+        "priority": 17213,
+        "selector": "fwmark 0x10e lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10e",
+        "priority": 17613,
+        "selector": "fwmark 0x10e unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10f",
+        "priority": 17214,
+        "selector": "fwmark 0x10f lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x10f",
+        "priority": 17614,
+        "selector": "fwmark 0x10f unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10f",
+        "priority": 17214,
+        "selector": "fwmark 0x10f lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x10f",
+        "priority": 17614,
+        "selector": "fwmark 0x10f unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x110",
+        "priority": 17215,
+        "selector": "fwmark 0x110 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x110",
+        "priority": 17615,
+        "selector": "fwmark 0x110 unreachable"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x110",
+        "priority": 17215,
+        "selector": "fwmark 0x110 lookup 102",
+        "table": "102"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x110",
+        "priority": 17615,
+        "selector": "fwmark 0x110 unreachable"
+       },
+       {
+        "family": 4,
+        "fwmark": "0x64",
+        "priority": 17100,
+        "selector": "fwmark 0x64 lookup 100",
+        "table": "100"
+       },
+       {
+        "family": 6,
+        "fwmark": "0x64",
+        "priority": 17100,
+        "selector": "fwmark 0x64 lookup 100",
+        "table": "100"
+       }
+      ],
+      "secret_files": [
+       "/etc/meridian/wss/client-gw-ali.env",
+       "/etc/meridian/wss/client-gw-hk5.env",
+       "/etc/wireguard/m02.conf",
+       "/etc/wireguard/m02w.conf",
+       "/etc/wireguard/m03.conf",
+       "/etc/wireguard/m04.conf",
+       "/etc/wireguard/mra.conf"
+      ],
+      "sysctl_all": true,
+      "sysctl_ifaces": [
+       "eth0",
+       "m02",
+       "m02w",
+       "m03",
+       "m04",
+       "mra"
+      ],
+      "sysctl_keys": [
+       "net.ipv4.conf.all.accept_redirects",
+       "net.ipv4.conf.all.rp_filter",
+       "net.ipv4.conf.all.send_redirects",
+       "net.ipv4.conf.default.rp_filter",
+       "net.ipv4.conf.default.send_redirects",
+       "net.ipv4.conf.eth0.accept_redirects",
+       "net.ipv4.conf.eth0.rp_filter",
+       "net.ipv4.conf.eth0.send_redirects",
+       "net.ipv4.conf.m02.accept_redirects",
+       "net.ipv4.conf.m02.rp_filter",
+       "net.ipv4.conf.m02.send_redirects",
+       "net.ipv4.conf.m02w.accept_redirects",
+       "net.ipv4.conf.m02w.rp_filter",
+       "net.ipv4.conf.m02w.send_redirects",
+       "net.ipv4.conf.m03.accept_redirects",
+       "net.ipv4.conf.m03.rp_filter",
+       "net.ipv4.conf.m03.send_redirects",
+       "net.ipv4.conf.m04.accept_redirects",
+       "net.ipv4.conf.m04.rp_filter",
+       "net.ipv4.conf.m04.send_redirects",
+       "net.ipv4.conf.mra.accept_redirects",
+       "net.ipv4.conf.mra.rp_filter",
+       "net.ipv4.conf.mra.send_redirects",
+       "net.ipv4.ip_forward",
+       "net.ipv6.conf.all.accept_redirects",
+       "net.ipv6.conf.all.forwarding",
+       "net.ipv6.conf.default.accept_redirects",
+       "net.ipv6.conf.eth0.accept_ra",
+       "net.ipv6.conf.eth0.accept_redirects",
+       "net.ipv6.conf.eth0.forwarding",
+       "net.ipv6.conf.m02.accept_redirects",
+       "net.ipv6.conf.m02w.accept_redirects",
+       "net.ipv6.conf.m03.accept_redirects",
+       "net.ipv6.conf.m04.accept_redirects",
+       "net.ipv6.conf.mra.accept_redirects"
+      ],
+      "units": [
+       "meridian-failover.service",
+       "meridian-sniff.service",
+       "wstunnel-client-gw-ali.service",
+       "wstunnel-client-gw-hk5.service"
+      ]
+     },
+     "host": {
+      "arch": "x86_64",
+      "complete": true,
+      "kernel": "6.12.12-amd64",
+      "mem_avail_kb": 1650220,
+      "mem_total_kb": 2015040,
+      "os": "Debian GNU/Linux 13 (trixie)"
+     },
+     "id": "pf-d27f71d6f7c8e288",
+     "kind": "gateway",
+     "node_id": "gw",
+     "node_name": "网关",
+     "not_checked": [
+      "不检查放行规则是否覆盖 Meridian 的端口（只看 INPUT/FORWARD 的默认策略、DOCKER-USER 是否存在和 FORWARD 跳转的先后，以及别的表的 drop 链）",
+      "不检查云厂商安全组、上游防火墙或 NAT：端口能否从外面到达要在装好后看握手",
+      "不预测别的服务以后的改动：Docker 重启时 meridian-fwcompat.service 会重新加上 DOCKER-USER 规则；WARP 重连、有人手动启动或重载 nftables.service 不在预检之内（会清空规则集的 nftables.service 已启用或在运行时直接拒绝）",
+      "不检查 SmartDNS 上游是否可用，也不建立 WSS 连接（WSS 证书和路径由面板生成，预检不验证两端能否握手）；面板下发的 wstunnel / SmartDNS 只核对架构、路径和 SHA-256，不在预检里执行它们",
+      "不在预检里执行 nft：远端规则集已避开 nft 0.9.3（Ubuntu 20.04）不确定的写法，装机时 meridian-up.sh 仍先 nft -c，失败会在激活前停止并补偿",
+      "iptables-legacy 主机只看 filter 表 INPUT/FORWARD 的默认策略、DOCKER-USER 和 FORWARD 的跳转，不逐条检查 legacy 规则、nat 改写和 MARK",
+      "WARP 只读进程名和地址作为依赖线索（连到它本地监听的进程、指向它的 resolv.conf），不读它的配置和账户",
+      "不检查 sudo：只接受 root 登录",
+      "面板只改它自己的东西：受管文件、接口、nft 表、路由，以及在 Docker 的 FORWARD DROP 可以安全共存时 DOCKER-USER 里带 Meridian 注释的放行规则；不改 Docker、ufw、firewalld、nftables.service 的配置和策略（面板只下发并安装它自己的固定版本 wstunnel / SmartDNS 到 /usr/local/sbin/meridian-*，主机不需要自己下载）"
+     ],
+     "ownership": "same",
+     "platform": "Debian 13 x86_64（网关）",
+     "role": "gateway"
+    }
+   },
+   "status": 200
+  }
+ },
+ "scenario": "preflight-blocked"
+}

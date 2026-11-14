@@ -17,3 +17,6 @@ web/dist/
 # Appliance state and rendered secrets stay on the gateway.
 /var/lib/meridian/
 /etc/meridian/
+
+# Demo preview build (web/README.md「演示预览」): never shipped.
+web/dist-demo/
