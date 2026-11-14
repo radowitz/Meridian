@@ -569,12 +569,13 @@ func (s *Server) afterGroupChange(t model.Topology, id string) {
 func (s *Server) reconcileUnlockLocked(t model.Topology) {
 	snap := s.loadUnlock()
 	changed := false
+	now := time.Now().UTC()
 	for _, svc := range servicesOf(t) {
 		prev, ok := snap.Services[svc.RuleID]
 		if !ok {
 			continue
 		}
-		next := unlock.Reconcile(prev, svc)
+		next := unlock.ReconcileWith(prev, svc, now, policyFor(t, svc))
 		if next.Preferred != prev.Preferred || next.Active != prev.Active || next.Pool != prev.Pool || next.Demoted != prev.Demoted {
 			snap.Services[svc.RuleID] = next
 			changed = true

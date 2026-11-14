@@ -378,6 +378,11 @@ func (s *Server) listServiceGroups(w http.ResponseWriter, r *http.Request) {
 type serviceBody struct {
 	Name   *string `json:"name"`
 	Target *string `json:"target"` // group:<id>, exit:<id>, direct, reject
+	// Select is "" (fixed) or "auto"; Probes the catalog adapters bound to
+	// the group (validate.checkServiceSelection checks both). Neither
+	// creates or changes a rule.
+	Select *string   `json:"select"`
+	Probes *[]string `json:"probes"`
 }
 
 func setServiceTarget(sg *model.ServiceGroup, spec string) error {
@@ -448,6 +453,18 @@ func (s *Server) patchServiceGroup(w http.ResponseWriter, r *http.Request) {
 					t.Settings.DefaultGroup = sg.TargetGroup
 				}
 			}
+			if b.Select != nil {
+				sg.Select = strings.TrimSpace(*b.Select)
+			}
+			if b.Probes != nil {
+				if len(*b.Probes) > 32 {
+					return errors.New("409:检测项过多")
+				}
+				sg.Probes = append([]string(nil), (*b.Probes)...)
+				if len(sg.Probes) == 0 {
+					sg.Probes = nil
+				}
+			}
 			out = *sg
 			return nil
 		}
@@ -455,6 +472,15 @@ func (s *Server) patchServiceGroup(w http.ResponseWriter, r *http.Request) {
 	})
 	if s.writeSaveErr(w, issues, err) {
 		return
+	}
+	if b.Select != nil || b.Probes != nil {
+		// A state computed for the old binding is re-aligned; whether the
+		// computed exit changed is shown as pending until installed.
+		if t, err := s.topology(); err == nil {
+			s.mu.Lock()
+			s.reconcileUnlockLocked(t)
+			s.mu.Unlock()
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"service_group": out})
 }

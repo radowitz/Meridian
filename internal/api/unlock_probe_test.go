@@ -187,7 +187,7 @@ func TestUnlockCatalogResultsAndJobAPI(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &cat); err != nil {
 		t.Fatal(err)
 	}
-	if len(cat.Catalog) != 14 || cat.Validation != "synthetic_only" || !strings.Contains(cat.ValidationText, "尚未在真实平台上验证") {
+	if len(cat.Catalog) != len(probe.Catalog) || len(cat.Catalog) < 24 || cat.Validation != "synthetic_only" || !strings.Contains(cat.ValidationText, "尚未在真实平台上验证") {
 		t.Fatalf("catalog: %d %s", len(cat.Catalog), cat.Validation)
 	}
 	for _, e := range cat.Catalog {

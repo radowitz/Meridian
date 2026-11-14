@@ -223,6 +223,14 @@ type Adapter struct {
 	Basis   string
 	Limits  string
 	Sources []Source
+	// Section is the coverage section the panel groups it under
+	// (SectionInternational, SectionAI, SectionHK, …; coverage.go).
+	Section string
+	// Regions are the exit regions a conclusion of this adapter speaks
+	// for. Nil: any region (a global platform; with CapRegionVerdict the
+	// platform's region must match the exit's). A regional adapter run on
+	// an exit of another region can only say "not here".
+	Regions []string
 }
 
 // Reachability is kept for older API readers.
@@ -326,7 +334,19 @@ var (
 	srcGO = func(file string) Source {
 		return Source{Name: "HsukqiLee/MediaUnlockTest pkg/providers/" + file + "（main @ dc6c6e6）", URL: "https://github.com/HsukqiLee/MediaUnlockTest/blob/main/pkg/providers/" + file, Checked: checked}
 	}
+	// The r variants name a method written from the scripts' known
+	// behaviour without re-reading the cited commit in this pass.
+	srcLMCr = func(fn string) Source {
+		return Source{Name: "lmc999/RegionRestrictionCheck check.sh " + fn, URL: "https://github.com/lmc999/RegionRestrictionCheck/blob/main/check.sh", Checked: RecheckPending}
+	}
+	srcGOr = func(file string) Source {
+		return Source{Name: "HsukqiLee/MediaUnlockTest pkg/providers/" + file, URL: "https://github.com/HsukqiLee/MediaUnlockTest/tree/main/pkg/providers", Checked: RecheckPending}
+	}
 )
+
+// RecheckPending is the Checked value of a source whose request details
+// were not re-read against the cited commit (see the catalog note).
+const RecheckPending = "待对照源码复核"
 
 const uaAndroid = "Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 
@@ -338,7 +358,7 @@ var (
 // Catalog is the fixed set of services, keyed by the project's rule ids.
 var Catalog = []Adapter{
 	{
-		Service: "auto-netflix", Name: "Netflix", Capability: CapRegionVerdict, Returns: verdictReturns,
+		Service: "auto-netflix", Name: "Netflix", Capability: CapRegionVerdict, Returns: verdictReturns, Section: SectionInternational,
 		Platforms: []Platform{{Name: "Netflix", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Netflix", Primary: true, Hosts: []string{"www.netflix.com", "netflix.com"},
 			Steps: []Step{{URL: "https://www.netflix.com/title/81280792"}}, Classify: classifyNetflix}},
@@ -348,7 +368,7 @@ var Catalog = []Adapter{
 			{Name: "Meridian 既有适配器（本项目 5b01903 起）", URL: "internal/probe/adapters.go", Checked: checked}},
 	},
 	{
-		Service: "auto-disney", Name: "Disney+", Capability: CapRegionVerdict, Returns: verdictReturns,
+		Service: "auto-disney", Name: "Disney+", Capability: CapRegionVerdict, Returns: verdictReturns, Section: SectionInternational,
 		Platforms: []Platform{{Name: "Disney+", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Disney+", Primary: true, Hosts: []string{"www.disneyplus.com", "disneyplus.com"},
 			Steps: []Step{{URL: "https://www.disneyplus.com/"}}, Classify: classifyDisney}},
@@ -357,7 +377,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcLMC("MediaUnlockTest_DisneyPlus（只取其首页跳转 preview|unavailable 判断）")},
 	},
 	{
-		Service: "auto-openai", Name: "OpenAI / ChatGPT", Capability: CapVerdict, Returns: verdictReturns,
+		Service: "auto-openai", Name: "OpenAI / ChatGPT", Capability: CapVerdict, Returns: verdictReturns, Section: SectionAI,
 		Platforms: []Platform{{Name: "OpenAI API / Web", Checked: true, Primary: true}, {Name: "ChatGPT iOS", Checked: true, Note: "仅参考，不入库"}},
 		Checks: []Check{
 			{Platform: "OpenAI API / Web", Primary: true, Hosts: []string{"api.openai.com"},
@@ -373,7 +393,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcLMC("WebTest_OpenAI")},
 	},
 	{
-		Service: "auto-anthropic", Name: "Claude / Anthropic", Capability: CapVerdict, Returns: verdictReturns,
+		Service: "auto-anthropic", Name: "Claude / Anthropic", Capability: CapVerdict, Returns: verdictReturns, Section: SectionAI,
 		Platforms: []Platform{{Name: "Claude", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Claude", Primary: true, Hosts: []string{"claude.ai", "www.claude.ai"},
 			Steps: []Step{{URL: "https://claude.ai/"}}, Classify: classifyAnthropic}},
@@ -382,7 +402,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcLMC("WebTest_Claude")},
 	},
 	{
-		Service: "auto-gemini", Name: "Gemini", Capability: CapVerdict, Returns: verdictReturns,
+		Service: "auto-gemini", Name: "Gemini", Capability: CapVerdict, Returns: verdictReturns, Section: SectionAI,
 		Platforms: []Platform{{Name: "Gemini", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Gemini", Primary: true, Hosts: []string{"gemini.google.com"},
 			Steps: []Step{{URL: "https://gemini.google.com/"}}, Classify: classifyGemini}},
@@ -391,7 +411,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcLMC("WebTest_Gemini"), srcGO("Gemini.go（403 = Banned）")},
 	},
 	{
-		Service: "auto-copilot", Name: "Microsoft Copilot", Capability: CapVerdict, Returns: verdictReturns,
+		Service: "auto-copilot", Name: "Microsoft Copilot", Capability: CapVerdict, Returns: verdictReturns, Section: SectionAI,
 		Platforms: []Platform{{Name: "Copilot", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Copilot", Primary: true, Hosts: []string{"copilot.microsoft.com"},
 			Steps: []Step{{URL: "https://copilot.microsoft.com/c/api/user?api-version=2", NoRedirect: true}}, Classify: classifyCopilot}},
@@ -400,7 +420,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcGO("Copilot.go")},
 	},
 	{
-		Service: "auto-perplexity", Name: "Perplexity", Capability: CapReachability, Returns: reachReturns,
+		Service: "auto-perplexity", Name: "Perplexity", Capability: CapReachability, Returns: reachReturns, Section: SectionAI,
 		Platforms: []Platform{{Name: "Perplexity", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Perplexity", Primary: true, Hosts: []string{"www.perplexity.ai", "perplexity.ai"},
 			Steps: []Step{{URL: "https://www.perplexity.ai/"}}, Classify: classifyReach}},
@@ -409,7 +429,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcGO("Perplexity.go（仅作为“没有平台信号”的依据）")},
 	},
 	{
-		Service: "auto-grok", Name: "Grok", Capability: CapReachability, Returns: reachReturns,
+		Service: "auto-grok", Name: "Grok", Capability: CapReachability, Returns: reachReturns, Section: SectionAI,
 		Platforms: []Platform{{Name: "Grok", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Grok", Primary: true, Hosts: []string{"grok.x.ai", "grok.com"},
 			Steps: []Step{{URL: "https://grok.x.ai/"}}, Classify: classifyReach}},
@@ -418,7 +438,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcGO("Grok.go（仅作为“没有平台信号”的依据）")},
 	},
 	{
-		Service: "auto-bahamut", Name: "巴哈姆特動畫瘋", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true,
+		Service: "auto-bahamut", Name: "巴哈姆特動畫瘋", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionTW, Regions: []string{"tw", "hk"},
 		Platforms: []Platform{{Name: "動畫瘋", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "動畫瘋", Primary: true, Hosts: []string{"ani.gamer.com.tw"},
 			Steps: []Step{
@@ -431,7 +451,7 @@ var Catalog = []Adapter{
 		Sources: []Source{src1S("MediaUnlockTest_BahamutAnime"), srcLMC("MediaUnlockTest_BahamutAnime"), srcGO("BahamutAnime.go")},
 	},
 	{
-		Service: "auto-kktv", Name: "KKTV", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true,
+		Service: "auto-kktv", Name: "KKTV", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionTW, Regions: []string{"tw"},
 		Platforms: []Platform{{Name: "KKTV", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "KKTV", Primary: true, Hosts: []string{"api.kktv.me"},
 			Steps: []Step{{URL: "https://api.kktv.me/v3/ipcheck"}}, Classify: classifyKKTV}},
@@ -440,7 +460,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcGO("KKTV.go"), srcLMC("MediaUnlockTest_KKTV")},
 	},
 	{
-		Service: "auto-linetv", Name: "LINE TV", Capability: CapVerdict, Returns: verdictReturns, IPv4Only: true,
+		Service: "auto-linetv", Name: "LINE TV", Capability: CapVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionTW, Regions: []string{"tw"},
 		Platforms: []Platform{{Name: "LINE TV", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "LINE TV", Primary: true, Hosts: []string{"www.linetv.tw"},
 			Steps: []Step{{URL: "https://www.linetv.tw/drama/11829/eps/1"}}, Classify: classifyLineTV}},
@@ -449,7 +469,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcGO("LineTV.go"), srcLMC("MediaUnlockTest_LineTVTW（未采用，见限制）")},
 	},
 	{
-		Service: "auto-hami", Name: "Hami Video", Capability: CapVerdict, Returns: verdictReturns, IPv4Only: true,
+		Service: "auto-hami", Name: "Hami Video", Capability: CapVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionTW, Regions: []string{"tw"},
 		Platforms: []Platform{{Name: "Hami Video", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Hami Video", Primary: true, Hosts: []string{"hamivideo.hinet.net"},
 			Steps: []Step{{URL: "https://hamivideo.hinet.net/api/play.do?id=OTT_VOD_0000249064&freeProduct=1"}}, Classify: classifyHami}},
@@ -458,7 +478,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcLMC("MediaUnlockTest_HamiVideo"), srcGO("HamiVideo.go")},
 	},
 	{
-		Service: "auto-abema", Name: "Abema / Niconico / TVer", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true,
+		Service: "auto-abema", Name: "Abema / Niconico / TVer", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionJP, Regions: []string{"jp"},
 		Platforms: []Platform{
 			{Name: "ABEMA", Checked: true, Primary: true},
 			{Name: "Niconico", Checked: true, Note: "仅参考，不入库：规则的域名只有 abema"},
@@ -477,7 +497,7 @@ var Catalog = []Adapter{
 		Sources: []Source{srcLMC("MediaUnlockTest_AbemaTV"), srcGO("Abema.go"), srcGO("NicoNico.go"), srcGO("TVer.go（不采用：需要 API key / 令牌链）")},
 	},
 	{
-		Service: "auto-mytvsuper", Name: "MyTV SUPER / Viu", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true,
+		Service: "auto-mytvsuper", Name: "MyTV SUPER / Viu", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionHK, Regions: []string{"hk"},
 		Platforms: []Platform{
 			{Name: "MyTV SUPER", Checked: true, Primary: true},
 			{Name: "Viu.com", Checked: true, Note: "仅参考，不入库：规则的域名只有 mytvsuper.com"},
@@ -494,7 +514,115 @@ var Catalog = []Adapter{
 		Limits:  "两个公开实现分别看 country_code 与 region 字段，本项目两者都认；只发 IPv4",
 		Sources: []Source{srcLMC("MediaUnlockTest_MyTVSuper"), srcGO("MyTVSuper.go"), srcGO("Viu.go"), srcLMC("MediaUnlockTest_ViuCom")},
 	},
+
+	// ---- added with the coverage table (coverage.go) ----------------------
+	//
+	// The request details of the adapters below follow the public scripts'
+	// documented behaviour as recalled; this pass could not re-read the
+	// cited commits (no network access), so each source is marked
+	// RecheckPending on top of the synthetic-only validation status. None
+	// of them routes anything by itself: a result only moves traffic once
+	// the operator attaches the adapter to a service group set to
+	// automatic selection.
+	{
+		Service: "youtube-premium", Name: "YouTube Premium", Capability: CapVerdict, Returns: verdictReturns, Section: SectionInternational,
+		Platforms: []Platform{{Name: "YouTube Premium", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "YouTube Premium", Primary: true, Hosts: []string{"www.youtube.com", "youtube.com"},
+			Steps: []Step{{URL: "https://www.youtube.com/premium"}}, Classify: classifyYouTubePremium}},
+		Basis:   "Premium 介绍页：含 Premium is not available in your country，或引到 www.google.cn = 不可用；200 且含 ad-free 字样 = 可用，页面 INNERTUBE_CONTEXT_GL / countryCode 的地区只作展示；其他 = 未知",
+		Limits:  "只读未登录的介绍页，不代表账号能订阅；“ad-free”是页面文案，改版会变成未知；地区只作展示（不是目录地区）",
+		Sources: []Source{srcLMCr("MediaUnlockTest_YouTube_Premium"), srcGOr("YoutubePremium.go")},
+	},
+	{
+		Service: "primevideo", Name: "Amazon Prime Video", Capability: CapRegionVerdict, Returns: verdictReturns, Section: SectionInternational,
+		Platforms: []Platform{{Name: "Prime Video", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "Prime Video", Primary: true, Hosts: []string{"www.primevideo.com", "primevideo.com"},
+			Steps: []Step{{URL: "https://www.primevideo.com/"}}, Classify: classifyPrimeVideo}},
+		Basis:   "首页数据：isServiceRestricted 为 true = 不可用；currentTerritory 给出的地区必须与出口一致，不一致按地区不符为不可用；没有这两个标记 = 未知",
+		Limits:  "依赖首页内嵌数据，改版会变成未知；不判断具体片目",
+		Sources: []Source{srcLMCr("MediaUnlockTest_PrimeVideo"), srcGOr("PrimeVideo.go")},
+	},
+	{
+		Service: "dazn", Name: "DAZN", Capability: CapRegionVerdict, Returns: verdictReturns, Section: SectionInternational,
+		Platforms: []Platform{{Name: "DAZN", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "DAZN", Primary: true, Hosts: []string{"startup.core.indazn.com"},
+			Steps: []Step{{URL: "https://startup.core.indazn.com/misl/v5/Startup", Body: daznStartupBody,
+				Headers: [][2]string{{"Content-Type", "application/json"}}}}, Classify: classifyDAZN}},
+		Basis:   "启动接口（固定的匿名请求体，不含账号、设备或会话标识）JSON 的 Region.isAllowed 与 Region.GeolocatedCountry：false = 不可用；true 且地区与出口一致 = 可用；地区不一致 = 不可用；字段缺失 = 未知",
+		Limits:  "接口没有公开文档；“可用”只是地区允许，不代表有可看的赛事",
+		Sources: []Source{srcLMCr("MediaUnlockTest_Dazn"), srcGOr("Dazn.go")},
+	},
+	{
+		Service: "tvbanywhere", Name: "TVBAnywhere+", Capability: CapVerdict, Returns: verdictReturns, Section: SectionInternational,
+		Platforms: []Platform{{Name: "TVBAnywhere+", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "TVBAnywhere+", Primary: true, Hosts: []string{"uapisfm.tvbanywhere.com.sg"},
+			Steps: []Step{{URL: "https://uapisfm.tvbanywhere.com.sg/geoip/check/platform/android"}}, Classify: classifyTVBAnywhere}},
+		Basis:   "geoip 接口 JSON 的 allow_in_this_country：true = 可用（country 只作展示），false = 不可用；没有这个字段 = 未知",
+		Limits:  "这是 TVB 面向香港以外地区的服务：香港出口上得到“不可用”是正常的；不判断账号",
+		Sources: []Source{srcLMCr("MediaUnlockTest_TVBAnywhere"), srcGOr("TVBAnywhere.go")},
+	},
+	{
+		Service: "dmm-tv", Name: "DMM TV", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionJP, Regions: []string{"jp"},
+		Platforms: []Platform{{Name: "DMM TV", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "DMM TV", Primary: true, Hosts: []string{"api.beacon.dmm.com"},
+			Steps: []Step{{URL: "https://api.beacon.dmm.com/v1/streaming/start", Body: dmmTVStartBody,
+				Headers: [][2]string{{"Content-Type", "application/json"}}}}, Classify: classifyDMMTV}},
+		Basis:   "播放开始接口（固定的匿名请求体）：应答含 FOREIGN = 海外地址，不可用；含 UNAUTHORIZED = 通过地区检查、只差登录 → 可用（日本）；其他 = 未知",
+		Limits:  "“可用”只说明地区检查通过；作品 ID 写死，下架后会变成未知；只发 IPv4",
+		Sources: []Source{srcLMCr("MediaUnlockTest_DMMTV"), srcGOr("DMMTV.go")},
+	},
+	{
+		Service: "hulu-jp", Name: "Hulu Japan", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionJP, Regions: []string{"jp"},
+		Platforms: []Platform{{Name: "Hulu Japan", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "Hulu Japan", Primary: true, Hosts: []string{"id.hulu.jp", "www.hulu.jp"},
+			Steps: []Step{{URL: "https://id.hulu.jp/"}}, Classify: classifyHuluJP}},
+		Basis:   "账号入口的最终地址：路径含 restrict = 地区限制页，不可用；停在 hulu.jp 的 login 路径 = 可用（日本）；其他 = 未知",
+		Limits:  "只看跳转去向；只发 IPv4",
+		Sources: []Source{srcLMCr("MediaUnlockTest_HuluJP"), srcGOr("HuluJP.go")},
+	},
+	{
+		Service: "radiko", Name: "radiko", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionJP, Regions: []string{"jp"},
+		Platforms: []Platform{{Name: "radiko", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "radiko", Primary: true, Hosts: []string{"radiko.jp"},
+			Steps: []Step{{URL: "https://radiko.jp/area"}}, Classify: classifyRadiko}},
+		Basis:   "地区接口：class=\"OUT\" = 日本以外，不可用；class=\"JP<编号>\" = 日本某地区 → 可用（日本，编号只作展示）；其他 = 未知",
+		Limits:  "只说明 IP 被认作日本哪一区，不代表能收听全部电台；只发 IPv4",
+		Sources: []Source{srcLMCr("MediaUnlockTest_Radiko"), srcGOr("Radiko.go")},
+	},
+	{
+		Service: "myvideo", Name: "MyVideo", Capability: CapVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionTW, Regions: []string{"tw"},
+		Platforms: []Platform{{Name: "MyVideo", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "MyVideo", Primary: true, Hosts: []string{"www.myvideo.net.tw"},
+			Steps: []Step{{URL: "https://www.myvideo.net.tw/login.do", NoRedirect: true}}, Classify: classifyMyVideo}},
+		Basis:   "登录页（不跟随跳转）：跳到含 serviceAreaBlock 的路径 = 地区限制，不可用；200 停在登录页 = 可用（无负面标记）；其他 = 未知",
+		Limits:  "“可用”只是没有地区限制跳转；只发 IPv4",
+		Sources: []Source{srcLMCr("MediaUnlockTest_MyVideo"), srcGOr("MyVideo.go")},
+	},
+	{
+		Service: "peacock", Name: "Peacock", Capability: CapVerdict, Returns: verdictReturns, Section: SectionUS, Regions: []string{"us"},
+		Platforms: []Platform{{Name: "Peacock", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "Peacock", Primary: true, Hosts: []string{"www.peacocktv.com"},
+			Steps: []Step{{URL: "https://www.peacocktv.com/", NoRedirect: true}}, Classify: classifyPeacock}},
+		Basis:   "首页（不跟随跳转）：跳到含 unavailable 的路径 = 不可用；200 = 可用（无负面标记）；其他跳转 = 未知",
+		Limits:  "只看首页是否被引到不可用页",
+		Sources: []Source{srcLMCr("MediaUnlockTest_Peacock"), srcGOr("Peacock.go")},
+	},
+	{
+		Service: "plutotv", Name: "Pluto TV", Capability: CapVerdict, Returns: verdictReturns, Section: SectionUS,
+		Platforms: []Platform{{Name: "Pluto TV", Checked: true, Primary: true}},
+		Checks: []Check{{Platform: "Pluto TV", Primary: true, Hosts: []string{"pluto.tv"},
+			Steps: []Step{{URL: "https://pluto.tv/", NoRedirect: true}}, Classify: classifyPlutoTV}},
+		Basis:   "首页（不跟随跳转）：跳到含 thanks-for-watching 的路径 = 不可用；200 或站内其他跳转 = 可用（无负面标记）；其他 = 未知",
+		Limits:  "Pluto TV 在多个国家开放、各国频道不同；这里只判断是否被拒绝，不判断目录地区",
+		Sources: []Source{srcLMCr("MediaUnlockTest_PlutoTV"), srcGOr("PlutoTV.go")},
+	},
 }
+
+// Fixed anonymous request bodies (no account, device or session data).
+const (
+	daznStartupBody = `{"LandingPageKey":"generic","languages":"en-US,en","Platform":"web","PlatformAttributes":{},"Manufacturer":"","PromoCode":"","Version":"2"}`
+	dmmTVStartBody  = `{"player_name":"dmmtv_browser","player_version":"0.0.0","content_type_detail":"VOD_SVOD","content_id":"11uvjcm4fw2wdu7drtd1epnvz","purchase_product_id":null}`
+)
 
 // ---- classifiers ------------------------------------------------------------
 //

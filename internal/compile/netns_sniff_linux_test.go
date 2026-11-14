@@ -348,7 +348,19 @@ func newSniffLab(t *testing.T, topo model.Topology) *sniffLab {
 	must(in("gw", "sysctl", "-qw", "net.ipv6.conf.all.forwarding=1")...)
 	// far: the test servers and every resolver of the target file on lo,
 	// the way home through the preferred tunnel.
+	// far stands for the relays, the hubs and the exits together and sends
+	// everything home through one tunnel, so a connection the gateway
+	// shares onto another leg reaches far on an interface its reverse
+	// route does not use. The far interfaces carry no IPv4 address, and
+	// on such an interface any rp_filter but 0 drops that packet (even
+	// loose mode); a new namespace copies the host's values, which are 2
+	// on a host Meridian is installed on. Real relays answer on the leg a
+	// connection came in on, so this is the test's far end only.
 	must(in("far", "sysctl", "-qw", "net.ipv4.conf.all.rp_filter=0")...)
+	must(in("far", "sysctl", "-qw", "net.ipv4.conf.default.rp_filter=0")...)
+	for _, tun := range l.tunnels {
+		must(in("far", "sysctl", "-qw", "net.ipv4.conf."+tun+".rp_filter=0")...)
+	}
 	for _, a := range []string{"203.0.113.110/32", "203.0.113.111/32", "203.0.113.115/32", "203.0.113.200/32", "198.51.100.30/32"} {
 		must(in("far", "ip", "addr", "add", a, "dev", "lo")...)
 	}

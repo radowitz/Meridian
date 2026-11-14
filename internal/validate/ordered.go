@@ -6,6 +6,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/model"
 	rulesorder "github.com/radowitz/meridian/internal/ordered"
+	"github.com/radowitz/meridian/internal/probe"
 	"github.com/radowitz/meridian/internal/ruleset"
 )
 
@@ -78,6 +79,7 @@ func checkRuleSetsAndServices(t model.Topology) []Issue {
 			}
 		}
 	}
+	out = append(out, checkServiceSelection(t)...)
 	if defaults > 1 {
 		out = append(out, Issue{Code: "service_default_mismatch", Severity: SeverityError, Field: "service_groups", Message: "只能有一个兜底（MATCH）服务组。"})
 	}
@@ -89,6 +91,113 @@ func checkRuleSetsAndServices(t model.Topology) []Issue {
 	}
 	if quic > 1 {
 		out = append(out, Issue{Code: "quic_row_repeated", Severity: SeverityError, Field: "rules", Message: "QUIC 开关只能有一行（它的位置决定哪些规则豁免）。"})
+	}
+	return out
+}
+
+// checkServiceSelection validates the unlock binding of service groups
+// (model.ServiceGroup Select / Probes) and the probe settings. One adapter
+// is decided in one place only: a probe bound to a service group in
+// automatic mode must not also be the adapter of an enabled built-in rule
+// aimed at a region group (that rule has its own unlock state), or the two
+// would move overlapping traffic independently.
+func checkServiceSelection(t model.Topology) []Issue {
+	var out []Issue
+	builtin := map[string]string{}
+	for _, r := range t.Rules {
+		if r.Enabled && r.TargetGroup != "" && probe.Probeable(r.ID) {
+			builtin[r.ID] = r.Name
+		}
+	}
+	used := map[string]bool{}
+	for _, r := range t.Rules {
+		if r.Enabled && r.TargetService != "" {
+			used[r.TargetService] = true
+		}
+	}
+	for _, s := range t.ServiceGroups {
+		add := func(code, sev, msg string) {
+			out = append(out, Issue{Code: code, Severity: sev, Field: "service_groups", GroupID: s.TargetGroup, Message: fmt.Sprintf("服务组「%s」：%s", s.Name, msg)})
+		}
+		if s.Select != "" && s.Select != model.SelectAuto {
+			add("service_select_bad", SeverityError, "选择方式只能是固定（空）或 auto。")
+		}
+		seen := map[string]bool{}
+		verdicts := 0
+		for _, id := range s.Probes {
+			a, ok := probe.Lookup(id)
+			switch {
+			case !ok:
+				add("service_probe_unknown", SeverityError, "检测项 "+id+" 不在探测目录里。")
+				continue
+			case seen[id]:
+				add("service_probe_unknown", SeverityError, "检测项 "+id+" 重复。")
+				continue
+			}
+			seen[id] = true
+			if a.Capability == probe.CapRegionVerdict || a.Capability == probe.CapVerdict {
+				verdicts++
+			}
+			if s.Select == model.SelectAuto {
+				if name, clash := builtin[id]; clash {
+					add("unlock_owner_conflict", SeverityError, fmt.Sprintf("检测项 %s 同时是已启用的内置规则「%s」的自动选择依据。同一个服务只能由一处决定出口：停用该内置规则，或把 %s 从这个服务组的自动选择里去掉。", id, name, id))
+				}
+				if g, ok := t.GroupByID(s.TargetGroup); ok {
+					var outside []string
+					for _, m := range g.Members {
+						if n, ok := t.NodeByID(m); ok && n.Region != "" && !a.CoversRegion(n.Region) {
+							outside = append(outside, m)
+						}
+					}
+					if len(outside) > 0 {
+						add("service_probe_region", SeverityWarning, fmt.Sprintf("检测项 %s 只能判断 %s 地区；候选出口 %s 不在其中，在它们上面只会得到“不在该地区”的结论。", id, strings.Join(a.Regions, "、"), strings.Join(outside, "、")))
+					}
+				}
+			}
+		}
+		if s.Select != model.SelectAuto {
+			continue
+		}
+		switch {
+		case s.Default:
+			add("service_auto_default", SeverityWarning, "兜底（MATCH）服务组不按检测结果自动选择（它承载全部未匹配的境外流量）：自动设置被忽略，检测结果只记录。")
+		case s.TargetGroup == "":
+			add("service_auto_target", SeverityWarning, "自动选择只对指向地区组的服务组起作用（候选就是该组的成员）；现在指向出口、直连或拒绝，等于钉死：检测结果只记录。")
+		}
+		if len(s.Probes) == 0 {
+			add("service_auto_probes", SeverityError, "自动选择至少要绑定一个检测项。")
+		} else if verdicts == 0 {
+			add("service_auto_probes", SeverityError, "绑定的检测项都只能判断到达性，永远得不到解锁结论，自动选择不会有任何依据。")
+		}
+		if g, ok := t.GroupByID(s.TargetGroup); ok && g.Mode == model.GroupManual {
+			add("service_auto_pinned", SeverityWarning, "目标地区组是手动模式：手动选择优先，检测结果只记录，不移动出口。")
+		}
+		if !used[s.ID] {
+			add("service_auto_unused", SeverityWarning, "没有启用的规则指向这个服务组：检测结果只展示，不影响任何流量（不会自动新增规则）。")
+		}
+	}
+	if p := t.Settings.UnlockProbe; p != nil {
+		bad := func(field, msg string) {
+			out = append(out, Issue{Code: "unlock_probe_settings", Severity: SeverityError, Field: "unlock_probe." + field, Message: msg})
+		}
+		if p.ExitConcurrency != 0 && (p.ExitConcurrency < 1 || p.ExitConcurrency > model.MaxUnlockExitConcurrency) {
+			bad("exit_concurrency", fmt.Sprintf("同时探测的出口数只能是 1 到 %d。", model.MaxUnlockExitConcurrency))
+		}
+		if p.ExitRequestBudget != 0 && (p.ExitRequestBudget < model.MinUnlockExitBudget || p.ExitRequestBudget > model.MaxUnlockExitBudget) {
+			bad("exit_request_budget", fmt.Sprintf("每个出口每轮的请求预算要在 %d 到 %d 之间。", model.MinUnlockExitBudget, model.MaxUnlockExitBudget))
+		}
+		if p.ResultTTLSec != 0 {
+			interval := t.Settings.UnlockIntervalSec
+			if interval <= 0 {
+				interval = 6 * 3600
+			}
+			switch {
+			case p.ResultTTLSec < model.MinUnlockResultTTLSec || p.ResultTTLSec > model.MaxUnlockResultTTLSec:
+				bad("result_ttl_sec", "结果有效期要在 1 小时到 7 天之间。")
+			case p.ResultTTLSec < interval:
+				bad("result_ttl_sec", "结果有效期短于探测间隔：下一轮之前所有结果都已过期，自动选择永远找不到有依据的备选。")
+			}
+		}
 	}
 	return out
 }

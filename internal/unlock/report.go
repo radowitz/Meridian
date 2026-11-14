@@ -159,6 +159,13 @@ type Outcome struct {
 // admitting them (pinned rule, exit outside the pool). now is the panel
 // clock; the caller must hold the snapshot's writer lock.
 func Ingest(snap *Snapshot, ob Observation, members []string, note string, now time.Time) []Outcome {
+	return IngestWith(snap, ob, members, note, now, Policy{})
+}
+
+// IngestWith is Ingest under a policy (result lifetime). Admission is
+// exactly the same; the policy only changes which earlier results the
+// state machine still counts as evidence when it steps.
+func IngestWith(snap *Snapshot, ob Observation, members []string, note string, now time.Time, pol Policy) []Outcome {
 	if snap.Services == nil {
 		snap.Services = map[string]State{}
 	}
@@ -243,7 +250,7 @@ func Ingest(snap *Snapshot, ob Observation, members []string, note string, now t
 		Service: ob.Service, ExitID: ob.ExitID, Family: fam, OK: verdict,
 		Kind: ob.Kind, At: received, ObservedAt: observed,
 	}
-	Apply(snap, ev, members, "")
+	ApplyWith(snap, ev, members, "", pol)
 	for _, f := range admitted {
 		out = append(out, Outcome{Service: ob.Service, ExitID: ob.ExitID, Family: f, OK: ob.Results[f], Accepted: true})
 	}

@@ -25,6 +25,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import { href, useStatus } from "./state";
+import { CoverageTable, RoutingPanel } from "./UnlockRouting";
 import type { ProbeCatalogEntry, ProbeCategory, ProbeGrade, ProbeJob, ProbeResultRow, ProbeSelection } from "./types";
 import {
   TABLE_SCROLL,
@@ -156,6 +157,8 @@ const NOT_INGESTED: Record<string, string> = {
   interrupted: "面板中断，未入库",
   save_failed: "保存失败，未入库",
   family_not_supported: "检测方法不支持这个地址族，未入库",
+  no_owner: "没有关联的规则或服务组：只展示，不入库，也不会新增分流",
+  over_budget: "超出该出口每轮的请求预算，这一轮没有探测",
 };
 
 export function ingestText(v?: string) {
@@ -680,6 +683,11 @@ function ResultsMatrix({
                             <CategoryChip cat={shownCategory(r)} grade={shownGrade(r)} small />
                           )}
                           {r.is_active ? <span className="active-dot" aria-hidden /> : null}
+                          {r.expired ? (
+                            <span className="muted" style={{ fontSize: 10 }} data-testid={`expired-${s}-${c.id}-${f}`}>
+                              已过期
+                            </span>
+                          ) : null}
                         </button>
                       );
                     })}
@@ -1015,6 +1023,20 @@ export default function UnlockPage() {
         </DataView>
       </Section>
 
+      <Section title="服务组自动路由（按地区）">
+        <DataView state={view} rows={3}>
+          {(v) => (
+            <RoutingPanel
+              owners={v.owners ?? []}
+              schedule={v.schedule}
+              catalog={catalog.data?.catalog ?? []}
+              pending={v.pending_apply}
+              onChanged={() => void view.reload()}
+            />
+          )}
+        </DataView>
+      </Section>
+
       <Section title="历史">
         <DataView state={view} rows={3}>
           {(v) => (
@@ -1061,6 +1083,14 @@ export default function UnlockPage() {
                 {c.ingest_rule ? ` 入库规则：${c.ingest_rule}` : ""}
               </Typography.Paragraph>
               <CatalogTable catalog={c.catalog} />
+              {c.coverage?.length ? (
+                <>
+                  <Typography.Title level={5} style={{ marginTop: 16 }}>
+                    覆盖表（{c.coverage.filter((i) => i.adapter).length} / {c.coverage.length} 项有适配器）
+                  </Typography.Title>
+                  <CoverageTable items={c.coverage} reasons={c.reasons ?? {}} />
+                </>
+              ) : null}
             </>
           )}
         </DataView>

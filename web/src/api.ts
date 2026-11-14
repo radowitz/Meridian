@@ -506,6 +506,8 @@ export const activateHeldRuleSet = (id: string) => request<RuleSetView>("POST", 
 export const listServiceGroups = () => request<{ service_groups: { service_group: ServiceGroup; used_by: RuleRef[] }[] }>("GET", "/api/service-groups");
 export const setServiceTarget = (id: string, target: string) =>
   request<{ service_group: ServiceGroup }>("PATCH", `/api/service-groups/${enc(id)}`, { target });
+export const setServiceSelect = (id: string, body: { select?: "" | "auto"; probes?: string[] }) =>
+  request<{ service_group: ServiceGroup }>("PATCH", `/api/service-groups/${enc(id)}`, body);
 export const createServiceGroup = (name: string, target: string) => request<{ service_group: ServiceGroup }>("POST", "/api/service-groups", { name, target });
 export const deleteServiceGroup = (id: string) => request<{ deleted: string }>("DELETE", `/api/service-groups/${enc(id)}`);
 export const importPreview = (body: ImportRequest) => request<ImportPreview>("POST", "/api/rules/import/preview", body);

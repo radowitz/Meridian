@@ -7,6 +7,7 @@ import (
 
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/pool"
+	"github.com/radowitz/meridian/internal/unlock"
 	"github.com/radowitz/meridian/internal/validate"
 )
 
@@ -530,7 +531,17 @@ func ruleExit(t model.Topology, r model.Rule, exits []ExitPlan, groups []GroupPl
 		return target{}, "", false
 	}
 	if gp.Group.Mode == model.GroupAuto {
-		if id := decisions[r.ID]; id != "" && id != gp.Selection.Target && containsID(gp.Selection.Order, id) {
+		// The decision is keyed where it is made: a rule through a service
+		// group follows that group's decision (unlock.ServiceKey), never a
+		// key of its own; a rule aimed at the group directly uses its rule
+		// ID (a rule ID that looks like a service key is ignored).
+		key := r.ID
+		if rt.Service != "" {
+			key = unlock.ServiceKey(rt.Service)
+		} else if unlock.IsServiceKey(r.ID) {
+			key = ""
+		}
+		if id := decisions[key]; key != "" && id != "" && id != gp.Selection.Target && containsID(gp.Selection.Order, id) {
 			if e, ok := exitByID(exits, id); ok {
 				return target{Exit: e, Mark: e.Mark, V6: carriesV6(e)}, "", true
 			}

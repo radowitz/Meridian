@@ -59,7 +59,7 @@ type ProbeRequest struct {
 const (
 	minExitMark = 0x101
 	maxExitMark = 0x101 + 63 // the selector loop in render_routes.go
-	maxServices = 16
+	maxServices = MaxProbeServices
 )
 
 var (
@@ -73,6 +73,10 @@ var (
 // ErrProbeBusy means the agent refused to start a probe now (an action is
 // running, or MaxProbes probes already are).
 var ErrProbeBusy = errors.New("宿主正忙（安装/回滚进行中或探测已达上限），本次探测没有执行")
+
+// MaxProbeServices is how many catalog services one /v1/probe request may
+// name; the panel splits a longer list into several requests.
+const MaxProbeServices = 16
 
 // ValidateProbe checks a probe request completely before anything runs.
 func ValidateProbe(req ProbeRequest) error {

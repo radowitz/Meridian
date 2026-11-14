@@ -686,13 +686,13 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 ```
 立即测试 (POST /api/unlock/run, kind=manual) ┐
 定时 tickUnlock (kind=scheduled)            ┴→ startProbeJob：服务 × 出口 × 地址族，校验、上限、只允许一轮
-  → runProbeJob：同时最多 2 个出口
+  → runProbeJob：同时最多 exit_concurrency（默认 2）个出口
     → runProbeGroup（一个出口）：每个地址族一次 hostexec.Client.Probe（不重试）
       → meridian-host POST /v1/probe → probe.Prober.Run：出口检查 → 各平台适配器 → 再次出口检查
     → unlock.Ingest：每个服务一份 Observation，带这一轮全部地址族；在面板写锁内「读 → Ingest → 写」
 ```
 
-- **只接受枚举值**：面板只能选 `internal/probe` 目录表里的 14 个适配器（每个适配器能给出哪一级结论、只做到达性的是哪些、哪些只发 IPv4，见 [unlock-methods.md](unlock-methods.md)「能力声明一览」）、拓扑里的出口和 `ipv4` / `ipv6`。请求体有多余字段（`url`、`command`……）直接 400。agent 侧 `ValidateProbe` 再校验一遍：出口 mark 必须在 `0x101`–`0x140`，中转地址必须在 `10.66.200.0/24` / `fd66:0:0:ff::/64`，解析器必须是 `fd66::/48` 里的出口隧道地址，服务必须在目录表里，最多 16 个。没有 URL、主机、端口、请求头、命令或路径参数；`MERIDIAN_UNLOCK_EXEC` 已删除，设置了也只会在日志里提示不再使用。
+- **只接受枚举值**：面板只能选 `internal/probe` 目录表里的适配器（目前 24 个）（每个适配器能给出哪一级结论、只做到达性的是哪些、哪些只发 IPv4，见 [unlock-methods.md](unlock-methods.md)「能力声明一览」）、拓扑里的出口和 `ipv4` / `ipv6`。请求体有多余字段（`url`、`command`……）直接 400。agent 侧 `ValidateProbe` 再校验一遍：出口 mark 必须在 `0x101`–`0x140`，中转地址必须在 `10.66.200.0/24` / `fd66:0:0:ff::/64`，解析器必须是 `fd66::/48` 里的出口隧道地址，服务必须在目录表里，最多 16 个。没有 URL、主机、端口、请求头、命令或路径参数；`MERIDIAN_UNLOCK_EXEC` 已删除，设置了也只会在日志里提示不再使用。
 - **强制出口与地址族**：socket 带该出口的 fwmark（`SO_MARK`，需要 agent 的 `CAP_NET_ADMIN`），从该出口在 `lo` 上的中转地址发出，按地址族只用 `tcp4` 或 `tcp6`；名字经该出口的隧道解析器（ULA，同样带 mark 和中转源地址）只查 A 或 AAAA。网关上这个 mark 命中 `lookup 102`（默认路由是西向隧道，后面是 `unreachable`），阿里云和枢纽按中转源地址选出口，和局域网流量被 SNAT 之后走的路一样。本机发出的流量走 output 路径，不经过 `inet meridian_guard` 的 forward 兜底，所以每条连接前还要做路由检查：`ip -4|-6 route get <目的> from <中转地址> mark <mark>` 的出口设备必须是 Meridian 隧道接口（`m00`/`m00w`/`mmesh` 这一类），否则不连接。中转地址不在本机 `lo` 上（网关还没装这个出口）时什么都不发。
 - **验证实际出口**：访问平台之前先请求固定的 `https://www.cloudflare.com/cdn-cgi/trace`，返回的公网地址必须是所选地址族，地区必须等于出口地区；拓扑里有该地址族的公网端点（`endpoint_v4` / `endpoint_v6`）时地址还必须等于端点。全部平台请求结束后再查一次，地址变了（例如枢纽把这张表切到了同池别的成员）整轮作废。出口确认不了的项一律是「探测失败」，从不作为平台结论。
 - **结果类别**：网络可达（非平台判定）/ 平台明确解锁（带平台给出的地区和依据）/ 平台明确未解锁 / 探测失败（超时、传输错误、出口不对、地址族不对、取消）/ 未知（应答无法识别）。面板按服务、出口、地址族显示开始与完成时间、结果、平台地区、证据（状态码、主机和路径、命中的标记，不含查询串和正文）、出口确认、错误，以及入库结果。
@@ -708,6 +708,23 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 - `internal/api`：手动一轮按服务 × 出口 × 地址族生成项、请求带对出口的 mark / 中转地址 / 解析器 / 地区、每个出口一轮只推进一次状态且不计失败次数；定时与手动同链、结果真实入库、两次定时明确未解锁才降级、定时推后、没有 agent 时只记一条说明；无平台结论记为 `inconclusive` 且不降级、agent 声称解锁但出口未确认时降为失败；取消后不入库、同时只允许一轮、整轮超时；任意 URL / 命令 / 无适配器服务 / 非出口 / `any` 地址族被拒、出口不支持的地址族只记录不发送；探测入库与 10 份并发出口报告在同一把锁里都不丢、agent 并发不超过 2。
 - `internal/unlock`：`inconclusive` 三次也不降级，但会清掉首选的恢复计时。
 
+### 服务组自动选择与覆盖表（R4）
+
+做法见 [unlock-methods.md](unlock-methods.md)「服务组自动选择」「调度与克制」「覆盖表」。
+
+自动化回归（只证明控制流和判定逻辑，不证明真实平台或真实网关）：
+
+- `go test ./internal/unlock -run AutoSelect`：可注入时钟下的失效切换（一次定时失败不动、手动失败不计、两次定时失败才换并记录原因和时间）、滞回切回（30 分钟连续成功，期间失败重新计时）、全部候选失效（留在默认出口、标不可用、不去没测过的成员）、钉死优先、结果过期（过期的成功不作为备选证据）、旧的未带时间的结果保持原含义。
+- `go test ./internal/probe -run 'AdapterFixtures|Capability|CoverageTable|RegionsAndCost'`：新增适配器的合成应答（可用、不可用、地区不符、质询、限流、改版）；覆盖表每一项要么对应目录里的适配器（或其中的参考检查）要么有原因，每个适配器都在覆盖表和本文档里，每一步都是 https 且主机在固定名单里，请求头只用允许的名字。
+- `go test ./internal/compile -run ServiceGroupDecision`：服务组决定把它的规则改到被选成员的 mark 和解析器（不是国内解析器），按规则 ID 写的决定无效，候选外的决定和固定服务组被忽略；切换前后每个被引用的 nft 集合都已声明、没有重复声明、清单里的地址集合都已声明，嗅探服务接受编译出的快照和目标文件；覆盖 IPv4-only 与双栈目标、嵌套出口、仅 TCP 的外部出口、地区组、单出口目标。
+- `go test ./internal/api -run 'ServiceGroupAuto|ServiceGroupAll|UnownedAdapter|ScheduledBudget|AutoServiceGroupOwner|ProbeSplits'`：两个检测项的组合、两次定时失败切换、路由视图（候选证据、推算出口、原因与时间、调度设置）、改成固定后决定立即消失、全部失效时告警、没有关联的适配器只展示且不新增规则、每出口请求预算、内置规则与服务组同时决定同一服务被拒绝、超过 16 个服务时拆成多次 agent 请求。
+
+实机（**未执行**，在存档证据之前一律算「未验证」）：
+
+- [ ] 覆盖表新增的 10 个适配器对照引用脚本的当前源码复核请求和标记，再在真实平台的可用 / 受限出口上各跑一次。
+- [ ] 在真实网关上把一个服务组设为自动：首选连续两次定时失败后面板显示待安装；安装后该服务组规则的连接和 DNS 都从被选出口出去（抓包，确认没有查询发往国内解析器）；首选恢复满 30 分钟后切回；所有候选失效时留在默认出口并告警。
+- [ ] 默认设置下定时一轮对每个出口发出的平台请求不超过预算（agent 日志或抓包计数）。
+
 实机（Debian 13 网关，root，**未执行**；在存档证据之前一律算「未验证」）：
 
 - [ ] `meridian-host` 新的沙箱（`RestrictAddressFamilies` 增加了 `AF_INET AF_INET6`，仍只有 `CAP_NET_ADMIN`）下 `SO_MARK` 可以设置、能绑定 `lo` 上的中转地址、能读系统 CA。
@@ -719,7 +736,7 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 - [ ] 名字解析始终经出口隧道解析器的 ULA（IPv6 传输，带同一 mark 和中转源地址），IPv4 探测也是如此；该出口的 smartdns 没起来时整轮失败而不是改用本机解析器。Go 解析器会先看网关的 `/etc/hosts`，不要在网关上为这些平台写 hosts 条目。回程依赖网关 `rp_filter=2`（宽松），与局域网流量相同。
 - [ ] 出口的出站公网地址和 `endpoint_v4` 不是同一个地址（多 IP 主机）时，该出口的面板探测会一直报出口不一致；需要人工确认后调整端点或接受这个限制。
 
-真实平台行为（只能由人对照真实页面核实，仓库里没有向真实平台发过任何请求，14 个适配器全部基于公开的检测思路和合成样例；每个平台要核对的事项以 [unlock-methods.md](unlock-methods.md)「需要人工在真实平台上核对的事项」为准，下面只列最早的四个）：
+真实平台行为（只能由人对照真实页面核实，仓库里没有向真实平台发过任何请求，全部 24 个适配器都基于公开的检测思路和合成样例（覆盖表新增的 10 个连请求细节都待对照源码复核）；每个平台要核对的事项以 [unlock-methods.md](unlock-methods.md)「需要人工在真实平台上核对的事项」为准，下面只列最早的四个）：
 
 - [ ] Netflix：自制剧标题 `81280792` 在解锁地区返回 200 且页面带 `requestCountry` / `countryCode`（或 URL 带 `/xx-yy/` 前缀），仅自制剧地区 404，被封 IP 403。美国目录 URL 没有前缀时，只能靠页面标记；页面结构变化会落到「未知」。
 - [ ] Disney+：不可用地区是否跳到含 `unavailable` 的路径；可用时页面是否带 `countryCode` / `region` 或 `/语言-地区` 前缀。没有这些标记时只会是「未知」。

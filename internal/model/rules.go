@@ -74,7 +74,23 @@ type ServiceGroup struct {
 	// Default marks the group MATCH points at: its target is the gateway's
 	// default group (Settings.DefaultGroup), so it must be a region group.
 	Default bool `json:"default,omitempty"`
+	// Select is "" (fixed: the target is used as it is) or SelectAuto: the
+	// unlock results of Probes choose which member of the target region
+	// group carries the group's rules (the candidates are that group's
+	// members in effective order; where it stays when none is known to
+	// unlock is the member the group itself selects). An exit target, a
+	// manual region group or direct/reject is a pin: results are recorded
+	// and shown, nothing moves. See docs/unlock-methods.md「服务组自动选择」.
+	Select string `json:"select,omitempty"`
+	// Probes are catalog adapter IDs (internal/probe) whose results belong
+	// to this group: in automatic mode they drive the choice, in fixed mode
+	// they are shown only. They say nothing about which names the group
+	// routes: that is decided by the rules (and rule-sets) pointing at it.
+	Probes []string `json:"probes,omitempty"`
 }
+
+// SelectAuto is ServiceGroup.Select for unlock-driven selection.
+const SelectAuto = "auto"
 
 // MihomoImport is what the panel remembers between imports: the operator's
 // mapping of mihomo names (line groups, region selectors, proxies) to

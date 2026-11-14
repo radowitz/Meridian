@@ -12,6 +12,7 @@ import (
 	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/model"
 	"github.com/radowitz/meridian/internal/pool"
+	"github.com/radowitz/meridian/internal/probe"
 	"github.com/radowitz/meridian/internal/unlock"
 	"github.com/radowitz/meridian/internal/verify"
 )
@@ -36,13 +37,27 @@ func (s *Server) unlockDecisions(t model.Topology) map[string]string {
 	return unlock.Decisions(s.loadUnlock(), servicesOf(t))
 }
 
-// servicesOf lists every enabled rule aimed at a region group: the group's
-// effective order is the service's member list (the unlock map never
-// leaves it), and rules of a manual group are pinned (recorded only).
+// servicesOf lists every place an unlock decision is made or shown:
+//
+//   - every enabled rule aimed at a region group (the built-in auto-* rules
+//     among them), keyed by its rule ID: the group's effective order is the
+//     service's member list (the unlock map never leaves it), and rules of
+//     a manual group are pinned (recorded only). Its probe is the adapter
+//     with the rule's ID, when there is one;
+//   - every service group with probes attached, keyed by
+//     unlock.ServiceKey(id): with automatic selection on a region group
+//     the group's effective order is the candidate list and the member the
+//     group selects is where it stays when no candidate is known good;
+//     fixed mode, a manual group, an exit target or direct/reject are pinned
+//     (results are recorded and shown, nothing moves).
+//
+// One adapter is decided in one place only (validate checkServiceSelection
+// refuses an automatic service group whose probe is also an enabled
+// built-in rule's).
 func servicesOf(t model.Topology) []unlock.Service {
 	var out []unlock.Service
 	for _, r := range t.Rules {
-		if !r.Enabled || r.TargetGroup == "" {
+		if !r.Enabled || r.TargetGroup == "" || unlock.IsServiceKey(r.ID) {
 			continue
 		}
 		g, ok := t.GroupByID(r.TargetGroup)
@@ -50,13 +65,76 @@ func servicesOf(t model.Topology) []unlock.Service {
 			continue
 		}
 		sel := pool.Select(t, g, nil)
-		out = append(out, unlock.Service{
+		svc := unlock.Service{
 			RuleID: r.ID, Name: r.Name, Pool: g.ID,
 			Preferred: sel.Target, Members: append([]string{}, sel.Order...),
 			Pin: g.Mode == model.GroupManual,
-		})
+		}
+		if probe.Probeable(r.ID) {
+			svc.Probes = []string{r.ID}
+		}
+		out = append(out, svc)
+	}
+	for _, sg := range t.ServiceGroups {
+		if len(sg.Probes) == 0 {
+			continue
+		}
+		svc := unlock.Service{RuleID: unlock.ServiceKey(sg.ID), Name: sg.Name, ServiceGroup: sg.ID, Pin: true, Members: []string{}}
+		for _, id := range sg.Probes {
+			if probe.Probeable(id) {
+				svc.Probes = append(svc.Probes, id)
+			}
+		}
+		switch {
+		case sg.TargetGroup != "":
+			g, ok := t.GroupByID(sg.TargetGroup)
+			if !ok {
+				continue
+			}
+			sel := pool.Select(t, g, nil)
+			svc.Pool, svc.Preferred, svc.Members = g.ID, sel.Target, append([]string{}, sel.Order...)
+			svc.Pin = sg.Select != model.SelectAuto || g.Mode == model.GroupManual || sg.Default
+		case sg.TargetExit != "":
+			svc.Preferred, svc.Members = sg.TargetExit, []string{sg.TargetExit}
+		}
+		out = append(out, svc)
 	}
 	return out
+}
+
+// unlockPolicy is the state machine's policy from the settings: the
+// result lifetime (default twice the probe interval), for every service.
+func unlockPolicy(t model.Topology) unlock.Policy {
+	ttl := 2 * unlock.Interval(t.Settings.UnlockIntervalSec)
+	if p := t.Settings.UnlockProbe; p != nil && p.ResultTTLSec > 0 {
+		ttl = time.Duration(p.ResultTTLSec) * time.Second
+	}
+	return unlock.Policy{TTL: ttl}
+}
+
+// policyFor adds evidence-only backups for a service group: when no
+// candidate has a valid success it stays on the member its group selects
+// and the panel warns. Rules aimed at a region group (the built-in auto-*
+// rules) keep their earlier behaviour of trying a member never measured.
+func policyFor(t model.Topology, svc unlock.Service) unlock.Policy {
+	pol := unlockPolicy(t)
+	pol.RequireEvidence = svc.ServiceGroup != ""
+	return pol
+}
+
+// exitConcurrency and exitBudget are the probe restraint settings.
+func exitConcurrency(t model.Topology) int {
+	if p := t.Settings.UnlockProbe; p != nil && p.ExitConcurrency > 0 && p.ExitConcurrency <= probeExitConcurrency {
+		return p.ExitConcurrency
+	}
+	return model.DefaultUnlockExitConcurrency
+}
+
+func exitBudget(t model.Topology) int {
+	if p := t.Settings.UnlockProbe; p != nil && p.ExitRequestBudget > 0 {
+		return p.ExitRequestBudget
+	}
+	return model.DefaultUnlockExitBudget
 }
 
 func (s *Server) loadUnlock() unlock.Snapshot {
@@ -177,6 +255,10 @@ func (s *Server) getUnlock(w http.ResponseWriter, r *http.Request) {
 		// that were removed from the topology: shown as such, never as
 		// current results.
 		"removed_exits": unlock.RemovedExits(snap, exitExists(t)),
+		// Where each decision is made, its candidates, evidence, exit in use
+		// (panel computation) and last switch (unlock_routing.go).
+		"owners":   routingView(t, snap, time.Now().UTC()),
+		"schedule": probeSchedule(t),
 	})
 }
 
@@ -302,9 +384,9 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		note := ingestNote(svc, exit.ID)
-		seedState(&snap, svc)
+		seedState(&snap, svc, now, policyFor(t, svc))
 		ob := unlock.Observation{Service: id, ExitID: exit.ID, Kind: kind, ObservedAt: observed, Results: results[id]}
-		outcomes = append(outcomes, unlock.Ingest(&snap, ob, svc.Members, note, now)...)
+		outcomes = append(outcomes, unlock.IngestWith(&snap, ob, svc.Members, note, now, policyFor(t, svc))...)
 	}
 	rids := make([]string, 0, len(reach))
 	for id := range reach {
@@ -316,9 +398,9 @@ func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
 		if !found {
 			continue
 		}
-		seedState(&snap, svc)
+		seedState(&snap, svc, now, policyFor(t, svc))
 		ob := unlock.Observation{Service: id, ExitID: exit.ID, Kind: kind, ObservedAt: observed, Results: reach[id]}
-		outcomes = append(outcomes, unlock.Ingest(&snap, ob, svc.Members, reachOnlyNote, now)...)
+		outcomes = append(outcomes, unlock.IngestWith(&snap, ob, svc.Members, reachOnlyNote, now, policyFor(t, svc))...)
 	}
 	// An exit-side report does not move NextRun: that is the panel's own
 	// probe schedule (unlock_probe.go).

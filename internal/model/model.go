@@ -321,6 +321,10 @@ type Settings struct {
 	// UnlockIntervalSec is the scheduled streaming/AI probe period.
 	// Zero means 6 hours. Manual rules are not moved by the results.
 	UnlockIntervalSec int `json:"unlock_interval_sec,omitempty"`
+	// UnlockProbe tunes the scheduled probe (concurrency, request budget,
+	// result lifetime). Nil means the defaults (UnlockProbeSettings). The
+	// compiler never reads it.
+	UnlockProbe *UnlockProbeSettings `json:"unlock_probe,omitempty"`
 
 	// NAT64 is a phase-3 reservation. Enabled must stay false until a
 	// translator is actually deployed; the compiler will not install a
@@ -352,6 +356,33 @@ type Settings struct {
 	// Sniff is the name-sniffing TCP forwarder (sniff.go). Nil means off.
 	Sniff *SniffSettings `json:"sniff,omitempty"`
 }
+
+// UnlockProbeSettings restrain the panel's unlock probe. Zero fields take
+// the defaults below. See docs/unlock-methods.md「调度与克制」.
+type UnlockProbeSettings struct {
+	// ExitConcurrency is how many exits are probed at the same time
+	// (1 or 2; the host agent runs at most 2). Default 2, as before the
+	// setting existed; 1 halves the load on the platforms at a time.
+	ExitConcurrency int `json:"exit_concurrency,omitempty"`
+	// ExitRequestBudget caps the platform requests one scheduled run sends
+	// through one exit (both families, egress checks included). Services
+	// beyond it are left out of that run and recorded as such. Default 40.
+	ExitRequestBudget int `json:"exit_request_budget,omitempty"`
+	// ResultTTLSec is how long a result stays valid evidence for automatic
+	// selection (unlock.Policy.TTL). Default twice the probe interval.
+	ResultTTLSec int `json:"result_ttl_sec,omitempty"`
+}
+
+// Defaults and bounds of UnlockProbeSettings.
+const (
+	DefaultUnlockExitConcurrency = 2
+	MaxUnlockExitConcurrency     = 2
+	DefaultUnlockExitBudget      = 40
+	MinUnlockExitBudget          = 6
+	MaxUnlockExitBudget          = 200
+	MinUnlockResultTTLSec        = 3600
+	MaxUnlockResultTTLSec        = 7 * 86400
+)
 
 // NAT64 is the placeholder for a future translator in front of a pure-v6
 // host. The prefix is not added to any routing table by this version.

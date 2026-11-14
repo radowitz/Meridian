@@ -430,7 +430,7 @@ export function ServiceGroupsSection({ topo, dirty, onChanged }: { topo: Topolog
   return (
     <Section title="服务组">
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        规则可以指向服务组，服务组再指向一个地区组、出口、直连或拒绝。改服务组的指向就像在 mihomo 里切换选择组：所有用它的规则一起改，不必动规则；安装后生效，住宅 / IPv6 要求照常校验。
+        规则可以指向服务组，服务组再指向一个地区组、出口、直连或拒绝。改服务组的指向就像在 mihomo 里切换选择组：所有用它的规则一起改，不必动规则；安装后生效，住宅 / IPv6 要求照常校验。检测项和「按检测自动选择」在解锁页设置（候选就是指向的地区组的成员）。
       </Typography.Paragraph>
       {dirty ? <Alert type="warning" showIcon message="规则有未保存的修改：先保存或放弃，再改服务组。" style={{ marginBottom: 8 }} /> : null}
       {error ? <ApiErrorAlert error={error} /> : null}
@@ -441,7 +441,7 @@ export function ServiceGroupsSection({ topo, dirty, onChanged }: { topo: Topolog
         dataSource={data ?? []}
         locale={{ emptyText: "还没有服务组（导入 mihomo 配置时按它的选择组创建）" }}
         columns={[
-          { title: "服务组", render: (_, r) => <span>{r.service_group.name} {r.service_group.default ? <Tag color="gold">MATCH / 默认组</Tag> : null}{r.service_group.origin === "mihomo" ? <Tag>导入</Tag> : null}</span> },
+          { title: "服务组", render: (_, r) => <span>{r.service_group.name} {r.service_group.default ? <Tag color="gold">MATCH / 默认组</Tag> : null}{r.service_group.origin === "mihomo" ? <Tag>导入</Tag> : null}{r.service_group.select === "auto" ? <Tag color="blue">按检测自动选择</Tag> : null}{r.service_group.probes?.length ? <Tag>{r.service_group.probes.length} 个检测项</Tag> : null}</span> },
           {
             title: "指向",
             render: (_, r) => (

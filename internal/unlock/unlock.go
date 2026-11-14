@@ -85,6 +85,105 @@ type State struct {
 	// PreferredSeenAt is when the panel received the preferred member's
 	// latest result, success or failure.
 	PreferredSeenAt time.Time `json:"preferred_seen_at,omitempty"`
+	// KnownAt is when the panel received the result recorded in Known, per
+	// member. With a result lifetime (Policy.TTL) a Known entry older than
+	// the lifetime is no evidence at all: it neither makes a member a
+	// known-good backup nor rules it out. An entry without a time (a state
+	// stored before KnownAt existed) keeps its old meaning until the
+	// member's next result replaces it. See Policy.
+	KnownAt map[string]time.Time `json:"known_at,omitempty"`
+	// SwitchedAt and SwitchReason record the last change of Active (panel
+	// clock) and why (Switch* codes). For display only.
+	SwitchedAt   time.Time `json:"switched_at,omitempty"`
+	SwitchReason string    `json:"switch_reason,omitempty"`
+}
+
+// Switch reasons.
+const (
+	// SwitchPreferredFailed: the preferred member failed SchedFailsNeed
+	// scheduled probes; the service moved to a backup.
+	SwitchPreferredFailed = "preferred_failed"
+	// SwitchBackupFailed: the backup in use failed SchedFailsNeed scheduled
+	// probes; the service moved to the next backup.
+	SwitchBackupFailed = "backup_failed"
+	// SwitchRecovered: the preferred member was continuously successful for
+	// ReturnCooldown with a fresh result; the service returned.
+	SwitchRecovered = "recovered"
+	// SwitchAllFailed: no candidate is known to unlock; the service is back
+	// on (or stays on) the preferred member and is marked unavailable.
+	SwitchAllFailed = "all_failed"
+	// SwitchGroupChanged: the group's order or preferred member changed
+	// (Reconcile).
+	SwitchGroupChanged = "group_changed"
+)
+
+func switchReason(prev, next State) string {
+	switch {
+	case next.Unavailable:
+		return SwitchAllFailed
+	case next.Active == next.Preferred && prev.Demoted:
+		return SwitchRecovered
+	case next.Demoted && !prev.Demoted:
+		return SwitchPreferredFailed
+	default:
+		return SwitchBackupFailed
+	}
+}
+
+// Policy carries the tunable parts of the state machine. The zero value is
+// the behaviour before the policy existed (results never expire), which is
+// what Advance, Apply, Ingest and Reconcile use.
+type Policy struct {
+	// TTL is how long an admitted result stays valid evidence about a
+	// member (panel receive time). Zero: no expiry. An expired success is
+	// not a reason to move a service onto that member, and an expired
+	// failure is not a reason to keep it off; both count as "not measured".
+	// The thresholds themselves (SchedFailsNeed, ReturnCooldown,
+	// ResultFreshFor) do not change with it.
+	TTL time.Duration
+	// RequireEvidence: a backup is only ever a member with a valid (fresh,
+	// successful) result. Without it a member never measured may be tried
+	// when no member is known good (the behaviour before the policy). With
+	// it, when no candidate has valid evidence, the service stays on the
+	// preferred member and is marked unavailable (the panel warns).
+	RequireEvidence bool
+}
+
+// known is s.Known[id] under pol at now: seen is false for a member never
+// measured and, with a TTL, for a result older than the TTL.
+func (s State) known(id string, now time.Time, pol Policy) (ok, seen bool) {
+	ok, seen = s.Known[id]
+	if !seen || pol.TTL <= 0 {
+		return ok, seen
+	}
+	at, has := s.KnownAt[id]
+	if !has || at.IsZero() {
+		// A result recorded before KnownAt existed keeps the meaning it had
+		// (an upgrade does not move or strand a service); the next result
+		// for the member replaces it with a timed one.
+		return ok, true
+	}
+	if now.Before(at) || now.Sub(at) > pol.TTL {
+		return false, false
+	}
+	return ok, true
+}
+
+// Evidence reports what the state holds about member id at now under pol:
+// "ok", "failed", "expired" (a result exists but is older than the TTL) or
+// "" (never measured). For display; the machine uses known.
+func (s State) Evidence(id string, now time.Time, pol Policy) string {
+	ok, seen := s.Known[id]
+	if !seen {
+		return ""
+	}
+	if _, fresh := s.known(id, now, pol); !fresh {
+		return "expired"
+	}
+	if ok {
+		return "ok"
+	}
+	return "failed"
 }
 
 // Event is one probe verdict of one exit for one service, after Ingest has
@@ -107,8 +206,17 @@ type Event struct {
 // Advance does not check ordering or staleness; callers that take reports
 // from the network must go through Ingest.
 func Advance(s State, ev Event, members []string) State {
+	return AdvanceWith(s, ev, members, Policy{})
+}
+
+// AdvanceWith is Advance under a policy (result lifetime). The decision
+// rules are the same; only which earlier results still count differs.
+func AdvanceWith(s State, ev Event, members []string, pol Policy) State {
 	if s.Known == nil {
 		s.Known = map[string]bool{}
+	}
+	if s.KnownAt == nil {
+		s.KnownAt = map[string]time.Time{}
 	}
 	if s.Preferred == "" && len(members) > 0 {
 		s.Preferred = members[0]
@@ -120,6 +228,7 @@ func Advance(s State, ev Event, members []string) State {
 		return s
 	}
 	s.Known[ev.ExitID] = ev.OK
+	s.KnownAt[ev.ExitID] = ev.At
 	if ev.ExitID == s.Preferred {
 		s.PreferredSeenAt = ev.At
 		if !ev.OK {
@@ -143,14 +252,14 @@ func Advance(s State, ev Event, members []string) State {
 		s.BackupOKAt = ev.At
 	}
 	if !s.Demoted && s.SchedFails >= SchedFailsNeed {
-		if alt := pickBackup(s, members); alt != "" {
+		if alt := pickBackup(s, members, ev.At, pol); alt != "" {
 			s.Active = alt
 			s.Demoted = true
 			s.ActiveFails = 0
 			s.Unavailable = false
 			s.BackupOKAt = time.Time{}
 			s.PreferredOKAt = time.Time{}
-			if good, seen := s.Known[alt]; seen && good {
+			if good, seen := s.known(alt, ev.At, pol); seen && good {
 				s.BackupOKAt = ev.At
 			}
 		} else if ev.Kind == KindScheduled && ev.ExitID == s.Preferred && !ev.OK {
@@ -169,11 +278,11 @@ func Advance(s State, ev Event, members []string) State {
 			s.ActiveFails++
 			if s.ActiveFails >= SchedFailsNeed {
 				s.ActiveFails = 0
-				if alt := pickBackup(s, members); alt != "" && alt != s.Active {
+				if alt := pickBackup(s, members, ev.At, pol); alt != "" && alt != s.Active {
 					s.Active = alt
 					s.Unavailable = false
 					s.BackupOKAt = time.Time{}
-					if good, seen := s.Known[alt]; seen && good {
+					if good, seen := s.known(alt, ev.At, pol); seen && good {
 						s.BackupOKAt = ev.At
 					}
 				} else {
@@ -219,14 +328,22 @@ func (s State) CanReturn(now time.Time) bool {
 	return !now.Before(s.PreferredOKAt.Add(ReturnCooldown))
 }
 
-func pickBackup(s State, members []string) string {
+func pickBackup(s State, members []string, now time.Time, pol Policy) string {
+	if pol.RequireEvidence {
+		for _, id := range members {
+			if ok, seen := s.known(id, now, pol); id != s.Preferred && seen && ok {
+				return id
+			}
+		}
+		return ""
+	}
 	var candidate string
 	anyUnknown := false
 	for _, id := range members {
 		if id == s.Preferred {
 			continue
 		}
-		ok, seen := s.Known[id]
+		ok, seen := s.known(id, now, pol)
 		if seen && !ok {
 			continue
 		}
@@ -240,7 +357,7 @@ func pickBackup(s State, members []string) string {
 			return id
 		}
 	}
-	if candidate != "" && (anyUnknown || s.Known[candidate]) {
+	if candidate != "" && anyUnknown {
 		return candidate
 	}
 	return ""
@@ -266,24 +383,35 @@ func contains(ss []string, s string) bool {
 // is never made active by a reorder. An active member that left the group
 // is dropped the same way.
 func Reconcile(s State, svc Service) State {
+	return ReconcileWith(s, svc, time.Time{}, Policy{})
+}
+
+// ReconcileWith is Reconcile under a policy at now: an expired result is
+// neither the "just failed" preferred that keeps the service demoted nor
+// the known-good member it stays on.
+func ReconcileWith(s State, svc Service, now time.Time, pol Policy) State {
 	if s.Preferred == svc.Preferred && (s.Active == "" || contains(svc.Members, s.Active)) {
 		s.Pool = svc.Pool
 		return s
 	}
 	known := map[string]bool{}
+	knownAt := map[string]time.Time{}
 	for id, ok := range s.Known {
 		if contains(svc.Members, id) {
 			known[id] = ok
+			if at, has := s.KnownAt[id]; has {
+				knownAt[id] = at
+			}
 		}
 	}
-	next := State{Pool: svc.Pool, Preferred: svc.Preferred, Active: svc.Preferred, Known: known}
+	next := State{Pool: svc.Pool, Preferred: svc.Preferred, Active: svc.Preferred, Known: known, KnownAt: knownAt}
 	if svc.Preferred == "" {
 		next.Active = ""
 		return next
 	}
-	if ok, seen := known[svc.Preferred]; seen && !ok {
+	if ok, seen := next.known(svc.Preferred, now, pol); seen && !ok {
 		for _, id := range svc.Members {
-			if id != svc.Preferred && known[id] {
+			if good, seen := next.known(id, now, pol); id != svc.Preferred && seen && good {
 				next.Active = id
 				next.Demoted = true
 				break
@@ -293,12 +421,21 @@ func Reconcile(s State, svc Service) State {
 			next.Unavailable = true
 		}
 	}
+	next.SwitchedAt, next.SwitchReason = s.SwitchedAt, s.SwitchReason
+	if next.Active != s.Active && s.Active != "" && !now.IsZero() {
+		next.SwitchedAt, next.SwitchReason = now, SwitchGroupChanged
+	}
 	return next
 }
 
-// Service is a rule aimed at a region group. Pool holds the group ID.
-// Rules of a manual group are listed with Pin set so the panel can show
-// them, but Decisions skips them.
+// Service is one place an unlock decision is made: a rule aimed at a
+// region group (a built-in auto-* rule, keyed by its rule ID) or a service
+// group set to automatic selection (keyed by ServiceKey). Pool holds the
+// region group ID; Members its effective order (the candidates);
+// Preferred the member the group selects (where the service stays when no
+// candidate is known to unlock it). Rules of a manual group, and service
+// groups in fixed mode, are listed with Pin set so the panel can show them,
+// but Decisions skips them.
 type Service struct {
 	RuleID    string   `json:"rule_id"`
 	Name      string   `json:"name"`
@@ -306,7 +443,22 @@ type Service struct {
 	Preferred string   `json:"preferred"`
 	Members   []string `json:"members"`
 	Pin       bool     `json:"pin"`
+	// Probes are the catalog adapters whose verdicts drive this service
+	// (the rule's own adapter, or the service group's list).
+	Probes []string `json:"probes,omitempty"`
+	// ServiceGroup is the service group's ID for a service-group entry.
+	ServiceGroup string `json:"service_group,omitempty"`
 }
+
+// ServiceKeyPrefix starts the state and decision key of a service group.
+// A key of a rule never starts with it (callers skip such a rule ID).
+const ServiceKeyPrefix = "service-group:"
+
+// ServiceKey is the state and decision key of service group id.
+func ServiceKey(id string) string { return ServiceKeyPrefix + id }
+
+// IsServiceKey reports whether key belongs to a service group.
+func IsServiceKey(key string) bool { return strings.HasPrefix(key, ServiceKeyPrefix) }
 
 // HistoryEntry is one stored probe line.
 type HistoryEntry struct {
@@ -383,13 +535,23 @@ func Decisions(snap Snapshot, services []Service) map[string]string {
 // exit is not in the service's pool). Network reports go through Ingest,
 // which calls Apply only for admitted results.
 func Apply(snap *Snapshot, ev Event, members []string, note string) {
+	ApplyWith(snap, ev, members, note, Policy{})
+}
+
+// ApplyWith is Apply under a policy.
+func ApplyWith(snap *Snapshot, ev Event, members []string, note string, pol Policy) {
 	if snap.Services == nil {
 		snap.Services = map[string]State{}
 	}
 	prev := snap.Services[ev.Service]
 	next := prev
 	if note == "" {
-		next = Advance(prev, ev, members)
+		next = AdvanceWith(prev, ev, members, pol)
+	}
+	if prev.Active != "" && prev.Active != next.Active && next.Active != "" {
+		next.SwitchedAt, next.SwitchReason = ev.At, switchReason(prev, next)
+	} else if next.Unavailable && !prev.Unavailable {
+		next.SwitchedAt, next.SwitchReason = ev.At, SwitchAllFailed
 	}
 	snap.Services[ev.Service] = next
 	if prev.Active != next.Active && next.Active != "" {

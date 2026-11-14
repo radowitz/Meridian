@@ -231,6 +231,10 @@ export interface ServiceGroup {
   target_action?: "direct" | "reject";
   /** The MATCH group: its target is the default group. */
   default?: boolean;
+  /** "" fixed, "auto": unlock results of `probes` choose the member of the target region group. */
+  select?: "" | "auto";
+  /** Catalog adapters bound to the group (they do not decide which names it routes). */
+  probes?: string[];
 }
 
 export interface ImportFlag {
@@ -1783,6 +1787,56 @@ export interface UnlockView {
   decisions: Record<string, string>;
   /** Exits the unlock state mentions that are no longer in the topology. */
   removed_exits?: string[];
+  /** Where each unlock decision is made (rules aimed at a group, service groups with probes). */
+  owners?: UnlockOwner[];
+  schedule?: UnlockSchedule;
+}
+
+export interface UnlockSchedule {
+  interval_sec: number;
+  exit_concurrency: number;
+  exit_request_budget: number;
+  result_ttl_sec: number;
+  sched_fails_need: number;
+  return_cooldown_sec: number;
+  result_fresh_sec: number;
+}
+
+export interface UnlockCandidate {
+  exit_id: string;
+  name: string;
+  region?: string;
+  tcp_only?: boolean;
+  /** ok | failed | expired | "" (never measured) */
+  evidence: "" | "ok" | "failed" | "expired";
+  seen_at?: string;
+  active: boolean;
+  default: boolean;
+}
+
+export interface UnlockOwner {
+  key: string;
+  name: string;
+  kind: "rule" | "service_group";
+  service_group?: string;
+  group?: string;
+  group_name?: string;
+  region?: string;
+  mode: "auto" | "pinned";
+  pin_reason?: string;
+  probes: string[];
+  candidates: UnlockCandidate[];
+  default?: string;
+  /** The panel's computed exit in use (推算), not read from the gateway. */
+  active?: string;
+  inferred: boolean;
+  demoted: boolean;
+  unavailable: boolean;
+  sched_fails: number;
+  switched_at?: string;
+  switch_reason?: string;
+  rules: number;
+  warnings: string[];
 }
 
 /** network_ok | unlocked | not_unlocked | failed | unknown | not_applicable (nothing sent: the check does not support the family) */
@@ -1837,6 +1891,9 @@ export interface ProbeJobItem {
   transport?: "tcp_only";
   /** What such an exit cannot carry and so was not tested (anything that needs UDP). */
   untested?: string[];
+  /** Unlock keys this adapter's result feeds (rule IDs, service-group:<id>); none: shown only. */
+  owners?: string[];
+  ingest_by?: Record<string, string>;
 }
 
 export interface ProbeJob {
@@ -1870,6 +1927,21 @@ export interface ProbeCatalogEntry {
   enabled?: boolean;
   group?: string;
   group_mode?: string;
+  owners?: string[];
+  section?: string;
+  /** Exit regions a conclusion speaks for; empty: any. */
+  regions?: string[];
+  request_cost?: number;
+}
+
+export interface CoverageItem {
+  section: string;
+  name: string;
+  scripts: string[];
+  adapter?: string;
+  part?: string;
+  reason?: string;
+  note?: string;
 }
 
 export interface ProbeJobsView {
@@ -1888,6 +1960,9 @@ export interface ProbeCatalogView {
   validation_text: string;
   grades: ProbeGrade[];
   ingest_rule: string;
+  coverage?: CoverageItem[];
+  sections?: string[];
+  reasons?: Record<string, string>;
 }
 
 export interface ProbeResultRow extends ProbeJobItem {
@@ -1899,6 +1974,8 @@ export interface ProbeResultRow extends ProbeJobItem {
   ingestible: boolean;
   /** The exit was removed from the topology: history, never a current result. */
   exit_removed?: boolean;
+  /** Older than the result lifetime: not valid evidence any more. */
+  expired?: boolean;
 }
 
 export interface ProbeSelection {

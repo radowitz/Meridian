@@ -148,8 +148,10 @@ func Compile(t model.Topology) (*Bundle, error) {
 	return compile(t, nil)
 }
 
-// CompileWithDecisions is Compile plus the unlock map. Keys are rule IDs,
-// values are exit IDs in the same pool. Pinned rules ignore the map.
+// CompileWithDecisions is Compile plus the unlock map. Keys are rule IDs
+// (a rule aimed at a region group) or unlock.ServiceKey(id) (every rule
+// through service group id); values are exit IDs in the same group.
+// Pinned rules, manual groups and fixed service groups ignore the map.
 func CompileWithDecisions(t model.Topology, decisions map[string]string) (*Bundle, error) {
 	return compile(t, decisions)
 }
