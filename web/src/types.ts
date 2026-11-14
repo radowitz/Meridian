@@ -1790,6 +1790,28 @@ export interface UnlockView {
   /** Where each unlock decision is made (rules aimed at a group, service groups with probes). */
   owners?: UnlockOwner[];
   schedule?: UnlockSchedule;
+  auto_apply?: AutoApplyView;
+}
+
+export interface AutoApplyCheck {
+  at: string;
+  trigger: string;
+  /** applied | not_pending | no_installed_record | out_of_sync | files_outside_allow_list | min_gap | daily_cap | backoff | busy | preflight_unavailable | preflight_blocked | compile_failed | install_failed */
+  code: string;
+  message: string;
+  decisions?: Record<string, string>;
+  files?: string[];
+}
+
+export interface AutoApplyView {
+  enabled: boolean;
+  min_gap_sec: number;
+  daily_max: number;
+  backoff_sec: number;
+  installed_recorded: boolean;
+  allow_list: string[];
+  last_check?: AutoApplyCheck;
+  last_attempt?: { at: string; trigger: string; decisions: Record<string, string>; ok: boolean; code?: string; message?: string; files?: string[] };
 }
 
 export interface UnlockSchedule {

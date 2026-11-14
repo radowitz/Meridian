@@ -98,6 +98,13 @@ type Server struct {
 	job   *jobHandle
 	// keyMu serialises key resolution so two installs cannot generate two keys.
 	keyMu sync.Mutex
+	// autoMu keeps one automatic unlock install evaluation at a time
+	// (autoapply.go); clock is its time source (nil: time.Now), and
+	// autoMutate a test seam that alters the bundle compiled with the new
+	// decisions before the allow-list check (tests only).
+	autoMu     sync.Mutex
+	clock      func() time.Time
+	autoMutate func(*compile.Bundle)
 	// Artifacts are the panel-delivered binaries (internal/artifacts),
 	// loaded and verified at startup. Nil: none available; installs that
 	// need one are refused by the preflight.
@@ -509,6 +516,9 @@ const (
 	codeGatewayKey             = "gateway_key_unavailable" // 409: the gateway private key cannot be resolved
 	codeHostStateMalformed     = "host_state_malformed"    // 500
 	codeApplyFailed            = "apply_failed"            // fallback
+	// codeAutoChanged: an automatic install found the compiled bundle no
+	// longer equal to the one its conditions were checked for (409).
+	codeAutoChanged = "auto_apply_changed"
 )
 
 func writeCoded(w http.ResponseWriter, status int, code, msg string, extra map[string]any) {
@@ -542,6 +552,24 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 		writeCoded(w, http.StatusBadRequest, codeBadRequest, err.Error(), nil)
 		return
 	}
+	s.applyGateway(w, r, body, nil)
+}
+
+// autoInstall is an automatic install of an unlock decision (autoapply.go).
+// The caller holds the gateway node lock and has already run the host
+// preflight for exactly this bundle; decisions are the ones it checked and
+// canonical the bundle it checked them for.
+type autoInstall struct {
+	decisions map[string]string
+	canonical string
+}
+
+// applyGateway is the one gateway install / snapshot path: POST /api/apply
+// and the automatic install of an unlock decision both run it. With auto
+// set the preflight gate is skipped (the caller ran it under the node
+// lock), the key is only reused, never generated, and the compiled bundle
+// must be exactly the one the caller checked.
+func (s *Server) applyGateway(w http.ResponseWriter, r *http.Request, body applyBody, auto *autoInstall) {
 	install := body.Install && !body.DryRun
 	var t model.Topology
 	var key string
@@ -563,14 +591,19 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 			// runs before the gateway key is generated or anything is
 			// written: blocking findings, a stale or changed review, or a
 			// first install without one are refused here.
-			if err == nil && !s.gateGatewayInstall(w, r, provision.FilesFor(pb.Files, localNodeID), body.PreflightID) {
+			if err == nil && auto == nil && !s.gateGatewayInstall(w, r, provision.FilesFor(pb.Files, localNodeID), body.PreflightID) {
 				return
 			}
 		}
 		// First install generates and stores the gateway key; later installs
 		// reuse it. Resolution happens before compile so peers see the
-		// matching public key, and before any host file is written.
-		t, key, err = s.resolveKey(localNodeID, provision.KeyGenerateIfMissing)
+		// matching public key, and before any host file is written. An
+		// automatic install never generates one.
+		policy := provision.KeyGenerateIfMissing
+		if auto != nil {
+			policy = provision.KeyReuse
+		}
+		t, key, err = s.resolveKey(localNodeID, policy)
 		if err != nil {
 			writeCoded(w, http.StatusConflict, codeGatewayKey, err.Error(), nil)
 			return
@@ -582,12 +615,22 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	b, err := s.compileTopo(t)
+	// The decisions are taken once: the bundle is compiled with them and
+	// they are what the install records as installed.
+	dec := s.unlockDecisions(t)
+	if auto != nil {
+		dec = auto.decisions
+	}
+	b, err := s.compileWith(t, dec)
 	if err != nil {
 		if refuseInvalid(w, err) {
 			return
 		}
 		writeCoded(w, http.StatusBadRequest, codeTopologyInvalid, err.Error(), nil)
+		return
+	}
+	if auto != nil && b.Canonical() != auto.canonical {
+		writeCoded(w, http.StatusConflict, codeAutoChanged, "拓扑或决定在检查之后变了，这次自动安装没有执行", nil)
 		return
 	}
 	if install && refusePeerKeys(w, b) {
@@ -612,7 +655,11 @@ func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !body.DryRun {
-		s.clearUnlockPending()
+		if install {
+			s.recordInstalledDecisions(dec)
+		} else {
+			s.clearUnlockPending()
+		}
 		s.GCRemoteSecrets()
 	}
 	writeJSON(w, http.StatusOK, res)

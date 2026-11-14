@@ -1067,3 +1067,11 @@ func (a Applier) adoptLegacy(rt Runtime, to map[string]string) ([]string, error)
 	notes = append([]string{fmt.Sprintf("已接管旧版安装（清单版本 %d，%d 个文件）：失败时补偿恢复到旧版并重新激活", m.Version, len(m.Files))}, notes...)
 	return notes, nil
 }
+
+// Empty reports whether the two manifests describe the same installed
+// state (no file, interface, unit, table or sidecar differs).
+func (d ManifestDiff) Empty() bool {
+	return len(d.FilesAdded)+len(d.FilesRemoved)+len(d.FilesChanged)+len(d.InterfacesAdded)+len(d.InterfacesRemoved)+
+		len(d.UnitsAdded)+len(d.UnitsRemoved)+len(d.NFTTablesAdded)+len(d.NFTTablesRemoved)+len(d.RouteTablesAdded)+
+		len(d.RouteTablesRemoved)+len(d.SidecarsAdded)+len(d.SidecarsRemoved) == 0
+}

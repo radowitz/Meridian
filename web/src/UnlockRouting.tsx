@@ -11,8 +11,8 @@ import { Alert, Button, Select, Space, Table, Tag, Tooltip, Typography } from "a
 import { useMemo, useState } from "react";
 import * as api from "./api";
 import { href } from "./state";
-import type { CoverageItem, ProbeCatalogEntry, UnlockOwner, UnlockSchedule } from "./types";
-import { ApiErrorAlert, Link, StatusTag, TABLE_SCROLL, TimeText, useAction } from "./ui";
+import type { AutoApplyView, CoverageItem, ProbeCatalogEntry, UnlockOwner, UnlockSchedule } from "./types";
+import { ApiErrorAlert, Link, Mono, StatusTag, TABLE_SCROLL, TimeText, useAction } from "./ui";
 
 export const SECTION_LABEL: Record<string, string> = {
   international: "国际流媒体",
@@ -146,6 +146,50 @@ function OwnerCard({ o, catalog, onChanged }: { o: UnlockOwner; catalog: ProbeCa
   );
 }
 
+const AUTO_CODE: Record<string, string> = {
+  applied: "已自动安装",
+  not_pending: "没有待安装的决定",
+  no_installed_record: "不知道上次安装用的决定：先人工安装一次",
+  out_of_sync: "网关上还有别的未安装改动",
+  files_outside_allow_list: "改动超出允许的规则文件",
+  min_gap: "距上次自动安装太近",
+  daily_cap: "已到 24 小时上限",
+  backoff: "同样的决定刚失败过，等待退避",
+  busy: "网关正在执行别的动作",
+  preflight_unavailable: "无法做安装前预检",
+  preflight_blocked: "安装前预检有阻断项",
+  compile_failed: "编译失败",
+  install_failed: "自动安装失败（已按事务补偿）",
+};
+
+/** Automatic install status of unlock decisions. */
+export function AutoApplyStatus({ v, pending }: { v?: AutoApplyView; pending: boolean }) {
+  if (!v) return null;
+  const last = v.last_check;
+  return (
+    <div data-testid="auto-apply" style={{ marginBottom: 12 }}>
+      <Space size={6} wrap>
+        <Typography.Text strong>自动安装决定</Typography.Text>
+        {v.enabled ? <Tag color="blue">已开启</Tag> : <Tag>关闭：决定等人工安装</Tag>}
+        {v.enabled ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            间隔至少 {Math.round(v.min_gap_sec / 60)} 分钟，24 小时最多 {v.daily_max} 次，失败后同样的决定 {Math.round(v.backoff_sec / 60)} 分钟内不重试；只改这些网关文件：{v.allow_list.join("、")}。未在真实网关上验证。
+          </Typography.Text>
+        ) : null}
+      </Space>
+      {v.last_attempt ? (
+        <div style={{ fontSize: 12 }}>
+          上次自动安装 <TimeText value={v.last_attempt.at} />：{v.last_attempt.ok ? "成功" : `失败（${v.last_attempt.code ?? ""}）`}，决定{" "}
+          <Mono>{Object.entries(v.last_attempt.decisions).map(([k, e]) => `${k}→${e}`).join("，") || "全部回到默认"}</Mono>
+        </div>
+      ) : null}
+      {v.enabled && pending && last && last.code !== "applied" ? (
+        <Alert type="warning" showIcon style={{ marginTop: 6 }} data-testid="auto-apply-reason" message={`待安装的决定没有自动安装：${AUTO_CODE[last.code] ?? last.code}`} description={last.message} />
+      ) : null}
+    </div>
+  );
+}
+
 /** The routing section body. Owners come from GET /api/unlock (absent on older panels). */
 export function RoutingPanel({
   owners,
@@ -153,12 +197,14 @@ export function RoutingPanel({
   catalog,
   pending,
   onChanged,
+  autoApply,
 }: {
   owners: UnlockOwner[];
   schedule?: UnlockSchedule;
   catalog: ProbeCatalogEntry[];
   pending: boolean;
   onChanged: () => void;
+  autoApply?: AutoApplyView;
 }) {
   const byRegion = useMemo(() => {
     const m = new Map<string, UnlockOwner[]>();
@@ -167,9 +213,10 @@ export function RoutingPanel({
   }, [owners]);
   return (
     <div data-testid="unlock-routing">
+      <AutoApplyStatus v={autoApply} pending={pending} />
       <Typography.Paragraph type="secondary">
         「实测证据」是探测结果（带收到时间，超过有效期即不再算证据）；「在用」是面板据此推算的出口，
-        {pending ? "还没有安装到网关" : "经安装进入网关"}，网关不回报确认。同一个服务只由一处决定出口：内置规则或服务组。
+        {pending ? "还没有安装到网关" : "经安装进入网关"}（人工安装，或开启后的自动安装），网关不回报确认。同一个服务只由一处决定出口：内置规则或服务组。
         分流哪些域名由规则和规则集合决定，检测访问的是适配器固定的几个主机，两者不是一回事。
         {schedule
           ? ` 每 ${Math.round(schedule.interval_sec / 3600)} 小时定时一轮，同时 ${schedule.exit_concurrency} 个出口，每个出口每轮最多 ${schedule.exit_request_budget} 个请求，结果有效 ${Math.round(schedule.result_ttl_sec / 3600)} 小时。`
@@ -209,7 +256,7 @@ export function CoverageTable({ items, reasons }: { items: CoverageItem[]; reaso
           options={Object.entries(SECTION_LABEL).map(([value, label]) => ({ value, label }))}
         />
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          清单按引用脚本的地区分节整理，待对照源码复核。
+          清单按三个引用脚本固定提交的地区分节逐项读出；适配器都只在合成样本上测过，没有在真实平台上验证。
         </Typography.Text>
       </Space>
       <Table

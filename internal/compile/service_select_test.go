@@ -239,3 +239,63 @@ func TestServiceGroupDecisionNestedAndExternal(t *testing.T) {
 		}
 	}
 }
+
+// A decision change touches only the rule-derived gateway files
+// (DecisionFiles): across the sniff test topologies (IPv4-only and
+// dual-stack, single and backup hub, relay sharing, remote access,
+// nested and external exits), with the forwarder on and off, moving a
+// built-in rule and a service group changes no other file and no other
+// node. DecisionChange reports a forged change elsewhere as refused.
+func TestDecisionChangeTouchesOnlyRuleFiles(t *testing.T) {
+	cases := 0
+	for name, topo := range sniffTopologies(t) {
+		for _, sniffed := range []bool{false, true} {
+			tp := topo
+			if sniffed {
+				tp = sniffOn(tp)
+			}
+			exits := planExits(tp, mustTunnels(t, tp))
+			groups := planGroups(tp, exits)
+			base := compileDec(t, tp, nil)
+			// Every automatic group with two or more members: move each
+			// rule aimed at it, and its service group, to the second member.
+			for _, gp := range groups {
+				if gp.Group.Mode != model.GroupAuto || len(gp.Selection.Order) < 2 {
+					continue
+				}
+				alt := gp.Selection.Order[1]
+				dec := map[string]string{}
+				for _, r := range tp.Rules {
+					if r.Enabled && r.TargetGroup == gp.Group.ID {
+						dec[r.ID] = alt
+					}
+				}
+				for _, sg := range tp.ServiceGroups {
+					if sg.TargetGroup == gp.Group.ID {
+						dec[unlock.ServiceKey(sg.ID)] = alt
+					}
+				}
+				if len(dec) == 0 {
+					continue
+				}
+				next := compileDec(t, tp, dec)
+				changed, refused := DecisionChange(base, next, "gw")
+				if len(refused) > 0 {
+					t.Errorf("%s (sniff %v) group %s → %s: files outside the allow-list changed: %v", name, sniffed, gp.Group.ID, alt, refused)
+				}
+				if len(changed) > 0 {
+					cases++
+				}
+			}
+		}
+	}
+	if cases == 0 {
+		t.Fatal("no decision changed any file: the test proves nothing")
+	}
+	a := &Bundle{Files: map[string]string{"nodes/gw/etc/nftables.d/meridian.nft": "a", "nodes/gw/etc/systemd/system/x.service": "u", "nodes/hk/etc/x": "1"}}
+	b := &Bundle{Files: map[string]string{"nodes/gw/etc/nftables.d/meridian.nft": "b", "nodes/gw/etc/systemd/system/x.service": "v", "nodes/hk/etc/x": "2", "nodes/gw/etc/wireguard/m00.conf": "new"}}
+	changed, refused := DecisionChange(a, b, "gw")
+	if len(changed) != 1 || len(refused) != 3 {
+		t.Fatalf("changed %v refused %v", changed, refused)
+	}
+}

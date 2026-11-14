@@ -1031,6 +1031,7 @@ export default function UnlockPage() {
               schedule={v.schedule}
               catalog={catalog.data?.catalog ?? []}
               pending={v.pending_apply}
+              autoApply={v.auto_apply}
               onChanged={() => void view.reload()}
             />
           )}

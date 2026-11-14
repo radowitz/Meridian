@@ -53,30 +53,49 @@ API 里对应 `validation: "synthetic_only"` 和 `validation_text`，出现在�
 | auto-hami | Hami Video | verdict | 是 | Hami Video |
 | auto-abema | Abema / Niconico / TVer | region_verdict | 是 | ABEMA；参考：Niconico；不支持：TVer |
 | auto-mytvsuper | MyTV SUPER / Viu | region_verdict | 是 | MyTV SUPER；参考：Viu.com；不支持：ViuTV |
-| youtube-premium | YouTube Premium | verdict（地区仅展示） | 否 | YouTube Premium |
-| primevideo | Amazon Prime Video | region_verdict | 否 | Prime Video |
-| dazn | DAZN | region_verdict | 否 | DAZN |
-| tvbanywhere | TVBAnywhere+ | verdict（地区仅展示） | 否 | TVBAnywhere+ |
+| youtube-premium | YouTube Premium | verdict | 否 | YouTube Premium |
+| primevideo | Amazon Prime Video | region_verdict | 是 | Prime Video |
+| dazn | DAZN | region_verdict | 是 | DAZN |
+| tvbanywhere | TVBAnywhere+ | verdict | 是 | TVBAnywhere+ |
 | dmm-tv | DMM TV | region_verdict（仅 jp） | 是 | DMM TV |
 | hulu-jp | Hulu Japan | region_verdict（仅 jp） | 是 | Hulu Japan |
 | radiko | radiko | region_verdict（仅 jp） | 是 | radiko |
 | myvideo | MyVideo | verdict（仅 tw） | 是 | MyVideo |
 | peacock | Peacock | verdict（仅 us） | 否 | Peacock |
-| plutotv | Pluto TV | verdict | 否 | Pluto TV |
+| plutotv | Pluto TV | verdict | 是 | Pluto TV |
+| fod | FOD（富士电视台） | region_verdict（仅 jp） | 是 | FOD |
+| unext | U-NEXT | region_verdict（仅 jp） | 否 | U-NEXT |
+| dmm | DMM（地区判定接口） | region_verdict（仅 jp） | 否 | DMM |
+| nhk-plus | NHK+ | region_verdict（仅 jp） | 否 | NHK+ |
+| 4gtv | 4GTV | region_verdict（仅 tw） | 是 | 4GTV |
+| friday-video | friDay 影音 | verdict（仅 tw） | 否 | friDay 影音 |
+| nbatv | NBA TV | verdict | 否 | NBA TV |
+| bglobal-sea | B-Global（东南亚） | verdict（仅 sg/my/th/id/vn/ph） | 是 | B-Global |
+| fubotv | fuboTV | verdict | 是 | fuboTV |
+| philo | Philo | verdict（仅 us） | 是 | Philo |
+| sling | Sling TV | verdict（仅 us） | 否 | Sling TV |
+| tubi | Tubi | verdict | 否 | Tubi |
+| acorntv | Acorn TV | verdict | 是 | Acorn TV |
+| britbox | BritBox | verdict | 否 | BritBox |
+| amcplus | AMC+ | verdict | 否 | AMC+ |
+| metaai | Meta AI | verdict | 否 | Meta AI |
+| coze | Coze | verdict | 否 | Coze |
 
 「仅 jp」等是适配器声明的 `regions`：它的结论只能说明出口在不在这个地区可用；放到别的地区的出口上只会得到「地区不符 / 不可用」。没有声明的适配器对任何地区都给出结论（带地区的适配器仍要求平台报的地区与出口一致）。
 
-**下面 10 个适配器（覆盖表新增）比上面 14 个多一层未验证**：它们的请求地址、请求体和标记是按引用脚本的已知行为写的，这一轮没有网络、没能对照引用的提交重读源码，来源一栏标「待对照源码复核」（API 的 `sources[].checked`）。它们和其余适配器一样只在合成样本上测过。另外它们不绑定任何内置规则：只有运营者把它们挂到某个服务组上，结果才会参与选择。
+**上面 14 个之后的 27 个适配器是覆盖表新增的**：2026-11-14 对照下文「各服务」列出的三个来源（固定到完整提交号）逐项核对了请求地址、方法、关键请求头和请求体、成功 / 失败 / 地区标记，来源一栏的 `checked` 是对照日期。它们和其余适配器一样只在合成样本上测过，没有请求过真实平台。它们不绑定任何内置规则：只有运营者把它们挂到某个服务组上，结果才会参与选择。
 
 AI 类服务没有“目录地区”的概念，所以 Gemini、Copilot 报的地区只作展示，不拿来和出口地区比较。流媒体的地区不一致按 `not_unlocked` 处理（`region_mismatch`）。
 
 ## 各服务
 
-各节引用的公开来源（查阅日期 2026-11-13，只读源码）：
+各节引用的公开来源（最初的 14 个查阅日期 2026-11-13；覆盖表与新增适配器 2026-11-14 再次只读拉取，同一提交）：
 
-- **LMC**：lmc999/RegionRestrictionCheck `check.sh`，main @ b6d4a6f（2025-12-08）。<https://github.com/lmc999/RegionRestrictionCheck>
-- **1S**：1-stream/RegionRestrictionCheck `check.sh`，main @ ef841d0（2026-10-06）。<https://github.com/1-stream/RegionRestrictionCheck>
-- **GO**：HsukqiLee/MediaUnlockTest `pkg/providers/*.go`，main @ dc6c6e6（2026-10-14），是 nkeonkeo/MediaUnlockTest 仍在维护的分支。<https://github.com/HsukqiLee/MediaUnlockTest>
+- **LMC**：lmc999/RegionRestrictionCheck `check.sh`，提交 `b6d4a6f9a87fc6eae6d3e62d0092ececcec8e844`（2025-12-08），AGPL-3.0。<https://github.com/lmc999/RegionRestrictionCheck>
+- **1S**：1-stream/RegionRestrictionCheck `check.sh`，提交 `ef841d0a2910a44a6ca565e3a03de0f2282d83b3`（2026-10-06），AGPL-3.0。<https://github.com/1-stream/RegionRestrictionCheck>
+- **GO**：HsukqiLee/MediaUnlockTest `pkg/providers/*.go`（清单在 `lists.go`），提交 `dc6c6e6cc490315824d485c668f059535e97ea94`（2026-10-14），是 nkeonkeo/MediaUnlockTest 仍在维护的分支；仓库里没有许可证文件。<https://github.com/HsukqiLee/MediaUnlockTest>
+
+只读取了源码，没有复制代码：本项目的请求地址、固定请求体和应答标记是公开方法的事实，判断逻辑和代码是本项目自己写的（`internal/probe/adapters_more.go`、`adapters_new.go`）。机器可读的提交号在 `probe.SourceCommits`。
 
 ### Netflix（auto-netflix）
 
@@ -205,90 +224,220 @@ AI 类服务没有“目录地区”的概念，所以 Gemini、Copilot 报的�
 
 ## 覆盖表新增的适配器
 
-以下各节的来源一律是「LMC / GO 同名函数，待对照源码复核」（见上文说明），只在合成样本上测过。
+以下各节由 `internal/probe` 的目录生成，与代码一致。和公开方法有意不同的地方写在「限制」里（例如不带 Cookie、对某个标记读得更严）。
 
 ### YouTube Premium（youtube-premium）
 
-- 请求：`GET https://www.youtube.com/premium`。主机：`www.youtube.com`、`youtube.com`。
-- 不可用：页面含 `Premium is not available in your country`，或引到 `www.google.cn`（地区记为 cn）。
-- 可用：200 且页面含 `ad-free`；`INNERTUBE_CONTEXT_GL` / `countryCode` 给出的地区只作展示。
-- 未知：200 但两种标记都没有（改版）、质询、限流、5xx。
-- 限制：未登录的介绍页，不是账号判断。
+- 请求：GET `https://www.youtube.com/premium`。主机：`www.youtube.com`、`youtube.com`。
+- 判断：Premium 介绍页：引用 www.google.cn = 不可用（cn）；含 Premium is not available in your country（不分大小写）= 不可用；含 ad-free（不分大小写）= 可用，INNERTUBE_CONTEXT_GL 给出的地区只作展示；其他 = 未知
+- 限制：两个公开实现都带一组同意页 Cookie 请求，本项目不带 Cookie，所以要求先同意 Cookie 的地区多半是未知；只读未登录的介绍页，不是账号判断
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_YouTube_Premium（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/YouTube.go YoutubeRegion（成功标记不同：看购买按钮或价格字样，未采用）（dc6c6e6）（对照日期 2026-11-14）
 
-### Amazon Prime Video（primevideo）
+### Amazon Prime Video（primevideo）— 只发 IPv4
 
-- 请求：`GET https://www.primevideo.com/`。主机：`www.primevideo.com`、`primevideo.com`。
-- 不可用：页面数据 `"isServiceRestricted":true`；`currentTerritory` 与出口地区不一致（`region_mismatch`）。
-- 可用：`currentTerritory` 与出口地区一致。
-- 未知：两个标记都没有、非 200。
+- 请求：GET `https://www.primevideo.com`。主机：`www.primevideo.com`、`primevideo.com`。
+- 判断：首页数据：isServiceRestricted 为 true = 不可用；"currentTerritory":"XX" 给出的地区必须与出口一致，不一致按地区不符为不可用；都没有 = 未知
+- 限制：LMC 只要页面出现 isServiceRestricted 这个键就算不可用，本项目要求它的值是 true，避免把 false 读成封锁；GO 在没有地区时会跟随亚马逊各国站点的链接，主机不固定，未采用；公开实现不支持 IPv6，只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_PrimeVideo（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/PrimeVideo.go（dc6c6e6）（对照日期 2026-11-14）
 
-### DAZN（dazn）
+### DAZN（dazn）— 只发 IPv4
 
-- 请求：`POST https://startup.core.indazn.com/misl/v5/Startup`，固定的匿名 JSON 请求体（`LandingPageKey`、`languages`、`Platform`、`Version` 等常量，不含账号、设备或会话标识），`Content-Type: application/json`。主机：`startup.core.indazn.com`。
-- 不可用：`Region.isAllowed = false`；`isAllowed = true` 但 `GeolocatedCountry` 与出口地区不一致。
-- 可用：`isAllowed = true` 且地区一致。
-- 未知：没有 `Region.isAllowed`。
+- 请求：POST（固定请求体） `https://startup.core.indazn.com/misl/v5/Startup`。主机：`startup.core.indazn.com`。
+- 判断：启动接口（固定的匿名 JSON 请求体）：Region.isAllowed = false 不可用；true 且 GeolocatedCountry 与出口一致可用，不一致不可用；非质询的 403 或应答含 Security policy has been breached = 拒绝该地址；字段缺失 = 未知
+- 限制：“可用”只是地区允许，不代表有可看的赛事；公开实现不支持 IPv6，只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_Dazn（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/Dazn.go（dc6c6e6）（对照日期 2026-11-14）
 
-### TVBAnywhere+（tvbanywhere）
+### TVBAnywhere+（tvbanywhere）— 只发 IPv4
 
-- 请求：`GET https://uapisfm.tvbanywhere.com.sg/geoip/check/platform/android`。主机：`uapisfm.tvbanywhere.com.sg`。
-- `allow_in_this_country = true` 可用（`country` 只作展示），`false` 不可用，没有字段为未知。
-- 限制：这是 TVB 面向香港以外的服务，香港出口上「不可用」是正常结果。
+- 请求：GET `https://uapisfm.tvbanywhere.com.sg/geoip/check/platform/android`。主机：`uapisfm.tvbanywhere.com.sg`。
+- 判断：geoip 接口 JSON 的 allow_in_this_country：true = 可用（country 只作展示），false = 不可用；没有这个字段 = 未知
+- 限制：GO 把 country = HK 也当作可用，LMC 只看 allow_in_this_country，本项目按 LMC（平台自己的标志）；这是 TVB 面向香港以外的服务，香港出口上「不可用」可能是正常的；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_TVBAnywhere（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/TVBAnywhere.go（dc6c6e6）（对照日期 2026-11-14）
 
-### DMM TV（dmm-tv）— 只发 IPv4，只判断 jp
+### DMM TV（dmm-tv）— 只发 IPv4
 
-- 请求：`POST https://api.beacon.dmm.com/v1/streaming/start`，固定的匿名 JSON 请求体（播放器名、固定作品 ID）。主机：`api.beacon.dmm.com`。
-- 应答含 `FOREIGN` 不可用；含 `UNAUTHORIZED`（通过地区检查、只差登录）可用（jp）。其他为未知。
-- 限制：作品下架后会变成未知。
+- 请求：POST（固定请求体） `https://api.beacon.dmm.com/v1/streaming/start`。主机：`api.beacon.dmm.com`。
+- 判断：播放开始接口（固定的匿名请求体，与 LMC 相同）：应答含 FOREIGN = 海外地址，不可用；含 UNAUTHORIZED = 通过地区检查、只差登录 → 可用（日本）；其他 = 未知
+- 限制：“可用”只说明地区检查通过；作品 ID 写死，下架后会变成未知；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_DMMTV（b6d4a6f）；1-stream/RegionRestrictionCheck check.sh MediaUnlockTest_DMMTV（ef841d0）（对照日期 2026-11-14）
 
-### Hulu Japan（hulu-jp）— 只发 IPv4，只判断 jp
+### Hulu Japan（hulu-jp）— 只发 IPv4
 
-- 请求：`GET https://id.hulu.jp/`（允许跳到 `www.hulu.jp`）。主机：`id.hulu.jp`、`www.hulu.jp`。
-- 最终路径含 `restrict` 不可用；停在 `login` 路径可用（jp）；其他为未知。
+- 请求：GET `https://id.hulu.jp/`。主机：`id.hulu.jp`、`www.hulu.jp`、`hulu.jp`。
+- 判断：账号入口跟随跳转后的最终地址：含 restrict = 地区限制页，不可用；非质询的 403 = 不可用；停在 hulu.jp 上且 200 = 可用（日本）；其他 = 未知
+- 限制：只看跳转去向和状态码；GO 不跟随跳转、把 302 当作可用，本项目按 LMC 跟随（只在固定主机内）；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_HuluJP（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/Hulu.go HuluJP（dc6c6e6）（对照日期 2026-11-14）
 
-### radiko（radiko）— 只发 IPv4，只判断 jp
+### radiko（radiko）— 只发 IPv4
 
-- 请求：`GET https://radiko.jp/area`。主机：`radiko.jp`。
-- `class="OUT"` 不可用；`class="JP<编号>"` 可用（jp，编号只作展示）；其他为未知。
+- 请求：GET `https://radiko.jp/area?_=1625406539531`。主机：`radiko.jp`。
+- 判断：地区接口（与两个公开实现相同的固定查询参数）：class="OUT" = 日本以外，不可用；含 JAPAN = 日本某地区 → 可用（日本，地区名只作展示）；其他 = 未知
+- 限制：只说明 IP 被认作日本某一区，不代表能收听全部电台；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_Radiko（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/Radiko.go（dc6c6e6）（对照日期 2026-11-14）
 
-### MyVideo（myvideo）— 只发 IPv4，只判断 tw
+### MyVideo（myvideo）— 只发 IPv4
 
-- 请求：`GET https://www.myvideo.net.tw/login.do`，不跟随跳转。主机：`www.myvideo.net.tw`。
-- 跳到含 `serviceAreaBlock` 的路径不可用；200 可用（无负面标记）；其他跳转为未知。
+- 请求：GET `https://www.myvideo.net.tw/login.do`。主机：`www.myvideo.net.tw`。
+- 判断：登录页跟随跳转后的最终地址：含 serviceAreaBlock（不分大小写）= 地区限制，不可用；非质询的 403 = 不可用；200 = 可用（无负面标记）；其他 = 未知
+- 限制：“可用”只是没有地区限制跳转；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_MyVideo（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/MyVideo.go（dc6c6e6）（对照日期 2026-11-14）
 
-### Peacock（peacock）— 只判断 us
+### Peacock（peacock）
 
-- 请求：`GET https://www.peacocktv.com/`，不跟随跳转。主机：`www.peacocktv.com`。
-- 跳到含 `unavailable` 的路径不可用；200 可用（无负面标记）；其他为未知。
+- 请求：GET `https://www.peacocktv.com/`。主机：`www.peacocktv.com`。
+- 判断：首页跟随跳转后的最终地址：含 unavailable（不分大小写）= 不可用；200 = 可用（无负面标记）；其他 = 未知
+- 限制：只看首页是否被引到不可用页；GO 只看第一次跳转的 Location，结论相同
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_PeacockTV（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/PeacockTV.go（dc6c6e6）（对照日期 2026-11-14）
 
-### Pluto TV（plutotv）
+### Pluto TV（plutotv）— 只发 IPv4
 
-- 请求：`GET https://pluto.tv/`，不跟随跳转。主机：`pluto.tv`。
-- 跳到含 `thanks-for-watching` 的路径不可用；200 或站内其他跳转可用（无负面标记）；其他为未知。
-- 限制：多国开放、各国频道不同，不判断目录地区。
+- 请求：GET `https://pluto.tv/`。主机：`pluto.tv`。
+- 判断：首页跟随跳转：最终地址含 plutotv-is-not-available（LMC）或页面含 thanks-for-watching（GO）= 不可用；200 = 可用（无负面标记）；其他 = 未知
+- 限制：多国开放、各国频道不同，不判断目录地区；只发 IPv4（LMC 不支持 IPv6）
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_PlutoTV（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/PlutoTV.go（dc6c6e6）（对照日期 2026-11-14）
+
+### FOD（富士电视台）（fod）— 只发 IPv4
+
+- 请求：GET `https://geocontrol1.stream.ne.jp/fod-geo/check.xml?time=1624504256`。主机：`geocontrol1.stream.ne.jp`。
+- 判断：地区检查 XML 的 <FLAG TYPE="…">：true = 可用（日本），false = 不可用；其他 = 未知
+- 限制：只说明地区检查通过；固定的 time 参数与公开方法相同；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_FOD（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/FOD.go（dc6c6e6）（对照日期 2026-11-14）
+
+### U-NEXT（unext）
+
+- 请求：POST（固定请求体） `https://cc.unext.jp`。主机：`cc.unext.jp`。
+- 判断：播放列表接口（固定作品、匿名 GraphQL 请求）的 resultStatus：475 或 200 = 可用（日本），467 = 不可用；其他 = 未知
+- 限制：公开方法发送网页播放器的完整查询，本项目只请求 resultStatus 一个字段（自己写的较短查询），平台是否接受未验证；作品下架后会变成未知
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_unext（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/UNext.go（dc6c6e6）（对照日期 2026-11-14）
+
+### DMM（地区判定接口）（dmm）
+
+- 请求：POST（固定请求体） `https://api.tv.dmm.com/graphql`。主机：`api.tv.dmm.com`。
+- 判断：匿名 GraphQL 查询 client.isForeignAccess：false = 可用（日本），true = 海外访问，不可用；其他 = 未知
+- 限制：按 GO 的方法；LMC 的方法只看一个页面里的提示文字（判断依据弱），未采用
+- 来源：HsukqiLee/MediaUnlockTest pkg/providers/DMM.go（dc6c6e6）；lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_DMM（未采用）（b6d4a6f）（对照日期 2026-11-14）
+
+### NHK+（nhk-plus）
+
+- 请求：GET `https://location-plus.nhk.jp/geoip/area.json`。主机：`location-plus.nhk.jp`。
+- 判断：平台自己的地理接口 JSON country_code：JP = 可用（日本），其他国家码 = 不可用（地区不符）；非质询的 403 = 拒绝；其他 = 未知
+- 限制：只说明平台把地址认作日本，不代表账号能看
+- 来源：HsukqiLee/MediaUnlockTest pkg/providers/NHKPlus.go（dc6c6e6）（对照日期 2026-11-14）
+
+### 4GTV（4gtv）— 只发 IPv4
+
+- 请求：GET `https://api2.4gtv.tv/Web/IsTaiwanArea`。主机：`api2.4gtv.tv`。
+- 判断：IsTaiwanArea 接口 JSON 的 Data：Y = 可用（台湾），N = 不可用；其他 = 未知
+- 限制：按 LMC 的方法；GO 的方法要 POST 一段编码过的请求体，未采用；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_4GTV（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/4GTV.go（未采用）（dc6c6e6）（对照日期 2026-11-14）
+
+### friDay 影音（friday-video）
+
+- 请求：GET `https://video.friday.tw/api2/streaming/get?streamingId=122581&streamingType=2&contentType=4&contentId=1&clientId=`。主机：`video.friday.tw`。
+- 判断：播放接口（固定作品、空 clientId）JSON 的 code：0000 = 可用，1006 = 不可用；其他 = 未知
+- 限制：只说明地区检查通过；作品下架后会变成未知
+- 来源：HsukqiLee/MediaUnlockTest pkg/providers/FridayVideo.go（dc6c6e6）（对照日期 2026-11-14）
+
+### NBA TV（nbatv）
+
+- 请求：GET `https://www.nba.com/watch/`。主机：`www.nba.com`。
+- 判断：观看页：含 Service is not available in your region = 不可用；200 且没有这句 = 可用（无负面标记）；其他 = 未知
+- 限制：多国服务，不判断目录地区；“可用”只是没有负面标记
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_NBATV（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/NBATV.go（dc6c6e6）（对照日期 2026-11-14）
+
+### B-Global（东南亚）（bglobal-sea）— 只发 IPv4
+
+- 请求：GET `https://api.bilibili.tv/intl/gateway/web/playurl?s_locale=en_US&platform=web&ep_id=347666`。主机：`api.bilibili.tv`。
+- 判断：国际版播放地址接口（固定剧集）JSON 的 code：0 = 可用（东南亚版权区），10003003 或 10004001 = 不可用；其他 = 未知
+- 限制：只判断这部东南亚版权作品；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_BGlobalSEA（b6d4a6f）（对照日期 2026-11-14）
+
+### fuboTV（fubotv）— 只发 IPv4
+
+- 请求：GET `https://api.fubo.tv/v3/location`。主机：`api.fubo.tv`。
+- 判断：位置接口：含 NO_SERVICE_IN_COUNTRY 或 "network_allowed":false = 不可用；"network_allowed":true = 可用（country_code2 只作展示）；其他 = 未知
+- 限制：fuboTV 在几个国家开放，地区只作展示；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_FuboTV（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/FuboTV.go（dc6c6e6）（对照日期 2026-11-14）
+
+### Philo（philo）— 只发 IPv4
+
+- 请求：GET `https://content-us-east-2-fastly-b.www.philo.com/geo`。主机：`content-us-east-2-fastly-b.www.philo.com`。
+- 判断：地理接口 JSON 的 status：SUCCESS = 可用，FAIL = 不可用；其他 = 未知
+- 限制：主机名是公开方法写死的 CDN 名字，改名后会失败；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_Philo（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/Philo.go（dc6c6e6）（对照日期 2026-11-14）
+
+### Sling TV（sling）
+
+- 请求：GET `https://www.sling.com/`。主机：`www.sling.com`。
+- 判断：首页跟随跳转后的最终地址：含 geo-block = 不可用；200 = 可用（无负面标记）；其他 = 未知
+- 限制：只看是否被引到地区封锁页
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_SlingTV（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/SlingTV.go（dc6c6e6）（对照日期 2026-11-14）
+
+### Tubi（tubi）
+
+- 请求：GET `https://tubitv.com/home`。主机：`tubitv.com`、`www.tubitv.com`。
+- 判断：首页：含 not currently available in your area = 不可用；含 manifest = 可用；都没有 = 未知
+- 限制：“可用”的依据是页面里的 manifest 字样（公开方法如此），较弱；多国开放，不判断目录地区
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_TubiTV（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/TubiTV.go（dc6c6e6）（对照日期 2026-11-14）
+
+### Acorn TV（acorntv）— 只发 IPv4
+
+- 请求：GET `https://acorn.tv/`。主机：`acorn.tv`、`www.acorn.tv`。
+- 判断：首页：含 not yet available in your 或 unavailable in your = 不可用；含 signup.acorn.tv（注册入口）= 可用；都没有 = 未知
+- 限制：多国开放，不判断目录地区；只发 IPv4
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_AcornTV（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/AcornTV.go（dc6c6e6）（对照日期 2026-11-14）
+
+### BritBox（britbox）
+
+- 请求：GET `https://www.britbox.com/`。主机：`www.britbox.com`、`britbox.com`。
+- 判断：首页跟随跳转后的最终地址：含 locationnotsupported、locationnotvalidated 或被引到 britbox.co.uk = 不可用；200 = 可用（无负面标记）；其他 = 未知
+- 限制：只看跳转去向；多国开放，不判断目录地区
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_BritBox（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/BritBox.go（dc6c6e6）（对照日期 2026-11-14）
+
+### AMC+（amcplus）
+
+- 请求：GET `https://www.amcplus.com/`。主机：`www.amcplus.com`、`amcplus.com`。
+- 判断：首页跟随跳转后的最终地址：含 geographic-restriction 或非质询的 403 = 不可用；200 = 可用（无负面标记）；其他 = 未知
+- 限制：公开方法从最终地址的末段读一个地区名，本项目不采用（只作展示意义也不大）；多国开放，不判断目录地区
+- 来源：lmc999/RegionRestrictionCheck check.sh MediaUnlockTest_AMCPlus（b6d4a6f）；HsukqiLee/MediaUnlockTest pkg/providers/AMCPlus.go（dc6c6e6）（对照日期 2026-11-14）
+
+### Meta AI（metaai）
+
+- 请求：GET `https://www.meta.ai/`。主机：`www.meta.ai`。
+- 判断：首页：含 AbraGeoBlockedErrorRoot = 地区封锁，不可用；含 KadabraRootContainer = 可用（"code":"xx_YY" 的 YY 只作展示）；都没有 = 未知
+- 限制：标记是页面组件名，改版会变成未知；不是账号判断
+- 来源：lmc999/RegionRestrictionCheck check.sh WebTest_MetaAI（b6d4a6f）（对照日期 2026-11-14）
+
+### Coze（coze）
+
+- 请求：GET `https://www.coze.com/api/developer/get_login_info`。主机：`www.coze.com`。
+- 判断：未登录信息接口 JSON：data.IsForbiddenRegion = true 或应答含 Your region is not supported = 不可用；data.CountryCode 非空 = 可用（地区只作展示）；非质询的 403 = 拒绝；其他 = 未知
+- 限制：接口没有公开文档；不是账号判断
+- 来源：HsukqiLee/MediaUnlockTest pkg/providers/Coze.go（dc6c6e6）（对照日期 2026-11-14）
 
 ## 覆盖表
 
 以引用脚本（LMC、1S、GO）各地区清单为基准逐项对照。每一项要么由一个适配器实现，要么写明不实现的原因；不为凑数降低判断标准，证据等级和 `unlock.Ingest` 的准入规则没有因为新增适配器而改变。机器可读的同一张表是 `internal/probe/coverage.go`（`GET /api/unlock/catalog` 的 `coverage`）。
 
-**清单本身也待复核**：这张表按项目已知的各脚本地区分节整理，这一轮没有网络，没能对照引用的提交逐行重读；脚本后来增删的项目可能没有反映在这里。
+清单来自两个 check.sh 的地区函数（Global / HK / TW / JP / NA / SEA / AI）和 GO 的 `lists.go`，在上面固定的提交上逐项读出；新加坡取东南亚清单里的新加坡部分和东南亚通用项，美国取北美清单里的美国部分和通用项。其他地区（欧洲、韩国、印度、大洋洲、加拿大、南美、非洲）不在这张表里。
 
 原因代码：
 
 | 代码 | 含义 |
 |---|---|
-| `needs_token` | 公开方法要把账号、应用令牌、API key、设备标识或会话值当作请求参数，本项目不发送任何这类数据 |
-| `needs_js` | 要执行页面脚本，或从主机不固定的脚本里抓参数，放不进固定主机名单 |
-| `weak_signal` | 只有不可靠的判断依据（写死的地区表、页面里的单个字样、只能读出地区而没有任何不可用标记） |
-| `not_service` | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），出口确认已经给出实际地区 |
+| `needs_token` | 公开方法要把账号、应用令牌、API key、播放器 policy key、设备标识或会话值当作请求参数，本项目不发送任何这类数据 |
+| `needs_js` | 要执行页面脚本，或从前一步页面里取多个地址和参数，放不进固定的单值链 |
+| `weak_signal` | 只有不可靠的判断依据（写死的地区表、只看 HTTP 状态码（403 也可能是风控）、页面里的单个字样、第三方地理服务、只能读出地区而没有不可用标记） |
+| `not_service` | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），出口确认已经给出实际地区 |
 | `not_https` | 公开方法用明文 HTTP 或非 443 端口，探测只走 https/443 |
 | `discontinued` | 平台已停止或并入别的服务 |
 | `fake_login` | 公开方法提交伪造的登录表单看错误码，本项目不提交任何登录请求 |
-| `not_reviewed` | 这一轮无法重读引用的源码，请求细节没有把握，不凭记忆实现；留待对照源码后补 |
+| `header_only` | 判断依据在应答头或 Set-Cookie 里，探测不把应答头和 Cookie 交给分类器 |
+| `transport` | 公开方法降低 TLS 要求或直连写死的 IP 并改写 Host 头 |
 
-各地区实现数：国际流媒体 15 项中 7 项（其中 Viu.com 是参考检查）；AI 6 项全部有适配器（其中 Perplexity、Grok 只做到达性，不能驱动自动选择）；香港 6 项中 2 项；台湾 10 项中 5 项；日本 19 项中 6 项（其中 Niconico 是参考检查）；新加坡地区清单 2 项中 0 项（新加坡出口上能用的是国际一节的 Netflix、Disney+、Prime Video、YouTube Premium、DAZN、TVBAnywhere+）；美国 17 项中 2 项。
+各地区实现数（含参考检查）：国际（多地区） 28 项中 8 项；AI 14 项中 8 项；香港 9 项中 3 项；台湾 13 项中 7 项；日本 27 项中 9 项；新加坡（含东南亚通用项） 6 项中 1 项；美国 34 项中 9 项。Perplexity、Grok 只做到达性，不能驱动自动选择；Viu.com、Niconico 是参考检查，不入库。新加坡出口上能用的还有国际一节的 Netflix、Disney+、Prime Video、YouTube Premium、DAZN、TVBAnywhere+、NBA TV。
 
-### 国际流媒体
+### 国际（多地区）
 
 | 项目 | 脚本 | 结果 | 说明 |
 |---|---|---|---|
@@ -297,22 +446,29 @@ AI 类服务没有“目录地区”的概念，所以 Gemini、Copilot 报的�
 | YouTube Premium | LMC、1S、GO | 已实现：`youtube-premium` |  |
 | Amazon Prime Video | LMC、1S、GO | 已实现：`primevideo` |  |
 | DAZN | LMC、1S、GO | 已实现：`dazn` |  |
-| TVBAnywhere+ | LMC、GO | 已实现：`tvbanywhere` |  |
-| Viu.com | LMC、GO | 已实现：`auto-mytvsuper`（参考检查 Viu.com，不入库） |  |
-| iQIYI 国际版 | LMC、GO | 未实现（`needs_token`） | 地区只出现在 Set-Cookie 里，读它就要收 Cookie |
-| Spotify 注册 | LMC、GO | 未实现（`needs_token`） | 注册接口的表单里带写死的应用 key |
-| TikTok | LMC、GO | 未实现（`weak_signal`） | 只能读出页面里的 region，没有不可用标记 |
-| HBO Max | LMC、1S、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| Disney+ Hotstar | LMC、1S | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| YouTube CDN | LMC、1S | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
-| Netflix 首选 CDN | LMC、1S | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
-| Steam 货币区 | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
-| Bing 地区 | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
-| Wikipedia 编辑权限 | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
-| Google Play 地区 | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
-| Google 搜索免验证码 | LMC、1S | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
-| Instagram 授权音乐 | LMC、1S | 未实现（`needs_token`） | 请求带应用 ID 请求头与写死的查询文档 ID |
-| Apple 地区 | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
+| TVBAnywhere+ | LMC、1S、GO | 已实现：`tvbanywhere` |  |
+| Viu.com | LMC、1S、GO | 已实现：`auto-mytvsuper`（参考检查 Viu.com，不入库） |  |
+| NBA TV | LMC、1S、GO | 已实现：`nbatv` |  |
+| iQIYI 国际版 | LMC、1S、GO | 未实现（`header_only`） | 地区来自应答 Set-Cookie 里的 mod= 值 |
+| Spotify 注册 | LMC、1S、GO | 未实现（`needs_token`） | 注册接口的表单里带写死的应用 key |
+| HotStar | LMC、1S、GO | 未实现（`header_only`） | 地区来自跳转与 Cookie 里的 geo= 值 |
+| Bilibili Anime（港澳台） | 1S、GO | 未实现（`needs_token`） | 请求带每次随机生成的 session 参数 |
+| TikTok | 1S、GO | 未实现（`weak_signal`） | 只能读出平台认定的地区，没有不可用标记 |
+| Instagram 授权音乐 | 1S | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| WeTV | GO | 未实现（`weak_signal`） | 公开方法只读地区 |
+| YouTube CDN | LMC、1S、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| YouTube 地区 | 1S | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| Netflix 首选 CDN | LMC、1S、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| Steam 货币区 | LMC、1S、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| Bing 地区 | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| Apple 地区 | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| OneTrust 地区 | LMC | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| Wikipedia 编辑权限 | LMC、1S、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| Google Play 地区 | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| Google 搜索免验证码 | LMC、1S | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| Reddit | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| X（Twitter） | GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| SD 高达 G 世纪（游戏） | LMC | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
 
 ### AI
 
@@ -321,9 +477,17 @@ AI 类服务没有“目录地区”的概念，所以 Gemini、Copilot 报的�
 | ChatGPT / OpenAI | LMC、1S、GO | 已实现：`auto-openai` |  |
 | Claude | LMC、1S、GO | 已实现：`auto-anthropic` |  |
 | Gemini | LMC、1S、GO | 已实现：`auto-gemini` |  |
-| Microsoft Copilot | GO | 已实现：`auto-copilot` |  |
-| Perplexity | GO | 已实现：`auto-perplexity` | 只做到达性：公开方法只是地区表 |
-| Grok | GO | 已实现：`auto-grok` | 只做到达性：公开方法只是地区表加 403 |
+| Microsoft Copilot | 1S、GO | 已实现：`auto-copilot` |  |
+| Perplexity | GO | 已实现：`auto-perplexity` | 只做到达性：公开方法是地区表 |
+| Grok | GO | 已实现：`auto-grok` | 只做到达性：公开方法是地区表加 403 |
+| Meta AI | LMC | 已实现：`metaai` |  |
+| Coze | GO | 已实现：`coze` |  |
+| Sora | 1S | 未实现（`weak_signal`） | cdn-cgi/trace 的 loc 对照写死的地区表 |
+| Poe | GO | 未实现（`weak_signal`） | loc 对照写死的地区表 |
+| Mistral | GO | 未实现（`weak_signal`） | loc 对照写死的地区表 |
+| DeepSeek | GO | 未实现（`transport`） | 直连写死的 IP 并改写 Host 头 |
+| Kimi | GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| Dola | GO | 未实现（`weak_signal`） | 只能读出地区，没有不可用标记 |
 
 ### 香港
 
@@ -331,76 +495,113 @@ AI 类服务没有“目录地区”的概念，所以 Gemini、Copilot 报的�
 |---|---|---|---|
 | MyTV SUPER | LMC、1S、GO | 已实现：`auto-mytvsuper` |  |
 | 巴哈姆特動畫瘋（港澳区） | LMC、1S、GO | 已实现：`auto-bahamut` |  |
-| Now E | LMC、GO | 未实现（`needs_token`） | 请求体带设备标识与调用参考号 |
-| ViuTV | LMC、GO | 未实现（`needs_token`） | 请求体带设备标识与调用参考号 |
-| HBO GO Asia（香港） | LMC、GO | 未实现（`discontinued`） | 平台已停止或并入别的服务，公开方法已过时 |
-| Bilibili 港澳台限定 | LMC、1S、GO | 未实现（`not_reviewed`） | 要写死的剧集 ID 与随机会话参数 |
+| NBA TV（香港） | 1S、GO | 已实现：`nbatv` |  |
+| Now E | LMC | 未实现（`needs_token`） | 请求体带设备标识与调用参考号 |
+| ViuTV | LMC、1S、GO | 未实现（`needs_token`） | 请求体带设备标识与调用参考号 |
+| HBO Max（香港） | LMC、1S、GO | 未实现（`header_only`） | 地区码 countryCode= 在应答头里 |
+| SonyLiv（香港） | LMC、GO | 未实现（`needs_token`） | 先从页面取 securityToken 再调接口 |
+| Bilibili 港澳台限定 | LMC、1S | 未实现（`needs_token`） | 请求带每次随机生成的 session 参数 |
+| HOY TV | 1S、GO | 未实现（`weak_signal`） | 只看直播流地址的 HTTP 状态码 |
 
 ### 台湾
 
 | 项目 | 脚本 | 结果 | 说明 |
 |---|---|---|---|
-| KKTV | LMC、GO | 已实现：`auto-kktv` |  |
-| LINE TV | LMC、GO | 已实现：`auto-linetv` |  |
-| Hami Video | LMC、GO | 已实现：`auto-hami` |  |
+| KKTV | LMC、1S、GO | 已实现：`auto-kktv` |  |
+| LINE TV | LMC、1S、GO | 已实现：`auto-linetv` |  |
+| Hami Video | LMC、1S、GO | 已实现：`auto-hami` |  |
 | 巴哈姆特動畫瘋 | LMC、1S、GO | 已实现：`auto-bahamut` |  |
-| MyVideo | LMC、GO | 已实现：`myvideo` |  |
-| LiTV | LMC、GO | 未实现（`needs_token`） | 请求体带设备标识（puid） |
-| 4GTV | LMC、GO | 未实现（`needs_token`） | 请求体是写死的编码串，内容不透明 |
-| CatchPlay+ | LMC、GO | 未实现（`needs_token`） | 要 Bearer 令牌 |
-| HBO GO Asia（台湾） | LMC、GO | 未实现（`discontinued`） | 平台已停止或并入别的服务，公开方法已过时 |
-| Bilibili 台湾限定 | LMC、1S、GO | 未实现（`not_reviewed`） | 要写死的剧集 ID 与随机会话参数 |
+| MyVideo | LMC、1S、GO | 已实现：`myvideo` |  |
+| 4GTV | LMC、1S、GO | 已实现：`4gtv` |  |
+| friDay 影音 | 1S、GO | 已实现：`friday-video` |  |
+| LiTV | LMC、1S、GO | 未实现（`needs_token`） | 请求带设备标识（puid） |
+| Ofiii | 1S、GO | 未实现（`needs_token`） | 查询串带写死的设备 ID |
+| CatchPlay+ | LMC、1S、GO | 未实现（`needs_token`） | 要 Bearer 令牌 |
+| HBO Max（台湾） | LMC、1S、GO | 未实现（`header_only`） | 地区码 countryCode= 在应答头里 |
+| SonyLiv（台湾） | LMC | 未实现（`needs_token`） | 先从页面取 securityToken 再调接口 |
+| Bilibili 台湾限定 | LMC、1S | 未实现（`needs_token`） | 请求带每次随机生成的 session 参数 |
 
 ### 日本
 
 | 项目 | 脚本 | 结果 | 说明 |
 |---|---|---|---|
 | ABEMA | LMC、1S、GO | 已实现：`auto-abema` |  |
-| Niconico | LMC、GO | 已实现：`auto-abema`（参考检查 Niconico，不入库） |  |
+| Niconico | LMC、1S、GO | 已实现：`auto-abema`（参考检查 Niconico，不入库） |  |
+| DMM TV | LMC、1S | 已实现：`dmm-tv` |  |
+| DMM | LMC、GO | 已实现：`dmm` |  |
+| Hulu Japan | LMC、1S、GO | 已实现：`hulu-jp` |  |
+| radiko | LMC、1S、GO | 已实现：`radiko` |  |
+| FOD（富士电视台） | LMC、1S、GO | 已实现：`fod` |  |
+| U-NEXT | LMC、1S、GO | 已实现：`unext` |  |
+| NHK+ | 1S、GO | 已实现：`nhk-plus` |  |
 | TVer | LMC、1S、GO | 未实现（`needs_token`） | 要平台用户令牌链或播放器 API key |
-| DMM TV | LMC、GO | 已实现：`dmm-tv` |  |
-| Hulu Japan | LMC、GO | 已实现：`hulu-jp` |  |
-| radiko | LMC、GO | 已实现：`radiko` |  |
-| DMM | LMC、GO | 未实现（`weak_signal`） | 只看页面里的一句提示文字 |
-| FOD（富士电视台） | LMC、GO | 未实现（`weak_signal`） | 只在应答里找 true / false 字样 |
-| U-NEXT | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| WOWOW | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| TELASA | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| music.jp | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| mora | LMC | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| J:COM On Demand | LMC | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| VideoMarket | LMC、GO | 未实现（`needs_token`） | 要先换取访问令牌 |
-| Paravi | LMC | 未实现（`discontinued`） | 已并入 U-NEXT |
-| GYAO! | LMC | 未实现（`discontinued`） | 平台已停止或并入别的服务，公开方法已过时 |
-| Karaoke@DAM | LMC、GO | 未实现（`not_https`） | 公开方法用明文 HTTP 或非 443 端口，探测只走 https/443 |
-| 日本区游戏（舰队 Collection、赛马娘、公主连结、世界弹射物语、Project Sekai 等） | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏），不是解锁判断；出口确认已经给出实际地区 |
+| TELASA | LMC、1S、GO | 未实现（`needs_token`） | 请求头带写死的设备 ID（X-Device-ID） |
+| WOWOW | LMC、1S、GO | 未实现（`needs_js`） | 四步链，从前一步的页面里取多个地址与作品号 |
+| VideoMarket | LMC、1S、GO | 未实现（`needs_token`） | 请求带写死的 Bearer 令牌 |
+| AnimeFesta | LMC、1S、GO | 未实现（`needs_token`） | 请求头带用户追踪 ID |
+| Lemino | LMC、1S、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| d アニメストア | LMC、1S、GO | 未实现（`transport`） | 要允许旧式 TLS 重协商；判断依据也只是页面里的「海外」字样 |
+| J:COM On Demand | LMC、1S、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| WATCHA | LMC、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| Rakuten TV JP | LMC、1S、GO | 未实现（`weak_signal`） | 公开方法把 Rakuten TV 的播放信息和另一个服务（Rakuten NBA）的地理过滤拼成一个结论 |
+| Rakuten Magazine | 1S、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| MGStage | 1S、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| Karaoke@DAM | LMC、1S、GO | 未实现（`not_https`） | 公开方法用明文 HTTP 或非 443 端口，探测只走 https/443 |
+| mora | LMC、1S、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| music.jp | LMC、1S、GO | 未实现（`weak_signal`） | 只看脚本文件里有没有 checkIp 字样 |
+| Paravi | 1S | 未实现（`discontinued`） | 已并入 U-NEXT |
+| ErogameScape（论坛） | LMC、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
+| 日本区游戏（舰队 Collection、赛马娘、为美好的世界献上祝福 Fantastic Days、公主连结、Project Sekai、World Flipper） | LMC、1S、GO | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
 
-### 新加坡
+### 新加坡（含东南亚通用项）
 
 | 项目 | 脚本 | 结果 | 说明 |
 |---|---|---|---|
-| meWATCH | LMC | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| HBO GO Asia（新加坡） | LMC、GO | 未实现（`discontinued`） | 平台已停止或并入别的服务，公开方法已过时 |
+| B-Global 东南亚 | LMC、1S | 已实现：`bglobal-sea` |  |
+| meWATCH | LMC、1S、GO | 未实现（`weak_signal`） | 应答里出现任何数字 code 都算不可用（错误和限流也会这样） |
+| StarHub TV+ | 1S | 未实现（`weak_signal`） | 只看直播清单地址的 HTTP 状态码 |
+| CatchPlay+（新加坡） | 1S、GO | 未实现（`needs_token`） | 要 Bearer 令牌 |
+| HBO Max（东南亚） | LMC、1S、GO | 未实现（`header_only`） | 地区码 countryCode= 在应答头里 |
+| SonyLiv（东南亚） | LMC | 未实现（`needs_token`） | 先从页面取 securityToken 再调接口 |
 
 ### 美国
 
 | 项目 | 脚本 | 结果 | 说明 |
 |---|---|---|---|
-| Peacock | LMC、GO | 已实现：`peacock` |  |
-| Pluto TV | LMC、GO | 已实现：`plutotv` |  |
-| Hulu | LMC、1S、GO | 未实现（`fake_login`） | 公开方法提交伪造的登录表单来看错误码，本项目不提交任何登录请求 |
-| Paramount+ | LMC、GO | 未实现（`weak_signal`） | 跳到 /intl/ 只说明不是美国站，多国都有本地站 |
-| ESPN+ | LMC、GO | 未实现（`needs_token`） | 公开方法要把账号、应用令牌、API key、设备标识或会话值当作请求参数，本项目不发送任何这类数据 |
-| Discovery+ | LMC、GO | 未实现（`needs_token`） | 公开方法要把账号、应用令牌、API key、设备标识或会话值当作请求参数，本项目不发送任何这类数据 |
-| Starz | LMC、GO | 未实现（`needs_token`） | 公开方法要把账号、应用令牌、API key、设备标识或会话值当作请求参数，本项目不发送任何这类数据 |
-| Crunchyroll | LMC、GO | 未实现（`needs_token`） | 公开方法要把账号、应用令牌、API key、设备标识或会话值当作请求参数，本项目不发送任何这类数据 |
-| Fox | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| Philo | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| fuboTV | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| Sling TV | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| Tubi | LMC、GO | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| 其他北美频道站（Shudder、BritBox、Crackle、The CW、A&E、NBA TV、NBC、FXNOW、TLC GO、Acorn TV、MGM+、encoreTVB、KOCOWA、KBS America、DirecTV Stream） | LMC | 未实现（`not_reviewed`） | 本轮无法重读引用的源码（无网络），请求细节没有把握，不凭记忆实现；留待对照源码后补 |
-| 已停止的北美服务（Funimation、Popcornflix、SHOWTIME 独立应用） | LMC | 未实现（`discontinued`） | 平台已停止或并入别的服务，公开方法已过时 |
+| Peacock | LMC、1S、GO | 已实现：`peacock` |  |
+| Pluto TV | LMC、1S、GO | 已实现：`plutotv` |  |
+| fuboTV | LMC、GO | 已实现：`fubotv` |  |
+| Philo | LMC、1S、GO | 已实现：`philo` |  |
+| Sling TV | LMC、1S、GO | 已实现：`sling` |  |
+| Tubi | LMC、GO | 已实现：`tubi` |  |
+| Acorn TV | LMC、1S、GO | 已实现：`acorntv` |  |
+| BritBox | LMC、1S、GO | 已实现：`britbox` |  |
+| AMC+ | LMC、GO | 已实现：`amcplus` |  |
+| Hulu | LMC、1S、GO | 未实现（`fake_login`） | 公开方法提交伪造的登录表单看错误码，本项目不提交任何登录请求 |
+| HBO Max（美国） | LMC、1S、GO | 未实现（`header_only`） | 地区码 countryCode= 在应答头里 |
+| Paramount+ | LMC、1S、GO | 未实现（`weak_signal`） | 只看是否跳到 /intl/（只说明不是美国站）与状态码 |
+| ESPN+ | LMC、1S、GO | 未实现（`needs_token`） | 要先换取设备令牌 |
+| Discovery+ | LMC、1S、GO | 未实现（`needs_token`） | 要设备 ID 与令牌 |
+| Starz | LMC、1S、GO | 未实现（`needs_token`） | 要授权头 |
+| MGM+ | LMC、1S、GO | 未实现（`needs_token`） | 先建会话再带会话令牌 |
+| NBC TV | LMC、1S、GO | 未实现（`needs_token`） | 要授权头 |
+| TLC GO | LMC、GO | 未实现（`needs_token`） | 要设备 ID 换取令牌 |
+| encoreTVB | LMC、1S、GO | 未实现（`needs_token`） | 请求头带播放器 policy key |
+| A&E TV | LMC、1S、GO | 未实现（`header_only`） | 地区来自应答 Cookie AETN-Country-Code |
+| Crackle | LMC、1S | 未实现（`header_only`） | 地区来自应答头 x-crackle-region |
+| FOX | LMC、1S、GO | 未实现（`weak_signal`） | 只看一个视频分片地址的 HTTP 状态码 |
+| NFL+ | LMC、1S、GO | 未实现（`weak_signal`） | 只看是否跳到另一个产品站点 |
+| FXNOW | LMC、1S、GO | 未实现（`weak_signal`） | 只有不可用字样，没有可用标记 |
+| Shudder | LMC、1S、GO | 未实现（`weak_signal`） | 可用标记是页面里的 movies 字样，不可用标记包含泛泛的 not available |
+| The CW | LMC、1S、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| KOCOWA | LMC、1S、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| DirecTV Stream | LMC、1S、GO | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| Crunchyroll | LMC、1S、GO | 未实现（`weak_signal`） | 用第三方地理服务判断，不是平台信号 |
+| SonyLiv（美国） | LMC、GO | 未实现（`needs_token`） | 先从页面取 securityToken 再调接口 |
+| Popcornflix | LMC、1S | 未实现（`weak_signal`） | 只看 HTTP 状态码 |
+| SHOWTIME | 1S | 未实现（`discontinued`） | 已并入 Paramount+ |
+| KBS America | 1S | 未实现（`weak_signal`） | LMC 里已注释停用；1S 的方法只看状态 |
+| MathsSpot（Roblox） | LMC、1S | 未实现（`not_service`） | 不是流媒体或 AI 服务（地区识别、IP 信誉、CDN 位置、游戏、论坛），不是解锁判断；出口确认已经给出实际地区 |
 
 ## 服务组自动选择
 
@@ -417,8 +618,22 @@ AI 类服务没有“目录地区”的概念，所以 Gemini、Copilot 报的�
 - **阈值和滞回不变**：连续两次定时失败才换成员（手动和健康补测不计）；切回首选要首选最新结果是 30 分钟内收到的成功，并且从最后一次失败之后连续成功满 30 分钟，期间任何一次失败都重新计时。
 - **结果有效期**（`settings.unlock_probe.result_ttl_sec`，默认探测间隔的两倍，即 12 小时）：超过有效期的结果不是证据，既不能让一个成员成为可用备选，也不再把它排除在外。升级前保存、没有收到时间的旧结果保持原有含义，直到该成员的下一次结果把它替换。
 - **只用有证据的备选**（服务组）：首选连续两次定时失败时，只换到有**有效期内成功结果**的候选；没有这样的候选就留在默认出口，标「组内都不可用」并在面板告警，不会换到没测过的成员，也不会换地区。指向地区组的规则（内置规则）保留原来的行为：没有已知可用成员时会先试一个还没测过的成员。
-- **切换的生效路径**：决定存在面板的解锁状态里（`unlock.Decisions`，键是规则 ID 或 `service-group:<id>`），只经现有的安装事务进入网关（面板显示「待安装」，与内置规则相同；不会无人值守地自动安装）。编译时 `planRules` 是规则目标、mark、地址集合名字的唯一来源：服务组的决定把它的每条规则改到被选成员**自己的** mark，地址集合、SmartDNS 的解析器组（被选成员的隧道解析器，不是国内解析器；该成员没有 IPv6 时照常不返回 AAAA、不声明 IPv6 集合）、嗅探服务的规则快照和目标文件都从这同一份计划生成。按规则 ID 写的决定对经过服务组的规则无效。`internal/compile/service_select_test.go` 编译切换前后的结果，检查每个被引用的集合都已声明、没有重复声明、清单里的地址集合都已声明，嗅探服务接受编译出的快照和目标文件，覆盖 IPv4-only 与双栈目标、嵌套出口、仅 TCP 的外部出口、地区组和单出口目标。
+- **切换的生效路径**：决定存在面板的解锁状态里（`unlock.Decisions`，键是规则 ID 或 `service-group:<id>`），只经现有的网关安装事务进入网关：默认由运营者安装（面板显示「待安装」，与内置规则相同）；打开 `auto_apply` 后，满足下节全部条件时由面板自己走同一个安装事务（见「自动安装决定」）。编译时 `planRules` 是规则目标、mark、地址集合名字的唯一来源：服务组的决定把它的每条规则改到被选成员**自己的** mark，地址集合、SmartDNS 的解析器组（被选成员的隧道解析器，不是国内解析器；该成员没有 IPv6 时照常不返回 AAAA、不声明 IPv6 集合）、嗅探服务的规则快照和目标文件都从这同一份计划生成。按规则 ID 写的决定对经过服务组的规则无效。`internal/compile/service_select_test.go` 编译切换前后的结果，检查每个被引用的集合都已声明、没有重复声明、清单里的地址集合都已声明，嗅探服务接受编译出的快照和目标文件，覆盖 IPv4-only 与双栈目标、嵌套出口、仅 TCP 的外部出口、地区组和单出口目标。
 - **没有规则的服务只展示**：一个适配器既不是启用规则的探测项、也没有挂在服务组上时，只能在面板里对指定的出口或地区组手动探测，结果标「未入库：没有关联」，不会因此新增或修改任何规则或服务组。
+
+### 自动安装决定（`settings.unlock_probe.auto_apply`，默认关闭）
+
+关闭时（默认）一切与以前相同：决定改变后标「待安装」，等运营者安装。打开后，每当决定改变（服务组或内置规则换成员，或恢复后切回），面板在探测一轮结束、出口报告之后、以及每分钟的定时检查里评估一次；**下面全部满足**才安装，否则决定保持待安装，面板显示是哪一条没满足（`GET /api/unlock` 的 `auto_apply.last_check`）：
+
+1. **安装前已同步**：记录了上一次网关安装用的决定；没有未完成的宿主事务；用这些决定重新编译当前拓扑，得到的网关文件与已安装的逐个哈希相同，并且与上一次应用的快照（全部节点的规范文本）完全相同。所以自动安装除了这个决定不会带上任何别的未审阅改动。升级后还没有经面板安装过一次的网关没有这条记录，要先人工安装一次。
+2. **只改规则文件**：用新决定编译，与 (1) 相比只有网关节点的这些文件不同（`compile.DecisionFiles`，由 `TestDecisionChangeTouchesOnlyRuleFiles` 在各种示例拓扑上验证决定改变只碰它们）：`etc/nftables.d/meridian.nft`、`etc/smartdns/smartdns.conf`、`etc/meridian/rules/order.conf`、`etc/meridian/rules/decide.json`、`etc/meridian/sniff/targets.json`。任何别的文件、别的节点、文件增删（密钥、WireGuard 接口文件、单元文件都不在其中）都拒绝。
+3. **频率**：距上一次自动安装至少 `auto_apply_min_gap_sec`（默认 600 秒，300–86400），最近 24 小时少于 `auto_apply_daily_max` 次（默认 6，1–48）；同样的决定自动安装失败后 1 小时内不再试（换了别的决定仍受最小间隔约束）。
+4. **没有别的动作**：网关节点锁（预检、装机、撤回用的那把）空闲，宿主事务锁没被占用也没有未完成的事务；否则推迟到下一次评估，不排队。
+5. **预检**：在节点锁内为这次的文件运行一次宿主预检，没有阻断项。
+
+满足后调用与 `POST /api/apply`（`install: true`）同一个函数 `applyGateway`：同样的密钥处理（只复用已有密钥，不生成）、同样的事务（失败时补偿、补偿失败则保留事务日志等待恢复）、同样的 WSS 与秘密记录；编译结果必须与检查时的完全相同，否则不执行。每次自动安装记入 `unlock_auto_apply`（时间、触发、决定、结果、改动文件）和解锁历史（标「自动安装解锁决定」）。失败后决定保持待安装、不循环重试（见第 3 条的退避）。状态机的阈值和滞回不因此改变；恢复后切回走同一条路。
+
+对流量的影响（按代码，**未在真实网关上验证**）：安装由 `meridian-up.sh` 用一个 nft 批次整体替换 `inet meridian` 表（先 `nft -c` 检查，失败则旧表不动），替换是原子的，但表里按域名学到的地址集合随之清空，客户端重新解析后才重新填上；分类是逐包按目的地址做的，但出口由中转源地址决定：网关上所有出口 mark 都查同一张表 102，枢纽按中转源地址选出口，而中转源地址转换（`transit_snat`，nat 钩子）只在连接的第一个包上决定并记在 conntrack 里，替换规则表不改已有的转换，所以按代码已建立的连接继续从原出口出去直到结束，切换只影响新连接；解析器配置变了时网关的 SmartDNS 会重启（缓存清空）；嗅探转发服务的单元文件不变时只重载，已转发的连接保持原路。
 
 ### 分流域名与探测主机不是一回事
 
@@ -442,7 +657,7 @@ AI 类服务没有“目录地区”的概念，所以 Gemini、Copilot 报的�
 
 ## 合成样本
 
-`internal/probe/adapters_test.go` 和 `adapters_more_test.go` 里，每个服务都有手写的应答样本（新增的 10 个各覆盖：可用、不可用、地区不符（带地区的）、质询页、限流、改版），覆盖：地区受限、可用（有地区和无地区）、登录墙、反爬质询、跳到不可用页面、超时（在运行器层面测）、意外或改版的应答。另有测试检查每个适配器声明的 `returns` 与分类器实际能给出的结论完全一致。样本都标明是合成的，不含 Cookie、令牌或个人数据。它们只能证明分类器实现了本文写的规则，证明不了真实平台现在怎么应答。
+`internal/probe/adapters_test.go` 和 `adapters_more_test.go` 里，每个服务都有手写的应答样本（覆盖表新增的 27 个各覆盖：可用、不可用、地区不符（带地区的）、质询页、限流、改版），覆盖：地区受限、可用（有地区和无地区）、登录墙、反爬质询、跳到不可用页面、超时（在运行器层面测）、意外或改版的应答。另有测试检查每个适配器声明的 `returns` 与分类器实际能给出的结论完全一致。样本都标明是合成的，不含 Cookie、令牌或个人数据。它们只能证明分类器实现了本文写的规则，证明不了真实平台现在怎么应答。
 
 ## 需要人工在真实平台上核对的事项
 
@@ -458,6 +673,6 @@ AI 类服务没有“目录地区”的概念，所以 Gemini、Copilot 报的�
 8. MyTV SUPER：应答里实际用的是 `country_code` 还是 `region`。
 9. 各平台在 IPv6 出口上的表现，以及“只发 IPv4”的服务是否本来就没有 AAAA 记录。
 10. 每个检查的跳转链是否都停在固定主机名单内，有没有因此被归为 `redirect_unlisted` 的情况。
-11. 覆盖表新增的 10 个适配器：先对照引用脚本的当前源码核对请求地址、请求体和标记（来源标「待对照源码复核」），再在真实平台上各跑一次可用和受限出口。
-12. 覆盖表本身：对照引用脚本当前的地区分节，补上漏掉的项目或标出已删除的项目。
+11. 覆盖表新增的 27 个适配器：已对照固定提交的源码，但没有在真实平台上跑过；在可用和受限出口上各跑一次。U-NEXT 的请求是本项目自己缩短的 GraphQL 查询，平台是否接受要先核对。
+12. 覆盖表本身：已按固定提交逐项读出；引用脚本之后增删的项目要在更新提交号时重读。
 13. 服务组自动选择：在真实网关上把一个服务组设为自动，制造首选连续两次定时失败，确认面板给出待安装、安装后该服务组规则的流量和 DNS 都从被选出口出去（抓包，不经国内解析器），首选恢复 30 分钟后切回；所有候选失败时留在默认出口并告警。

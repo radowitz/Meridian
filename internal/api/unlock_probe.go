@@ -681,6 +681,9 @@ func (s *Server) runProbeJob(ctx context.Context, h *jobHandle, kind unlock.Kind
 		s.job = nil
 	}
 	s.jobMu.Unlock()
+	// A changed decision may be installed automatically (autoapply.go);
+	// the job is over, so the install's activate cancels no probe of it.
+	s.maybeAutoApply(string(kind))
 }
 
 // closeGroup marks a group that never started.
@@ -1496,6 +1499,8 @@ func (s *Server) StartUnlockScheduler() {
 }
 
 func (s *Server) tickUnlock() {
+	// Pending decisions whose back-off or gap has passed (autoapply.go).
+	s.maybeAutoApply(autoTrigTick)
 	s.mu.Lock()
 	t, err := s.topology()
 	if err != nil {

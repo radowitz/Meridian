@@ -334,19 +334,34 @@ var (
 	srcGO = func(file string) Source {
 		return Source{Name: "HsukqiLee/MediaUnlockTest pkg/providers/" + file + "（main @ dc6c6e6）", URL: "https://github.com/HsukqiLee/MediaUnlockTest/blob/main/pkg/providers/" + file, Checked: checked}
 	}
-	// The r variants name a method written from the scripts' known
-	// behaviour without re-reading the cited commit in this pass.
-	srcLMCr = func(fn string) Source {
-		return Source{Name: "lmc999/RegionRestrictionCheck check.sh " + fn, URL: "https://github.com/lmc999/RegionRestrictionCheck/blob/main/check.sh", Checked: RecheckPending}
+	// The 2 variants are the comparison of 2026-11-14, pinned to the full
+	// commit hashes of SourceCommits (the same commits as above).
+	srcLMC2 = func(fn string) Source {
+		return Source{Name: "lmc999/RegionRestrictionCheck check.sh " + fn + "（" + SourceCommits["LMC"][:7] + "）", URL: "https://github.com/lmc999/RegionRestrictionCheck/blob/" + SourceCommits["LMC"] + "/check.sh", Checked: compared}
 	}
-	srcGOr = func(file string) Source {
-		return Source{Name: "HsukqiLee/MediaUnlockTest pkg/providers/" + file, URL: "https://github.com/HsukqiLee/MediaUnlockTest/tree/main/pkg/providers", Checked: RecheckPending}
+	src1S2 = func(fn string) Source {
+		return Source{Name: "1-stream/RegionRestrictionCheck check.sh " + fn + "（" + SourceCommits["1S"][:7] + "）", URL: "https://github.com/1-stream/RegionRestrictionCheck/blob/" + SourceCommits["1S"] + "/check.sh", Checked: compared}
+	}
+	srcGO2 = func(file string) Source {
+		f := file
+		if i := strings.Index(f, " "); i > 0 {
+			f = f[:i]
+		}
+		return Source{Name: "HsukqiLee/MediaUnlockTest pkg/providers/" + file + "（" + SourceCommits["GO"][:7] + "）", URL: "https://github.com/HsukqiLee/MediaUnlockTest/blob/" + SourceCommits["GO"] + "/pkg/providers/" + f, Checked: compared}
 	}
 )
 
-// RecheckPending is the Checked value of a source whose request details
-// were not re-read against the cited commit (see the catalog note).
-const RecheckPending = "待对照源码复核"
+// compared is the date the adapters added with the coverage table were
+// compared with the sources at SourceCommits.
+const compared = "2026-11-14"
+
+// SourceCommits pins the sources read for the catalog and the coverage
+// table (full commit hashes; the same commits the earlier adapters cite).
+var SourceCommits = map[string]string{
+	"LMC": "b6d4a6f9a87fc6eae6d3e62d0092ececcec8e844",
+	"1S":  "ef841d0a2910a44a6ca565e3a03de0f2282d83b3",
+	"GO":  "dc6c6e6cc490315824d485c668f059535e97ea94",
+}
 
 const uaAndroid = "Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 
@@ -356,7 +371,7 @@ var (
 )
 
 // Catalog is the fixed set of services, keyed by the project's rule ids.
-var Catalog = []Adapter{
+var Catalog = append([]Adapter{
 	{
 		Service: "auto-netflix", Name: "Netflix", Capability: CapRegionVerdict, Returns: verdictReturns, Section: SectionInternational,
 		Platforms: []Platform{{Name: "Netflix", Checked: true, Primary: true}},
@@ -517,110 +532,109 @@ var Catalog = []Adapter{
 
 	// ---- added with the coverage table (coverage.go) ----------------------
 	//
-	// The request details of the adapters below follow the public scripts'
-	// documented behaviour as recalled; this pass could not re-read the
-	// cited commits (no network access), so each source is marked
-	// RecheckPending on top of the synthetic-only validation status. None
-	// of them routes anything by itself: a result only moves traffic once
-	// the operator attaches the adapter to a service group set to
-	// automatic selection.
+	// Compared on 2026-11-14 with the cited sources at the commits in
+	// coverage.go (SourceCommits): request URL, method, the headers and body
+	// that matter, and the success / failure / region markers. Differences
+	// that remain on purpose (no cookies, stricter reading of a marker) are
+	// in Limits. None of them routes anything by itself: a result moves
+	// traffic only once the operator attaches the adapter to a service group
+	// set to automatic selection.
 	{
 		Service: "youtube-premium", Name: "YouTube Premium", Capability: CapVerdict, Returns: verdictReturns, Section: SectionInternational,
 		Platforms: []Platform{{Name: "YouTube Premium", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "YouTube Premium", Primary: true, Hosts: []string{"www.youtube.com", "youtube.com"},
 			Steps: []Step{{URL: "https://www.youtube.com/premium"}}, Classify: classifyYouTubePremium}},
-		Basis:   "Premium 介绍页：含 Premium is not available in your country，或引到 www.google.cn = 不可用；200 且含 ad-free 字样 = 可用，页面 INNERTUBE_CONTEXT_GL / countryCode 的地区只作展示；其他 = 未知",
-		Limits:  "只读未登录的介绍页，不代表账号能订阅；“ad-free”是页面文案，改版会变成未知；地区只作展示（不是目录地区）",
-		Sources: []Source{srcLMCr("MediaUnlockTest_YouTube_Premium"), srcGOr("YoutubePremium.go")},
+		Basis:   "Premium 介绍页：引用 www.google.cn = 不可用（cn）；含 Premium is not available in your country（不分大小写）= 不可用；含 ad-free（不分大小写）= 可用，INNERTUBE_CONTEXT_GL 给出的地区只作展示；其他 = 未知",
+		Limits:  "两个公开实现都带一组同意页 Cookie 请求，本项目不带 Cookie，所以要求先同意 Cookie 的地区多半是未知；只读未登录的介绍页，不是账号判断",
+		Sources: []Source{srcLMC2("MediaUnlockTest_YouTube_Premium"), srcGO2("YouTube.go YoutubeRegion（成功标记不同：看购买按钮或价格字样，未采用）")},
 	},
 	{
-		Service: "primevideo", Name: "Amazon Prime Video", Capability: CapRegionVerdict, Returns: verdictReturns, Section: SectionInternational,
+		Service: "primevideo", Name: "Amazon Prime Video", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionInternational,
 		Platforms: []Platform{{Name: "Prime Video", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Prime Video", Primary: true, Hosts: []string{"www.primevideo.com", "primevideo.com"},
-			Steps: []Step{{URL: "https://www.primevideo.com/"}}, Classify: classifyPrimeVideo}},
-		Basis:   "首页数据：isServiceRestricted 为 true = 不可用；currentTerritory 给出的地区必须与出口一致，不一致按地区不符为不可用；没有这两个标记 = 未知",
-		Limits:  "依赖首页内嵌数据，改版会变成未知；不判断具体片目",
-		Sources: []Source{srcLMCr("MediaUnlockTest_PrimeVideo"), srcGOr("PrimeVideo.go")},
+			Steps: []Step{{URL: "https://www.primevideo.com"}}, Classify: classifyPrimeVideo}},
+		Basis:   "首页数据：isServiceRestricted 为 true = 不可用；\"currentTerritory\":\"XX\" 给出的地区必须与出口一致，不一致按地区不符为不可用；都没有 = 未知",
+		Limits:  "LMC 只要页面出现 isServiceRestricted 这个键就算不可用，本项目要求它的值是 true，避免把 false 读成封锁；GO 在没有地区时会跟随亚马逊各国站点的链接，主机不固定，未采用；公开实现不支持 IPv6，只发 IPv4",
+		Sources: []Source{srcLMC2("MediaUnlockTest_PrimeVideo"), srcGO2("PrimeVideo.go")},
 	},
 	{
-		Service: "dazn", Name: "DAZN", Capability: CapRegionVerdict, Returns: verdictReturns, Section: SectionInternational,
+		Service: "dazn", Name: "DAZN", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionInternational,
 		Platforms: []Platform{{Name: "DAZN", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "DAZN", Primary: true, Hosts: []string{"startup.core.indazn.com"},
 			Steps: []Step{{URL: "https://startup.core.indazn.com/misl/v5/Startup", Body: daznStartupBody,
-				Headers: [][2]string{{"Content-Type", "application/json"}}}}, Classify: classifyDAZN}},
-		Basis:   "启动接口（固定的匿名请求体，不含账号、设备或会话标识）JSON 的 Region.isAllowed 与 Region.GeolocatedCountry：false = 不可用；true 且地区与出口一致 = 可用；地区不一致 = 不可用；字段缺失 = 未知",
-		Limits:  "接口没有公开文档；“可用”只是地区允许，不代表有可看的赛事",
-		Sources: []Source{srcLMCr("MediaUnlockTest_Dazn"), srcGOr("Dazn.go")},
+				Headers: [][2]string{{"Content-Type", "application/json"}, {"Origin", "https://www.dazn.com"}, {"Referer", "https://www.dazn.com/"}}}}, Classify: classifyDAZN}},
+		Basis:   "启动接口（固定的匿名 JSON 请求体）：Region.isAllowed = false 不可用；true 且 GeolocatedCountry 与出口一致可用，不一致不可用；非质询的 403 或应答含 Security policy has been breached = 拒绝该地址；字段缺失 = 未知",
+		Limits:  "“可用”只是地区允许，不代表有可看的赛事；公开实现不支持 IPv6，只发 IPv4",
+		Sources: []Source{srcLMC2("MediaUnlockTest_Dazn"), srcGO2("Dazn.go")},
 	},
 	{
-		Service: "tvbanywhere", Name: "TVBAnywhere+", Capability: CapVerdict, Returns: verdictReturns, Section: SectionInternational,
+		Service: "tvbanywhere", Name: "TVBAnywhere+", Capability: CapVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionInternational,
 		Platforms: []Platform{{Name: "TVBAnywhere+", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "TVBAnywhere+", Primary: true, Hosts: []string{"uapisfm.tvbanywhere.com.sg"},
 			Steps: []Step{{URL: "https://uapisfm.tvbanywhere.com.sg/geoip/check/platform/android"}}, Classify: classifyTVBAnywhere}},
 		Basis:   "geoip 接口 JSON 的 allow_in_this_country：true = 可用（country 只作展示），false = 不可用；没有这个字段 = 未知",
-		Limits:  "这是 TVB 面向香港以外地区的服务：香港出口上得到“不可用”是正常的；不判断账号",
-		Sources: []Source{srcLMCr("MediaUnlockTest_TVBAnywhere"), srcGOr("TVBAnywhere.go")},
+		Limits:  "GO 把 country = HK 也当作可用，LMC 只看 allow_in_this_country，本项目按 LMC（平台自己的标志）；这是 TVB 面向香港以外的服务，香港出口上「不可用」可能是正常的；只发 IPv4",
+		Sources: []Source{srcLMC2("MediaUnlockTest_TVBAnywhere"), srcGO2("TVBAnywhere.go")},
 	},
 	{
 		Service: "dmm-tv", Name: "DMM TV", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionJP, Regions: []string{"jp"},
 		Platforms: []Platform{{Name: "DMM TV", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "DMM TV", Primary: true, Hosts: []string{"api.beacon.dmm.com"},
-			Steps: []Step{{URL: "https://api.beacon.dmm.com/v1/streaming/start", Body: dmmTVStartBody,
-				Headers: [][2]string{{"Content-Type", "application/json"}}}}, Classify: classifyDMMTV}},
-		Basis:   "播放开始接口（固定的匿名请求体）：应答含 FOREIGN = 海外地址，不可用；含 UNAUTHORIZED = 通过地区检查、只差登录 → 可用（日本）；其他 = 未知",
+			Steps: []Step{{URL: "https://api.beacon.dmm.com/v1/streaming/start", Body: dmmTVStartBody}}, Classify: classifyDMMTV}},
+		Basis:   "播放开始接口（固定的匿名请求体，与 LMC 相同）：应答含 FOREIGN = 海外地址，不可用；含 UNAUTHORIZED = 通过地区检查、只差登录 → 可用（日本）；其他 = 未知",
 		Limits:  "“可用”只说明地区检查通过；作品 ID 写死，下架后会变成未知；只发 IPv4",
-		Sources: []Source{srcLMCr("MediaUnlockTest_DMMTV"), srcGOr("DMMTV.go")},
+		Sources: []Source{srcLMC2("MediaUnlockTest_DMMTV"), src1S2("MediaUnlockTest_DMMTV")},
 	},
 	{
 		Service: "hulu-jp", Name: "Hulu Japan", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionJP, Regions: []string{"jp"},
 		Platforms: []Platform{{Name: "Hulu Japan", Checked: true, Primary: true}},
-		Checks: []Check{{Platform: "Hulu Japan", Primary: true, Hosts: []string{"id.hulu.jp", "www.hulu.jp"},
+		Checks: []Check{{Platform: "Hulu Japan", Primary: true, Hosts: []string{"id.hulu.jp", "www.hulu.jp", "hulu.jp"},
 			Steps: []Step{{URL: "https://id.hulu.jp/"}}, Classify: classifyHuluJP}},
-		Basis:   "账号入口的最终地址：路径含 restrict = 地区限制页，不可用；停在 hulu.jp 的 login 路径 = 可用（日本）；其他 = 未知",
-		Limits:  "只看跳转去向；只发 IPv4",
-		Sources: []Source{srcLMCr("MediaUnlockTest_HuluJP"), srcGOr("HuluJP.go")},
+		Basis:   "账号入口跟随跳转后的最终地址：含 restrict = 地区限制页，不可用；非质询的 403 = 不可用；停在 hulu.jp 上且 200 = 可用（日本）；其他 = 未知",
+		Limits:  "只看跳转去向和状态码；GO 不跟随跳转、把 302 当作可用，本项目按 LMC 跟随（只在固定主机内）；只发 IPv4",
+		Sources: []Source{srcLMC2("MediaUnlockTest_HuluJP"), srcGO2("Hulu.go HuluJP")},
 	},
 	{
 		Service: "radiko", Name: "radiko", Capability: CapRegionVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionJP, Regions: []string{"jp"},
 		Platforms: []Platform{{Name: "radiko", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "radiko", Primary: true, Hosts: []string{"radiko.jp"},
-			Steps: []Step{{URL: "https://radiko.jp/area"}}, Classify: classifyRadiko}},
-		Basis:   "地区接口：class=\"OUT\" = 日本以外，不可用；class=\"JP<编号>\" = 日本某地区 → 可用（日本，编号只作展示）；其他 = 未知",
-		Limits:  "只说明 IP 被认作日本哪一区，不代表能收听全部电台；只发 IPv4",
-		Sources: []Source{srcLMCr("MediaUnlockTest_Radiko"), srcGOr("Radiko.go")},
+			Steps: []Step{{URL: "https://radiko.jp/area?_=1625406539531"}}, Classify: classifyRadiko}},
+		Basis:   "地区接口（与两个公开实现相同的固定查询参数）：class=\"OUT\" = 日本以外，不可用；含 JAPAN = 日本某地区 → 可用（日本，地区名只作展示）；其他 = 未知",
+		Limits:  "只说明 IP 被认作日本某一区，不代表能收听全部电台；只发 IPv4",
+		Sources: []Source{srcLMC2("MediaUnlockTest_Radiko"), srcGO2("Radiko.go")},
 	},
 	{
 		Service: "myvideo", Name: "MyVideo", Capability: CapVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionTW, Regions: []string{"tw"},
 		Platforms: []Platform{{Name: "MyVideo", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "MyVideo", Primary: true, Hosts: []string{"www.myvideo.net.tw"},
-			Steps: []Step{{URL: "https://www.myvideo.net.tw/login.do", NoRedirect: true}}, Classify: classifyMyVideo}},
-		Basis:   "登录页（不跟随跳转）：跳到含 serviceAreaBlock 的路径 = 地区限制，不可用；200 停在登录页 = 可用（无负面标记）；其他 = 未知",
+			Steps: []Step{{URL: "https://www.myvideo.net.tw/login.do"}}, Classify: classifyMyVideo}},
+		Basis:   "登录页跟随跳转后的最终地址：含 serviceAreaBlock（不分大小写）= 地区限制，不可用；非质询的 403 = 不可用；200 = 可用（无负面标记）；其他 = 未知",
 		Limits:  "“可用”只是没有地区限制跳转；只发 IPv4",
-		Sources: []Source{srcLMCr("MediaUnlockTest_MyVideo"), srcGOr("MyVideo.go")},
+		Sources: []Source{srcLMC2("MediaUnlockTest_MyVideo"), srcGO2("MyVideo.go")},
 	},
 	{
 		Service: "peacock", Name: "Peacock", Capability: CapVerdict, Returns: verdictReturns, Section: SectionUS, Regions: []string{"us"},
 		Platforms: []Platform{{Name: "Peacock", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Peacock", Primary: true, Hosts: []string{"www.peacocktv.com"},
-			Steps: []Step{{URL: "https://www.peacocktv.com/", NoRedirect: true}}, Classify: classifyPeacock}},
-		Basis:   "首页（不跟随跳转）：跳到含 unavailable 的路径 = 不可用；200 = 可用（无负面标记）；其他跳转 = 未知",
-		Limits:  "只看首页是否被引到不可用页",
-		Sources: []Source{srcLMCr("MediaUnlockTest_Peacock"), srcGOr("Peacock.go")},
+			Steps: []Step{{URL: "https://www.peacocktv.com/"}}, Classify: classifyPeacock}},
+		Basis:   "首页跟随跳转后的最终地址：含 unavailable（不分大小写）= 不可用；200 = 可用（无负面标记）；其他 = 未知",
+		Limits:  "只看首页是否被引到不可用页；GO 只看第一次跳转的 Location，结论相同",
+		Sources: []Source{srcLMC2("MediaUnlockTest_PeacockTV"), srcGO2("PeacockTV.go")},
 	},
 	{
-		Service: "plutotv", Name: "Pluto TV", Capability: CapVerdict, Returns: verdictReturns, Section: SectionUS,
+		Service: "plutotv", Name: "Pluto TV", Capability: CapVerdict, Returns: verdictReturns, IPv4Only: true, Section: SectionUS,
 		Platforms: []Platform{{Name: "Pluto TV", Checked: true, Primary: true}},
 		Checks: []Check{{Platform: "Pluto TV", Primary: true, Hosts: []string{"pluto.tv"},
-			Steps: []Step{{URL: "https://pluto.tv/", NoRedirect: true}}, Classify: classifyPlutoTV}},
-		Basis:   "首页（不跟随跳转）：跳到含 thanks-for-watching 的路径 = 不可用；200 或站内其他跳转 = 可用（无负面标记）；其他 = 未知",
-		Limits:  "Pluto TV 在多个国家开放、各国频道不同；这里只判断是否被拒绝，不判断目录地区",
-		Sources: []Source{srcLMCr("MediaUnlockTest_PlutoTV"), srcGOr("PlutoTV.go")},
+			Steps: []Step{{URL: "https://pluto.tv/"}}, Classify: classifyPlutoTV}},
+		Basis:   "首页跟随跳转：最终地址含 plutotv-is-not-available（LMC）或页面含 thanks-for-watching（GO）= 不可用；200 = 可用（无负面标记）；其他 = 未知",
+		Limits:  "多国开放、各国频道不同，不判断目录地区；只发 IPv4（LMC 不支持 IPv6）",
+		Sources: []Source{srcLMC2("MediaUnlockTest_PlutoTV"), srcGO2("PlutoTV.go")},
 	},
-}
+}, moreCatalog...)
 
 // Fixed anonymous request bodies (no account, device or session data).
 const (
-	daznStartupBody = `{"LandingPageKey":"generic","languages":"en-US,en","Platform":"web","PlatformAttributes":{},"Manufacturer":"","PromoCode":"","Version":"2"}`
+	daznStartupBody = `{"Version":"2","LandingPageKey":"generic","Languages":"en-US","Platform":"web","Manufacturer":"","PromoCode":"","PlatformAttributes":{}}`
 	dmmTVStartBody  = `{"player_name":"dmmtv_browser","player_version":"0.0.0","content_type_detail":"VOD_SVOD","content_id":"11uvjcm4fw2wdu7drtd1epnvz","purchase_product_id":null}`
 )
 

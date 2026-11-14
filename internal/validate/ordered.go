@@ -186,6 +186,12 @@ func checkServiceSelection(t model.Topology) []Issue {
 		if p.ExitRequestBudget != 0 && (p.ExitRequestBudget < model.MinUnlockExitBudget || p.ExitRequestBudget > model.MaxUnlockExitBudget) {
 			bad("exit_request_budget", fmt.Sprintf("每个出口每轮的请求预算要在 %d 到 %d 之间。", model.MinUnlockExitBudget, model.MaxUnlockExitBudget))
 		}
+		if p.AutoApplyMinGapSec != 0 && (p.AutoApplyMinGapSec < model.MinAutoApplyMinGapSec || p.AutoApplyMinGapSec > model.MaxAutoApplyMinGapSec) {
+			bad("auto_apply_min_gap_sec", fmt.Sprintf("两次自动安装的最小间隔要在 %d 秒到 %d 秒之间。", model.MinAutoApplyMinGapSec, model.MaxAutoApplyMinGapSec))
+		}
+		if p.AutoApplyDailyMax != 0 && (p.AutoApplyDailyMax < 1 || p.AutoApplyDailyMax > model.MaxAutoApplyDailyMax) {
+			bad("auto_apply_daily_max", fmt.Sprintf("每 24 小时自动安装次数上限要在 1 到 %d 之间。", model.MaxAutoApplyDailyMax))
+		}
 		if p.ResultTTLSec != 0 {
 			interval := t.Settings.UnlockIntervalSec
 			if interval <= 0 {

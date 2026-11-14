@@ -734,3 +734,19 @@ func lcsTable(a, b []string) [][]int {
 	}
 	return dp
 }
+
+// Busy reports, without waiting, whether a host transaction (install,
+// rollback, recovery, withdraw) holds the transaction lock now or an
+// unfinished one is recorded. Read-only; for callers that must defer
+// rather than queue behind it.
+func (a Applier) Busy() (bool, error) {
+	if err := os.MkdirAll(a.hostDir(), 0o750); err != nil {
+		return false, err
+	}
+	held, err := lockBusy(filepath.Join(a.hostDir(), "txn.lock"))
+	if err != nil || held {
+		return held, err
+	}
+	j, err := a.loadJournal()
+	return j != nil, err
+}

@@ -371,6 +371,19 @@ type UnlockProbeSettings struct {
 	// ResultTTLSec is how long a result stays valid evidence for automatic
 	// selection (unlock.Policy.TTL). Default twice the probe interval.
 	ResultTTLSec int `json:"result_ttl_sec,omitempty"`
+	// AutoApply lets the panel install a changed unlock decision on the
+	// gateway by itself, through the normal gateway install transaction,
+	// when every condition of api.autoApply holds (installed state in sync
+	// before the decision, only rule-derived gateway files change, a fresh
+	// host preflight without blocking findings, nothing else running,
+	// within the rate limits). Off by default: decisions wait for an
+	// operator install, as before.
+	AutoApply bool `json:"auto_apply,omitempty"`
+	// AutoApplyMinGapSec is the minimum time between two automatic
+	// installs (default 600). AutoApplyDailyMax caps them per 24 hours
+	// (default 6).
+	AutoApplyMinGapSec int `json:"auto_apply_min_gap_sec,omitempty"`
+	AutoApplyDailyMax  int `json:"auto_apply_daily_max,omitempty"`
 }
 
 // Defaults and bounds of UnlockProbeSettings.
@@ -382,6 +395,11 @@ const (
 	MaxUnlockExitBudget          = 200
 	MinUnlockResultTTLSec        = 3600
 	MaxUnlockResultTTLSec        = 7 * 86400
+	DefaultAutoApplyMinGapSec    = 600
+	MinAutoApplyMinGapSec        = 300
+	MaxAutoApplyMinGapSec        = 86400
+	DefaultAutoApplyDailyMax     = 6
+	MaxAutoApplyDailyMax         = 48
 )
 
 // NAT64 is the placeholder for a future translator in front of a pure-v6

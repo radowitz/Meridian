@@ -26,7 +26,12 @@ const (
 // state (generating missing material first). Without a credential store
 // the tokens stay and every install path refuses the bundle.
 func (s *Server) compileTopo(t model.Topology) (*compile.Bundle, error) {
-	b, err := compile.CompileWithDecisions(t, s.unlockDecisions(t))
+	return s.compileWith(t, s.unlockDecisions(t))
+}
+
+// compileWith is compileTopo with the given unlock decisions.
+func (s *Server) compileWith(t model.Topology, dec map[string]string) (*compile.Bundle, error) {
+	b, err := compile.CompileWithDecisions(t, dec)
 	if err != nil {
 		return nil, err
 	}
@@ -257,8 +262,9 @@ func (s *Server) getUnlock(w http.ResponseWriter, r *http.Request) {
 		"removed_exits": unlock.RemovedExits(snap, exitExists(t)),
 		// Where each decision is made, its candidates, evidence, exit in use
 		// (panel computation) and last switch (unlock_routing.go).
-		"owners":   routingView(t, snap, time.Now().UTC()),
-		"schedule": probeSchedule(t),
+		"owners":     routingView(t, snap, time.Now().UTC()),
+		"schedule":   probeSchedule(t),
+		"auto_apply": s.autoApplyView(t),
 	})
 }
 
@@ -279,6 +285,9 @@ type reportBody struct {
 }
 
 func (s *Server) postUnlockReport(w http.ResponseWriter, r *http.Request) {
+	// Runs after the lock below is released: a decision this report changed
+	// may be installed automatically (autoapply.go).
+	defer s.maybeAutoApply("report")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	body, err := readLimited(r, 256<<10)

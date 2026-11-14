@@ -9,7 +9,7 @@ import { App as AntApp } from "antd";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fakeApi } from "./testing";
 import type { UnlockOwner } from "./types";
-import { RoutingPanel } from "./UnlockRouting";
+import { AutoApplyStatus, RoutingPanel } from "./UnlockRouting";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -59,5 +59,31 @@ describe("unlock routing panel", () => {
     await waitFor(() => expect(api.find("PATCH /api/service-groups/svc-video")).toHaveLength(1));
     expect(api.find("PATCH /api/service-groups/svc-video")[0].body).toEqual({ select: "auto" });
     await waitFor(() => expect(changed).toHaveBeenCalled());
+  });
+});
+
+describe("automatic install status", () => {
+  it("names the condition that kept a pending decision from being installed", () => {
+    render(
+      <AntApp>
+        <AutoApplyStatus
+          pending
+          v={{
+            enabled: true,
+            min_gap_sec: 600,
+            daily_max: 6,
+            backoff_sec: 3600,
+            installed_recorded: true,
+            allow_list: ["etc/nftables.d/meridian.nft"],
+            last_check: { at: "2026-11-14T00:00:00Z", trigger: "scheduled", code: "out_of_sync", message: "网关上安装的文件与按上一次决定编译的结果不一致" },
+            last_attempt: { at: "2026-11-13T00:00:00Z", trigger: "scheduled", decisions: { "auto-openai": "us-2" }, ok: true },
+          }}
+        />
+      </AntApp>,
+    );
+    const box = screen.getByTestId("auto-apply");
+    expect(box.textContent).toContain("已开启");
+    expect(box.textContent).toContain("auto-openai→us-2");
+    expect(screen.getByTestId("auto-apply-reason").textContent).toContain("网关上还有别的未安装改动");
   });
 });
