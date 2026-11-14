@@ -5,11 +5,11 @@
 // appear in the recent decisions only when recording is on; they live in
 // the forwarder's memory, never on disk.
 
-import { Alert, Button, Checkbox, Input, Space, Switch, Table, Tag, Typography } from "antd";
+import { Alert, Button, Checkbox, Input, Space, Switch, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 import * as api from "./api";
 import type { SniffRecord, SniffSettings, SniffView } from "./types";
-import { ApiErrorAlert, Section, StatusTag, TABLE_SCROLL, TimeText, useApi } from "./ui";
+import { ApiErrorAlert, DataTable, Explain, Facts, Mono, SafetyNotice, Section, StatusTag, TimeText, useApi } from "./ui";
 
 /** Plain words for the forwarder's "no name" reasons (internal/sniff). */
 export const SNIFF_WHY: Record<string, string> = {
@@ -109,9 +109,9 @@ function SettingForm({ v, onSaved }: { v: SniffView; onSaved: () => void }) {
       </Space>
       <Space wrap>
         <Typography.Text>接管的 TCP 端口</Typography.Text>
-        <Input value={ports} onChange={(e) => setPorts(e.target.value)} aria-label="嗅探端口" style={{ width: 200 }} />
+        <Input value={ports} onChange={(e) => setPorts(e.target.value)} aria-label="嗅探端口" className="input-w200" />
         <Typography.Text>ECH 公共名（按地址判断）</Typography.Text>
-        <Input value={ech} onChange={(e) => setEch(e.target.value)} aria-label="ECH 公共名" style={{ width: 240 }} />
+        <Input value={ech} onChange={(e) => setEch(e.target.value)} aria-label="ECH 公共名" className="input-w240" />
       </Space>
       <Checkbox checked={record} onChange={(e) => setRecord(e.target.checked)}>
         在近期决策里记录域名（只在网关内存里，不写磁盘、不进日志；域名属于敏感信息，默认不记录）
@@ -135,23 +135,28 @@ export function SniffSection() {
       {st.error ? <ApiErrorAlert error={st.error} /> : null}
       {v ? (
         <Space direction="vertical" style={{ width: "100%" }}>
-          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
-            开启后，局域网和远程接入设备新建的、发往接管端口的 TCP 连接交给网关上的转发服务：它读 TLS 的 SNI 或 HTTP 的 Host，按这张有序规则表从上到下匹配，
-            用目标自己的解析器重新解析后经该目标的隧道连出。读不到名字的连接按目的地址分类的结果走，与关闭时相同。转发服务停止或崩溃时，被接管的连接直接失败，不会绕过。
-          </Typography.Paragraph>
+          <Explain summary="开启后，发往接管端口的 TCP 连接按 TLS 的 SNI 或 HTTP 的 Host 在这张有序规则表里匹配。">
+            局域网和远程接入设备新建的、发往接管端口的 TCP 连接交给网关上的转发服务：它读 TLS 的 SNI 或 HTTP 的 Host，按这张有序规则表从上到下匹配，
+            用目标自己的解析器重新解析后经该目标的隧道连出。读不到名字的连接按目的地址分类的结果走，与关闭时相同。
+          </Explain>
+          <SafetyNotice kind="failclosed">转发服务停止或崩溃时，被接管的连接直接失败，不会绕过。</SafetyNotice>
           <SettingForm v={v} onSaved={() => void st.reload()} />
-          <div data-testid="sniff-coverage">
-            <Typography.Text strong>按名字判断</Typography.Text>
-            {v.coverage.by_name.map((x) => (
-              <div key={x} style={{ fontSize: 12 }}>· {x}</div>
-            ))}
-            <Typography.Text strong>仍按目的地址判断</Typography.Text>
-            {v.coverage.address_only.map((x) => (
-              <div key={x} style={{ fontSize: 12 }}>· {x}</div>
-            ))}
-            <Typography.Text strong>代价与已知误差</Typography.Text>
-            {v.coverage.costs.map((x) => (
-              <div key={x} style={{ fontSize: 12 }}>· {x}</div>
+          <div data-testid="sniff-coverage" className="sniff-coverage">
+            {(
+              [
+                ["按名字判断", v.coverage.by_name],
+                ["仍按目的地址判断", v.coverage.address_only],
+                ["代价与已知误差", v.coverage.costs],
+              ] as const
+            ).map(([title, list]) => (
+              <div key={title} className="sniff-coverage-col">
+                <Typography.Text strong>{title}</Typography.Text>
+                <ul className="plain-list">
+                  {list.map((x) => (
+                    <li key={x}>{x}</li>
+                  ))}
+                </ul>
+              </div>
             ))}
           </div>
           <Space wrap data-testid="sniff-runtime">
@@ -166,27 +171,28 @@ export function SniffSection() {
           {v.runtime.code && v.setting.enabled ? <Alert type="warning" showIcon message={v.runtime.message} /> : null}
           {v.runtime.health?.last_reload_error ? <Alert type="warning" showIcon message={"上次重载失败，仍用旧规则：" + v.runtime.health.last_reload_error} /> : null}
           {recent.length > 0 ? (
-            <Table<SniffRecord>
+            <DataTable<SniffRecord>
               size="small"
               rowKey={(r) => r.start + r.source + (r.dest ?? "")}
               dataSource={recent}
-              pagination={{ pageSize: 20 }}
-              scroll={TABLE_SCROLL}
+              pageSize={20}
+              secondary={(r) => <Facts items={[["来源", <Mono key="s">{r.source}</Mono>], ["耗时", `${r.decide_ms ?? "—"} 毫秒`], ["规则代", String(r.generation ?? "—")]]} />}
               columns={[
-                { title: "时间", render: (_, r) => <TimeText value={r.start} /> },
-                { title: "来源", dataIndex: "source" },
-                { title: "原目的地址", dataIndex: "dest" },
+                { title: "时间", kind: "fixed", width: 100, render: (_, r) => <TimeText value={r.start} /> },
+                { title: "原目的地址", kind: "ellipsis", width: 150, mono: true, dataIndex: "dest" },
                 {
                   title: "判断依据",
+                  kind: "flex",
+                  width: 190,
                   render: (_, r) =>
                     r.sniffed ? (
-                      <Space size={2}>
+                      <Space size={2} wrap>
                         <Tag color="blue">按名字</Tag>
-                        {names && r.name ? <Typography.Text code>{r.name}</Typography.Text> : null}
+                        {names && r.name ? <Typography.Text code className="mono">{r.name}</Typography.Text> : null}
                         {r.why === "ech_outer" ? <Tag>ECH 明文名</Tag> : null}
                       </Space>
                     ) : (
-                      <Space size={2}>
+                      <Space size={2} wrap>
                         <Tag>按地址</Tag>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                           {SNIFF_WHY[r.why ?? ""] ?? r.why}
@@ -194,12 +200,14 @@ export function SniffSection() {
                       </Space>
                     ),
                 },
-                { title: "规则", render: (_, r) => (r.rule_id ? r.rule_id : r.rule_index < 0 ? "名单 / 默认组" : "") },
-                { title: "目标", dataIndex: "target" },
+                { title: "规则", kind: "ellipsis", width: 130, render: (_, r) => (r.rule_id ? r.rule_id : r.rule_index < 0 ? "名单 / 默认组" : "") },
+                { title: "目标", kind: "ellipsis", width: 130, dataIndex: "target" },
                 {
                   title: "结果",
+                  kind: "flex",
+                  width: 150,
                   render: (_, r) =>
-                    r.result === "ok" ? <StatusTag kind="ok">{RESULT.ok}</StatusTag> : <StatusTag kind="attention">{RESULT[r.result] ?? r.result}</StatusTag>,
+                    r.result === "ok" ? <StatusTag kind="ok">{RESULT.ok}</StatusTag> : <Typography.Text type="warning">{RESULT[r.result] ?? r.result}</Typography.Text>,
                 },
               ]}
             />

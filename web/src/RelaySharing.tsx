@@ -4,11 +4,11 @@
 // probe traffic cost is the panel's estimate from the settings and is
 // labelled so.
 
-import { Alert, Checkbox, Divider, Form, InputNumber, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, Checkbox, Divider, Form, InputNumber, Select, Space, Tag, Tooltip, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { PathGrade, PathMeasured, PathQuality, RelayOverride, RelayStatus, Sharing, SharingRelay, Topology } from "./types";
 import { PATH_QUALITY_DEFAULTS, probeCostBytes } from "./types";
-import { StatusTag, TimeText, bytes, type StatusKind } from "./ui";
+import { DataTable, EllipsisText, Explain, KV, StatusTag, TimeText, bytes, type StatusKind } from "./ui";
 
 export const RELAY_STATUS: Record<RelayStatus, { kind: StatusKind; label: string; help: string }> = {
   active: { kind: "ok", label: "分担中", help: "按质量权重接收新连接" },
@@ -62,6 +62,25 @@ function Measured({ m }: { m?: PathMeasured }) {
   );
 }
 
+/** "45 ms · 0.0%" for compact rows; the smoothed and last values with the time on hover. */
+function MeasuredShort({ m }: { m?: PathMeasured }) {
+  if (!m || !m.at) return <Typography.Text type="secondary">未测量</Typography.Text>;
+  const v = (x: number | undefined, unit: string, digits = 0) => (x === undefined ? "—" : `${x.toFixed(digits)}${unit}`);
+  return (
+    <Tooltip
+      title={
+        <span>
+          时延 {v(m.rtt_ms, " ms")} · 丢包 {v(m.loss_pct, "%", 1)}（多轮平滑，网关测量，<TimeText value={m.at} />）；本轮：时延 {v(m.last_rtt_ms, " ms", 1)}，丢包 {v(m.last_loss_pct, "%", 0)}
+        </span>
+      }
+    >
+      <span data-testid="measured" className="nowrap" tabIndex={0}>
+        {v(m.rtt_ms, " ms")} · {v(m.loss_pct, "%", 1)}
+      </span>
+    </Tooltip>
+  );
+}
+
 function ProbeCell({ r }: { r: SharingRelay }) {
   const p = r.probe;
   if (!p || !p.at) return <Typography.Text type="secondary">{p && p.bytes_today ? `今日 ${bytes(p.bytes_today)}` : "未探测"}</Typography.Text>;
@@ -102,12 +121,11 @@ export function RelaySharingView({ s, compact }: { s: Sharing; compact?: boolean
   if (s.alert && s.alert !== "on_backup") {
     head.push(<Alert key="alert" type="error" showIcon style={{ marginBottom: 8 }} message={s.alert_text || s.alert} data-testid="sharing-alert" />);
   }
-  return (
-    <div data-testid="relay-sharing">
-      {head}
-      <Space wrap size={[16, 4]} style={{ marginBottom: 8 }}>
+  const share = (r: SharingRelay) => (s.path === "backup" ? "0%（备用枢纽承载）" : total > 0 ? `${((r.weight / 10) | 0).toString()}%` : "—");
+  const facts = (
+    <div className="kv-list">
+      <KV label="承载">
         <span data-testid="sharing-path">
-          <Typography.Text type="secondary">承载：</Typography.Text>
           {s.path === "backup" ? (
             <Tag color="orange">备用枢纽 {s.backup?.name ?? ""}</Tag>
           ) : s.path === "main" ? (
@@ -116,108 +134,189 @@ export function RelaySharingView({ s, compact }: { s: Sharing; compact?: boolean
             <Typography.Text type="secondary">未知</Typography.Text>
           )}
         </span>
-        <span>
-          <Typography.Text type="secondary">上次切换枢纽：</Typography.Text>
-          <TimeText value={s.switched} empty="从未" />
-        </span>
-        {s.beat ? (
-          <span>
-            <Typography.Text type="secondary">记录于 </Typography.Text>
-            <TimeText value={s.beat} />
+      </KV>
+      <KV label="上次切换枢纽">
+        <TimeText value={s.switched} empty="从未" />
+      </KV>
+      {s.beat ? (
+        <KV label="记录于">
+          <TimeText value={s.beat} />
+        </KV>
+      ) : null}
+      {s.backup ? (
+        <KV label="备用枢纽">
+          <span data-testid="sharing-backup" className="inline-status">
+            <span className="sr-only">备用枢纽 </span>
+            <EllipsisText text={`${s.backup.name}（WG over WSS，${s.backup.iface}）`} />
+            <StatusTag kind={GRADE[s.backup.grade]?.kind ?? "unverified"}>{GRADE[s.backup.grade]?.label ?? s.backup.grade}</StatusTag>
+            {compact ? <MeasuredShort m={s.backup.measured} /> : <Measured m={s.backup.measured} />}
           </span>
-        ) : null}
-      </Space>
-      <Table<SharingRelay>
+        </KV>
+      ) : null}
+    </div>
+  );
+  if (compact) {
+    // In a tile: one compact row per relay; details on hover and on the exits page.
+    return (
+      <div data-testid="relay-sharing">
+        {head}
+        {facts}
+        <ul className="relay-rows" aria-label="中继">
+          {s.relays.map((r) => {
+            const st = RELAY_STATUS[r.status] ?? RELAY_STATUS.unknown;
+            const g = GRADE[r.grade] ?? { kind: "unverified" as StatusKind, label: r.grade };
+            const tip = [
+              r.name,
+              r.iface ? `接口 ${r.iface}` : "",
+              `${st.label}：${st.help}`,
+              r.reason && r.status !== "active" ? REASON[r.reason] ?? r.reason : "",
+              `质量（网关测量）：${g.label}`,
+              r.drain ? "已有连接正被清理" : "",
+            ]
+              .filter(Boolean)
+              .join("\n");
+            return (
+              <li key={r.id} className="relay-row">
+                <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{tip}</span>}>
+                  <span className="relay-row-name" tabIndex={0}>
+                    {r.name}
+                    {s.designated === r.id ? <Tag className="tag-inline">指定</Tag> : null}
+                  </span>
+                </Tooltip>
+                <span data-testid={`relay-status-${r.id}`}>
+                  <StatusTag kind={st.kind} title={st.help}>
+                    {st.label}
+                  </StatusTag>
+                </span>
+                <span className="relay-row-share" data-testid={`relay-weight-${r.id}`}>
+                  {s.path === "backup" ? (
+                    <Tooltip title="0%（备用枢纽承载）">
+                      <span>
+                        0%<span className="sr-only">（备用枢纽承载）</span>
+                      </span>
+                    </Tooltip>
+                  ) : (
+                    share(r)
+                  )}
+                </span>
+                <span className="relay-row-q">
+                  <MeasuredShort m={r.measured} />
+                </span>
+                {r.drain ? (
+                  <span className="sr-only" data-testid={`relay-drain-${r.id}`}>
+                    已有连接正被清理
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  }
+  return (
+    <div data-testid="relay-sharing">
+      {head}
+      {facts}
+      <DataTable<SharingRelay>
         size="small"
         rowKey="id"
-        pagination={false}
         dataSource={s.relays}
         columns={[
           {
             title: "中继",
+            kind: "flex",
+            width: 150,
             render: (_, r) => (
-              <Space direction="vertical" size={0}>
+              <div className="cell-stack">
                 <span>
                   {r.name} {s.designated === r.id ? <Tag title="本机自己的组解析等无中继标记的流量走它">指定</Tag> : null}
                 </span>
                 {r.iface ? <Typography.Text type="secondary" className="mono">{r.iface}</Typography.Text> : null}
-              </Space>
+              </div>
             ),
           },
           {
             title: "状态",
+            kind: "flex",
+            width: 150,
             render: (_, r) => {
               const st = RELAY_STATUS[r.status] ?? RELAY_STATUS.unknown;
               return (
-                <Space direction="vertical" size={0}>
+                <div className="cell-stack">
                   <span data-testid={`relay-status-${r.id}`}>
                     <StatusTag kind={st.kind} title={st.help}>
                       {st.label}
                     </StatusTag>
                   </span>
                   {r.reason && r.status !== "active" ? (
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    <Typography.Text type="secondary" className="cell-small">
                       {REASON[r.reason] ?? r.reason}，<TimeText value={r.status_since} />
                     </Typography.Text>
                   ) : null}
                   {r.drain ? (
-                    <Typography.Text type="danger" style={{ fontSize: 12 }} data-testid={`relay-drain-${r.id}`}>
+                    <Typography.Text type="danger" className="cell-small" data-testid={`relay-drain-${r.id}`}>
                       已有连接正被清理
                     </Typography.Text>
                   ) : null}
-                </Space>
+                </div>
               );
             },
           },
           {
             title: "新连接份额",
+            kind: "flex",
+            width: 100,
+            render: (_, r) => <span data-testid={`relay-weight-${r.id}`}>{share(r)}</span>,
+          },
+          {
+            title: "质量（网关测量）",
+            kind: "flex",
+            width: 180,
             render: (_, r) => (
-              <span data-testid={`relay-weight-${r.id}`}>
-                {s.path === "backup" ? "0%（备用枢纽承载）" : total > 0 ? `${((r.weight / 10) | 0).toString()}%` : "—"}
-              </span>
+              <div className="cell-stack">
+                <StatusTag kind={GRADE[r.grade]?.kind ?? "unverified"}>{GRADE[r.grade]?.label ?? r.grade}</StatusTag>
+                <Measured m={r.measured} />
+              </div>
             ),
           },
-          { title: "质量（网关测量）", render: (_, r) => <Space direction="vertical" size={0}><StatusTag kind={GRADE[r.grade]?.kind ?? "unverified"}>{GRADE[r.grade]?.label ?? r.grade}</StatusTag><Measured m={r.measured} /></Space> },
-          ...(compact
-            ? []
-            : [
-                {
-                  title: "流量",
-                  render: (_: unknown, r: SharingRelay) => (
-                    <Typography.Text style={{ fontSize: 12 }}>
-                      ↓ {rate(r.traffic.rx_bps)} ↑ {rate(r.traffic.tx_bps)}
-                      <br />
-                      <Typography.Text type="secondary">
-                        累计 ↓ {bytes(r.traffic.rx_bytes)} ↑ {bytes(r.traffic.tx_bytes)} · 新连接 {r.traffic.new_conns}
-                      </Typography.Text>
-                    </Typography.Text>
-                  ),
-                },
-                { title: "吞吐探测", render: (_: unknown, r: SharingRelay) => <ProbeCell r={r} /> },
-              ]),
+          {
+            title: "流量",
+            kind: "flex",
+            width: 170,
+            render: (_: unknown, r: SharingRelay) => (
+              <Typography.Text className="cell-small">
+                ↓ {rate(r.traffic.rx_bps)} ↑ {rate(r.traffic.tx_bps)}
+                <br />
+                <Typography.Text type="secondary">
+                  累计 ↓ {bytes(r.traffic.rx_bytes)} ↑ {bytes(r.traffic.tx_bytes)} · 新连接 {r.traffic.new_conns}
+                </Typography.Text>
+              </Typography.Text>
+            ),
+          },
+          { title: "吞吐探测", kind: "flex", width: 170, render: (_: unknown, r: SharingRelay) => <ProbeCell r={r} /> },
         ]}
       />
-      {s.backup ? (
-        <div style={{ marginTop: 8 }} data-testid="sharing-backup">
-          <Typography.Text type="secondary">备用枢纽 {s.backup.name}（WG over WSS，{s.backup.iface}）：</Typography.Text> <StatusTag kind={GRADE[s.backup.grade]?.kind ?? "unverified"}>{GRADE[s.backup.grade]?.label ?? s.backup.grade}</StatusTag> <Measured m={s.backup.measured} />
-        </div>
-      ) : null}
-      {!compact ? (
-        <div style={{ marginTop: 8 }}>
-          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 4 }} data-testid="sharing-impact">
-            断连影响：{s.eviction_impact}
-          </Typography.Paragraph>
-          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }} data-testid="sharing-probe-cost">
-            {s.probe_cost.enabled ? (
-              <>
-                吞吐探测会消耗中继的计费流量（面板估算）：每次约 {bytes(s.probe_cost.bytes_per_probe)}（上下行合计），每台中继每天最多 {s.probe_cost.max_probes_per_day} 次、约 {bytes(s.probe_cost.max_bytes_per_day)}（预算 {bytes(s.probe_cost.daily_budget_bytes)}）。{s.probe_cost.trigger}
-              </>
-            ) : (
-              "吞吐探测已关闭：没有探测流量；“小包通、没有速率”只能靠被动信号（有业务时 TCP 收不到回包、负载下时延膨胀等）发现。"
-            )}
-          </Typography.Paragraph>
-        </div>
-      ) : null}
+      <div style={{ marginTop: 8 }}>
+        <Explain
+          summary={
+            <span data-testid="sharing-impact">断连影响：{s.eviction_impact}</span>
+          }
+        />
+        <Explain
+          summary={
+            <span data-testid="sharing-probe-cost">
+              {s.probe_cost.enabled ? (
+                <>
+                  吞吐探测会消耗中继的计费流量（面板估算）：每次约 {bytes(s.probe_cost.bytes_per_probe)}（上下行合计），每台中继每天最多 {s.probe_cost.max_probes_per_day} 次、约 {bytes(s.probe_cost.max_bytes_per_day)}（预算 {bytes(s.probe_cost.daily_budget_bytes)}）。{s.probe_cost.trigger}
+                </>
+              ) : (
+                "吞吐探测已关闭：没有探测流量；“小包通、没有速率”只能靠被动信号（有业务时 TCP 收不到回包、负载下时延膨胀等）发现。"
+              )}
+            </span>
+          }
+        />
+      </div>
     </div>
   );
 }
@@ -301,7 +400,7 @@ export function PathQualitySettings({ topo, onChange }: { topo: Topology; onChan
   };
   return (
     <div data-testid="path-quality-settings">
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+      <Typography.Paragraph type="secondary" className="cell-small">
         {relays.length >= 2
           ? `网关连着 ${relays.length} 台中继：新连接按测得的质量自动加权分担（同一连接始终走同一台中继），所有中继持续低于可用下限时才改走备用枢纽。留空即默认值；修改要安装到网关后才生效。`
           : "只有一台中继时不做分担，这些设置不生效（保存也不会影响现有安装）。"}

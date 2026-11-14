@@ -8,7 +8,7 @@
 // Kept in its own component on purpose (a later layout rework of every
 // page); it uses the shared helpers of ui.tsx as they are.
 
-import { Alert, Button, Collapse, Space, Table, Tag, Typography } from "antd";
+import { Alert, Button, Collapse, Space, Tag, Typography } from "antd";
 import { useEffect, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
@@ -16,7 +16,7 @@ import { PreflightReport } from "./Preflight";
 import { href } from "./state";
 import type { DeployPhase, DeployRun, DeploySkip, DeployStep, DeployView } from "./types";
 import { roleLabel } from "./types";
-import { ApiErrorAlert, DataView, ExecNote, Link, Section, StatusTag, TABLE_SCROLL, TimeText, useAction, useApi, useConfirmDanger, type StatusKind } from "./ui";
+import { ApiErrorAlert, DataTable, DataView, ExecNote, Explain, Link, Section, StatusTag, TimeText, useAction, useApi, useConfirmDanger, type StatusKind } from "./ui";
 
 const PHASE: Record<DeployPhase, { kind: StatusKind; label: string }> = {
   pending: { kind: "neutral", label: "待预检" },
@@ -189,29 +189,30 @@ function PlanPreview({ view, onStart, starting }: { view: DeployView; onStart: (
           {plan.notes?.map((n) => (
             <Alert key={n} type="warning" showIcon style={{ marginBottom: 8 }} message={n} />
           ))}
-          <Table
+          <DataTable
             size="small"
             rowKey="node_id"
-            pagination={false}
-            scroll={TABLE_SCROLL}
+            pageSize={50}
             dataSource={plan.steps}
             onRow={(s) => ({ "data-testid": `plan-step-${s.node_id}` }) as React.HTMLAttributes<HTMLElement>}
             columns={[
-              { title: "#", width: 40, render: (_, __, i) => i + 1 },
+              { title: "#", kind: "fixed", width: 48, render: (_, __, i) => i + 1 },
               {
                 title: "节点",
-                className: "cell-name",
+                kind: "flex",
+                width: 200,
                 render: (_, s) => (
-                  <Space size={4}>
+                  <Space size={4} wrap>
                     <Typography.Text strong>{s.node_name || s.node_id}</Typography.Text>
                     <Tag>{roleText(s.role)}</Tag>
                   </Space>
                 ),
               },
-              { title: "现在", className: "nowrap", render: (_, s) => <Typography.Text type="secondary">{NODE_STATE_TEXT[s.plan_state] ?? s.plan_state}</Typography.Text> },
+              { title: "现在", kind: "ellipsis", width: 150, render: (_, s) => NODE_STATE_TEXT[s.plan_state] ?? s.plan_state },
               {
                 title: "为什么在这个位置",
-                className: "cell-text",
+                kind: "flex",
+                width: 320,
                 render: (_, s) => (
                   <>
                     <span>{s.reason}</span>
@@ -468,29 +469,30 @@ function RunView({
           description="这还不是端到端验证：到「防泄露」页做验收、到「解锁」页跑探测，实际执行过的才算通过。"
         />
       ) : null}
-      <Table
+      <DataTable
         size="small"
         rowKey="node_id"
-        pagination={false}
-        scroll={TABLE_SCROLL}
+        pageSize={50}
         dataSource={run.steps}
         onRow={(s) => ({ "data-testid": `deploy-step-${s.node_id}` }) as React.HTMLAttributes<HTMLElement>}
         columns={[
-          { title: "#", width: 40, render: (_, s) => s.position },
+          { title: "#", kind: "fixed", width: 48, render: (_, s) => s.position },
           {
             title: "节点",
-            className: "cell-name",
+            kind: "flex",
+            width: 200,
             render: (_, s) => (
-              <Space size={4}>
+              <Space size={4} wrap>
                 <Typography.Text strong={s.current}>{s.node_name || s.node_id}</Typography.Text>
                 <Tag>{roleText(s.role)}</Tag>
               </Space>
             ),
           },
-          { title: "状态", className: "nowrap", render: (_, s) => <PhaseTag st={s} /> },
+          { title: "状态", kind: "fixed", width: 132, render: (_, s) => <PhaseTag st={s} /> },
           {
             title: "说明",
-            className: "cell-text",
+            kind: "flex",
+            width: 320,
             render: (_, s) => (
               <>
                 <span>{s.outcome && s.outcome !== "not_started" ? (OUTCOME[s.outcome] ?? s.outcome) : s.reason}</span>
@@ -592,9 +594,9 @@ export function DeploymentGuide({ onChanged, header }: { onChanged?: () => void;
     <Section title="按顺序部署待变更节点" id="guide">
       <div data-testid="deploy-guide">
         {header}
-        <Typography.Paragraph type="secondary">
-          顺序：挂在中继出口后面的出口 → 出口 → 备用枢纽 → 主枢纽 → 中继 → 网关；管理通道经过别的节点时，被经过的节点排在后面。每一步都是下面「远端节点」和「安装到本机」里的同一套预检和下发，只是按顺序串起来；不会一次确认全部。
-        </Typography.Paragraph>
+        <Explain summary="一台一台按顺序预检、确认、下发；每台都要你单独确认，不会一次确认全部。">
+          顺序：挂在中继出口后面的出口 → 出口 → 备用枢纽 → 主枢纽 → 中继 → 网关；管理通道经过别的节点时，被经过的节点排在后面。每一步都是下面「远端节点」和「安装到本机」里的同一套预检和下发，只是按顺序串起来。
+        </Explain>
         <ApiErrorAlert error={act.error} onClose={act.clear} />
         <DataView state={state} rows={4}>
           {(v) => (

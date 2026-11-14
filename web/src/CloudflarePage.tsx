@@ -12,7 +12,6 @@ import {
   Form,
   Input,
   Space,
-  Table,
   Tag,
   Typography,
 } from "antd";
@@ -24,7 +23,8 @@ import { useRouter } from "./state";
 import type { CloudflareAccountView, CloudflareRequirements, PermissionCheck } from "./types";
 import {
   RowActions,
-  TABLE_SCROLL,
+  DataTable,
+  SplitStatus,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -65,30 +65,30 @@ export function PermissionCheckView({ check }: { check: PermissionCheck | null |
   return (
     <div data-testid="permission-check">
       <Space wrap style={{ marginBottom: 8 }}>
-        <StatusTag kind={s.kind}>{s.label}</StatusTag>
+        <SplitStatus kind={s.kind} label={s.label} />
         <TimeText value={check.checked_at} />
         {check.token_status ? <Tag>令牌状态 {check.token_status}</Tag> : null}
         {check.token_kind ? <Tag>{check.token_kind === "account" ? "账户令牌" : check.token_kind === "user" ? "用户令牌" : check.token_kind}</Tag> : null}
       </Space>
       {check.detail ? <Typography.Paragraph style={{ marginBottom: 8 }}>{check.detail}</Typography.Paragraph> : null}
-      <Table
+      <DataTable
         size="small"
-        pagination={false}
         rowKey="name"
+        pageSize={50}
         dataSource={check.checks ?? []}
-        scroll={TABLE_SCROLL}
         columns={[
-          { title: "检查", className: "cell-name", render: (_, p) => PROBE_LABEL[p.name] ?? p.name },
-          { title: "接口", className: "nowrap", render: (_, p) => <Mono>{p.endpoint}</Mono> },
+          { title: "检查", kind: "flex", width: 150, render: (_, p) => PROBE_LABEL[p.name] ?? p.name },
+          { title: "接口", kind: "ellipsis", width: 220, mono: true, render: (_, p) => p.endpoint },
           {
             title: "结果",
+            kind: "fixed",
             width: 100,
             render: (_, p) => {
               const st = PROBE_STATUS[p.status] ?? { kind: "neutral" as const, label: p.status };
               return <StatusTag kind={st.kind}>{st.label}</StatusTag>;
             },
           },
-          { title: "说明", dataIndex: "detail", width: 280, className: "cell-text" },
+          { title: "说明", dataIndex: "detail", kind: "flex", width: 240 },
         ]}
       />
       {check.missing && check.missing.length > 0 ? (
@@ -134,16 +134,15 @@ function TokenHowTo({ req }: { req: CloudflareRequirements }) {
   return (
     <div className="howto">
       <Typography.Title level={5}>需要的权限</Typography.Title>
-      <Table
+      <DataTable
         size="small"
-        pagination={false}
         rowKey="name"
+        pageSize={50}
         dataSource={req.permissions}
-        scroll={TABLE_SCROLL}
         columns={[
-          { title: "权限", className: "cell-name", render: (_, p) => <Mono>{p.name}</Mono> },
-          { title: "范围", className: "nowrap", render: (_, p) => (p.scope === "account" ? "账户" : p.scope) },
-          { title: "用途", dataIndex: "why", width: 280, className: "cell-text" },
+          { title: "权限", kind: "flex", width: 220, render: (_, p) => <Mono>{p.name}</Mono> },
+          { title: "范围", kind: "fixed", width: 80, render: (_, p) => (p.scope === "account" ? "账户" : p.scope) },
+          { title: "用途", dataIndex: "why", kind: "flex", width: 240 },
         ]}
       />
       <Typography.Title level={5} style={{ marginTop: 16 }}>
@@ -393,39 +392,42 @@ export default function CloudflarePage() {
           }
         >
           {(d) => (
-            <Table
+            <DataTable
               rowKey="id"
               dataSource={d.accounts}
-              pagination={false}
-              scroll={TABLE_SCROLL}
+              pageSize={50}
               expandable={{
                 expandedRowKeys: expanded,
                 onExpandedRowsChange: (keys) => setExpanded(keys as string[]),
                 expandedRowRender: (a) => <PermissionCheckView check={a.permission_check} />,
               }}
               columns={[
-                { title: "名称", dataIndex: "name", className: "cell-name" },
-                { title: "Account ID", className: "nowrap", render: (_, a) => <Mono copy>{a.account_id}</Mono> },
+                { title: "名称", dataIndex: "name", kind: "flex", width: 130 },
+                { title: "Account ID", kind: "flex", width: 180, render: (_, a) => <Mono ellipsis copy>{a.account_id}</Mono> },
                 {
                   title: "Token",
-                  width: 100,
+                  kind: "fixed",
+                  width: 90,
                   render: (_, a) => <StatusTag kind={a.token_set ? "ok" : "attention"}>{a.token_set ? "已设置" : "未设置"}</StatusTag>,
                 },
                 {
                   title: "权限检查",
-                  className: "nowrap",
+                  kind: "flex",
+                  width: 150,
                   render: (_, a) => {
                     const s = checkSummary(a.permission_check);
                     return (
-                      <Space size={4}>
-                        <StatusTag kind={s.kind}>{s.label}</StatusTag>
+                      <div className="cell-stack">
+                        <SplitStatus kind={s.kind} label={s.label} />
                         {a.permission_check ? <TimeText value={a.permission_check.checked_at} /> : null}
-                      </Space>
+                      </div>
                     );
                   },
                 },
                 {
                   title: "Mesh",
+                  kind: "fixed",
+                  width: 110,
                   render: (_, a) =>
                     a.used_for_mesh || meshAccount === a.id ? (
                       <Tag color="blue">Mesh 使用中</Tag>
@@ -437,6 +439,8 @@ export default function CloudflarePage() {
                 },
                 {
                   title: "绑定部署",
+                  kind: "flex",
+                  width: 110,
                   render: (_, a) =>
                     a.bound_deployment ? (
                       <Link to={refLink(a.bound_deployment) ?? "#/cloudflare"}>{a.bound_deployment.name || a.bound_deployment.id}</Link>
@@ -446,8 +450,8 @@ export default function CloudflarePage() {
                 },
                 {
                   title: "操作",
-                  fixed: "right",
-                  className: "cell-actions",
+                  kind: "actions",
+                  width: 120,
                   render: (_, a) => (
                     <RowActions
                       label={a.name}

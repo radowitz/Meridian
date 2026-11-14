@@ -2,14 +2,14 @@
 // "路由已发布 · 数据面未验证": the panel has no Linux packet-forwarding
 // evidence, so nothing on this page ever says Mesh works.
 
-import { Alert, App as AntApp, Button, Collapse, Select, Space, Steps, Table, Tag, Typography } from "antd";
+import { Alert, App as AntApp, Button, Collapse, Select, Space, Steps, Tag, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
 import { href } from "./state";
 import type { CloudflareAccountView, MeshJournal, MeshNodeReadiness, MeshRunResult, MeshStatus, PermissionCheck } from "./types";
 import {
-  TABLE_SCROLL,
+  DataTable,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -59,18 +59,18 @@ const MISSING: Record<string, string> = { server: "关联服务器", credential:
 
 function ReadinessTable({ rows }: { rows: MeshNodeReadiness[] }) {
   return (
-    <Table
+    <DataTable
       size="small"
       rowKey="node_id"
-      pagination={false}
+      pageSize={50}
       dataSource={rows}
-      scroll={TABLE_SCROLL}
       columns={[
-        { title: "节点", className: "cell-name", render: (_, r) => <Link to={href("topology", r.node_id)}>{r.name || r.node_id}</Link> },
-        { title: "角色", className: "nowrap", render: (_, r) => (r.role === "hub" ? "枢纽" : r.role === "exit" ? "出口" : r.role) },
+        { title: "节点", kind: "flex", width: 160, render: (_, r) => <Link to={href("topology", r.node_id)}>{r.name || r.node_id}</Link> },
+        { title: "角色", kind: "fixed", width: 64, render: (_, r) => (r.role === "hub" ? "枢纽" : r.role === "exit" ? "出口" : r.role) },
         {
           title: "服务器",
-          className: "nowrap",
+          kind: "flex",
+          width: 170,
           render: (_, r) =>
             r.server_id ? (
               <Link to={href("servers", r.server_id)}>{r.server_name || r.server_id}</Link>
@@ -80,15 +80,19 @@ function ReadinessTable({ rows }: { rows: MeshNodeReadiness[] }) {
         },
         {
           title: "就绪",
-          className: "nowrap",
+          kind: "flex",
+          width: 200,
           render: (_, r) =>
             r.ready ? (
               <StatusTag kind="ok">就绪</StatusTag>
             ) : (
-              <StatusTag kind="attention">{`还需：${r.missing.map((m) => MISSING[m] ?? m).join("、")}`}</StatusTag>
+              <span className="inline-status wrap">
+                <StatusTag kind="attention">未就绪</StatusTag>
+                <span className="cell-small">还需：{r.missing.map((m) => MISSING[m] ?? m).join("、")}</span>
+              </span>
             ),
         },
-        { title: "部署时固定的指纹", render: (_, r) => <Mono>{r.host_key}</Mono> },
+        { title: "部署时固定的指纹", kind: "ellipsis", width: 200, mono: true, render: (_, r) => r.host_key || "—" },
       ]}
     />
   );
@@ -211,18 +215,17 @@ function JournalView({ journal, status }: { journal: MeshJournal; status: MeshSt
         <Typography.Paragraph type="secondary">
           部署和撤回只连这些目标，并要求同一个主机指纹；这些服务器和密钥在撤回完成前不能删除或改指向。
         </Typography.Paragraph>
-        <Table
+        <DataTable
           size="small"
           rowKey="node_id"
-          pagination={false}
+          pageSize={50}
           dataSource={journal.hosts ?? []}
-          scroll={TABLE_SCROLL}
           columns={[
-            { title: "节点", className: "cell-name", render: (_, h) => h.name || h.node_id },
-            { title: "服务器", render: (_, h) => (h.server_id ? <Link to={href("servers", h.server_id)}>{h.server_id}</Link> : <StatusTag kind="attention">记录里没有</StatusTag>) },
-            { title: "密钥", render: (_, h) => (h.credential_id ? <Link to={href("keys", h.credential_id)}>{h.credential_id}</Link> : "—") },
-            { title: "目标", render: (_, h) => <Mono>{`${h.ssh_user}@${h.ssh_host}:${h.ssh_port}`}</Mono> },
-            { title: "主机指纹", render: (_, h) => (h.host_key ? <Mono copy>{h.host_key}</Mono> : <StatusTag kind="attention">未取得</StatusTag>) },
+            { title: "节点", kind: "flex", width: 140, render: (_, h) => h.name || h.node_id },
+            { title: "服务器", kind: "flex", width: 140, render: (_, h) => (h.server_id ? <Link to={href("servers", h.server_id)}>{h.server_id}</Link> : <StatusTag kind="attention">记录里没有</StatusTag>) },
+            { title: "密钥", kind: "flex", width: 120, render: (_, h) => (h.credential_id ? <Link to={href("keys", h.credential_id)}>{h.credential_id}</Link> : "—") },
+            { title: "目标", kind: "ellipsis", width: 200, mono: true, render: (_, h) => `${h.ssh_user}@${h.ssh_host}:${h.ssh_port}` },
+            { title: "主机指纹", kind: "flex", width: 220, render: (_, h) => (h.host_key ? <Mono ellipsis copy>{h.host_key}</Mono> : <StatusTag kind="attention">未取得</StatusTag>) },
           ]}
         />
       </div>

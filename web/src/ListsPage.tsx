@@ -3,14 +3,14 @@
 // There is no scheduler: lists change only when someone starts an update.
 
 import { CloudDownloadOutlined, DownOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Dropdown, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App as AntApp, Dropdown, Space, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
 import { useStatus, useTopologyDoc } from "./state";
 import type { ListAttempt, ListKind, ListResult, ListsJob, ListsPolicy, ListsReport, ListsView } from "./types";
 import {
-  TABLE_SCROLL,
+  DataTable,
   ApiErrorAlert,
   DataView,
   Facts,
@@ -87,18 +87,33 @@ function Attempts({ attempts }: { attempts: ListAttempt[] | undefined }) {
 
 function ReportTable({ report }: { report: ListsReport }) {
   return (
-    <Table
+    <DataTable
       size="small"
       rowKey="list"
-      pagination={false}
+      pageSize={50}
       dataSource={report.lists ?? []}
-      scroll={TABLE_SCROLL}
+      secondary={(r) => (
+        <Facts
+          items={[
+            ["文件", String(r.current?.files ?? r.files ?? "—")],
+            [
+              "丢弃",
+              r.dropped && Object.keys(r.dropped).length > 0
+                ? `${Object.entries(r.dropped)
+                    .map(([k, n]) => `${k} ${n}`)
+                    .join("，")}（domain-set 表达不了 keyword: 和 regexp: 条目，丢弃并计数）`
+                : "—",
+            ],
+          ]}
+        />
+      )}
       columns={[
         {
           title: "名单",
-          className: "cell-name",
+          kind: "flex",
+          width: 170,
           render: (_, r) => (
-            <Space size={4}>
+            <Space size={4} wrap>
               <Tag>{KIND_LABEL[r.kind] ?? r.kind}</Tag>
               <Mono>{listName(r.list)}</Mono>
             </Space>
@@ -106,6 +121,8 @@ function ReportTable({ report }: { report: ListsReport }) {
         },
         {
           title: "结果",
+          kind: "fixed",
+          width: 140,
           render: (_, r) => {
             const s = resultStatus(r);
             return <StatusTag kind={s.kind} title={r.error}>{s.label}</StatusTag>;
@@ -113,7 +130,8 @@ function ReportTable({ report }: { report: ListsReport }) {
         },
         {
           title: "生效来源",
-          className: "nowrap",
+          kind: "fixed",
+          width: 90,
           render: (_, r) => {
             const src = r.updated ? r.source : r.current?.source;
             const url = r.updated ? r.url : r.current?.url;
@@ -126,25 +144,9 @@ function ReportTable({ report }: { report: ListsReport }) {
             );
           },
         },
-        { title: "版本时间", render: (_, r) => <TimeText value={r.current?.updated_at} /> },
-        { title: "条数", align: "right", render: (_, r) => (r.current?.count ?? r.count ?? "—").toLocaleString() },
-        { title: "文件", align: "right", render: (_, r) => r.current?.files ?? r.files ?? "—" },
-        {
-          title: "丢弃",
-          render: (_, r) =>
-            r.dropped && Object.keys(r.dropped).length > 0 ? (
-              <Tooltip title="domain-set 表达不了 keyword: 和 regexp: 条目，丢弃并计数">
-                <span>
-                  {Object.entries(r.dropped)
-                    .map(([k, n]) => `${k} ${n}`)
-                    .join("，")}
-                </span>
-              </Tooltip>
-            ) : (
-              <Typography.Text type="secondary">—</Typography.Text>
-            ),
-        },
-        { title: "尝试", render: (_, r) => <Attempts attempts={r.attempts} /> },
+        { title: "版本时间", kind: "fixed", width: 100, render: (_, r) => <TimeText value={r.current?.updated_at} /> },
+        { title: "条数", kind: "fixed", width: 90, align: "right", render: (_, r) => (r.current?.count ?? r.count ?? "—").toLocaleString() },
+        { title: "尝试", kind: "flex", width: 200, render: (_, r) => <Attempts attempts={r.attempts} /> },
       ]}
     />
   );
@@ -351,23 +353,23 @@ export default function ListsPage() {
                     : `读不到网关上的版本：${hostStatus.error.message}`}
                 </Typography.Paragraph>
               ) : null}
-              <Table
+              <DataTable
                 size="small"
                 rowKey="key"
-                pagination={false}
+                pageSize={50}
                 dataSource={configured}
-                scroll={TABLE_SCROLL}
                 loading={hostStatus.loading && !hostStatus.data && !hostStatus.error}
                 columns={[
-                  { title: "名单", className: "cell-name", render: (_, r) => <Space size={4}><Tag>{KIND_LABEL[r.kind]}</Tag><Mono>{r.name}</Mono></Space> },
+                  { title: "名单", kind: "flex", width: 220, render: (_, r) => <Space size={4} wrap><Tag>{KIND_LABEL[r.kind]}</Tag><Mono>{r.name}</Mono></Space> },
                   {
                     title: "网关上的版本",
-                    className: "nowrap",
+                    kind: "flex",
+                    width: 260,
                     render: (_, r) => {
                       const p = published?.[r.key];
                       if (!published) return <Typography.Text type="secondary">未知</Typography.Text>;
                       return p ? (
-                        <Space size={6}>
+                        <Space size={6} wrap>
                           <span>{SOURCE_LABEL[p.source] ?? p.source}</span>
                           <TimeText value={p.updated_at} />
                           <Typography.Text type="secondary">{p.count.toLocaleString()} 条</Typography.Text>

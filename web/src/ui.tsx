@@ -1385,6 +1385,54 @@ export function StatusReason({
   );
 }
 
+/**
+ * A status label made of several dot-separated facts ("未验证 · 状态过期"):
+ * the tag holds only the first, short part; the rest follows as one line of
+ * muted text (`detail="inline"`, cut with "…") or only in the tooltip and for
+ * screen readers (`detail="hidden"`, for tight rows such as overview tiles).
+ * The wrapper carries `data-status` and the whole label as its text.
+ */
+export function SplitStatus({
+  kind,
+  label,
+  title,
+  detail = "inline",
+  testId,
+}: {
+  kind: StatusKind;
+  label: string;
+  title?: ReactNode;
+  detail?: "inline" | "hidden";
+  testId?: string;
+}) {
+  const [head, ...rest] = label.split(" · ");
+  const tail = rest.join(" · ");
+  const tag = <StatusTag kind={kind}>{head}</StatusTag>;
+  return (
+    <span className={`split-status split-${detail}`} data-status={kind} data-testid={testId}>
+      {title || (detail === "hidden" && tail) ? (
+        <Tooltip title={title ?? label}>
+          <span className="split-status-tag" tabIndex={detail === "hidden" ? 0 : undefined}>
+            {tag}
+          </span>
+        </Tooltip>
+      ) : (
+        tag
+      )}
+      {tail ? (
+        detail === "hidden" ? (
+          <span className="sr-only"> · {tail}</span>
+        ) : (
+          <span className="split-status-detail">
+            <span className="split-status-sep"> · </span>
+            {tail}
+          </span>
+        )
+      ) : null}
+    </span>
+  );
+}
+
 /** Reasons without blanks, duplicates, parts of a longer reason, or the label itself; joined with "；". */
 export function joinReasons(reason: string | (string | null | undefined)[] | null | undefined, label?: string): string {
   const list = (Array.isArray(reason) ? reason : [reason]).map((r) => (r ?? "").trim()).filter((r) => r !== "" && r !== label);

@@ -5,11 +5,11 @@
 // the existing installs (gateway install / remote provision), in the order
 // the panel lists.
 
-import { Alert, App as AntApp, Button, Space, Table, Tag, Typography } from "antd";
+import { Alert, App as AntApp, Button, Space, Tag, Typography } from "antd";
 import type { ReactNode } from "react";
 import * as api from "./api";
 import type { WSSListenerView, WSSPartyView, WSSView } from "./types";
-import { ApiErrorAlert, DataView, Facts, Mono, Section, StatusTag, TABLE_SCROLL, TimeText, useAction, useApi, useConfirmDanger, type ApiState } from "./ui";
+import { ApiErrorAlert, DataTable, DataView, Facts, Mono, Section, StatusTag, TimeText, useAction, useApi, useConfirmDanger, type ApiState } from "./ui";
 
 export function stageLabel(n: number, uncertain?: boolean): string {
   if (uncertain) return "不确定";
@@ -118,7 +118,7 @@ function ListenerCard({ l, nodeName, onChanged }: { l: WSSListenerView; nodeName
     });
   const partyName = (p: WSSPartyView) => (p.role === "server" ? `服务端（${nodeName(p.node_id)}）` : `客户端 ${p.link_id}（${nodeName(p.node_id)}）`);
   return (
-    <div className="wss-listener" data-testid={`wss-listener-${l.node_id}`} style={{ border: "1px solid var(--border, #eee)", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+    <div className="wss-listener" data-testid={`wss-listener-${l.node_id}`} style={{ border: "1px solid var(--m-border)", borderRadius: 8, padding: 12, marginBottom: 12, minWidth: 0 }}>
       <Space wrap style={{ marginBottom: 8 }}>
         <Typography.Text strong>{nodeName(l.node_id)}</Typography.Text>
         {stateTag(l)}
@@ -143,19 +143,20 @@ function ListenerCard({ l, nodeName, onChanged }: { l: WSSListenerView; nodeName
           ...(l.rotating ? ([["轮换开始", <TimeText key="rs" value={l.rotation_started} />]] as [ReactNode, ReactNode][]) : []),
         ]}
       />
-      <Table
+      <DataTable
         size="small"
-        pagination={false}
         rowKey="link_id"
+        pageSize={50}
         dataSource={l.links}
-        scroll={TABLE_SCROLL}
         style={{ marginTop: 8 }}
         data-testid={`wss-links-${l.node_id}`}
         columns={[
-          { title: "链路", dataIndex: "link_id", className: "cell-name" },
-          { title: "拨号端", dataIndex: "dialer_id", render: (v: string) => nodeName(v) },
+          { title: "链路", dataIndex: "link_id", kind: "ellipsis", width: 160, mono: true },
+          { title: "拨号端", dataIndex: "dialer_id", kind: "ellipsis", width: 150, render: (v: string) => nodeName(v) },
           {
             title: "路径",
+            kind: "flex",
+            width: 220,
             render: (_: unknown, k) => (
               <Space size={4} wrap>
                 {k.path_set ? <Tag color="green">已设置</Tag> : <Tag>未生成</Tag>}
@@ -167,7 +168,8 @@ function ListenerCard({ l, nodeName, onChanged }: { l: WSSListenerView; nodeName
           },
           {
             title: "操作",
-            className: "cell-actions",
+            kind: "actions",
+            width: 128,
             render: (_: unknown, k) => (
               <Button size="small" onClick={() => regenPath(k.link_id)} loading={act.busy === "path-" + k.link_id} disabled={l.legacy || !!k.pending_path_created_at}>
                 重新生成路径
@@ -176,18 +178,17 @@ function ListenerCard({ l, nodeName, onChanged }: { l: WSSListenerView; nodeName
           },
         ]}
       />
-      <Table
+      <DataTable
         size="small"
-        pagination={false}
         rowKey="party"
+        pageSize={50}
         dataSource={l.parties}
-        scroll={TABLE_SCROLL}
         style={{ marginTop: 8 }}
         data-testid={`wss-parties-${l.node_id}`}
         columns={[
-          { title: "一端", render: (_: unknown, p) => partyName(p) },
-          { title: "已安装", render: (_: unknown, p) => stageLabel(p.installed_stage, p.uncertain) },
-          { title: "下次下发", render: (_: unknown, p) => (l.rotating && p.involved ? stageLabel(p.target_stage) : "—") },
+          { title: "一端", kind: "flex", width: 180, render: (_: unknown, p) => partyName(p) },
+          { title: "已安装", kind: "flex", width: 180, render: (_: unknown, p) => stageLabel(p.installed_stage, p.uncertain) },
+          { title: "下次下发", kind: "flex", width: 180, render: (_: unknown, p) => (l.rotating && p.involved ? stageLabel(p.target_stage) : "—") },
         ]}
       />
       {l.next_steps.length > 0 ? (

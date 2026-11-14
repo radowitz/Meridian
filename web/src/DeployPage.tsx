@@ -14,7 +14,7 @@ import {
   SendOutlined,
   ToolOutlined,
 } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Collapse, Dropdown, Empty, Modal, Radio, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App as AntApp, Button, Collapse, Dropdown, Empty, Modal, Radio, Space, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
@@ -41,7 +41,9 @@ import { DeploymentGuide } from "./DeploymentGuide";
 import { roleLabel } from "./types";
 import { WSSPanel } from "./WSS";
 import {
-  TABLE_SCROLL,
+  DataTable,
+  Explain,
+  SplitStatus,
   ApiErrorAlert,
   CopyButton,
   DataView,
@@ -191,9 +193,7 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
         </Button>
       }
     >
-      <Typography.Paragraph type="secondary">
-        存储的拓扑编译出的文件与上一次应用的版本逐文件比较。密钥只以占位符出现，真实私钥只在写入宿主时注入。
-      </Typography.Paragraph>
+      <Explain summary="存储的拓扑编译出的文件与上一次应用的版本逐文件比较。">密钥只以占位符出现，真实私钥只在写入宿主时注入。</Explain>
       {install.kind === "changed" && install.appliedOnly ? (
         <Alert
           type="warning"
@@ -1024,22 +1024,22 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
           description="在它们那一行点「生成密钥并下发」。服务器要先在「服务器」页确认指纹并测试连接。"
         />
       ) : null}
-      <Typography.Paragraph type="secondary">
-        「预览脚本」不连接服务器，密钥显示为占位符。「下发」和「生成密钥并下发」先做只读预检：列出要做的变更和与服务器上已有服务的冲突，有阻断项就不能执行；确认后才会真的在服务器上执行，执行前面板还会再预检一次。
-      </Typography.Paragraph>
-      <Table<Node>
+      <Explain summary="「下发」先做只读预检，有阻断项就不能执行；确认后才会真的在服务器上执行，执行前面板还会再预检一次。">
+        「预览脚本」不连接服务器，密钥显示为占位符。预检列出要做的变更和与服务器上已有服务的冲突。「生成密钥并下发」也一样先预检。
+      </Explain>
+      <DataTable<Node>
         rowKey="id"
         dataSource={nodes}
-        pagination={false}
+        pageSize={50}
         size="middle"
-        scroll={TABLE_SCROLL}
         onRow={(n) => ({ "data-testid": `remote-node-${n.id}` }) as React.HTMLAttributes<HTMLElement>}
         columns={[
           {
             title: "节点",
-            className: "cell-name",
+            kind: "flex",
+            width: 170,
             render: (_, n) => (
-              <Space size={4}>
+              <Space size={4} wrap>
                 <Link to={href("topology", n.id)}>{n.name || n.id}</Link>
                 <Tag>{roleLabel[n.role]}</Tag>
               </Space>
@@ -1047,14 +1047,15 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
           },
           {
             title: "服务器",
-            className: "nowrap",
+            kind: "flex",
+            width: 190,
             render: (_, n) => {
               const sv = server(n);
               if (!n.server_id) return <StatusTag kind="attention">未选服务器</StatusTag>;
               if (!sv) return servers ? <StatusTag kind="failed">服务器不存在</StatusTag> : <Typography.Text type="secondary">…</Typography.Text>;
               const r = serverReadiness(sv);
               return (
-                <Space size={4}>
+                <Space size={4} wrap>
                   <Link to={href("servers", sv.id)}>{sv.name}</Link>
                   <StatusTag kind={r.kind}>{r.label}</StatusTag>
                 </Space>
@@ -1063,11 +1064,14 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
           },
           {
             title: "安装状态",
-            className: "nowrap",
+            kind: "flex",
+            width: 150,
             render: (_, n) => <NodeInstallTag st={nodeState(n.id)} />,
           },
           {
             title: "密钥",
+            kind: "fixed",
+            width: 132,
             render: (_, n) =>
               n.public_key ? (
                 <Tooltip title={n.public_key}>
@@ -1075,14 +1079,14 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
                 </Tooltip>
               ) : (
                 <span data-testid={`keyless-${n.id}`}>
-                  <StatusTag kind="attention">还没有 · 第一次装机</StatusTag>
+                  <SplitStatus kind="attention" label="还没有 · 第一次装机" detail="hidden" title="还没有密钥：第一次装机时生成" />
                 </span>
               ),
           },
           {
             title: "操作",
-            fixed: "right",
-            className: "cell-actions",
+            kind: "actions",
+            width: 180,
             render: (_, n) => {
               const sv = server(n);
               const ready = !!sv?.ready;
@@ -1325,9 +1329,9 @@ function ArtifactsCard() {
   const versions = [...new Map(list.map((a) => [a.name, `${a.name} ${a.version}`])).values()].join("、");
   return (
     <Section title="面板下发的二进制">
-      <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+      <Explain summary="wstunnel 和 SmartDNS 由面板按架构提供固定版本并校验 SHA-256；不一致就拒绝安装。">
         wstunnel 和 SmartDNS 由面板按架构（x86_64 / aarch64）提供固定版本，随节点配置经 SSH 传到主机的 /usr/local/sbin/meridian-*，主机不需要也不会自己下载；面板在加载和每次发送前校验 SHA-256，主机在激活前再校验一次，不一致就拒绝安装。主机上别的服务自己装的 wstunnel 或 smartdns 不会被覆盖或删除。
-      </Typography.Paragraph>
+      </Explain>
       {missing.length > 0 ? (
         <Alert
           type="error"
@@ -1347,21 +1351,21 @@ function ArtifactsCard() {
                 key: "list",
                 label: versions ? `固定版本：${versions}` : "固定版本",
                 children: (
-                  <Table
+                  <DataTable
                     size="small"
-                    pagination={false}
                     rowKey={(a) => `${a.name}-${a.arch}`}
                     dataSource={list}
-                    scroll={TABLE_SCROLL}
                     data-testid="artifacts-table"
                     columns={[
-                      { title: "名称", dataIndex: "name" },
-                      { title: "版本", dataIndex: "version" },
-                      { title: "架构", dataIndex: "arch" },
-                      { title: "SHA-256", dataIndex: "sha256", render: (v: string) => <Mono>{v.slice(0, 16) + "…"}</Mono> },
-                      { title: "主机路径", dataIndex: "host_path", render: (v: string) => <Mono>{v}</Mono> },
+                      { title: "名称", dataIndex: "name", kind: "fixed", width: 110 },
+                      { title: "版本", dataIndex: "version", kind: "ellipsis", width: 100 },
+                      { title: "架构", dataIndex: "arch", kind: "fixed", width: 90 },
+                      { title: "SHA-256", dataIndex: "sha256", kind: "ellipsis", width: 180, mono: true },
+                      { title: "主机路径", dataIndex: "host_path", kind: "ellipsis", width: 220, mono: true },
                       {
                         title: "面板副本",
+                        kind: "fixed",
+                        width: 100,
                         dataIndex: "available",
                         render: (v: boolean, a) => (v ? <StatusTag kind="ok">已校验</StatusTag> : <StatusTag kind="failed" title={a.error}>不可用</StatusTag>),
                       },

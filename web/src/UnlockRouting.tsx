@@ -7,12 +7,12 @@
 // fixed and automatic selection and given probes here; nothing creates or
 // changes a rule.
 
-import { Alert, Button, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, Button, Radio, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useMemo, useState } from "react";
 import * as api from "./api";
 import { href } from "./state";
 import type { AutoApplyView, CoverageItem, ProbeCatalogEntry, UnlockOwner, UnlockSchedule } from "./types";
-import { ApiErrorAlert, Link, Mono, StatusTag, TABLE_SCROLL, TimeText, useAction } from "./ui";
+import { ApiErrorAlert, DataTable, Explain, Link, Mono, SafetyNotice, StatusTag, TimeText, useAction } from "./ui";
 
 export const SECTION_LABEL: Record<string, string> = {
   international: "国际流媒体",
@@ -70,30 +70,31 @@ function OwnerCard({ o, catalog, onChanged }: { o: UnlockOwner; catalog: ProbeCa
       {o.warnings.map((w) => (
         <Alert key={w} type="warning" showIcon style={{ marginBottom: 6 }} message={w} data-testid="owner-warning" />
       ))}
-      <Table
+      <DataTable
         size="small"
         rowKey="exit_id"
-        pagination={false}
-        scroll={TABLE_SCROLL}
+        pageSize={50}
         dataSource={o.candidates}
         columns={[
           {
             title: "候选出口",
-            className: "nowrap",
+            kind: "flex",
+            width: 180,
             render: (_, c) => (
-              <Space size={4}>
+              <Space size={4} wrap>
                 {c.name}
                 {c.tcp_only ? <Tag>仅 TCP</Tag> : null}
                 {c.default ? <Tag>默认</Tag> : null}
               </Space>
             ),
           },
-          { title: "地区", className: "nowrap", render: (_, c) => (c.region ? c.region.toUpperCase() : "—") },
+          { title: "地区", kind: "fixed", width: 64, render: (_, c) => (c.region ? c.region.toUpperCase() : "—") },
           {
             title: "实测证据",
-            className: "nowrap",
+            kind: "flex",
+            width: 200,
             render: (_, c) => (
-              <Space size={4}>
+              <Space size={4} wrap>
                 <Tag color={EVIDENCE[c.evidence]?.color}>{EVIDENCE[c.evidence]?.label ?? c.evidence}</Tag>
                 {c.seen_at ? <TimeText value={c.seen_at} /> : null}
               </Space>
@@ -101,7 +102,8 @@ function OwnerCard({ o, catalog, onChanged }: { o: UnlockOwner; catalog: ProbeCa
           },
           {
             title: "在用（面板推算）",
-            className: "nowrap",
+            kind: "fixed",
+            width: 136,
             render: (_, c) =>
               c.active ? (
                 <Tooltip title="面板按检测结果算出的出口；经安装才进入网关，网关没有回报确认">
@@ -127,7 +129,7 @@ function OwnerCard({ o, catalog, onChanged }: { o: UnlockOwner; catalog: ProbeCa
         <Space size={8} wrap style={{ marginTop: 8 }}>
           <Select
             mode="multiple"
-            style={{ minWidth: 260 }}
+            style={{ minWidth: 260, maxWidth: "100%" }}
             value={probes}
             onChange={setProbes}
             aria-label={`${o.name} 的检测项`}
@@ -171,12 +173,15 @@ export function AutoApplyStatus({ v, pending }: { v?: AutoApplyView; pending: bo
       <Space size={6} wrap>
         <Typography.Text strong>自动安装决定</Typography.Text>
         {v.enabled ? <Tag color="blue">已开启</Tag> : <Tag>关闭：决定等人工安装</Tag>}
-        {v.enabled ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            间隔至少 {Math.round(v.min_gap_sec / 60)} 分钟，24 小时最多 {v.daily_max} 次，失败后同样的决定 {Math.round(v.backoff_sec / 60)} 分钟内不重试；只改这些网关文件：{v.allow_list.join("、")}。未在真实网关上验证。
-          </Typography.Text>
-        ) : null}
       </Space>
+      {v.enabled ? (
+        <>
+          <Explain summary={`间隔至少 ${Math.round(v.min_gap_sec / 60)} 分钟，24 小时最多 ${v.daily_max} 次。`}>
+            失败后同样的决定 {Math.round(v.backoff_sec / 60)} 分钟内不重试；只改这些网关文件：<Mono>{v.allow_list.join("、")}</Mono>。
+          </Explain>
+          <SafetyNotice kind="unverified">自动安装未在真实网关上验证。</SafetyNotice>
+        </>
+      ) : null}
       {v.last_attempt ? (
         <div style={{ fontSize: 12 }}>
           上次自动安装 <TimeText value={v.last_attempt.at} />：{v.last_attempt.ok ? "成功" : `失败（${v.last_attempt.code ?? ""}）`}，决定{" "}
@@ -214,15 +219,14 @@ export function RoutingPanel({
   return (
     <div data-testid="unlock-routing">
       <AutoApplyStatus v={autoApply} pending={pending} />
-      <Typography.Paragraph type="secondary">
-        「实测证据」是探测结果（带收到时间，超过有效期即不再算证据）；「在用」是面板据此推算的出口，
-        {pending ? "还没有安装到网关" : "经安装进入网关"}（人工安装，或开启后的自动安装），网关不回报确认。同一个服务只由一处决定出口：内置规则或服务组。
+      <SafetyNotice kind="unverified">这套自动选择没有在真实平台和真实网关上验证过。</SafetyNotice>
+      <Explain summary={<>「实测证据」是探测结果（超过有效期即不再算证据）；「在用」是面板据此推算的出口，{pending ? "还没有安装到网关" : "经安装进入网关"}，网关不回报确认。</>}>
+        「在用」经人工安装，或开启后的自动安装进入网关。同一个服务只由一处决定出口：内置规则或服务组。
         分流哪些域名由规则和规则集合决定，检测访问的是适配器固定的几个主机，两者不是一回事。
         {schedule
           ? ` 每 ${Math.round(schedule.interval_sec / 3600)} 小时定时一轮，同时 ${schedule.exit_concurrency} 个出口，每个出口每轮最多 ${schedule.exit_request_budget} 个请求，结果有效 ${Math.round(schedule.result_ttl_sec / 3600)} 小时。`
           : ""}
-        这套自动选择没有在真实平台和真实网关上验证过。
-      </Typography.Paragraph>
+      </Explain>
       {owners.length === 0 ? (
         <Typography.Text type="secondary">没有挂了检测项的规则或服务组。到规则页的服务组里选择检测项，或在这里改服务组。</Typography.Text>
       ) : (
@@ -242,10 +246,11 @@ export function RoutingPanel({
 /** The coverage table (catalog API): every item of the cited scripts' region lists. */
 export function CoverageTable({ items, reasons }: { items: CoverageItem[]; reasons: Record<string, string> }) {
   const [section, setSection] = useState<string>();
-  const shown = items.filter((i) => !section || i.section === section);
+  const [state, setState] = useState<"all" | "done" | "missing">("all");
+  const shown = items.filter((i) => (!section || i.section === section) && (state === "all" || (state === "done" ? !!i.adapter : !i.adapter)));
   return (
     <div data-testid="coverage-table">
-      <Space style={{ marginBottom: 8 }} wrap>
+      <div className="toolbar-row">
         <Select
           allowClear
           placeholder="地区"
@@ -255,32 +260,52 @@ export function CoverageTable({ items, reasons }: { items: CoverageItem[]; reaso
           aria-label="按地区筛选覆盖表"
           options={Object.entries(SECTION_LABEL).map(([value, label]) => ({ value, label }))}
         />
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          清单按三个引用脚本固定提交的地区分节逐项读出；适配器都只在合成样本上测过，没有在真实平台上验证。
-        </Typography.Text>
-      </Space>
-      <Table
+        <Radio.Group
+          optionType="button"
+          size="small"
+          value={state}
+          onChange={(e) => setState(e.target.value)}
+          aria-label="按实现情况筛选覆盖表"
+          options={[
+            { value: "all", label: `全部 ${items.filter((i) => !section || i.section === section).length}` },
+            { value: "done", label: "已实现" },
+            { value: "missing", label: "未实现" },
+          ]}
+        />
+      </div>
+      <SafetyNotice kind="unverified">清单按三个引用脚本固定提交的地区分节逐项读出；适配器都只在合成样本上测过，没有在真实平台上验证。</SafetyNotice>
+      <DataTable<CoverageItem>
         size="small"
         rowKey={(i) => i.section + "|" + i.name}
-        pagination={{ pageSize: 20, hideOnSinglePage: true }}
+        pageSize={20}
         dataSource={shown}
-        scroll={TABLE_SCROLL}
         columns={[
-          { title: "地区", className: "nowrap", render: (_, i) => SECTION_LABEL[i.section] ?? i.section },
-          { title: "项目", dataIndex: "name", className: "cell-name" },
-          { title: "脚本", className: "nowrap", render: (_, i) => i.scripts.join("、") },
+          { title: "地区", kind: "fixed", width: 96, render: (_, i) => SECTION_LABEL[i.section] ?? i.section },
+          { title: "项目", dataIndex: "name", kind: "ellipsis", width: 170 },
+          { title: "脚本", kind: "ellipsis", width: 130, render: (_, i) => i.scripts.join("、") },
           {
             title: "结果",
+            kind: "flex",
+            width: 170,
             render: (_, i) =>
               i.adapter ? (
-                <Tag color="green">已实现 {i.adapter}{i.part ? `（参考 ${i.part}）` : ""}</Tag>
+                <span className="cell-stack">
+                  <Tag color="green">已实现</Tag>
+                  <span className="mono cell-small">
+                    {i.adapter}
+                    {i.part ? `（参考 ${i.part}）` : ""}
+                  </span>
+                </span>
               ) : (
-                <Tooltip title={reasons[i.reason ?? ""]}>
-                  <Tag>未实现 · {i.reason}</Tag>
-                </Tooltip>
+                <span className="cell-stack">
+                  <Tooltip title={reasons[i.reason ?? ""]}>
+                    <Tag>未实现</Tag>
+                  </Tooltip>
+                  <span className="mono cell-small">{i.reason}</span>
+                </span>
               ),
           },
-          { title: "说明", className: "cell-text", render: (_, i) => i.note ?? (i.adapter ? "" : reasons[i.reason ?? ""]) },
+          { title: "说明", kind: "flex", width: 240, render: (_, i) => i.note ?? (i.adapter ? "" : reasons[i.reason ?? ""]) },
         ]}
       />
     </div>

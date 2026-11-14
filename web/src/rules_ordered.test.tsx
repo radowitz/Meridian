@@ -14,6 +14,28 @@ afterEach(() => {
   localStorage.clear();
 });
 
+/** The rules page header keeps one primary action; import and the templates are in its "更多操作" menu. */
+async function openHeaderMenuItem(text: string) {
+  await userEvent.click(await screen.findByRole("button", { name: "更多操作" }));
+  const item = await waitFor(() => {
+    const hit = [...document.querySelectorAll<HTMLElement>(".ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item")].find((e) => e.textContent?.includes(text));
+    if (!hit) throw new Error(`no menu item ${text}`);
+    return hit;
+  });
+  await userEvent.click(item);
+}
+
+/** A row action in the "…" menu of a table row (RowActions). */
+async function rowMenuItem(rowLabel: string, text: string) {
+  await userEvent.click(await screen.findByRole("button", { name: `${rowLabel} 的更多操作` }));
+  const item = await waitFor(() => {
+    const hit = [...document.querySelectorAll<HTMLElement>(".ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item")].find((e) => e.textContent?.includes(text));
+    if (!hit) throw new Error(`no menu item ${text}`);
+    return hit;
+  });
+  await userEvent.click(item);
+}
+
 function btn(text: string) {
   return new RegExp(`^\\s*${text.split("").join("\\s*")}\\s*$`);
 }
@@ -182,7 +204,7 @@ describe("rules: import from mihomo", () => {
       "POST /api/rules/import/confirm": () => ({ imported: 2, services: 1, rule_sets: 0, default_group: "hk", digest: "d2" }),
     });
     renderAt("#/rules");
-    await userEvent.click(await screen.findByRole("button", { name: btn("从 mihomo 导入") }));
+    await openHeaderMenuItem("从 mihomo 导入");
     const drawer = await screen.findByRole("dialog");
     fireEvent.change(within(drawer).getByLabelText("mihomo 配置"), { target: { value: `proxies:\n  - {${secretish}}\nrules:\n  - MATCH,Others\n` } });
     await userEvent.click(within(drawer).getByRole("button", { name: btn("预览") }));
@@ -229,7 +251,7 @@ describe("rules: remaining gaps (accept by code, subscription credentials, move 
       "POST /api/rules/import/preview": (req) => rowsFor(((req.body as { accept_codes?: string[] }).accept_codes ?? []).includes("ruleset_partial")),
     });
     renderAt("#/rules");
-    await userEvent.click(await screen.findByRole("button", { name: btn("从 mihomo 导入") }));
+    await openHeaderMenuItem("从 mihomo 导入");
     const drawer = await screen.findByRole("dialog");
     fireEvent.change(within(drawer).getByLabelText("mihomo 配置"), { target: { value: "rules:\n  - MATCH,AI\n" } });
     await userEvent.click(within(drawer).getByRole("button", { name: btn("预览") }));
@@ -270,9 +292,10 @@ describe("rules: remaining gaps (accept by code, subscription credentials, move 
     });
     renderAt("#/rules");
     expect(await screen.findByTestId("rs-auth-rs-p")).toHaveTextContent("Bearer 令牌（已设置）");
-    await userEvent.click(screen.getByRole("button", { name: btn("清除认证") }));
+    await rowMenuItem("Private", "清除认证");
     await waitFor(() => expect(api.find("DELETE /api/rule-sets/rs-p/auth")).toHaveLength(1));
-    await userEvent.click(await screen.findByRole("button", { name: btn("设置认证") }));
+    await waitFor(() => expect(screen.queryByTestId("rs-auth-rs-p")).toBeNull());
+    await rowMenuItem("Private", "设置认证");
     const dlg = await screen.findByRole("dialog");
     await userEvent.type(within(dlg).getByLabelText("订阅令牌"), token);
     await userEvent.click(within(dlg).getByRole("button", { name: btn("保存") }));

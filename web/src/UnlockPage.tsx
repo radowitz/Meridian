@@ -5,7 +5,7 @@
 // unlock. Every adapter is built from public methods and synthetic samples,
 // not validated against the real platforms, and the page says so up front.
 
-import { InfoCircleOutlined, PlayCircleOutlined, StopOutlined } from "@ant-design/icons";
+import { ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined, StopOutlined } from "@ant-design/icons";
 import {
   Alert,
   App as AntApp,
@@ -17,7 +17,6 @@ import {
   Radio,
   Select,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -28,17 +27,21 @@ import { href, useStatus } from "./state";
 import { CoverageTable, RoutingPanel } from "./UnlockRouting";
 import type { ProbeCatalogEntry, ProbeCategory, ProbeGrade, ProbeJob, ProbeResultRow, ProbeSelection } from "./types";
 import {
-  TABLE_SCROLL,
   ApiErrorAlert,
+  DataTable,
   DataView,
+  EllipsisText,
   EmptyState,
+  Explain,
   Facts,
   Link,
   Mono,
   Page,
+  SafetyNotice,
   Section,
   StatusTag,
   TimeText,
+  WideGrid,
   groupLabel,
   useAction,
   useApi,
@@ -173,9 +176,37 @@ export function ingestText(v?: string) {
   return v;
 }
 
-export function CategoryChip({ cat, grade, small }: { cat?: ProbeCategory; grade?: ProbeGrade; small?: boolean }) {
+/** The one-word form of each category for compact grid cells; the rest of the label stays readable to screen readers. */
+const SHORT: Record<ProbeCategory, string> = {
+  unlocked: "解锁",
+  not_unlocked: "未解锁",
+  network_ok: "仅可达",
+  unknown: "未知",
+  failed: "失败",
+  not_applicable: "不适用",
+};
+
+export function CategoryChip({ cat, grade, small, compact }: { cat?: ProbeCategory; grade?: ProbeGrade; small?: boolean; compact?: boolean }) {
   if (!cat) return <span className="cat-chip cat-none">—</span>;
   const c = CATEGORY[cat];
+  const gradeNote = grade && grade !== "platform_signal" && cat !== "network_ok" && cat !== "failed" && cat !== "not_applicable" ? GRADE[grade] : "";
+  if (compact) {
+    // One short word on screen; the full label and the evidence grade are in
+    // the title (hover) and in a visually hidden part (screen readers, tests).
+    const rest = c.label.startsWith(SHORT[cat]) ? c.label.slice(SHORT[cat].length) : `（${c.label}）`;
+    return (
+      <span className={`cat-chip ${c.cls} small compact${gradeNote ? " has-grade" : ""}`} data-category={cat} title={`${c.label}：${c.desc}${grade ? `（证据：${GRADE[grade]}）` : ""}`}>
+        {SHORT[cat]}
+        {rest || gradeNote ? (
+          <span className="sr-only">
+            {rest}
+            {gradeNote ? ` ${gradeNote}` : ""}
+          </span>
+        ) : null}
+        {gradeNote ? <span className="cat-grade-mark" aria-hidden>*</span> : null}
+      </span>
+    );
+  }
   return (
     <span className={`cat-chip ${c.cls}${small ? " small" : ""}`} data-category={cat} title={`${c.label}：${c.desc}${grade ? `（证据：${GRADE[grade]}）` : ""}`}>
       {c.label}
@@ -232,28 +263,29 @@ function CatalogInfo({ c }: { c: ProbeCatalogEntry }) {
 
 function CatalogTable({ catalog }: { catalog: ProbeCatalogEntry[] }) {
   return (
-    <Table<ProbeCatalogEntry>
+    <DataTable<ProbeCatalogEntry>
       rowKey="service"
       size="small"
-      pagination={false}
+      pageSize={50}
       dataSource={catalog}
-      scroll={TABLE_SCROLL}
       columns={[
         {
           title: "服务",
-          className: "cell-name",
+          kind: "flex",
+          width: 180,
           render: (_, c) => (
-            <Space size={4}>
+            <span className="name-with-action">
               <Typography.Text strong>{c.name}</Typography.Text>
-              <Popover title={c.name} content={<CatalogInfo c={c} />} trigger="click" overlayStyle={{ maxWidth: 520 }}>
+              <Popover title={c.name} content={<CatalogInfo c={c} />} trigger="click" overlayStyle={{ maxWidth: "min(520px, 90vw)" }}>
                 <Button type="text" size="small" icon={<InfoCircleOutlined />} aria-label={`${c.name} 的依据与局限`} />
               </Popover>
-            </Space>
+            </span>
           ),
         },
         {
           title: "能告诉你什么",
-          className: "nowrap",
+          kind: "fixed",
+          width: 128,
           render: (_, c) => {
             const cap = CAPABILITY[c.capability ?? (c.reachability ? "reachability" : "verdict")];
             return (
@@ -265,33 +297,40 @@ function CatalogTable({ catalog }: { catalog: ProbeCatalogEntry[] }) {
         },
         {
           title: "检测的平台",
-          render: (_, c) =>
-            (c.platforms ?? []).map((p) => (
-              <Tooltip key={p.name} title={p.note || (p.checked ? (p.primary ? "主平台：决定结论" : "附带检查，只作参考") : "不检查")}>
-                <Tag color={p.checked ? (p.primary ? "processing" : "default") : undefined} style={!p.checked ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
-                  {p.name}
-                </Tag>
-              </Tooltip>
-            )),
+          kind: "flex",
+          width: 220,
+          render: (_, c) => (
+            <span className="tag-wrap">
+              {(c.platforms ?? []).map((p) => (
+                <Tooltip key={p.name} title={p.note || (p.checked ? (p.primary ? "主平台：决定结论" : "附带检查，只作参考") : "不检查")}>
+                  <Tag color={p.checked ? (p.primary ? "processing" : "default") : undefined} style={!p.checked ? { textDecoration: "line-through", opacity: 0.6 } : undefined}>
+                    {p.name}
+                  </Tag>
+                </Tooltip>
+              ))}
+            </span>
+          ),
         },
         {
           title: "地址族",
-          className: "nowrap",
+          kind: "fixed",
+          width: 100,
           render: (_, c) => (c.ipv4_only ? <Tag>只有 IPv4</Tag> : <Typography.Text type="secondary">IPv4 / IPv6</Typography.Text>),
         },
         {
           title: "规则",
-          className: "nowrap",
+          kind: "flex",
+          width: 160,
           render: (_, c) =>
             c.enabled ? (
-              <Space size={4}>
+              <span className="tag-wrap">
                 <Link to={href("exits", c.group)}>{c.group}</Link>
                 {c.group_mode === "manual" ? (
                   <Tooltip title="组是手动模式：结果只记录，不改出口">
                     <Tag>手动组</Tag>
                   </Tooltip>
                 ) : null}
-              </Space>
+              </span>
             ) : (
               <Typography.Text type="secondary">没有启用的规则</Typography.Text>
             ),
@@ -407,7 +446,7 @@ function Launcher({
       {target === "groups" ? (
         <Select
           mode="multiple"
-          style={{ display: "block", marginTop: 8, maxWidth: 560 }}
+          style={{ display: "block", marginTop: 8, maxWidth: 560, width: "100%" }}
           placeholder="选择地区组（组里的全部成员都会被探测）"
           value={selGroups}
           onChange={setSelGroups}
@@ -417,7 +456,7 @@ function Launcher({
       ) : target === "exits" ? (
         <Select
           mode="multiple"
-          style={{ display: "block", marginTop: 8, maxWidth: 560 }}
+          style={{ display: "block", marginTop: 8, maxWidth: 560, width: "100%" }}
           placeholder="选择出口"
           value={selExits}
           onChange={setSelExits}
@@ -445,9 +484,10 @@ function Launcher({
         </Button>
         <Typography.Text type="secondary">
           {services.length} 个服务
-          {count !== null ? ` × ${count} 个出口` : ""}。每项先确认实际出口地址属于该出口，确认不了就记为探测失败，不会回落到别的出口。
+          {count !== null ? ` × ${count} 个出口` : ""}。
         </Typography.Text>
       </Space>
+      <SafetyNotice kind="failclosed">每项先确认实际出口地址属于该出口，确认不了就记为探测失败，不会回落到别的出口。</SafetyNotice>
       {running ? <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>已有一轮探测在进行，结束后才能开始新的。</Typography.Paragraph> : null}
       <ApiErrorAlert
         error={act.error}
@@ -542,18 +582,16 @@ function ResultDetail({ row }: { row: ProbeResultRow }) {
           <Typography.Title level={5} style={{ marginTop: 16 }}>
             分项检查（仅供参考，主平台决定结论）
           </Typography.Title>
-          <Table
+          <DataTable
             size="small"
             rowKey="platform"
-            pagination={false}
             dataSource={row.parts}
-            scroll={TABLE_SCROLL}
+            secondary={(p) => <Facts items={[["证据", p.evidence || p.error || "—", "stacked"]]} />}
             columns={[
-              { title: "平台", className: "cell-name", render: (_, p) => <span>{p.platform}{p.primary ? <Tag style={{ marginLeft: 4 }}>主</Tag> : null}</span> },
-              { title: "结论", render: (_, p) => <CategoryChip cat={p.category} grade={p.grade} small /> },
-              { title: "信号", render: (_, p) => (p.signal ? SIGNAL[p.signal] ?? p.signal : "—") },
-              { title: "地区", render: (_, p) => p.region?.toUpperCase() || "—" },
-              { title: "证据", width: 220, className: "cell-text", render: (_, p) => p.evidence || p.error || "—" },
+              { title: "平台", kind: "flex", width: 120, render: (_, p) => <span>{p.platform}{p.primary ? <Tag style={{ marginLeft: 4 }}>主</Tag> : null}</span> },
+              { title: "结论", kind: "fixed", width: 104, render: (_, p) => <CategoryChip cat={p.category} grade={p.grade} small /> },
+              { title: "信号", kind: "flex", width: 120, render: (_, p) => (p.signal ? SIGNAL[p.signal] ?? p.signal : "—") },
+              { title: "地区", kind: "fixed", width: 56, render: (_, p) => p.region?.toUpperCase() || "—" },
             ]}
           />
         </>
@@ -619,8 +657,8 @@ function ResultsMatrix({
   const svcName = (id: string) => catalog.find((c) => c.service === id)?.name ?? rows.find((r) => r.service === id)?.service_name ?? id;
 
   return (
-    <div className="matrix-wrap">
-      <table className="matrix" data-testid="unlock-matrix">
+    <WideGrid label="服务 × 出口矩阵，可左右滚动">
+      <table className="matrix matrix-compact" data-testid="unlock-matrix">
         <thead>
           <tr>
             <th rowSpan={2} className="matrix-corner">
@@ -638,10 +676,10 @@ function ResultsMatrix({
                 <Tooltip
                   title={c.active ? "枢纽报告这个组当前使用它" : c.modelActive ? "面板推算这个组在用它（未经枢纽确认）" : undefined}
                 >
-                  <span>
-                    {c.name}
+                  <span className="matrix-exit-head">
+                    <EllipsisText className="matrix-exit-name" text={c.name} />
                     {c.removed ? (
-                      <Tag color="default" style={{ marginLeft: 4 }} data-testid={`removed-exit-${c.id}`}>
+                      <Tag color="default" className="matrix-removed" data-testid={`removed-exit-${c.id}`}>
                         已删除的出口
                       </Tag>
                     ) : null}
@@ -659,7 +697,9 @@ function ResultsMatrix({
         <tbody>
           {services.map((s) => (
             <tr key={s}>
-              <th className="matrix-service">{svcName(s)}</th>
+              <th className="matrix-service">
+                <EllipsisText text={svcName(s)} />
+              </th>
               {cols.map((c) => (
                 <td key={c.id}>
                   <div className="matrix-cell">
@@ -673,19 +713,20 @@ function ResultsMatrix({
                           className="matrix-btn"
                           onClick={() => onOpen(r)}
                           data-testid={`cell-${s}-${c.id}-${f}`}
-                          aria-label={`${svcName(s)} · ${c.name} · ${f === "ipv6" ? "IPv6" : "IPv4"}：${shownCategory(r) ? CATEGORY[shownCategory(r)!].label : r.state}`}
+                          aria-label={`${svcName(s)} · ${c.name} · ${f === "ipv6" ? "IPv6" : "IPv4"}：${shownCategory(r) ? CATEGORY[shownCategory(r)!].label : r.state}${r.expired ? "（已过期）" : ""}`}
                         >
                           <span className="fam">{f === "ipv6" ? "v6" : "v4"}</span>
                           <TcpOnlyTag item={r} small />
                           {r.state === "queued" || r.state === "running" ? (
                             <span className="cat-chip cat-none">{r.state === "running" ? "探测中" : "排队"}</span>
                           ) : (
-                            <CategoryChip cat={shownCategory(r)} grade={shownGrade(r)} small />
+                            <CategoryChip cat={shownCategory(r)} grade={shownGrade(r)} compact />
                           )}
                           {r.is_active ? <span className="active-dot" aria-hidden /> : null}
                           {r.expired ? (
-                            <span className="muted" style={{ fontSize: 10 }} data-testid={`expired-${s}-${c.id}-${f}`}>
-                              已过期
+                            <span className="matrix-expired" data-testid={`expired-${s}-${c.id}-${f}`} title="结果已过期，不再算作证据">
+                              <ClockCircleOutlined aria-hidden />
+                              <span className="sr-only">已过期</span>
                             </span>
                           ) : null}
                         </button>
@@ -698,7 +739,7 @@ function ResultsMatrix({
           ))}
         </tbody>
       </table>
-    </div>
+    </WideGrid>
   );
 }
 
@@ -908,13 +949,27 @@ export default function UnlockPage() {
       >
         <div className="cat-legend">
           {(Object.keys(CATEGORY) as ProbeCategory[]).map((k) => (
-            <span key={k}>
-              <CategoryChip cat={k} small /> <span className="muted">{CATEGORY[k].desc}</span>
-            </span>
+            <CategoryChip key={k} cat={k} small />
           ))}
           <span>
-            <span className="active-dot" /> <span className="muted">组当前使用 / 服务当前所在的出口</span>
+            <span className="active-dot" /> <span className="muted">在用</span>
           </span>
+          <span className="muted">
+            <ClockCircleOutlined /> 已过期 · <span className="cat-grade-mark">*</span> 证据不是平台信号
+          </span>
+        </div>
+        <div className="page-notes">
+          <Explain summary="每格是一个出口上的一个地址族（v4 / v6）；点一格看完整结论、证据和时间。列多时先按地区组或出口筛选。">
+            <ul className="plain-list">
+              {(Object.keys(CATEGORY) as ProbeCategory[]).map((k) => (
+                <li key={k}>
+                  {CATEGORY[k].label}：{CATEGORY[k].desc}
+                </li>
+              ))}
+              <li>实心圆点：枢纽报告组当前使用 / 服务当前所在的出口；空心圆点：面板推算组在用（未经枢纽确认）。</li>
+              <li>时钟：结果已过期，不再算作证据。星号：证据等级不是平台信号（例如应答无法识别）。</li>
+            </ul>
+          </Explain>
         </div>
         {(results.data?.removed_exits?.length ?? 0) > 0 ? (
           <Alert
@@ -980,27 +1035,35 @@ export default function UnlockPage() {
                   action={<Link to={href("deploy")}>去部署</Link>}
                 />
               ) : null}
-              <Typography.Paragraph type="secondary">
-                每 {Math.round(v.interval_sec / 3600)} 小时定时探测一次，下次 <TimeText value={v.next_run} />。连续两次定时失败才改用同组的下一个成员；手动探测和健康变化补测不计数。
-                首选恢复后要连续成功满 30 分钟才切回，中间任何一次失败都会重新计时。手动组只记录，不改出口。
-              </Typography.Paragraph>
-              <Table
+              <div className="page-notes">
+                <Explain
+                  summary={
+                    <>
+                      每 {Math.round(v.interval_sec / 3600)} 小时定时探测一次，下次 <TimeText value={v.next_run} />。
+                    </>
+                  }
+                >
+                  连续两次定时失败才改用同组的下一个成员；手动探测和健康变化补测不计数。首选恢复后要连续成功满 30 分钟才切回，中间任何一次失败都会重新计时。手动组只记录，不改出口。
+                </Explain>
+              </div>
+              <DataTable
                 rowKey="rule_id"
                 size="small"
-                pagination={false}
+                pageSize={50}
                 dataSource={stateRows}
-                scroll={TABLE_SCROLL}
                 columns={[
-                  { title: "服务", dataIndex: "name", className: "cell-name" },
-                  { title: "地区组", className: "nowrap", render: (_, r) => {
+                  { title: "服务", dataIndex: "name", kind: "flex", width: 160 },
+                  { title: "地区组", kind: "flex", width: 140, render: (_, r) => {
                       const g = groups.data?.groups.find((x) => x.id === r.pool);
                       return <Link to={href("exits", r.pool)}>{g ? groupLabel(g, groups.data?.groups) : r.pool}</Link>;
                     },
                   },
-                  { title: "首选", className: "nowrap", render: (_, r) => exitCell(r.preferred) },
-                  { title: "现在承载", className: "nowrap", render: (_, r) => <Typography.Text strong={r.active !== r.preferred}>{exitCell(r.active)}</Typography.Text> },
+                  { title: "首选", kind: "flex", width: 130, render: (_, r) => exitCell(r.preferred) },
+                  { title: "现在承载", kind: "flex", width: 130, render: (_, r) => <Typography.Text strong={r.active !== r.preferred}>{exitCell(r.active)}</Typography.Text> },
                   {
                     title: "状态",
+                    kind: "flex",
+                    width: 200,
                     render: (_, r) => (
                       <Space size={4} wrap>
                         {r.pin ? <Tag>手动组：只记录</Tag> : null}
@@ -1041,27 +1104,27 @@ export default function UnlockPage() {
       <Section title="历史">
         <DataView state={view} rows={3}>
           {(v) => (
-            <Table
+            <DataTable
               size="small"
               rowKey={(_, i) => String(i)}
-              pagination={{ pageSize: 10, hideOnSinglePage: true }}
+              pageSize={10}
               dataSource={[...(v.history ?? [])].reverse()}
-              scroll={TABLE_SCROLL}
               columns={[
-                { title: "时间", className: "nowrap", render: (_, h) => <TimeText value={h.at} /> },
-                { title: "来源", className: "nowrap", render: (_, h) => HISTORY_KIND[h.kind] ?? h.kind },
-                { title: "服务", dataIndex: "service", className: "cell-name" },
-                { title: "出口", className: "nowrap", render: (_, h) => exitCell(h.exit_id) },
-                { title: "地址族", className: "nowrap", render: (_, h) => (h.family === "ipv6" ? "IPv6" : h.family === "ipv4" ? "IPv4" : "—") },
+                { title: "时间", kind: "fixed", width: 100, render: (_, h) => <TimeText value={h.at} /> },
+                { title: "来源", kind: "fixed", width: 100, render: (_, h) => HISTORY_KIND[h.kind] ?? h.kind },
+                { title: "服务", dataIndex: "service", kind: "ellipsis", width: 140 },
+                { title: "出口", kind: "flex", width: 130, render: (_, h) => exitCell(h.exit_id) },
+                { title: "地址族", kind: "fixed", width: 72, render: (_, h) => (h.family === "ipv6" ? "IPv6" : h.family === "ipv4" ? "IPv4" : "—") },
                 {
                   title: "结果",
-                  className: "nowrap",
+                  kind: "fixed",
+                  width: 84,
                   render: (_, h) => (h.kind === "inconclusive" ? <Tag>无结论</Tag> : h.ok ? <Tag color="green">可用</Tag> : <Tag color="red">不可用</Tag>),
                 },
                 {
                   title: "说明",
-                  width: 260,
-                  className: "cell-text",
+                  kind: "flex",
+                  width: 200,
                   render: (_, h) => (
                     <>
                       {h.rejected ? <Tag>未采纳：{REJECTED[h.rejected] ?? h.rejected}</Tag> : null}
@@ -1079,10 +1142,17 @@ export default function UnlockPage() {
         <DataView state={catalog} rows={4}>
           {(c) => (
             <>
-              <Typography.Paragraph type="secondary">
-                每个服务的检测方法能告诉你什么：「判定」类给出解锁结论；「仅可达」类只能说明连得上。点 <InfoCircleOutlined /> 看依据、局限和来源。
-                {c.ingest_rule ? ` 入库规则：${c.ingest_rule}` : ""}
-              </Typography.Paragraph>
+              <div className="page-notes">
+                <Explain
+                  summary={
+                    <>
+                      「判定」类给出解锁结论；「仅可达」类只能说明连得上。点 <InfoCircleOutlined /> 看依据、局限和来源。
+                    </>
+                  }
+                >
+                  {c.ingest_rule ? `入库规则：${c.ingest_rule}` : null}
+                </Explain>
+              </div>
               <CatalogTable catalog={c.catalog} />
               {c.coverage?.length ? (
                 <>

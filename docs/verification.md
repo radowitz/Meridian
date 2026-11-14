@@ -829,3 +829,13 @@ sudo bash deploy/verify-host-exec.sh --boot   # 兜底表先于 systemd-sysctl �
 | 防泄露清单不把未执行的证据标成通过 | `internal/verify/verify_test.go` `TestChecklistDoesNotClaimUnexecutedEvidence`、`TestNewWorkItemsAndScopes`；`server_test.go` `TestPoolsUnlockAndLeakcheck`；`web/src/pages.test.tsx`「leak check」 |
 
 尚未覆盖、留给后续的：除 `TestPanelFlowEndToEnd` 之外，API 层的安装测试都用激活桩；那个测试经真实 `hostexec.Client` 安装，但只检查了面板响应里没有秘密，没有检查 agent 收到的请求；Mesh 的真实 SSH 执行器（`sshRemote`）没有从 API 跑过（只用了假 Remote）；`/api/apply` 的 `dry_run`、`/api/rollback` 只检查了节点私钥。
+
+## 面板排版（全部页面与弹层）
+
+范围：`docs/ui-layout.md` 的统一排版规则应用到概览、拓扑、出口（含中继分担）、分流规则（含导入、嗅探、规则集、服务组、规则测试器）、名单、服务器、密钥、Cloudflare 与 Mesh、远程接入、部署（含部署引导、预检、撤回、WSS）、解锁（含自动路由、服务 × 出口矩阵、平台目录、覆盖表）、防泄露、登录页，以及这些页面里的抽屉和对话框。只改显示层：没有改任何 API 调用、请求体或数据语义。
+
+| 证据 | 等级 | 状态 |
+| --- | --- | --- |
+| `npm --prefix web test` 里的 `web/src/layout_pages.test.tsx`（合成数据：15 个节点、7 个地区组、165 条规则、56 个规则集、17 个服务组、41 个适配器、矩阵里 9 个出口、约 130 项覆盖表）：规则表分页且编号跨页连续、上移 / 移到第 N 条跨页后跟到所在页；规则表关键列和声明宽度；被截断的文字可聚焦并带全文；页头只有一个主操作，其余在「更多操作」；矩阵在可滚动区域里、紧凑单元格、按出口筛选；覆盖表按地区筛选；出口页同一原因只说一次、标签只放短状态；概览地区组行；拓扑自动排列不重叠；任何安全提示都不在折叠区里 | 自动化回归（jsdom，假 API） | 每次跑测试都覆盖 |
+| `web/src/ui_layout.test.tsx`：共享组件的类名、结构和交互 | 自动化回归 | 同上 |
+| 真实浏览器逐页检查：1440、1280、1024 下文档无横向滚动、内容不超出卡片 / 对话框 / 视口、没有竖排文字、固定列和吸顶条不遮挡内容、1280 及以上数据表关键列无需横滚；768、390 下文档不横向滚动、表格只在自己的容器里滚动、所有操作够得着；浅色和深色主题 | 实机人工（主会话在本机面板上，用真实规模的数据和 `web/tools/ui-audit.js`） | **待验证**：实现任务没有浏览器，以上宽度、折行、吸顶和遮挡都没有在浏览器里看过，不能写成已验证。逐项清单见 `docs/ui-layout.md`「Checks only a real browser can prove」 |

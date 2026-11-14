@@ -5,13 +5,13 @@
 // sign-off items (always 待人工签收) and known limitations. Nothing in the
 // integration or human groups can ever render as passed.
 
-import { Alert, Table, Typography } from "antd";
+import { Alert, Typography } from "antd";
 import type { ReactNode } from "react";
 import * as api from "./api";
 import { useStatus } from "./state";
 import type { LeakItem } from "./types";
 import {
-  TABLE_SCROLL, DataView, Page, Section, StatusTag, useApi, type StatusKind } from "./ui";
+  DataTable, DataView, Page, Section, StatusTag, useApi, type StatusKind } from "./ui";
 
 type Scope = "automated" | "integration" | "human" | "limitation";
 
@@ -95,25 +95,25 @@ export default function LeakPage() {
                   extra={fails > 0 ? <StatusTag kind="failed">{fails} 项配置缺失</StatusTag> : null}
                 >
                   <Typography.Paragraph type="secondary">{sc.note}</Typography.Paragraph>
-                  <Table<LeakItem>
+                  <DataTable<LeakItem>
                     rowKey="id"
                     size="small"
-                    pagination={false}
+                    pageSize={200}
                     dataSource={rows}
                     data-testid={`leak-${sc.key}`}
-                    scroll={TABLE_SCROLL}
                     onRow={(it) => ({ "data-testid": `leak-item-${it.id}` }) as React.HTMLAttributes<HTMLElement>}
                     columns={[
-                      { title: "检查", dataIndex: "title", width: 220, className: "cell-text" },
+                      { title: "检查", dataIndex: "title", kind: "flex", width: 220 },
                       {
                         title: "状态",
-                        className: "nowrap",
+                        kind: "fixed",
+                        width: 132,
                         render: (_, it) => {
                           const s = leakStatus(it);
                           return <StatusTag kind={s.kind}>{s.label}</StatusTag>;
                         },
                       },
-                      { title: "说明", dataIndex: "detail", width: 420, className: "cell-text" },
+                      { title: "说明", dataIndex: "detail", kind: "flex", width: 320 },
                     ]}
                   />
                 </Section>

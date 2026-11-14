@@ -8,7 +8,7 @@
 // outcomes withdrawn / already_withdrawn / recovered are shown as done.
 
 import { DeleteOutlined, RollbackOutlined, StopOutlined, UndoOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Input, Modal, Space, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, App as AntApp, Button, Input, Modal, Space, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
@@ -25,7 +25,7 @@ import type {
   WithdrawRunResult,
   WithdrawSet,
 } from "./types";
-import { ApiErrorAlert, Facts, Link, Mono, Section, StatusTag, TABLE_SCROLL, TimeText, type StatusKind } from "./ui";
+import { ApiErrorAlert, DataTable, EllipsisText, Explain, Facts, Link, Mono, RowActions, Section, StatusTag, TimeText, type MoreAction, type StatusKind } from "./ui";
 
 // ------------------------------------------------------------- labels ---
 
@@ -412,9 +412,9 @@ export function DeploymentRecords({
 
   return (
     <Section title="部署记录与撤回" id="deployments">
-      <Typography.Paragraph>
-        每个远端节点装机成功后，面板记下它装在哪台服务器上（地址、端口、用户、固定的主机指纹和凭据）。撤回只连这台服务器、只移除受管清单列出的内容。从拓扑删除节点不会撤回服务器上的安装：记录会留在这里，直到撤回完成；在那之前这台服务器和它的凭据不能删除或改指向。
-      </Typography.Paragraph>
+      <Explain summary="从拓扑删除节点不会撤回服务器上的安装：记录留在这里直到撤回完成，在那之前这台服务器和它的凭据不能删除或改指向。">
+        每个远端节点装机成功后，面板记下它装在哪台服务器上（地址、端口、用户、固定的主机指纹和凭据）。撤回只连这台服务器、只移除受管清单列出的内容。
+      </Explain>
       {state.error ? <ApiErrorAlert error={state.error} /> : null}
       {err ? <ApiErrorAlert error={err} onClose={() => setErr(null)} /> : null}
       {rows.length === 0 && !state.loading && !state.error ? (
@@ -423,12 +423,11 @@ export function DeploymentRecords({
         </Typography.Text>
       ) : null}
       {rows.length > 0 ? (
-        <Table<DeploymentView>
+        <DataTable<DeploymentView>
           rowKey="node_id"
           dataSource={rows}
-          pagination={false}
+          pageSize={50}
           size="middle"
-          scroll={TABLE_SCROLL}
           onRow={(d) => ({ "data-testid": `deployment-${d.node_id}` }) as React.HTMLAttributes<HTMLElement>}
           expandable={{
             rowExpandable: (d) => !!d.withdraw,
@@ -437,7 +436,8 @@ export function DeploymentRecords({
           columns={[
             {
               title: "节点",
-              className: "cell-name",
+              kind: "flex",
+              width: 200,
               render: (_, d) => (
                 <Space size={4} wrap>
                   {d.in_topology ? <Link to={href("topology", d.node_id)}>{d.node_name || d.node_id}</Link> : <span>{d.node_name || d.node_id}</span>}
@@ -456,18 +456,22 @@ export function DeploymentRecords({
             },
             {
               title: "部署时绑定的服务器",
+              kind: "flex",
+              width: 220,
               render: (_, d) => (
-                <div>
+                <div className="cell-stack">
                   <div>
                     {d.server_name ? <Link to={href("servers", d.server_id)}>{d.server_name}</Link> : <span className="mono-small">{d.server_id}</span>}{" "}
                     <span className="mono-small">{`${d.user || "root"}@${d.address}:${d.port}`}</span>
                   </div>
-                  <div className="mono-small muted">{d.fingerprint}</div>
+                  <EllipsisText className="mono-small muted" text={d.fingerprint} mono />
                 </div>
               ),
             },
             {
               title: "状态",
+              kind: "flex",
+              width: 200,
               render: (_, d) => (
                 <div>
                   <StatusOf d={d} />
@@ -487,32 +491,27 @@ export function DeploymentRecords({
             },
             {
               title: "操作",
-              fixed: "right",
-              className: "cell-actions",
+              kind: "actions",
+              width: 120,
               render: (_, d) => {
                 const busy = d.status === "withdrawing";
+                const more: MoreAction[] = [];
+                if (d.on_host && (d.status === "unknown" || d.status === "left_behind")) {
+                  more.push({ key: "journal", icon: <UndoOutlined />, label: "恢复中断的装机", disabled: busy, onClick: () => setDlg({ d, mode: "journal" }) });
+                }
+                if (d.on_host) more.push({ key: "abandon", icon: <StopOutlined />, label: "放弃（服务器已不存在）", disabled: busy, onClick: () => setAbandon(d) });
                 return (
-                  <Space size={4} className="table-actions" wrap>
+                  <RowActions label={d.node_name || d.node_id} more={more}>
                     {d.on_host ? (
                       <Button size="small" danger icon={<RollbackOutlined />} disabled={busy} onClick={() => setDlg({ d, mode: "manifest" })} data-testid={`withdraw-${d.node_id}`}>
                         撤回
-                      </Button>
-                    ) : null}
-                    {d.on_host && (d.status === "unknown" || d.status === "left_behind") ? (
-                      <Button size="small" icon={<UndoOutlined />} disabled={busy} onClick={() => setDlg({ d, mode: "journal" })}>
-                        恢复中断的装机
-                      </Button>
-                    ) : null}
-                    {d.on_host ? (
-                      <Button size="small" icon={<StopOutlined />} disabled={busy} onClick={() => setAbandon(d)}>
-                        放弃（服务器已不存在）
                       </Button>
                     ) : (
                       <Button size="small" icon={<DeleteOutlined />} onClick={() => void forget(d)}>
                         删除记录
                       </Button>
                     )}
-                  </Space>
+                  </RowActions>
                 );
               },
             },

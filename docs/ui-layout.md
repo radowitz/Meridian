@@ -45,6 +45,18 @@ shared component. Wide things scroll inside their own box (`DataTable`,
    secondary fields go in an expandable row; a scrolling table says so.
 9. **Wide grids** (unlock matrix, coverage) freeze the first column, show a
    scroll hint, and keep compact cells.
+10. **Hidden text inside a scrolling box needs a positioned ancestor inside
+    that box.** `.sr-only` (visually hidden labels) is `position: absolute`.
+    If its containing block is outside the `overflow-x: auto` box (for
+    example `.wide-grid`, which is positioned, around `.wide-grid-scroll`,
+    which was not), the box does not clip it, and the hidden labels of cells
+    scrolled out to the right widen every ancestor up to the document (the
+    unlock page was 127 px wider than a 1024 px viewport). Every horizontally
+    scrolling box is therefore `position: relative` (`.wide-grid-scroll`,
+    `.matrix-wrap`, the DataTable's `.ant-table-content` / `.ant-table-body`,
+    the command box), and so are the small wrappers that hold hidden text
+    (`.cat-chip.compact`, `.matrix-btn`, `.matrix-expired`, `.split-status`).
+    `web/tools/ui-audit.js` reports violations as `absOut`.
 
 ## Shared pieces (all in `web/src/ui.tsx`)
 
@@ -199,6 +211,85 @@ node card text and canvas height (not touched here, canvas CSS only); the
 (`Mono block copy` becomes `CommandBlock`); dialogs and drawers (`Facts` inside
 them).
 
+
+## Applied to the pages
+
+Every page, drawer and dialog now uses the shared pieces. `TABLE_SCROLL` is no
+longer used by any page (it stays exported for the N2 tests). New shared
+piece: `SplitStatus` (below). Page-level CSS is in `styles.css` under
+"N3: pages".
+
+### `SplitStatus`
+
+```tsx
+<SplitStatus kind="unverified" label="未验证 · 读不到" />                    // tag 未验证, then "· 读不到" as one muted line
+<SplitStatus kind="unverified" label="实际未知 · 未验证 · 未读取" detail="hidden" title={why} />  // tight rows: rest in tooltip + screen readers
+```
+
+A tag holds one short status only. Labels made of several dot-separated facts
+are split: the first fact in the tag, the rest beside it (`inline`, cut with
+"…") or only in the tooltip and a visually hidden span (`hidden`). The wrapper
+carries `data-status` and the whole label as its text. Used for the group
+actual state (exits, overview), Cloudflare permission check ("可读 · 写权限未确认"),
+server login "未选择 · 密码", node key "还没有 · 第一次装机".
+
+### Per page
+
+| Page / part | Tables: key columns (secondary = expandable row) | Collapsed (`Explain`) | Always visible |
+|---|---|---|---|
+| Shell | — | — | Top bar: main column has `min-width: 0`, status group does not wrap, so the right group (install, theme, lock) stays in the viewport. Drawers are at most `100vw` wide; modals at most `100vw - 32px`. Login hint is a `CommandBlock`. |
+| Overview | — | — | Tiles at least 360 px (fewer columns, not narrower tiles). 出口地区组: one grid row per group (name with "…" and tooltip / mode / one `SplitStatus` tag with details in the tooltip). Mesh 账户 stacked (address + short tag). 探测通道: tag + reason that wraps under it. 国内中继分担 tile: one compact row per relay (name, status tag, share, "45 ms · 0.4%"), details in tooltips; facts as `KV` rows. |
+| Topology | — | — | Node cards 200 px, 14 px name, one line per fact cut with "…" (whole text in the card title). Canvas `clamp(520px, 100vh - 250px, 960px)`. Nodes that were never placed get a layered position (`autoLayout`: gateway → relay → IX → hub → exit, 300 × 130 px grid, at most 5 per column; exits of one region group adjacent; an exit reached through another exit in a layer to the right, in its carrier's order); saved positions are kept; 「自动排列」re-lays all nodes on request (marks the document changed; positions are saved with the topology). Edge labels have padded backgrounds. |
+| Exits | Relay sharing (exits page): 中继, 状态, 份额, 质量, 流量, 吞吐探测 with widths | Mode rules once above the groups (`group-modes-note`), DNS / relay costs, exit kinds | Hub bar: a head (title, carrying hub, read button) and one row per hub (tier tag, name and server cut with "…", last read + short tag, cause on one line with its fix; read errors wrap). Single hub: `Facts` rows 枢纽 / 上次读取 / 原因. A hub report that is unusable for the same reason in every group (`sharedHubReports`) is said once on that hub's row ("各地区组的报告：…"); each card then shows only "主枢纽 [未验证]" / "备用枢纽 [未验证]" with the reason in the tooltip and hidden text; cards that differ keep their full line. Each card: `SplitStatus` for the actual state, the cause on one line (`joinReasons`) with the fix; unverified exit kinds as `SafetyNotice`. |
+| Rules | 顺序 124, 规则 (two lines: the name cut with "…" and its origin tag on the same line, then a one-line match with full text) flex, 去向 flex (one line: tag + name cut with "…"), 要求与遮蔽 flex (wraps, never under the action column), 校验 92, 启用 60, 操作 104; sum 962 px | Order explanation, AAAA / unlisted-name note, upgrade notes after the first, shared-address note | DNS fail-closed sentence (`SafetyNotice failclosed`); header: 添加规则 + "更多操作" (导入, QUIC 开关, Apple 模板). |
+| Rules: import drawer | mapping, services, rule-sets, ordered preview (行 / 原文 ellipsis / 映射为 / 状态 / 说明 / 删除), 50 per page | Preview notes after the first | "确认之前不写入任何东西" alert; blocking status. |
+| Rules: rule-sets, service groups, tester, sniffing | Rule-sets: 名称 (+ auth tag), URL ellipsis, 状态 (+ 部分生效 tag, errors), 使用, 操作 (立即更新 + menu); secondary: URL, format, counts, unsupported, used by. Sniff decisions: 时间, 原目的地址, 判断依据, 规则, 目标, 结果; secondary: 来源 | Section intros | Sniff fail-closed sentence (`SafetyNotice`); coverage (by name / by address / costs) as three short lists. |
+| Lists | Report: 名单, 结果, 生效来源, 版本时间, 条数, 尝试; secondary: 文件, 丢弃 | — | Source option cards unchanged. |
+| Servers | 名称, 地址 (one line, full text on focus), 登录, 主机指纹, 节点, 状态, 操作; secondary: 最近测试, fingerprint, channel | — | — |
+| Keys | SSH: 名称, 种类, 指纹 (ellipsis), 创建, 最近轮换, 使用者, 操作; SOCKS likewise | — | "不可查看" next to 已设置. |
+| Cloudflare / Mesh | Accounts: 名称, Account ID (ellipsis + copy), Token, 权限检查 (`SplitStatus`), Mesh, 绑定部署, 操作; checks and permission tables with widths; Mesh readiness: tag 未就绪 + "还需：…" text; pinned hosts with ellipsis | — | "写权限未确认" alert. |
+| Remote access | Devices: 设备, 模式, 地址 (ellipsis), 状态, 密钥, 启用, 操作 | — | Router command is a `CommandBlock` (one line, scrolls in its box). |
+| Deploy | Remote nodes: 节点, 服务器, 安装状态, 密钥 (`SplitStatus`), 操作 (one button + menu); binaries: ellipsis SHA / path; guide plan and run: #, 节点, 现在/状态, 为什么在这个位置/说明 (flex 320, wraps); deployment records: 节点, 服务器 (fingerprint on one line), 状态, 操作 (撤回 or 删除记录 + menu: 恢复中断的装机, 放弃) | Guide order, push/preflight explanation, binaries, diff intro, deployment-record intro | "不会一次确认全部"、"已装好不是端到端验证"、retry note, all alerts about refusals, leftovers and unknown outcomes. |
+| Unlock | Matrix: compact cells (one word per family, grade as "*", expiry as a clock icon; full label in title + hidden text; detail drawer), exit header names cut with tooltip, `WideGrid` (frozen first column, scroll hint), filters by region group / exit / service / family; catalog 服务, 能告诉你什么, 检测的平台, 地址族, 规则; state, history, owner candidate tables with widths; coverage: 地区 96, 项目 ellipsis, 脚本 ellipsis, 结果 (tag + adapter / reason), 说明 flex (wraps), filters by section and by implemented / not | Legend descriptions, schedule details, routing details, catalog intro | Validation notice; launcher fail-closed note; "自动选择未在真实平台和真实网关上验证" and "自动安装未在真实网关上验证" (`SafetyNotice unverified`); coverage "只在合成样本上测过" (`SafetyNotice`). |
+| Leak checks | 检查 flex, 状态 132, 说明 flex; all rows on one page (no item can hide on page 2) | — | Every status tag (未执行 / 待人工签收). |
+| WSS | Links: 链路, 拨号端, 路径, 操作; parties: 一端, 已安装, 下次下发 | — | — (border colour now uses the theme variable, was a light-only fallback). |
+
+### Rules table pagination
+
+`RULES_PAGE_SIZE` = 50 (20 / 50 / 100 selectable). The order number in the
+first column is the rule's position in the whole (filtered or not) list, so
+page 2 starts at 51. Moving works on whole-list positions: up / down, to the
+top / bottom and 「移到第 N 条」 change the list as before and the table then
+switches to the page that holds the moved rule (also after adding a rule at a
+position, a QUIC switch or a template, and when the page is opened with
+`#/rules/<id>`). Changing the search or the filter goes back to page 1.
+
+### Unlock matrix
+
+At 1280 the content box is about 976 px inside a section: a 132–180 px service
+column plus 9 exit columns of about 84 px fit without scrolling because each
+cell holds only "v4 未解锁" (family + one word; tcp-only exits add "仅 TCP"). With
+more exits, filter by region group or exit; at narrow widths the grid scrolls
+in its own box with the first column frozen and the scroll hint.
+
+### Left as is / not done
+
+- No new API: the overview relay tile links to the exits page for the full relay table (the data is the same; nothing new is fetched).
+- Tables with fewer than 20 rows show no pagination; very long free text (alerts with server messages) still wraps inside its alert.
+- The topology canvas cannot reduce label overlap for saved positions that are close together; 「自动排列」 is the remedy and is explicit.
+
+## Tests (pages)
+
+`web/src/layout_pages.test.tsx` uses a synthetic fixture of real size and
+checks per page what jsdom can prove: rules pagination and global numbering
+across pages (move up across a page boundary, move to N onto page 3), key
+columns and declared widths of the rules table, full text of cut cells, header
+actions (one primary + menu), rule-set pagination, unlock matrix structure
+(region, compact cells, hidden full labels, expiry icon) and the exit filter,
+coverage section filter, exits page (shared cause once, short tags), overview
+group rows, topology `autoLayout` without overlapping cards, and that no
+safety notice is inside a collapsed `Explain`.
+
 ## Tests
 
 `web/src/ui_layout.test.tsx` (jsdom) covers: Facts/KV structure and stacking;
@@ -226,6 +317,12 @@ dark, at 1440, 1280, 1024, 768 and 390 px:
 9. Truncated cells show the full text on hover and on keyboard focus (tooltip visible and not clipped).
 10. Header actions wrap or collapse at 768 and 390 and stay reachable; touch targets are at least 32 px.
 11. Colours and contrast of safety notices, status tags and the scroll hint in both themes.
+12. Per page with real-size data (about 14 nodes, 7 groups, 165 rules, 56 rule-sets, 17 service groups, 41 adapters, 9 exits): the rules table at 1280 and 1440 without horizontal scroll (declared sum 962 px plus pagination); the unlock matrix with 9 exits without scroll at 1280; the coverage table and the deployment guide tables without scroll at 1280; the deploy node and record tables at 1280.
+13. Overview at 1280, 1440 and a very wide window: tiles at least 360 px, group rows one line each, relay tile rows inside the tile; healthy and unavailable variants (agent ok / missing, relay sharing present / absent, Mesh account present / absent).
+14. Top bar at every width: the lock button is fully inside the viewport.
+15. Topology: node cards readable at the fitted zoom, 「自动排列」 gives a layout without overlapping cards or labels hidden under nodes; saved positions unchanged after reload.
+16. Drawers (rule, import 1100 px, node, result detail) and dialogs at 768 and 390: never wider than the viewport, content scrolls inside.
+17. Unlock page at 1024, 768 and 390: document scrollWidth equals the viewport (hidden matrix labels clipped by the grid's scroll box); `__audit` reports no `absOut`.
 
 ### Audit script
 
@@ -237,7 +334,7 @@ const r = await __audit(1280, ["", "rules", "unlock"], 1500); // width, page has
 console.log(__fmt(r));
 ```
 
-It loads the panel in an iframe of the given width and reports per page:
+It loads the panel in an iframe of the given width and reports per page (the wrap check ignores `.sr-only` text; `absOut` lists absolutely positioned elements outside the horizontally scrolling box around them when that box is not their containing block):
 document overflow (`ox`), content spilling out of its box (`spill`), tables and
 boxes that scroll (`hscroll`), elements beyond the viewport (`beyond`) or their
 card (`outCard`), labels/tags/buttons that wrap (`wrap`) and text squeezed into

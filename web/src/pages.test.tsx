@@ -1416,8 +1416,11 @@ describe("region groups: the hub's actual state", () => {
     renderAt("#/");
     expect(await screen.findByTestId("groups-tile-actual-g0")).toHaveTextContent("香港二号");
     expect(screen.queryByTestId("groups-tile-actual-g1")).toBeNull();
-    const tag = await screen.findByText("实际未知 · 未验证 · 未读取");
-    expect(tag.closest("[data-status]")).toHaveAttribute("data-status", "unverified");
+    // The tag holds the short status; the rest of the label is in the tooltip and for screen readers.
+    const tag = await screen.findByTestId("groups-tile-status-g1");
+    expect(tag).toHaveTextContent("实际未知 · 未验证 · 未读取");
+    expect(tag).toHaveAttribute("data-status", "unverified");
+    expect(within(tag).getByText("实际未知").closest(".ant-tag")).not.toBeNull();
     expect(screen.getByTestId("groups-tile-hub")).toHaveTextContent("读取于");
   });
 });
@@ -1630,15 +1633,17 @@ describe("remote access: configuration text", () => {
 });
 
 describe("tables at narrow widths", () => {
-  it("render inside a horizontally scrollable box, with non-wrapping names and a fixed action column", async () => {
+  it("render inside a horizontally scrollable box, with explicit column widths and a fixed action column", async () => {
     fakeApi({ "GET /api/servers": () => ({ servers: [server({ name: "一台名字很长很长的香港机房服务器" })] }) });
     renderAt("#/servers");
     const row = await screen.findByTestId("server-row-srv-1");
     const table = row.closest("table")!;
-    expect(table.style.width).toBe("max-content");
+    // DataTable: as wide as the sum of the declared column widths (not max-content), scrolling in its own box.
+    expect(table.style.width).not.toBe("max-content");
     expect(row.closest(".ant-table-content, .ant-table-body")).not.toBeNull();
-    expect(row.querySelector("td.cell-name")).toHaveTextContent("一台名字很长很长的香港机房服务器");
-    expect(row.querySelector("td.cell-actions.ant-table-cell-fix-right")).not.toBeNull();
+    expect(row.closest(".data-table-wrap")).not.toBeNull();
+    expect(row.querySelector("td.col-flex")).toHaveTextContent("一台名字很长很长的香港机房服务器");
+    expect(row.querySelector("td.col-actions.ant-table-cell-fix-right")).not.toBeNull();
   });
 });
 

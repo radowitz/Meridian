@@ -28,7 +28,6 @@ import {
   QRCode,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -40,7 +39,10 @@ import { href, useRouter, useStatus } from "./state";
 import type { RemoteAccessView, RemoteDeviceConfigResult, RemoteDevicePatch, RemoteDeviceView, RemoteMode, RemoteRuntimeView, RemoteSettingsPatch, RouterForward } from "./types";
 import {
   RowActions,
-  TABLE_SCROLL,
+  CommandBlock,
+  DataTable,
+  EllipsisText,
+  type DataColumn,
   ApiErrorAlert,
   ApplyRequiredNotice,
   CopyButton,
@@ -232,7 +234,7 @@ function RouterForwardBlock({ f, enabled }: { f: RouterForward; enabled: boolean
       {ready ? (
         <details className="ros-hint">
           <summary>RouterOS 示例命令</summary>
-          <Mono block copy>{`/ip firewall nat add chain=dstnat protocol=udp dst-port=${f.external_port} in-interface-list=WAN action=dst-nat to-addresses=${f.internal_address} to-ports=${f.internal_port} comment="meridian remote access"`}</Mono>
+          <CommandBlock label="RouterOS 端口转发命令，可左右滚动">{`/ip firewall nat add chain=dstnat protocol=udp dst-port=${f.external_port} in-interface-list=WAN action=dst-nat to-addresses=${f.internal_address} to-ports=${f.internal_port} comment="meridian remote access"`}</CommandBlock>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             按你的路由器调整入接口；只是示例，面板不会执行它。
           </Typography.Text>
@@ -590,13 +592,14 @@ export default function RemotePage() {
   const pendingInstall = install.kind === "changed" || install.kind === "not_installed";
 
   const columns = useMemo(
-    () => [
+    (): DataColumn<RemoteDeviceView>[] => [
       {
         title: "设备",
-        className: "cell-name",
+        kind: "flex",
+        width: 180,
         render: (_: unknown, d: RemoteDeviceView) => (
           <div>
-            <Space size={4}>
+            <Space size={4} wrap>
               <MobileOutlined />
               <Typography.Text strong>{d.name}</Typography.Text>
               {d.config_outdated ? (
@@ -607,13 +610,14 @@ export default function RemotePage() {
                 </Tooltip>
               ) : null}
             </Space>
-            {d.notes ? <div className="muted cell-note">{d.notes}</div> : null}
+            {d.notes ? <EllipsisText className="muted cell-small" text={d.notes} /> : null}
           </div>
         ),
       },
       {
         title: "模式",
-        className: "nowrap",
+        kind: "fixed",
+        width: 96,
         render: (_: unknown, d: RemoteDeviceView) => (
           <Tooltip title={MODE_SHORT[d.mode]}>
             <Tag color={d.mode === "full" ? "blue" : "default"}>{MODE_TITLE[d.mode]}</Tag>
@@ -622,17 +626,19 @@ export default function RemotePage() {
       },
       {
         title: "地址",
-        className: "nowrap",
+        kind: "flex",
+        width: 150,
         render: (_: unknown, d: RemoteDeviceView) => (
-          <div className="mono-small">
-            <div>{d.ipv4}</div>
-            <div className="muted">{d.ipv6}</div>
+          <div className="mono-small cell-stack">
+            <EllipsisText text={d.ipv4} mono />
+            {d.ipv6 ? <EllipsisText className="muted" text={d.ipv6} mono /> : null}
           </div>
         ),
       },
       {
         title: "状态",
-        width: 210,
+        kind: "flex",
+        width: 200,
         render: (_: unknown, d: RemoteDeviceView) => {
           const s = deviceStatus(d, rt);
           return (
@@ -651,7 +657,8 @@ export default function RemotePage() {
       },
       {
         title: "密钥",
-        className: "nowrap",
+        kind: "fixed",
+        width: 100,
         render: (_: unknown, d: RemoteDeviceView) => (
           <Tooltip title={d.preshared_key ? "带预共享密钥" : "没有预共享密钥"}>
             <span>
@@ -662,14 +669,16 @@ export default function RemotePage() {
       },
       {
         title: "启用",
+        kind: "fixed",
+        width: 60,
         render: (_: unknown, d: RemoteDeviceView) => (
           <Switch size="small" checked={d.enabled} loading={act.busy === `enable:${d.id}`} onChange={(on) => setEnabled(d, on)} aria-label={`启用 ${d.name}`} />
         ),
       },
       {
         title: "操作",
-        fixed: "right" as const,
-        className: "cell-actions",
+        kind: "actions",
+        width: 120,
         render: (_: unknown, d: RemoteDeviceView) => (
           <RowActions
             label={d.name}
@@ -768,12 +777,11 @@ export default function RemotePage() {
                   }
                 />
               ) : (
-                <Table<RemoteDeviceView>
+                <DataTable<RemoteDeviceView>
                   rowKey="id"
                   dataSource={v.devices}
-                  pagination={false}
+                  pageSize={50}
                   columns={columns}
-                  scroll={TABLE_SCROLL}
                   onRow={(d) => ({ "data-testid": `device-row-${d.id}` }) as React.HTMLAttributes<HTMLElement>}
                 />
               )}

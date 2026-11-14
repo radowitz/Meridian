@@ -122,29 +122,74 @@ function nodeLabel(n: Node, server: ServerView | undefined) {
     .filter(Boolean)
     .join(" · ");
   const needsServer = n.managed && n.role !== "gateway";
+  const meta = `${roleLabel[n.role]}${n.region ? ` · ${n.region.toUpperCase()}` : ""}${flags ? ` · ${flags}` : ""}`;
+  const serverText = needsServer ? (server ? `${server.name}${server.ready ? "" : " · 未就绪"}` : "未选服务器") : "";
+  // One line each, cut with "…"; the whole text is the card's title (hover).
   return (
-    <div className="node-card">
+    <div className="node-card" title={[n.name || n.id, meta, serverText].filter(Boolean).join("\n")}>
       <strong>{n.name || n.id}</strong>
-      <em>
-        {roleLabel[n.role]}
-        {n.region ? ` · ${n.region.toUpperCase()}` : ""}
-        {flags ? ` · ${flags}` : ""}
-      </em>
-      {needsServer ? (
-        <span className={`node-server ${server ? (server.ready ? "ok" : "warn") : "missing"}`}>
-          {server ? `${server.name}${server.ready ? "" : " · 未就绪"}` : "未选服务器"}
-        </span>
-      ) : null}
+      <em>{meta}</em>
+      {needsServer ? <span className={`node-server ${server ? (server.ready ? "ok" : "warn") : "missing"}`}>{serverText}</span> : null}
     </div>
   );
 }
 
+/** Spacing of the automatic layout: a node card is 200 px wide; the gap leaves room for the link labels. */
+export const LAYOUT = { colWidth: 300, rowHeight: 130, rowsPerColumn: 5 } as const;
+const ROLE_ORDER: Role[] = ["gateway", "relay", "ix", "hub", "exit"];
+
+/**
+ * Positions for a left-to-right layered layout (gateway → relay → IX → hub →
+ * exit). A layer with more than LAYOUT.rowsPerColumn nodes wraps into further
+ * columns, so many exits do not make one tall column. Display only: used for
+ * nodes without a saved position, and by「自动排列」on request.
+ */
+export function autoLayout(nodes: Node[], groups?: readonly { members: string[] }[]): Map<string, { x: number; y: number }> {
+  const out = new Map<string, { x: number; y: number }>();
+  // Exits of one region group next to each other (fewer crossing links);
+  // an exit reached through another exit goes into a layer to the right,
+  // in the order of its carrier.
+  const groupOf = (id: string) => {
+    const i = (groups ?? []).findIndex((g) => g.members.includes(id));
+    return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+  };
+  const isNested = (n: Node) => n.role === "exit" && !!n.via_exit;
+  const layers: Node[][] = [];
+  const roles = [...ROLE_ORDER, ...new Set(nodes.map((n) => n.role).filter((r) => !ROLE_ORDER.includes(r)))];
+  for (const role of roles) {
+    let layer = nodes.filter((n) => n.role === role && !isNested(n));
+    if (role === "exit") layer = [...layer].sort((a, b) => groupOf(a.id) - groupOf(b.id));
+    layers.push(layer);
+    if (role === "exit") {
+      const order = new Map(layer.map((n, i) => [n.id, i]));
+      layers.push(nodes.filter(isNested).sort((a, b) => (order.get(a.via_exit!) ?? 99) - (order.get(b.via_exit!) ?? 99)));
+    }
+  }
+  let col = 0;
+  for (const layer of layers) {
+    if (layer.length === 0) continue;
+    const cols = Math.ceil(layer.length / LAYOUT.rowsPerColumn);
+    const rows = Math.min(layer.length, LAYOUT.rowsPerColumn);
+    layer.forEach((n, i) => {
+      const c = Math.floor(i / LAYOUT.rowsPerColumn);
+      const r = i % LAYOUT.rowsPerColumn;
+      // Centre short layers against the tallest possible layer.
+      const offset = ((LAYOUT.rowsPerColumn - rows) * LAYOUT.rowHeight) / 2;
+      out.set(n.id, { x: (col + c) * LAYOUT.colWidth, y: offset + r * LAYOUT.rowHeight });
+    });
+    col += cols;
+  }
+  return out;
+}
+
 function toFlow(topo: Topology, servers: Map<string, ServerView>, issues: Issue[]): { nodes: RFNode[]; edges: Edge[] } {
   const bad = new Set(issues.filter((i) => i.severity === "error").flatMap((i) => [i.node_id, i.link_id]).filter(Boolean) as string[]);
+  // Nodes that were never placed get a layered position instead of all sitting at 0,0.
+  const auto = topo.nodes.some((n) => n.x === undefined && n.y === undefined) ? autoLayout(topo.nodes, topo.region_groups) : null;
   return {
     nodes: topo.nodes.map((n) => ({
       id: n.id,
-      position: { x: n.x ?? 0, y: n.y ?? 0 },
+      position: n.x === undefined && n.y === undefined && auto ? auto.get(n.id)! : { x: n.x ?? 0, y: n.y ?? 0 },
       data: { label: nodeLabel(n, n.server_id ? servers.get(n.server_id) : undefined) },
       className: `topo-node role-${n.role}${n.residential ? " residential" : ""}${n.role === "exit" && n.external ? " external" : ""}${n.role === "exit" && n.via_exit ? " nested" : ""}${bad.has(n.id) ? " has-error" : ""}`,
     })),
@@ -153,6 +198,8 @@ function toFlow(topo: Topology, servers: Map<string, ServerView>, issues: Issue[
       source: l.from,
       target: l.to,
       label: transportLabel[l.transport] + (l.standby ? " · 待命" : "") + (l.enabled ? "" : " · 停用"),
+      labelBgPadding: [6, 3] as [number, number],
+      labelBgBorderRadius: 4,
       animated: !l.standby && l.enabled,
       className: `topo-edge${l.standby ? " standby" : ""}${l.enabled ? "" : " disabled"}${bad.has(l.id) ? " has-error" : ""}`,
     })),
@@ -214,15 +261,32 @@ function Canvas({
         onEdgeClick={(_, e) => onSelect({ kind: "link", id: e.id })}
         onPaneClick={() => onSelect(null)}
         fitView
+        fitViewOptions={{ padding: 0.12, maxZoom: 1.1 }}
+        minZoom={0.3}
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={18} />
         <MiniMap pannable zoomable />
         <Controls showInteractive={false} />
       </ReactFlow>
-      <Button size="small" className="canvas-fit" icon={<ExpandOutlined />} onClick={() => flow.fitView({ duration: 200 })}>
-        适应画布
-      </Button>
+      <Space size={4} className="canvas-fit">
+        <Tooltip title="按 网关 → 中继 → IX → 枢纽 → 出口 重新排列全部节点；改的只是画布位置，保存后记住">
+          <Button
+            size="small"
+            onClick={() => {
+              const pos = autoLayout(topo.nodes, topo.region_groups);
+              onChange({ ...topo, nodes: topo.nodes.map((n) => ({ ...n, ...(pos.get(n.id) ?? {}) })) });
+              setNodes((cur) => cur.map((n) => ({ ...n, position: pos.get(n.id) ?? n.position })));
+              window.setTimeout(() => flow.fitView({ duration: 200 }), 0);
+            }}
+          >
+            自动排列
+          </Button>
+        </Tooltip>
+        <Button size="small" icon={<ExpandOutlined />} onClick={() => flow.fitView({ duration: 200 })}>
+          适应画布
+        </Button>
+      </Space>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 // 概览: what state the system is in and what to do next. Every tile shows
 // real data or an explicit empty / unavailable state.
 
-import { Space, Steps, Typography } from "antd";
+import { Space, Steps, Tooltip, Typography } from "antd";
 import type { ReactNode } from "react";
 import type { PanelStatus, RegionGroupView } from "./types";
 import * as api from "./api";
@@ -13,15 +13,18 @@ import { SniffSummary } from "./Sniff";
 import { href, useStatus, useTopologyDoc } from "./state";
 import {
   ApiErrorAlert,
+  EllipsisText,
   Link,
   Page,
   PendingInstallIndicator,
   Section,
+  SplitStatus,
   StatusTag,
   Tile,
   TimeText,
   errorTitle,
   groupLabel,
+  joinReasons,
   useApi,
   type ApiState,
   KV,
@@ -71,10 +74,23 @@ function GroupActualCell({ g, nodeName }: { g: RegionGroupView; nodeName: (id: s
     );
   }
   const t = actualTag(a);
+  const label = a.state === "not_switchable" ? "枢纽不切换" : `实际未知 · ${t.label}`;
   return (
-    <StatusTag kind={t.kind} title={`${ACTUAL_CODE[a.code ?? ""] ?? a.code ?? ""}${a.message ? `：${a.message}` : ""}。${model}`}>
-      {a.state === "not_switchable" ? "枢纽不切换" : `实际未知 · ${t.label}`}
-    </StatusTag>
+    <SplitStatus
+      kind={t.kind}
+      label={label}
+      detail="hidden"
+      testId={`groups-tile-status-${g.id}`}
+      title={
+        <span>
+          {label}
+          <br />
+          {joinReasons([ACTUAL_CODE[a.code ?? ""] ?? a.code, a.message])}
+          <br />
+          {model}
+        </span>
+      }
+    />
   );
 }
 
@@ -96,12 +112,14 @@ function ProbeChannel({ status, configured }: { status: PanelStatus | null; conf
       ? "宿主代理 meridian-host 连不上，现在不能探测"
       : "面板没有配置宿主探测通道（meridian-host 未运行或未挂载）";
   return (
-    <Space size={4} data-testid="probe-channel" wrap>
-      <StatusTag kind="attention">不可用</StatusTag>
-      <Typography.Text type="secondary" title={status.probe_error}>
+    <span data-testid="probe-channel" className="probe-channel">
+      <StatusTag kind="attention" title={status.probe_error}>
+        不可用
+      </StatusTag>
+      <Typography.Text type="secondary" className="probe-channel-why">
         {reason}
       </Typography.Text>
-    </Space>
+    </span>
   );
 }
 
@@ -316,12 +334,12 @@ export default function OverviewPage() {
               return (
                 <>
                   <Row label="账户">{d.accounts.length === 0 ? "未添加" : d.accounts.length}</Row>
-                  <Row label="Mesh 账户">
+                  <Row label="Mesh 账户" stacked={!!sel}>
                     {sel ? (
-                      <Space size={4}>
-                        <span>{sel.name}</span>
-                        <StatusTag kind={ck.kind}>{ck.label}</StatusTag>
-                      </Space>
+                      <span className="inline-status">
+                        <EllipsisText text={sel.name} />
+                        <SplitStatus kind={ck.kind} label={ck.label} />
+                      </span>
                     ) : (
                       <Typography.Text type="secondary">未选择</Typography.Text>
                     )}
@@ -379,22 +397,27 @@ export default function OverviewPage() {
                     </StatusTag>
                   )}
                 </Row>
-                {d.groups.slice(0, GROUP_TILE_ROWS).map((g) => (
-                  <Row
-                    key={g.id}
-                    label={
-                      <Space size={4}>
-                        <Link to={href("exits", g.id)}>{groupLabel(g, d.groups)}</Link>
-                        <Typography.Text type="secondary" style={{ whiteSpace: "nowrap" }}>
+                <ul className="group-rows" aria-label="地区组">
+                  {d.groups.slice(0, GROUP_TILE_ROWS).map((g) => {
+                    const label = groupLabel(g, d.groups);
+                    return (
+                      <li key={g.id} className="group-row" data-testid={`groups-tile-row-${g.id}`}>
+                        <Tooltip title={label}>
+                          <span className="group-row-name">
+                            <Link to={href("exits", g.id)}>{label}</Link>
+                          </span>
+                        </Tooltip>
+                        <Typography.Text type="secondary" className="group-row-mode">
                           {g.mode === "manual" ? "手动" : "自动"}
+                          {g.is_default ? " · 默认" : ""}
                         </Typography.Text>
-                        {g.is_default ? <Typography.Text type="secondary">· 默认</Typography.Text> : null}
-                      </Space>
-                    }
-                  >
-                    <GroupActualCell g={g} nodeName={nodeName} />
-                  </Row>
-                ))}
+                        <span className="group-row-state">
+                          <GroupActualCell g={g} nodeName={nodeName} />
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
                 {d.groups.length > GROUP_TILE_ROWS ? (
                   <div className="tile-more">
                     <span data-testid="groups-tile-more">
@@ -409,7 +432,7 @@ export default function OverviewPage() {
         </Tile>
 
         {upstream.data?.sharing ? (
-          <Tile title="国内中继分担" to={href("topology")}>
+          <Tile title="国内中继分担" to={href("exits")}>
             <RelaySharingView s={upstream.data.sharing} compact />
           </Tile>
         ) : null}

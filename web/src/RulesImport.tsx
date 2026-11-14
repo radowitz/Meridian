@@ -6,11 +6,11 @@
 // panel for preview / confirm and never stored in web storage. The panel
 // keeps only the rule part (docs/architecture.md「从 mihomo 导入」).
 
-import { Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, Button, Checkbox, Drawer, Form, Input, InputNumber, Modal, Radio, Select, Space, Switch, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import type { ImportPreview, ImportRequest, ImportRow, RuleRef, RuleSetAuthInput, RuleSetView, RuleTestResult, ServiceGroup, Topology } from "./types";
-import { ApiErrorAlert, Section, StatusTag, TABLE_SCROLL, TimeText, groupLabel, useConfirmDanger } from "./ui";
+import { ApiErrorAlert, DataTable, Explain, RowActions, Section, StatusTag, TimeText, groupLabel, useConfirmDanger } from "./ui";
 
 /** Panel targets a service group or a mapping can point at. */
 export function targetOptions(topo: Topology): { value: string; label: string }[] {
@@ -223,27 +223,35 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
             ))}
             {preview.quic ? <Tag color="purple">QUIC 开关（{preview.quic}）</Tag> : null}
           </Space>
-          {preview.notes.map((n) => (
-            <Typography.Paragraph key={n} type="secondary" style={{ fontSize: 12, marginBottom: 4 }}>
-              {n}
-            </Typography.Paragraph>
-          ))}
+          {preview.notes.length > 0 ? (
+            <Explain summary={preview.notes[0]} label={preview.notes.length > 1 ? `其余 ${preview.notes.length - 1} 条说明` : "了解更多"}>
+              {preview.notes.length > 1 ? (
+                <ul className="plain-list">
+                  {preview.notes.slice(1).map((n) => (
+                    <li key={n}>{n}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </Explain>
+          ) : null}
 
           {preview.mapping.length > 0 ? (
             <Section title="线路映射：mihomo 的线路 / 地区 → 面板的地区组或出口">
-              <Table
+              <DataTable
                 size="small"
                 rowKey="name"
-                pagination={false}
+                pageSize={50}
                 dataSource={preview.mapping}
                 columns={[
-                  { title: "mihomo 名字", dataIndex: "name", render: (v: string, m) => <span>{v} <Tag>{m.kind === "line" ? "线路组" : m.kind === "selector" ? "选择组" : "节点"}</Tag></span> },
-                  { title: "用到的行", render: (_, m) => (m.used_by ?? []).join("、") },
+                  { title: "mihomo 名字", kind: "flex", width: 200, dataIndex: "name", render: (v: string, m) => <span>{v} <Tag>{m.kind === "line" ? "线路组" : m.kind === "selector" ? "选择组" : "节点"}</Tag></span> },
+                  { title: "用到的行", kind: "ellipsis", width: 160, render: (_, m) => (m.used_by ?? []).join("、") || "—" },
                   {
                     title: "对应到",
+                    kind: "fixed",
+                    width: 300,
                     render: (_, m) => (
                       <Select
-                        style={{ minWidth: 260 }}
+                        style={{ width: "100%" }}
                         aria-label={`映射 ${m.name}`}
                         value={mapping[m.name] ?? m.mapped}
                         placeholder="选择地区组或出口"
@@ -259,16 +267,16 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
 
           {preview.services.length > 0 ? (
             <Section title="服务组（mihomo 的选择组）">
-              <Table
+              <DataTable
                 size="small"
                 rowKey="id"
-                pagination={false}
+                pageSize={50}
                 dataSource={preview.services}
                 columns={[
-                  { title: "服务组", render: (_, s) => <span>{s.name} {s.default ? <Tag color="gold">MATCH</Tag> : null}</span> },
-                  { title: "mihomo 选中路径", render: (_, s) => <span className="mono">{s.chain.join(" → ")}</span> },
-                  { title: "选中来源", render: (_, s) => ({ selection: "选中状态", ui: "手动选择", first_member: "第一个成员（没有选中状态）" })[s.pick_from] ?? s.pick_from },
-                  { title: "导入后指向", render: (_, s) => (s.keep_current ? `${specLabel(topo, s.current)}（保留面板当前）` : specLabel(topo, s.target)) },
+                  { title: "服务组", kind: "flex", width: 160, render: (_, s) => <span>{s.name} {s.default ? <Tag color="gold">MATCH</Tag> : null}</span> },
+                  { title: "mihomo 选中路径", kind: "ellipsis", width: 240, mono: true, render: (_, s) => s.chain.join(" → ") },
+                  { title: "选中来源", kind: "ellipsis", width: 160, render: (_, s) => ({ selection: "选中状态", ui: "手动选择", first_member: "第一个成员（没有选中状态）" })[s.pick_from] ?? s.pick_from },
+                  { title: "导入后指向", kind: "flex", width: 200, render: (_, s) => (s.keep_current ? `${specLabel(topo, s.current)}（保留面板当前）` : specLabel(topo, s.target)) },
                 ]}
               />
             </Section>
@@ -276,9 +284,7 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
 
           {(preview.accept_summary ?? []).length > 0 ? (
             <Section title="需要接受的替代（按类型）">
-              <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-                同一类可以一次全部接受；每一行仍在下面逐条列出。接受的类型会记在每条规则上，确认时和预览一起核对。
-              </Typography.Paragraph>
+              <Explain summary="同一类可以一次全部接受；每一行仍在下面逐条列出。">接受的类型会记在每条规则上，确认时和预览一起核对。</Explain>
               <Space direction="vertical" size={4} data-testid="accept-codes">
                 {preview.accept_summary!.map((c) => (
                   <Checkbox
@@ -296,17 +302,17 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
 
           {preview.rule_sets.length > 0 ? (
             <Section title="规则集">
-              <Table
+              <DataTable
                 size="small"
                 rowKey="name"
-                pagination={false}
+                pageSize={50}
                 dataSource={preview.rule_sets}
                 columns={[
-                  { title: "名称", render: (_, r) => <span>{r.name}{r.auth ? <Tooltip title="URL 里带的认证信息确认后存入凭据存储，不显示、不导出；面板只在下载这个规则集时附加。"><Tag color="gold" style={{ marginLeft: 4 }}>订阅认证 {r.auth}</Tag></Tooltip> : null}</span> },
-                  { title: "状态", render: (_, r) => <Tooltip title={r.error}>{r.state === "available" ? <StatusTag kind="ok">已下载</StatusTag> : r.state === "pending" ? <StatusTag kind="running">下载中</StatusTag> : <StatusTag kind="failed">{r.state}</StatusTag>}</Tooltip> },
-                  { title: "格式", render: (_, r) => r.format ?? "—" },
-                  { title: "条目", render: (_, r) => (r.counts ? Object.entries(r.counts).map(([k, v]) => `${k} ${v}`).join("，") : "—") },
-                  { title: "不能执行", render: (_, r) => (r.unsupported ? Object.entries(r.unsupported).map(([k, v]) => `${k} ${v}`).join("，") : "—") },
+                  { title: "名称", kind: "flex", width: 200, render: (_, r) => <span>{r.name}{r.auth ? <Tooltip title="URL 里带的认证信息确认后存入凭据存储，不显示、不导出；面板只在下载这个规则集时附加。"><Tag color="gold" style={{ marginLeft: 4 }}>订阅认证 {r.auth}</Tag></Tooltip> : null}</span> },
+                  { title: "状态", kind: "fixed", width: 110, render: (_, r) => <Tooltip title={r.error}>{r.state === "available" ? <StatusTag kind="ok">已下载</StatusTag> : r.state === "pending" ? <StatusTag kind="running">下载中</StatusTag> : <StatusTag kind="failed">{r.state}</StatusTag>}</Tooltip> },
+                  { title: "格式", kind: "fixed", width: 110, render: (_, r) => r.format ?? "—" },
+                  { title: "条目", kind: "ellipsis", width: 160, render: (_, r) => (r.counts ? Object.entries(r.counts).map(([k, v]) => `${k} ${v}`).join("，") : "—") },
+                  { title: "不能执行", kind: "ellipsis", width: 160, render: (_, r) => (r.unsupported ? Object.entries(r.unsupported).map(([k, v]) => `${k} ${v}`).join("，") : "—") },
                 ]}
               />
             </Section>
@@ -326,19 +332,20 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
                 { value: "changed", label: "变化" },
               ]}
             />
-            <Table<ImportRow>
+            <DataTable<ImportRow>
               size="small"
               rowKey={(r) => String(r.line)}
-              pagination={false}
-              scroll={TABLE_SCROLL}
+              pageSize={50}
               dataSource={rows}
               onRow={(r) => ({ "data-testid": `import-row-${r.line}` }) as React.HTMLAttributes<HTMLElement>}
               columns={[
-                { title: "行", dataIndex: "line", width: 56 },
-                { title: "原文", render: (_, r) => <span className="mono">{r.text}</span> },
-                { title: "映射为", render: (_, r) => <span>{ACTION_LABEL[r.action]}{r.match ? `：${r.match}` : ""}{r.target ? ` → ${r.target.kind === "service" ? `服务组 ${r.target.name}（${specLabel(topo, r.target.resolved)}）` : specLabel(topo, r.target.resolved ?? r.target.kind)}` : ""}</span> },
+                { title: "行", dataIndex: "line", kind: "fixed", width: 56 },
+                { title: "原文", kind: "ellipsis", width: 240, mono: true, render: (_, r) => r.text },
+                { title: "映射为", kind: "flex", width: 220, render: (_, r) => <span>{ACTION_LABEL[r.action]}{r.match ? `：${r.match}` : ""}{r.target ? ` → ${r.target.kind === "service" ? `服务组 ${r.target.name}（${specLabel(topo, r.target.resolved)}）` : specLabel(topo, r.target.resolved ?? r.target.kind)}` : ""}</span> },
                 {
                   title: "状态",
+                  kind: "fixed",
+                  width: 112,
                   render: (_, r) => (
                     <Space size={2} direction="vertical">
                       <StatusTag kind={STATUS_TAG[r.status].kind}>{STATUS_TAG[r.status].text}</StatusTag>
@@ -349,6 +356,8 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
                 },
                 {
                   title: "说明",
+                  kind: "flex",
+                  width: 240,
                   render: (_, r) => (
                     <Space direction="vertical" size={2}>
                       {(r.flags ?? []).map((f) => (
@@ -375,6 +384,8 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
                 },
                 {
                   title: "删除",
+                  kind: "fixed",
+                  width: 64,
                   render: (_, r) =>
                     r.action === "match" || r.action === "tail" || r.action === "after_match" ? null : (
                       <Switch
@@ -402,7 +413,7 @@ export function ImportDrawer({ open, topo, onClose, onDone }: { open: boolean; t
               </Typography.Paragraph>
             ) : null}
           </Section>
-          <Space style={{ marginTop: 12 }}>
+          <Space style={{ marginTop: 12 }} wrap>
             <Typography.Text type="secondary">改了映射、删除或接受后请先「刷新预览」，确认的是最后一次预览的内容。</Typography.Text>
             <Button type="primary" disabled={!preview.can_confirm} loading={busy} onClick={() => void confirmImport()}>
               确认导入
@@ -429,24 +440,26 @@ export function ServiceGroupsSection({ topo, dirty, onChanged }: { topo: Topolog
   const opts = targetOptions(topo);
   return (
     <Section title="服务组">
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        规则可以指向服务组，服务组再指向一个地区组、出口、直连或拒绝。改服务组的指向就像在 mihomo 里切换选择组：所有用它的规则一起改，不必动规则；安装后生效，住宅 / IPv6 要求照常校验。检测项和「按检测自动选择」在解锁页设置（候选就是指向的地区组的成员）。
-      </Typography.Paragraph>
+      <Explain summary="规则可以指向服务组，服务组再指向一个地区组、出口、直连或拒绝；改服务组的指向，所有用它的规则一起改。">
+        就像在 mihomo 里切换选择组：不必动规则；安装后生效，住宅 / IPv6 要求照常校验。检测项和「按检测自动选择」在解锁页设置（候选就是指向的地区组的成员）。
+      </Explain>
       {dirty ? <Alert type="warning" showIcon message="规则有未保存的修改：先保存或放弃，再改服务组。" style={{ marginBottom: 8 }} /> : null}
       {error ? <ApiErrorAlert error={error} /> : null}
-      <Table
+      <DataTable
         size="small"
         rowKey={(r) => r.service_group.id}
-        pagination={false}
+        pageSize={50}
         dataSource={data ?? []}
         locale={{ emptyText: "还没有服务组（导入 mihomo 配置时按它的选择组创建）" }}
         columns={[
-          { title: "服务组", render: (_, r) => <span>{r.service_group.name} {r.service_group.default ? <Tag color="gold">MATCH / 默认组</Tag> : null}{r.service_group.origin === "mihomo" ? <Tag>导入</Tag> : null}{r.service_group.select === "auto" ? <Tag color="blue">按检测自动选择</Tag> : null}{r.service_group.probes?.length ? <Tag>{r.service_group.probes.length} 个检测项</Tag> : null}</span> },
+          { title: "服务组", kind: "flex", width: 240, render: (_, r) => <span>{r.service_group.name} {r.service_group.default ? <Tag color="gold">MATCH / 默认组</Tag> : null}{r.service_group.origin === "mihomo" ? <Tag>导入</Tag> : null}{r.service_group.select === "auto" ? <Tag color="blue">按检测自动选择</Tag> : null}{r.service_group.probes?.length ? <Tag>{r.service_group.probes.length} 个检测项</Tag> : null}</span> },
           {
             title: "指向",
+            kind: "fixed",
+            width: 300,
             render: (_, r) => (
               <Select
-                style={{ minWidth: 260 }}
+                style={{ width: "100%" }}
                 aria-label={`服务组 ${r.service_group.name} 指向`}
                 disabled={dirty}
                 value={serviceSpec(r.service_group)}
@@ -464,7 +477,7 @@ export function ServiceGroupsSection({ topo, dirty, onChanged }: { topo: Topolog
               />
             ),
           },
-          { title: "使用的规则", render: (_, r) => (r.used_by.length ? r.used_by.map((u) => `第 ${u.position} 条`).join("、") : "—") },
+          { title: "使用的规则", kind: "ellipsis", width: 200, render: (_, r) => (r.used_by.length ? r.used_by.map((u) => `第 ${u.position} 条`).join("、") : "—") },
         ]}
       />
     </Section>
@@ -519,84 +532,97 @@ export function RuleSetsSection({ dirty, onChanged }: { dirty: boolean; onChange
         </Button>
       }
     >
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        支持 Clash/mihomo 规则集（yaml 或 text；classical、domain、ipcidr）和 Surge 的 .list 与 DOMAIN-SET。规则集在列表里占一条规则的位置。下载沿用名单的国内源 / 海外源 / 全自动（GitHub 原始文件经镜像），也可只用填写的 URL；失败时保留旧版本；新版本里网关执行不了的条目变多时暂缓，等你确认。不能执行的条目（进程、UA、端口、逻辑规则、关键词等）按类型计数。
-      </Typography.Paragraph>
+      <Explain summary="支持 Clash/mihomo 规则集（yaml / text）和 Surge 的 .list 与 DOMAIN-SET；规则集在列表里占一条规则的位置。">
+        支持 Clash/mihomo 规则集（yaml 或 text；classical、domain、ipcidr）和 Surge 的 .list 与 DOMAIN-SET。规则集在列表里占一条规则的位置。下载沿用名单的国内源 / 海外源 / 全自动（GitHub 原始文件经镜像），也可只用填写的 URL；失败时保留旧版本；新版本里网关执行不了的条目变多时暂缓，等你确认。不能执行的条目（进程、UA、端口、逻辑规则、关键词等）按类型计数，这样的规则集标为「部分生效」。
+      </Explain>
       {error ? <ApiErrorAlert error={error} /> : null}
-      <Table<RuleSetView>
+      <DataTable<RuleSetView>
         size="small"
         rowKey={(r) => r.rule_set.id}
-        pagination={false}
-        scroll={TABLE_SCROLL}
+        pageSize={20}
         dataSource={data ?? []}
         locale={{ emptyText: "还没有规则集" }}
+        secondary={(r) => (
+          <>
+            <div className="kv-line"><span className="muted">URL</span> <span className="mono">{r.rule_set.url}</span></div>
+            <div className="kv-line"><span className="muted">格式</span> {r.status.format ?? (r.rule_set.format || "自动识别")}</div>
+            <div className="kv-line"><span className="muted">条目</span> {counts(r.status.counts)}</div>
+            <div className="kv-line"><span className="muted">不能执行</span> {counts(r.status.unsupported)}</div>
+            <div className="kv-line"><span className="muted">使用</span> {r.used_by.length ? r.used_by.map((u) => `第 ${u.position} 条 ${u.name}`).join("、") : "—"}</div>
+            {r.status.applied ? <div className="kv-line"><span className="muted">生效</span> {r.status.applied}</div> : null}
+          </>
+        )}
         columns={[
-          { title: "名称", render: (_, r) => <span>{r.rule_set.name}{r.rule_set.origin === "mihomo" ? <Tag style={{ marginLeft: 4 }}>导入</Tag> : null}</span> },
-          { title: "URL", render: (_, r) => <Typography.Text className="mono" ellipsis style={{ maxWidth: 260 }}>{r.rule_set.url}</Typography.Text> },
-          { title: "格式", render: (_, r) => r.status.format ?? (r.rule_set.format || "自动识别") },
-          { title: "条目", render: (_, r) => counts(r.status.counts) },
-          { title: "不能执行", render: (_, r) => counts(r.status.unsupported) },
           {
-            title: "状态",
+            title: "名称",
+            kind: "flex",
+            width: 180,
             render: (_, r) => (
-              <Space direction="vertical" size={2}>
-                {r.status.state === "ok" ? <StatusTag kind="ok">可用</StatusTag> : r.status.state === "fetching" ? <StatusTag kind="running">下载中</StatusTag> : r.status.state === "held" ? <StatusTag kind="attention">新版本暂缓</StatusTag> : r.status.state === "failed" ? <StatusTag kind="failed">下载失败</StatusTag> : <StatusTag kind="neutral">未下载</StatusTag>}
-                {r.status.fetched_at ? <TimeText value={r.status.fetched_at} /> : null}
-                {r.status.last_error ? <Typography.Text type="danger" style={{ fontSize: 12 }}>{r.status.last_error}</Typography.Text> : null}
-                {r.status.held ? <Typography.Text type="warning" style={{ fontSize: 12 }}>{r.status.held.reason}</Typography.Text> : null}
-                {r.status.applied ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.status.applied}</Typography.Text> : null}
-              </Space>
+              <span>
+                {r.rule_set.name}
+                {r.rule_set.origin === "mihomo" ? <Tag style={{ marginLeft: 4 }}>导入</Tag> : null}
+                {r.auth ? (
+                  <Tooltip title="只写：面板不显示、不导出；只在下载这个规则集时发给 URL 的同一来源（仅 https）">
+                    <Tag color="gold" style={{ marginLeft: 4 }} data-testid={`rs-auth-${r.rule_set.id}`}>
+                      {AUTH_LABEL[r.auth.kind] ?? r.auth.kind}（已设置）
+                    </Tag>
+                  </Tooltip>
+                ) : null}
+              </span>
             ),
           },
+          { title: "URL", kind: "ellipsis", width: 200, mono: true, render: (_, r) => r.rule_set.url },
           {
-            title: "订阅认证",
-            render: (_, r) =>
-              r.auth ? (
-                <Tooltip title="只写：面板不显示、不导出；只在下载这个规则集时发给 URL 的同一来源（仅 https）">
-                  <Tag color="gold" data-testid={`rs-auth-${r.rule_set.id}`}>{AUTH_LABEL[r.auth.kind] ?? r.auth.kind}（已设置）</Tag>
-                </Tooltip>
-              ) : (
-                "—"
-              ),
+            title: "状态",
+            kind: "flex",
+            width: 170,
+            render: (_, r) => (
+              <div className="cell-stack">
+                <span className="cell-tags">
+                  {r.status.state === "ok" ? <StatusTag kind="ok">可用</StatusTag> : r.status.state === "fetching" ? <StatusTag kind="running">下载中</StatusTag> : r.status.state === "held" ? <StatusTag kind="attention">新版本暂缓</StatusTag> : r.status.state === "failed" ? <StatusTag kind="failed">下载失败</StatusTag> : <StatusTag kind="neutral">未下载</StatusTag>}
+                  {r.status.unsupported && Object.keys(r.status.unsupported).length ? (
+                    <Tooltip title={`不能执行的条目：${counts(r.status.unsupported)}`}>
+                      <Tag color="orange">部分生效</Tag>
+                    </Tooltip>
+                  ) : null}
+                </span>
+                {r.status.fetched_at ? <TimeText value={r.status.fetched_at} /> : null}
+                {r.status.last_error ? <Typography.Text type="danger" className="cell-small">{r.status.last_error}</Typography.Text> : null}
+                {r.status.held ? <Typography.Text type="warning" className="cell-small">{r.status.held.reason}</Typography.Text> : null}
+              </div>
+            ),
           },
-          { title: "使用", render: (_, r) => (r.used_by.length ? r.used_by.map((u) => `第 ${u.position} 条 ${u.name}`).join("、") : "—") },
+          { title: "使用", kind: "ellipsis", width: 130, render: (_, r) => (r.used_by.length ? r.used_by.map((u) => `第 ${u.position} 条 ${u.name}`).join("、") : "—") },
           {
             title: "操作",
+            kind: "actions",
+            width: 120,
             render: (_, r) => (
-              <Space size={0}>
+              <RowActions
+                label={r.rule_set.name}
+                more={[
+                  { key: "auth", label: r.auth ? "更换认证" : "设置认证", onClick: () => setAuthFor(r) },
+                  ...(r.auth ? [{ key: "clear", label: "清除认证", onClick: () => void act(() => api.clearRuleSetAuth(r.rule_set.id)) }] : []),
+                  ...(r.status.held ? [{ key: "held", label: "启用暂缓的版本", onClick: () => void act(() => api.activateHeldRuleSet(r.rule_set.id)) }] : []),
+                  {
+                    key: "delete",
+                    label: "删除",
+                    danger: true,
+                    disabled: dirty,
+                    onClick: () =>
+                      confirm({
+                        title: `删除规则集「${r.rule_set.name}」？`,
+                        consequence: r.used_by.length ? "还有规则在用它，面板会拒绝删除。" : "定义和已下载的内容一起删除。",
+                        okText: "删除",
+                        onOk: () => void act(() => api.deleteRuleSet(r.rule_set.id)),
+                      }),
+                  },
+                ]}
+              >
                 <Button type="link" size="small" onClick={() => void act(() => api.fetchRuleSet(r.rule_set.id))}>
                   立即更新
                 </Button>
-                <Button type="link" size="small" onClick={() => setAuthFor(r)}>
-                  {r.auth ? "更换认证" : "设置认证"}
-                </Button>
-                {r.auth ? (
-                  <Button type="link" size="small" onClick={() => void act(() => api.clearRuleSetAuth(r.rule_set.id))}>
-                    清除认证
-                  </Button>
-                ) : null}
-                {r.status.held ? (
-                  <Button type="link" size="small" onClick={() => void act(() => api.activateHeldRuleSet(r.rule_set.id))}>
-                    启用暂缓的版本
-                  </Button>
-                ) : null}
-                <Button
-                  type="link"
-                  size="small"
-                  danger
-                  disabled={dirty}
-                  onClick={() =>
-                    confirm({
-                      title: `删除规则集「${r.rule_set.name}」？`,
-                      consequence: r.used_by.length ? "还有规则在用它，面板会拒绝删除。" : "定义和已下载的内容一起删除。",
-                      okText: "删除",
-                      onOk: () => void act(() => api.deleteRuleSet(r.rule_set.id)),
-                    })
-                  }
-                >
-                  删除
-                </Button>
-              </Space>
+              </RowActions>
             ),
           },
         ]}
@@ -754,13 +780,11 @@ export function RuleTester() {
   const [error, setError] = useState<api.ApiError | null>(null);
   return (
     <Section title="哪条规则会命中？">
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        按已保存的列表从上到下判断（和 Clash / Surge 一样，第一条命中生效），之后是内置国内名单、中国地址直连和默认组。
-      </Typography.Paragraph>
+      <Explain summary="按已保存的列表从上到下判断（和 Clash / Surge 一样，第一条命中生效），之后是内置国内名单、中国地址直连和默认组。" />
       <Space wrap>
-        <Input placeholder="域名，例如 www.example.com" value={name} onChange={(e) => setName(e.target.value)} aria-label="测试域名" style={{ width: 260 }} />
-        <Input placeholder="地址（可选）" value={addr} onChange={(e) => setAddr(e.target.value)} aria-label="测试地址" style={{ width: 200 }} />
-        <Input placeholder="设备 MAC（可选，按设备的规则）" value={mac} onChange={(e) => setMac(e.target.value)} aria-label="测试设备 MAC" style={{ width: 240 }} />
+        <Input placeholder="域名，例如 www.example.com" value={name} onChange={(e) => setName(e.target.value)} aria-label="测试域名" className="input-w260" />
+        <Input placeholder="地址（可选）" value={addr} onChange={(e) => setAddr(e.target.value)} aria-label="测试地址" className="input-w200" />
+        <Input placeholder="设备 MAC（可选，按设备的规则）" value={mac} onChange={(e) => setMac(e.target.value)} aria-label="测试设备 MAC" className="input-w240" />
         <Button
           onClick={async () => {
             setError(null);
@@ -776,7 +800,7 @@ export function RuleTester() {
       </Space>
       {error ? <ApiErrorAlert error={error} /> : null}
       {res ? (
-        <div data-testid="rule-test-result" style={{ marginTop: 8 }}>
+        <div data-testid="rule-test-result" className="wrap-text" style={{ marginTop: 8 }}>
           {res.rule ? (
             <Typography.Text>
               第 {res.rule.position} 条「{res.rule.name}」{res.rule.source_line ? `（mihomo 第 ${res.rule.source_line} 行）` : ""}：{res.reason} → {res.target}

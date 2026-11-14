@@ -14,7 +14,6 @@ import {
   Result,
   Segmented,
   Space,
-  Table,
   Tag,
   Typography,
 } from "antd";
@@ -24,7 +23,7 @@ import { href, useRouter } from "./state";
 import { SOCKS_VALUE_RE, type SOCKSCredentialView, type SSHCredentialCreate, type SSHCredentialView, type SSHSecretInput } from "./types";
 import {
   RowActions,
-  TABLE_SCROLL,
+  DataTable,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -539,24 +538,25 @@ export default function CredentialsPage() {
         }
       >
         {(d) => (
-          <Table
+          <DataTable
             rowKey="id"
             dataSource={d.credentials}
-            pagination={false}
-            scroll={TABLE_SCROLL}
+            pageSize={50}
             onRow={(c) => ({ "data-testid": `credential-row-${c.id}` }) as React.HTMLAttributes<HTMLElement>}
             columns={[
               {
                 title: "名称",
                 dataIndex: "name",
-                className: "cell-name",
+                kind: "flex",
+                width: 150,
                 render: (_, c) => <Link to={href("keys", c.id)}>{c.name}</Link>,
               },
               {
                 title: "种类",
-                className: "nowrap",
+                kind: "flex",
+                width: 150,
                 render: (_, c) => (
-                  <Space size={4}>
+                  <Space size={4} wrap>
                     <span>{kindLabel(c)}</span>
                     {c.generated ? <Tag>面板生成</Tag> : null}
                     {c.has_passphrase ? <Tag>有口令</Tag> : null}
@@ -565,19 +565,21 @@ export default function CredentialsPage() {
               },
               {
                 title: "指纹",
-                width: 260,
+                kind: "flex",
+                width: 200,
                 render: (_, c) => (c.kind === "private_key" ? <Mono ellipsis>{c.fingerprint}</Mono> : <Typography.Text type="secondary">—</Typography.Text>),
               },
-              { title: "创建", render: (_, c) => <TimeText value={c.created_at} /> },
-              { title: "最近轮换", render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
+              { title: "创建", kind: "fixed", width: 100, render: (_, c) => <TimeText value={c.created_at} /> },
+              { title: "最近轮换", kind: "fixed", width: 100, render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
               {
                 title: "使用者",
-                className: "nowrap",
+                kind: "flex",
+                width: 150,
                 render: (_, c) =>
                   c.in_use_by.length === 0 ? (
                     <Typography.Text type="secondary">未使用</Typography.Text>
                   ) : (
-                    <Space size={[4, 0]}>
+                    <Space size={[4, 0]} wrap>
                       {c.in_use_by.slice(0, 3).map((r) => (
                         <Link key={r.kind + r.id} to={r.kind === "server" ? href("servers", r.id) : href("cloudflare") + "?section=mesh"}>
                           {r.name || r.id}
@@ -589,8 +591,8 @@ export default function CredentialsPage() {
               },
               {
                 title: "操作",
-                fixed: "right",
-                className: "cell-actions",
+                kind: "actions",
+                width: 100,
                 render: (_, c) => (
                   <RowActions
                     label={c.name}
@@ -923,27 +925,28 @@ function SocksSection({ focus, openCreate }: { focus: boolean; openCreate: boole
           empty={<EmptyState title="还没有 SOCKS 凭据" description="添加外部 SOCKS 出口之前，先在这里保存代理的用户名和密码。" />}
         >
           {(d) => (
-            <Table
+            <DataTable
               rowKey="id"
               dataSource={d.credentials}
-              pagination={false}
-              scroll={TABLE_SCROLL}
+              pageSize={50}
               onRow={(c) => ({ "data-testid": `socks-row-${c.id}` }) as React.HTMLAttributes<HTMLElement>}
               columns={[
                 {
                   title: "名称",
                   dataIndex: "name",
-                  className: "cell-name",
+                  kind: "flex",
+                  width: 160,
                   render: (_, c) => (
                     <span>
                       {c.name} <Typography.Text type="secondary" className="mono-small">{c.id}</Typography.Text>
                     </span>
                   ),
                 },
-                { title: "备注", width: 200, className: "cell-text", render: (_, c) => c.notes || <Typography.Text type="secondary">—</Typography.Text> },
+                { title: "备注", kind: "flex", width: 160, render: (_, c) => c.notes || <Typography.Text type="secondary">—</Typography.Text> },
                 {
                   title: "用户名和密码",
-                  className: "nowrap",
+                  kind: "fixed",
+                  width: 150,
                   render: (_, c) => (
                     <Space size={4}>
                       <StatusTag kind={c.secret_set ? "ok" : "attention"}>{c.secret_set ? "已设置" : "未设置"}</StatusTag>
@@ -951,16 +954,17 @@ function SocksSection({ focus, openCreate }: { focus: boolean; openCreate: boole
                     </Space>
                   ),
                 },
-                { title: "创建", render: (_, c) => <TimeText value={c.created_at} /> },
-                { title: "最近轮换", render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
+                { title: "创建", kind: "fixed", width: 100, render: (_, c) => <TimeText value={c.created_at} /> },
+                { title: "最近轮换", kind: "fixed", width: 100, render: (_, c) => <TimeText value={c.rotated_at} empty="—" /> },
                 {
                   title: "使用者",
-                  className: "nowrap",
+                  kind: "flex",
+                  width: 140,
                   render: (_, c) =>
                     c.used_by.length === 0 ? (
                       <Typography.Text type="secondary">未使用</Typography.Text>
                     ) : (
-                      <Space size={[4, 0]}>
+                      <Space size={[4, 0]} wrap>
                         {c.used_by.slice(0, 3).map((r) => (
                           <Link key={r.kind + r.id} to={href("exits")}>
                             {r.name || r.id}
@@ -972,8 +976,8 @@ function SocksSection({ focus, openCreate }: { focus: boolean; openCreate: boole
                 },
                 {
                   title: "操作",
-                  fixed: "right",
-                  className: "cell-actions",
+                  kind: "actions",
+                  width: 100,
                   render: (_, c) => (
                     <RowActions
                       label={c.name}

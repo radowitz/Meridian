@@ -17,7 +17,6 @@ import {
   Select,
   Space,
   Steps,
-  Table,
   Tag,
   Typography,
 } from "antd";
@@ -31,7 +30,9 @@ import type { AuthMethod, ChannelMode, LoginHelp, ManagementChannel, SSHCredenti
 import {
   ERROR_TEXT,
   RowActions,
-  TABLE_SCROLL,
+  DataTable,
+  SplitStatus,
+  type FactItem,
   ApiErrorAlert,
   DataView,
   EmptyState,
@@ -921,20 +922,39 @@ export default function ServersPage() {
               <StatusTag kind="ok">{`就绪 ${summary.ready}`}</StatusTag>
               {summary.attention > 0 ? <StatusTag kind="attention">{`需要处理 ${summary.attention}`}</StatusTag> : null}
             </Space>
-            <Table
+            <DataTable
               rowKey="id"
               dataSource={d.servers}
-              pagination={false}
-              scroll={TABLE_SCROLL}
+              pageSize={50}
+              secondary={(s) => (
+                <Facts
+                  items={[
+                    [
+                      "最近测试",
+                      s.last_test ? (
+                        <Space size={4} key="t">
+                          <StatusTag kind={s.last_test.ok ? "ok" : "failed"}>{s.last_test.ok ? "通过" : "失败"}</StatusTag>
+                          <TimeText value={s.last_test.at} />
+                        </Space>
+                      ) : (
+                        "未测试"
+                      ),
+                    ],
+                    ["主机指纹", <Mono key="f">{s.host_key.fingerprint || s.host_key.seen_fingerprint || ""}</Mono>],
+                    ...(s.channel && s.channel.mode !== "direct" ? ([["管理通道", channelText(s, list)]] as FactItem[]) : []),
+                  ]}
+                />
+              )}
               onRow={(s) => ({ "data-testid": `server-row-${s.id}` }) as HTMLAttributes<HTMLElement>}
               columns={[
-                { title: "名称", className: "cell-name", render: (_, s) => <Link to={href("servers", s.id)}>{s.name}</Link> },
+                { title: "名称", kind: "flex", width: 140, render: (_, s) => <Link to={href("servers", s.id)}>{s.name}</Link> },
                 {
                   title: "地址",
-                  className: "nowrap",
+                  kind: "flex",
+                  width: 200,
                   render: (_, s) => (
-                    <Space size={4}>
-                      <Mono>{`${s.user}@${s.address}:${s.port}`}</Mono>
+                    <Space size={4} className="cell-nowrap-flex">
+                      <Mono ellipsis>{`${s.user}@${s.address}:${s.port}`}</Mono>
                       {s.channel && s.channel.mode !== "direct" ? (
                         <Tag title={channelText(s, list)}>{s.channel.mode === "tunnel" ? "经隧道" : "经中继"}</Tag>
                       ) : null}
@@ -943,44 +963,38 @@ export default function ServersPage() {
                 },
                 {
                   title: "登录",
-                  className: "nowrap",
+                  kind: "flex",
+                  width: 150,
                   render: (_, s) =>
                     s.credential ? (
-                      <Space size={4}>
+                      <Space size={4} wrap>
                         <span>{authLabel(s.auth)}</span>
                         <Link to={href("keys", s.credential.id)}>{s.credential.name}</Link>
                       </Space>
                     ) : (
-                      <StatusTag kind="attention">{`${authLabel(s.auth)} · 未选择`}</StatusTag>
+                      <SplitStatus kind="attention" label={`未选择 · ${authLabel(s.auth)}`} />
                     ),
                 },
                 {
                   title: "主机指纹",
+                  kind: "fixed",
+                  width: 110,
                   render: (_, s) => {
                     const st = HOST_KEY_STATUS[s.host_key.state] ?? HOST_KEY_STATUS.unknown;
                     return <StatusTag kind={st.kind} title={s.host_key.fingerprint || s.host_key.seen_fingerprint}>{st.label}</StatusTag>;
                   },
                 },
                 {
-                  title: "最近测试",
-                  render: (_, s) =>
-                    s.last_test ? (
-                      <Space size={4}>
-                        <StatusTag kind={s.last_test.ok ? "ok" : "failed"}>{s.last_test.ok ? "通过" : "失败"}</StatusTag>
-                        <TimeText value={s.last_test.at} />
-                      </Space>
-                    ) : (
-                      <Typography.Text type="secondary">未测试</Typography.Text>
-                    ),
-                },
-                {
                   title: "节点",
-                  className: "nowrap",
+                  kind: "flex",
+                  width: 110,
                   render: (_, s) =>
                     s.node ? <Link to={href("topology", s.node.id)}>{s.node.name || s.node.id}</Link> : <Typography.Text type="secondary">—</Typography.Text>,
                 },
                 {
                   title: "状态",
+                  kind: "fixed",
+                  width: 120,
                   render: (_, s) => {
                     const r = serverReadiness(s);
                     return (
@@ -992,8 +1006,8 @@ export default function ServersPage() {
                 },
                 {
                   title: "操作",
-                  fixed: "right",
-                  className: "cell-actions",
+                  kind: "actions",
+                  width: 110,
                   render: (_, s) => (
                     <RowActions
                       label={s.name}
