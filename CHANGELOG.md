@@ -4,6 +4,17 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.1
+
+- Lists page shows every rule-set (entries, last update, state, error) with
+  per-set and bulk updates; failed rule-set fetches retry after 5/15/60
+  minutes instead of waiting a full interval.
+- Sniff self-check no longer blocks installs on slow exit resolvers: UDP
+  timeout with TCP 53 reachable is a warning, the query timeout is 5 s, and
+  a bare SERVFAIL header counts as an answer.
+- `install.sh`: picks the panel image from an archive that also carries
+  SmartDNS instead of the first image `docker load` lists.
+
 ## v1.0.0
 
 First public release.
