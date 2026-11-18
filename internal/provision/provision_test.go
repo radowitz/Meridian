@@ -379,6 +379,14 @@ func (sb *sandbox) rooted(script string) string {
 		"/usr/sbin/policy-rc.d", sb.root+"/usr/sbin/policy-rc.d",
 		"/proc/sys/", sb.root+"/proc/sys/",
 		"/run/systemd/system", sb.root+"/run/systemd/system",
+		// Host probes that must not see the machine running the tests
+		// (Ubuntu CI runners have systemd-networkd, a writable /run as
+		// root, real interfaces in /sys).
+		"/usr/lib/systemd/system/", sb.root+"/usr/lib/systemd/system/",
+		"/lib/systemd/system/", sb.root+"/lib/systemd/system/",
+		"/run/meridian-fwcompat.lock", sb.root+"/run/meridian-fwcompat.lock",
+		"[ -w /run ]", "[ -w "+sb.root+"/run ]",
+		"/sys/class/net/", sb.root+"/sys/class/net/",
 	)
 	return r.Replace(script)
 }
