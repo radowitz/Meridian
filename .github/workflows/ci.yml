@@ -20,7 +20,12 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: Go tests
-        run: go test ./... -count=1
+        run: |
+          set -o pipefail
+          if ! go test ./... -count=1 2>&1 | tee /tmp/go-test.log; then
+            grep -E '^(--- FAIL|FAIL|panic:)|_test\.go:[0-9]+:' /tmp/go-test.log | head -40 | while IFS= read -r l; do echo "::error title=go test::${l}"; done
+            exit 1
+          fi
       - name: Go build
         run: go build -o /dev/null ./cmd/meridian
       - name: Shell scripts (bash -n, shellcheck)
