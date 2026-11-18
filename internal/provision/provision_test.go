@@ -376,6 +376,10 @@ func (sb *sandbox) rooted(script string) string {
 		"/etc/", sb.root+"/etc/",
 		"/var/lib/meridian", sb.root+"/var/lib/meridian",
 		"/usr/local/sbin/", sb.root+"/usr/local/sbin/",
+		// The directory itself, as "install -d -m 755 '/usr/local/sbin'"
+		// names it (uutils install, on Ubuntu runners, chmods an existing
+		// directory where GNU install leaves it alone).
+		"'/usr/local/sbin'", "'"+sb.root+"/usr/local/sbin'",
 		"/usr/sbin/policy-rc.d", sb.root+"/usr/sbin/policy-rc.d",
 		"/proc/sys/", sb.root+"/proc/sys/",
 		"/run/systemd/system", sb.root+"/run/systemd/system",
