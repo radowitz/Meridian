@@ -304,6 +304,30 @@ func (e *env) bashLib(snippet string) (string, int) {
 	return e.run("../../../state/snippet.sh")
 }
 
+// An archive saved with the panel and SmartDNS ("docker save meridian:local
+// pymumu/smartdns") may list SmartDNS first; the panel image must still be
+// the meridian one, never SmartDNS (it broke a real upgrade).
+func TestLoadImageTarPicksPanelImage(t *testing.T) {
+	e := setup(t)
+	for name, c := range map[string]struct{ loaded, want string }{
+		"smartdns first": {"Loaded image: pymumu/smartdns:latest\nLoaded image: meridian:local", "meridian:local"},
+		"panel first":    {"Loaded image: meridian:local\nLoaded image: pymumu/smartdns:latest", "meridian:local"},
+		"registry ref":   {"Loaded image: pymumu/smartdns:latest\nLoaded image: ghcr.io/example/meridian:v1.0.0", "ghcr.io/example/meridian:v1.0.0"},
+		"single other":   {"Loaded image: example/panel:dev", "example/panel:dev"},
+		"only smartdns":  {"Loaded image: pymumu/smartdns:latest", "meridian:local"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			snippet := "fake_docker() { printf '%s\\n' \"$LOADED\"; }\nDOCKER=fake_docker\n: > \"$MERIDIAN_ENV_FILE.tar\"\n" +
+				"echo \"ref=$(load_image_tar \"$MERIDIAN_ENV_FILE.tar\" 2>/dev/null)\"\n"
+			snippet = "LOADED=$'" + strings.ReplaceAll(c.loaded, "\n", "\\n") + "'\n" + snippet
+			out, code := e.bashLib(snippet)
+			if code != 0 || !strings.Contains(out, "ref="+c.want+"\n") {
+				t.Fatalf("%d %q, want ref=%s", code, out, c.want)
+			}
+		})
+	}
+}
+
 func TestEnvSetIdempotentAndPrivate(t *testing.T) {
 	e := setup(t)
 	f := e.envFile()

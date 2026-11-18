@@ -198,6 +198,7 @@ export const SNIFF_OUTCOME: Record<string, string> = {
   rcode: "错误码（路径可用）",
   connected: "TCP 已建立",
   timeout: "超时",
+  slow: "回答慢（TCP 可达，路径可用）",
   send_refused: "发送被本机拒绝",
   refused: "被对端拒绝",
   unreachable: "不可达",

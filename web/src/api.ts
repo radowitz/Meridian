@@ -26,6 +26,7 @@ import type {
 
   RuleSet,
   RuleSetView,
+  RuleSetBulkJob,
   DNSLogClearError,
   DNSLogClearResidual,
   DNSLogJournalView,
@@ -760,6 +761,8 @@ export const clearRuleSetAuth = (id: string) => request<RuleSetView>("DELETE", `
 export const updateRuleSetDef = (id: string, patch: Partial<RuleSet>) => request<RuleSetView & RulesChange>("PATCH", `/api/rule-sets/${enc(id)}`, patch);
 export const deleteRuleSet = (id: string) => request<{ deleted: string } & RulesChange>("DELETE", `/api/rule-sets/${enc(id)}`);
 export const fetchRuleSet = (id: string) => request<RuleSetView>("POST", `/api/rule-sets/${enc(id)}/update`, {});
+export const updateAllRuleSets = () => request<{ job: RuleSetBulkJob }>("POST", "/api/rule-sets/update-all", {});
+export const getRuleSetsUpdateAll = (signal?: AbortSignal) => request<{ job: RuleSetBulkJob | null }>("GET", "/api/rule-sets/update-all", undefined, signal);
 export const activateHeldRuleSet = (id: string) => request<RuleSetView>("POST", `/api/rule-sets/${enc(id)}/activate-held`, { accept: true });
 export const retargetRules = (mihomoGroup: string, target: string) =>
   request<{ updated: number } & RulesChange>("POST", "/api/rules/retarget", { mihomo_group: mihomoGroup, target });

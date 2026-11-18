@@ -13,6 +13,7 @@ import { CloudDownloadOutlined } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Space, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
+import ListsRuleSets from "./ListsRuleSets";
 import type { ApiError } from "./api";
 import { href, useRouter, useStatus, useTopologyDoc } from "./state";
 import type { ListAttempt, ListKind, ListResult, ListsJob, ListsPolicy, ListsReport, ListsView } from "./types";
@@ -427,6 +428,7 @@ export default function ListsPage() {
           </>
         )}
       </DataView>
+      <ListsRuleSets />
       <Section title="解析配置" id="dns">
         <Typography.Paragraph data-testid="lists-dns-pointer">
           已移到 <Link to={href("dns")}>解析设置</Link>

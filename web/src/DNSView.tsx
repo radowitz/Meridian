@@ -62,6 +62,7 @@ const OUTCOME: Record<string, string> = {
   nxdomain: "NXDOMAIN（有回答）",
   rcode: "错误码（有回答）",
   timeout: "超时",
+  slow: "回答慢（TCP 可达）",
   send_refused: "发送被本机拒绝",
   refused: "被拒绝",
   unreachable: "不可达",

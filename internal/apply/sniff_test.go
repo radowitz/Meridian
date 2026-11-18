@@ -93,6 +93,12 @@ func (h *simHost) serveSniff(t *testing.T) {
 		case "default":
 			res.Targets[0].Status, res.Targets[0].Reason = sniff.TargetFailed, "解析器 [fd66::53:1]:53 超时，没有任何回应"
 			res.Targets[0].Resolvers[0] = sniff.SelfCheckProbe{Server: "[fd66::53:1]:53", Outcome: sniff.OutcomeTimeout}
+		case "slow": // the default's resolver answered too late, its TCP port opened
+			w := "解析器 [fd66::53:1]:53 没有按时回答，但 TCP 53 可以连通（路径可用，解析器慢）"
+			res.Targets[0].Warning = w
+			res.Targets[0].Resolvers[0] = sniff.SelfCheckProbe{Server: "[fd66::53:1]:53", Outcome: sniff.OutcomeSlow}
+			res.Targets[1].Warning = w
+			res.Targets[1].Resolvers[0] = sniff.SelfCheckProbe{Server: "[fd66::53:2]:53", Outcome: sniff.OutcomeSlow}
 		case "other":
 			res.Targets[1].Status, res.Targets[1].Reason = sniff.TargetFailed, "解析器 [fd66::53:2]:53 超时，没有任何回应"
 			res.Targets[1].Resolvers[0] = sniff.SelfCheckProbe{Server: "[fd66::53:2]:53", Outcome: sniff.OutcomeTimeout}

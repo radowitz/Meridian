@@ -180,14 +180,26 @@ EOF
   fi
 }
 
-# load_image_tar FILE: load a docker save archive and print the first image
-# reference it contains (meridian:local for archives built per the docs).
+# load_image_tar FILE: load a docker save archive and print the panel image
+# reference it contains. An archive may carry other images too (the docs'
+# "docker save meridian:local pymumu/smartdns" puts SmartDNS beside the
+# panel, and docker load lists them in no fixed order), so the panel image
+# is the one whose name says meridian; failing that, the only image loaded;
+# otherwise meridian:local. Never a SmartDNS image.
 load_image_tar() {
-  local f="$1" out ref
+  local f="$1" out refs ref
   [[ -r "${f}" ]] || die "镜像包读不到：${f}"
   out="$("${DOCKER}" load -i "${f}")" || die "docker load 失败：${f}"
   echo "${out}" >&2
-  ref="$(sed -n 's/^Loaded image: //p' <<<"${out}" | head -n1)"
+  refs="$(sed -n 's/^Loaded image: //p' <<<"${out}")"
+  ref="$(grep -E '(^|/)meridian(:|@|$)' <<<"${refs}" | head -n1 || true)"
+  if [[ -z "${ref}" ]]; then
+    local others
+    others="$(grep -viE 'smartdns' <<<"${refs}" || true)"
+    if [[ -n "${others}" && "$(wc -l <<<"${others}")" -eq 1 ]]; then
+      ref="${others}"
+    fi
+  fi
   [[ -n "${ref}" ]] || ref="meridian:local"
   echo "${ref}"
 }

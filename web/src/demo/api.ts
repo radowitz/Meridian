@@ -178,6 +178,8 @@ export const DEMO_ROUTES: DemoRoute[] = [
   R("DELETE", "/api/rule-sets/:id/auth", "refuse"),
   R("PATCH", "/api/rule-sets/:id", "refuse"),
   R("DELETE", "/api/rule-sets/:id", "refuse"),
+  R("POST", "/api/rule-sets/update-all", "refuse"),
+  R("GET", "/api/rule-sets/update-all", "special"),
   R("POST", "/api/rule-sets/:id/update", "refuse"),
   R("POST", "/api/rule-sets/:id/activate-held", "refuse"),
   R("POST", "/api/rules/retarget", "refuse"),
@@ -476,6 +478,7 @@ export function makeDemoApi(responses: Record<string, DemoResponse>) {
     if (key === "GET /api/setup/wizard")
       return { status: 200, body: { active: false, state: { step: "gateway", done: [], gateway: { lan_interface: "", lan_ipv4: "", router_ipv4: "" }, template: "" }, detected: {} } };
     if (key === "GET /api/templates") return { status: 200, body: { templates: [] } };
+    if (key === "GET /api/rule-sets/update-all") return { status: 200, body: { job: null } };
     if (key === "GET /api/rules/auto-apply") return { status: 200, body: { enabled: true, pending: false, last: null } };
     if (key === "PUT /api/topology") return responses[key] ?? refusal();
     if (key === "POST /api/unlock/adopt") {

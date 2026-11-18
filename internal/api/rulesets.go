@@ -62,7 +62,10 @@ type RuleSetStatus struct {
 	LastError   string              `json:"last_error,omitempty"`
 	Attempts    []ruleset.Candidate `json:"attempts,omitempty"`
 	Held        *heldVersion        `json:"held,omitempty"`
-	Applied     string              `json:"applied,omitempty"`
+	// Failures counts consecutive failed attempts (reset by a success); the
+	// scheduler retries sooner while it is small (retryBackoff).
+	Failures int    `json:"failures,omitempty"`
+	Applied  string `json:"applied,omitempty"`
 }
 
 type heldVersion struct {
@@ -80,6 +83,7 @@ type ruleSetState struct {
 	// prefetch: content fetched for an import preview, by URL (not secret;
 	// kept in memory until confirmed or the panel restarts).
 	prefetch map[string]prefetched
+	bulk     *rsBulkJob
 }
 
 type prefetched struct {
@@ -141,6 +145,8 @@ func (s *Server) fetchOptions(t model.Topology, id, url string, allowLAN bool) (
 func (s *Server) registerRuleSets(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/rule-sets", s.listRuleSets)
 	mux.HandleFunc("POST /api/rule-sets", s.createRuleSet)
+	mux.HandleFunc("POST /api/rule-sets/update-all", s.updateAllRuleSets)
+	mux.HandleFunc("GET /api/rule-sets/update-all", s.getUpdateAllRuleSets)
 	mux.HandleFunc("PATCH /api/rule-sets/{id}", s.patchRuleSet)
 	mux.HandleFunc("DELETE /api/rule-sets/{id}", s.deleteRuleSet)
 	mux.HandleFunc("POST /api/rule-sets/{id}/update", s.updateRuleSet)
@@ -791,6 +797,7 @@ func (s *Server) fetchOnce(t model.Topology, rs model.RuleSet, p lists.Policy) {
 	if err != nil {
 		s.updateRSStatus(rs.ID, func(st *RuleSetStatus) {
 			st.LastAttempt, st.LastError = now, err.Error()
+			st.Failures++
 			if st.Digest == "" {
 				st.State = "failed"
 			}
@@ -798,9 +805,21 @@ func (s *Server) fetchOnce(t model.Topology, rs model.RuleSet, p lists.Policy) {
 		return
 	}
 	parsed, content, cand, errs := s.fetchCandidates(ctx, rs.URL, sourceMode(rs), rs.Format, rs.Behavior, o, p)
+	// A local refusal (EPERM from the host firewall, e.g. the share-switch
+	// fence of share_txn.go dropping DNS for a few seconds) is transient:
+	// try again shortly instead of waiting for the next schedule.
+	for i := 0; content == nil && i < transientRetries && transientFetchErr(errs); i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(transientRetryDelay):
+		}
+		parsed, content, cand, errs = s.fetchCandidates(ctx, rs.URL, sourceMode(rs), rs.Format, rs.Behavior, o, p)
+	}
 	if content == nil {
 		s.updateRSStatus(rs.ID, func(st *RuleSetStatus) {
 			st.LastAttempt, st.LastError = now, strings.Join(errs, "；")
+			st.Failures++
 			if st.Digest == "" {
 				st.State = "failed"
 			}
@@ -813,7 +832,7 @@ func (s *Server) fetchOnce(t model.Topology, rs model.RuleSet, p lists.Policy) {
 			_ = os.MkdirAll(s.heldDir(), 0o700)
 			_ = writeFileAtomic(filepath.Join(s.heldDir(), rs.ID+".txt"), content, 0o600)
 			s.updateRSStatus(rs.ID, func(st *RuleSetStatus) {
-				st.LastAttempt, st.LastError, st.State = now, "", "held"
+				st.LastAttempt, st.LastError, st.State, st.Failures = now, "", "held", 0
 				st.Held = &heldVersion{Digest: digestOf(content), Format: parsed.Format, Counts: parsed.Counts, Unsupported: parsed.Unsupported, Reason: reason, FetchedAt: now}
 			})
 			return
@@ -822,6 +841,7 @@ func (s *Server) fetchOnce(t model.Topology, rs model.RuleSet, p lists.Policy) {
 	if err := s.activateContent(rs.ID, content, parsed.Format, parsed.Counts, parsed.Unsupported, parsed.Notes, cand.Source, cand.URL); err != nil {
 		s.updateRSStatus(rs.ID, func(st *RuleSetStatus) {
 			st.LastAttempt, st.LastError = now, "写入失败，旧版本保留："+err.Error()
+			st.Failures++
 		})
 	}
 }
@@ -871,7 +891,7 @@ func (s *Server) activateContent(id string, content []byte, format string, count
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	s.updateRSStatus(id, func(st *RuleSetStatus) {
-		st.State, st.FetchedAt, st.LastAttempt, st.LastError = "ok", now, now, ""
+		st.State, st.FetchedAt, st.LastAttempt, st.LastError, st.Failures = "ok", now, now, "", 0
 		st.Digest, st.Format, st.Counts, st.Unsupported, st.Notes, st.Held = digestOf(content), format, counts, unsupported, notes, nil
 		if source != "" {
 			st.Source, st.URL = source, ruleset.Redact(url)
@@ -946,9 +966,9 @@ func (s *Server) activeEntries(id string) ([]ordered.Entry, bool) {
 }
 
 // RunRuleSetScheduler fetches every rule-set whose interval elapsed (default
-// 24 h), checking every 10 minutes, until ctx ends.
+// 24 h) or whose retry after a failure is due, checking every 5 minutes, until ctx ends.
 func (s *Server) RunRuleSetScheduler(ctx context.Context) {
-	tick := time.NewTicker(10 * time.Minute)
+	tick := time.NewTicker(5 * time.Minute)
 	defer tick.Stop()
 	for {
 		select {
@@ -966,21 +986,61 @@ func (s *Server) RunRuleSetScheduler(ctx context.Context) {
 	}
 }
 
-// dueRuleSets are the rule-sets whose interval (default 24 h) elapsed since
-// their last attempt (successful or not), by ID. A rule-set never tried is
-// due at once.
+// retryBackoff: the delay after the 1st, 2nd and 3rd consecutive failure.
+// Later failures (likely permanent) wait for the full interval again.
+var retryBackoff = []time.Duration{5 * time.Minute, 15 * time.Minute, time.Hour}
+
+// Transient local refusals are retried within one attempt.
+var (
+	transientRetries    = 3
+	transientRetryDelay = 15 * time.Second
+)
+
+// transientFetchErr: every candidate failed with a local EPERM.
+func transientFetchErr(errs []string) bool {
+	if len(errs) == 0 {
+		return false
+	}
+	for _, e := range errs {
+		if !strings.Contains(e, "operation not permitted") {
+			return false
+		}
+	}
+	return true
+}
+
+// ruleSetInterval is a rule-set's schedule (default 24 h).
+func ruleSetInterval(rs model.RuleSet) time.Duration {
+	if rs.IntervalSec > 0 {
+		return time.Duration(rs.IntervalSec) * time.Second
+	}
+	return 24 * time.Hour
+}
+
+// nextDelay is the wait after the last attempt: a short backoff after a
+// failure (never longer than the interval), the interval otherwise.
+func nextDelay(rs model.RuleSet, st *RuleSetStatus) time.Duration {
+	iv := ruleSetInterval(rs)
+	if st != nil && st.LastError != "" && st.Failures > 0 && st.Failures <= len(retryBackoff) {
+		if d := retryBackoff[st.Failures-1]; d < iv {
+			return d
+		}
+	}
+	return iv
+}
+
+// dueRuleSets are the rule-sets whose interval (default 24 h), or retry
+// backoff after a failure, elapsed since their last attempt, by ID. A
+// rule-set never tried is due at once.
 func dueRuleSets(t model.Topology, st map[string]*RuleSetStatus, now time.Time) []model.RuleSet {
 	var out []model.RuleSet
 	for _, rs := range t.RuleSets {
-		iv := time.Duration(rs.IntervalSec) * time.Second
-		if iv == 0 {
-			iv = 24 * time.Hour
-		}
+		x := st[rs.ID]
 		last := time.Time{}
-		if x := st[rs.ID]; x != nil {
+		if x != nil {
 			last, _ = time.Parse(time.RFC3339, x.LastAttempt)
 		}
-		if now.Sub(last) >= iv {
+		if now.Sub(last) >= nextDelay(rs, x) {
 			out = append(out, rs)
 		}
 	}

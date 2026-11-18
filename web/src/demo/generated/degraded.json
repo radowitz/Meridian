@@ -14944,6 +14944,7 @@
         "suffix": 41
        },
        "digest": "422a05045c35f56d837c29a61fa822b85201704e577117d336d1c9927fc81b7a",
+       "failures": 1,
        "fetched_at": "2026-01-01T00:00:00Z",
        "format": "surge-list",
        "last_attempt": "2026-01-01T00:00:00Z",
@@ -22971,7 +22972,7 @@
         "rule_index": 36,
         "sniffed": true,
         "source": "192.168.77.23:50003",
-        "start": "2026-01-01T00:00:00Z",
+        "start": "2025-12-31T23:59:00Z",
         "target": "direct",
         "upstream": "198.51.100.13:443"
        },
@@ -23157,7 +23158,7 @@
        "bytes_up": 88567,
        "device": "192.168.77.20",
        "failed": 14,
-       "first_seen": "2025-12-31T00:36:00Z",
+       "first_seen": "2025-12-31T00:35:00Z",
        "last_seen": "2026-01-01T00:00:00Z",
        "mac": "00:00:5e:00:53:20",
        "name_unresolved": 2,
@@ -23445,7 +23446,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T23:42:00Z",
+       "start": "2025-12-31T23:41:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.12:443"
       },
@@ -23608,7 +23609,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T22:39:00Z",
+       "start": "2025-12-31T22:38:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.19:443",
        "why": "no_data"
@@ -23778,7 +23779,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T21:36:00Z",
+       "start": "2025-12-31T21:35:00Z",
        "target": "group:us",
        "upstream": "198.51.100.26:443"
       },
@@ -23928,7 +23929,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T20:33:00Z",
+       "start": "2025-12-31T20:32:00Z",
        "target": "group:hk",
        "upstream": "[2001:db8:5::27]:443"
       },
@@ -24087,7 +24088,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T19:30:00Z",
+       "start": "2025-12-31T19:29:00Z",
        "target": "reject"
       },
       {
@@ -24254,7 +24255,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T18:27:00Z",
+       "start": "2025-12-31T18:26:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.47:443"
       },
@@ -24399,7 +24400,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T17:24:00Z",
+       "start": "2025-12-31T17:23:00Z",
        "target": "direct",
        "view": "own_address_view",
        "why": "other"
@@ -24768,7 +24769,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T21:36:00Z",
+       "start": "2025-12-31T21:35:00Z",
        "target": "group:us",
        "upstream": "198.51.100.26:443"
       },
@@ -24932,7 +24933,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T17:24:00Z",
+       "start": "2025-12-31T17:23:00Z",
        "target": "direct",
        "view": "own_address_view",
        "why": "other"
@@ -25082,7 +25083,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T13:12:00Z",
+       "start": "2025-12-31T13:11:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.42:443"
       },
@@ -25248,7 +25249,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T09:00:00Z",
+       "start": "2025-12-31T08:59:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.30:443",
        "why": "name_unresolved"
@@ -25397,7 +25398,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T04:48:00Z",
+       "start": "2025-12-31T04:47:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.18:443"
       },
@@ -25553,7 +25554,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T00:36:00Z",
+       "start": "2025-12-31T00:35:00Z",
        "target": "direct",
        "upstream": "198.51.100.46:443"
       }
@@ -25704,7 +25705,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T22:39:00Z",
+       "start": "2025-12-31T22:38:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.19:443",
        "why": "no_data"
@@ -25872,7 +25873,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T18:27:00Z",
+       "start": "2025-12-31T18:26:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.47:443"
       },
@@ -26020,7 +26021,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T14:15:00Z",
+       "start": "2025-12-31T14:14:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.35:443",
        "why": "ech"
@@ -26188,7 +26189,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T10:03:00Z",
+       "start": "2025-12-31T10:02:00Z",
        "target": "direct",
        "upstream": "198.51.100.23:443"
       },
@@ -26336,7 +26337,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T05:51:00Z",
+       "start": "2025-12-31T05:50:00Z",
        "target": "group:gb",
        "upstream": "198.51.100.11:443"
       },
@@ -26492,7 +26493,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T01:39:00Z",
+       "start": "2025-12-31T01:38:00Z",
        "target": "group:hk",
        "upstream": "198.51.100.39:443"
       },
@@ -26656,7 +26657,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T23:42:00Z",
+       "start": "2025-12-31T23:41:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.12:443"
       },
@@ -26824,7 +26825,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T19:30:00Z",
+       "start": "2025-12-31T19:29:00Z",
        "target": "reject"
       },
       {
@@ -26980,7 +26981,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T15:18:00Z",
+       "start": "2025-12-31T15:17:00Z",
        "target": "group:gb",
        "upstream": "198.51.100.28:443"
       },
@@ -27148,7 +27149,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T11:06:00Z",
+       "start": "2025-12-31T11:05:00Z",
        "target": "direct",
        "view": "own_address_view",
        "why": "other"
@@ -27301,7 +27302,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T06:54:00Z",
+       "start": "2025-12-31T06:53:00Z",
        "target": "group:sg",
        "upstream": "198.51.100.44:443"
       },
@@ -27472,7 +27473,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T02:42:00Z",
+       "start": "2025-12-31T02:41:00Z",
        "target": "group:us",
        "upstream": "198.51.100.32:443",
        "why": "name_unresolved"
@@ -27782,7 +27783,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T20:33:00Z",
+       "start": "2025-12-31T20:32:00Z",
        "target": "group:hk",
        "upstream": "[2001:db8:5::27]:443"
       },
@@ -27925,7 +27926,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T16:21:00Z",
+       "start": "2025-12-31T16:20:00Z",
        "target": "group:sg",
        "upstream": "[2001:db8:5::1b]:443",
        "why": "no_data"
@@ -28086,7 +28087,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T12:09:00Z",
+       "start": "2025-12-31T12:08:00Z",
        "target": "group:us",
        "upstream": "[2001:db8:5::37]:443"
       },
@@ -28227,7 +28228,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T07:57:00Z",
+       "start": "2025-12-31T07:56:00Z",
        "target": "exit:myext",
        "upstream": "[2001:db8:5::2b]:443",
        "why": "ech"
@@ -28388,7 +28389,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T03:45:00Z",
+       "start": "2025-12-31T03:44:00Z",
        "target": "group:tw",
        "upstream": "[2001:db8:5::1f]:443"
       },

@@ -30,7 +30,7 @@ import (
 type fakeResolvers struct {
 	mu       sync.Mutex
 	mode     map[string]string
-	connect  map[string]string // "ok", "timeout", "refused"
+	connect  map[string]string // "ok", "timeout", "refused"; unset: "timeout" for a "timeout" resolver, else "ok"
 	asked    []string
 	marks    map[string]uint32
 	inflight atomic.Int32
@@ -86,7 +86,10 @@ func (f *fakeResolvers) exchange(ctx context.Context, server string, mark uint32
 
 func (f *fakeResolvers) dial(ctx context.Context, network, addr string, mark uint32) (net.Conn, error) {
 	f.mu.Lock()
-	m := f.connect[addr]
+	m, set := f.connect[addr]
+	if !set && f.mode[addr] == "timeout" {
+		m = "timeout" // a silent resolver is a dead path unless a test says otherwise
+	}
 	f.marks["connect "+addr] = mark
 	f.mu.Unlock()
 	switch m {
@@ -230,6 +233,67 @@ func TestSelfCheckMixedTargets(t *testing.T) {
 	d := res.DefaultResult()
 	if res.OK || d.Status != TargetFailed || d.Connect.Outcome != OutcomeTimeout || !strings.Contains(d.Reason, "TCP") {
 		t.Fatalf("connect probe: %+v", d)
+	}
+}
+
+// A UDP timeout with the same resolver's TCP port opening through the same
+// mark is a slow resolver, not a dead path (the production false positive:
+// SmartDNS answering ". NS" only after 2–3 s): the target passes with a
+// warning, the default verdict passes with a note. A timeout whose TCP
+// follow-up times out or is refused still fails (fail closed).
+func TestSelfCheckSlowResolver(t *testing.T) {
+	f := newFakeResolvers(allModes("timeout"))
+	for _, srv := range []string{rsDom, rsJP, rsHK, rsUS} {
+		f.connect[srv] = "ok"
+	}
+	s := checkServer(t, f)
+	res, _ := s.RunSelfCheck(context.Background(), TriggerRequest)
+	d := res.DefaultResult()
+	if !res.OK || d.Status != TargetOK || d.Resolvers[0].Outcome != OutcomeSlow || d.Resolvers[0].Reached || d.Warning == "" || !strings.Contains(d.Resolvers[0].Error, "tcp connected") {
+		t.Fatalf("%+v", d)
+	}
+	if f.marks["connect "+rsJP] != mJP || len(res.Failing()) != 0 {
+		t.Fatalf("follow-up mark %#x failing %+v", f.marks["connect "+rsJP], res.Failing())
+	}
+	for _, h := range res.ResolverHealth {
+		if h.Server == rsJP {
+			t.Fatalf("a slow resolver was recorded in its health: %+v", h)
+		}
+	}
+	res.TargetsSHA256 = "abc"
+	v := EvaluateSelfCheck(res, "abc", time.Time{}, time.Now())
+	if !v.OK || v.Code != VerdictOK || len(v.Failing) != 0 || !strings.Contains(strings.Join(v.Notes, "|"), "group:hk") {
+		t.Fatalf("%+v", v)
+	}
+	if w := warnings(res); !strings.Contains(w, "exit:jp") || strings.Contains(w, "\n") {
+		t.Fatalf("warning line %q", w)
+	}
+
+	for _, c := range []string{"timeout", "refused"} {
+		f = newFakeResolvers(allModes("timeout"))
+		f.connect[rsHK] = c
+		s = checkServer(t, f)
+		res, _ = s.RunSelfCheck(context.Background(), TriggerRequest)
+		d = res.DefaultResult()
+		if res.OK || d.Status != TargetFailed || d.Resolvers[0].Outcome != OutcomeTimeout || d.Warning != "" {
+			t.Fatalf("%s: %+v", c, d)
+		}
+		res.TargetsSHA256 = "abc"
+		if v := EvaluateSelfCheck(res, "abc", time.Time{}, time.Now()); v.OK || v.Code != VerdictDefaultFailed {
+			t.Fatalf("%s: %+v", c, v)
+		}
+	}
+}
+
+// The bounds leave room for a resolver that answers the root question in
+// 2–3 s, and the budget for a timeout plus the TCP follow-up in each of a
+// few rounds of workers.
+func TestSelfCheckBoundsValues(t *testing.T) {
+	if SelfCheckQueryTimeout < 4*time.Second || SelfCheckRecheckTimeout < 2*time.Second || SelfCheckRecheckTimeout >= SelfCheckQueryTimeout {
+		t.Fatal("query timeouts too short for slow resolvers")
+	}
+	if SelfCheckBudget < 2*(SelfCheckQueryTimeout+SelfCheckConnectTimeout) || SelfCheckConcurrency < 16 {
+		t.Fatal("budget does not fit two rounds of timeout + TCP follow-up")
 	}
 }
 
@@ -511,5 +575,30 @@ func TestSelfCheckKnownSilentResolver(t *testing.T) {
 	res, _ = s.RunSelfCheck(context.Background(), TriggerPeriodic)
 	if p = byTarget(res)["direct"].Resolvers[0]; !p.Reached || s.Resolver.demoted(rsDom, mDirect) {
 		t.Fatalf("answer did not clear it: %+v", p)
+	}
+}
+
+// SmartDNS answers a failed upstream lookup with a bare header (QDCOUNT 0,
+// SERVFAIL): the resolver answered. A success without the question, a
+// wrong id or a non-response still do not count.
+func TestParseSelfCheckReplyBareErrorHeader(t *testing.T) {
+	bare := []byte{0x12, 0x34, 0x81, 0x82, 0, 0, 0, 0, 0, 0, 0, 0}
+	if rc, err := parseSelfCheckReply(bare, 0x1234); err != nil || rc != 2 {
+		t.Fatalf("bare SERVFAIL: %d %v", rc, err)
+	}
+	if _, err := parseSelfCheckReply(bare, 0x4321); err == nil {
+		t.Fatal("wrong id accepted")
+	}
+	noerr := []byte{0x12, 0x34, 0x81, 0x80, 0, 0, 0, 0, 0, 0, 0, 0}
+	if _, err := parseSelfCheckReply(noerr, 0x1234); err == nil {
+		t.Fatal("NOERROR without the question accepted")
+	}
+	query := []byte{0x12, 0x34, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0}
+	if _, err := parseSelfCheckReply(query, 0x1234); err == nil {
+		t.Fatal("non-response accepted")
+	}
+	full := []byte{0x12, 0x34, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1}
+	if rc, err := parseSelfCheckReply(full, 0x1234); err != nil || rc != 0 {
+		t.Fatalf("full reply: %d %v", rc, err)
 	}
 }

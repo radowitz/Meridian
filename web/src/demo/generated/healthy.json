@@ -26890,7 +26890,7 @@
         "rule_index": 0,
         "sniffed": false,
         "source": "192.168.77.24:50004",
-        "start": "2026-01-01T00:00:00Z",
+        "start": "2025-12-31T23:59:00Z",
         "target": "group:gb",
         "upstream": "198.51.100.14:443",
         "why": "ech"

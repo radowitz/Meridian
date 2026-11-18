@@ -226,6 +226,20 @@ export interface RuleSetStatus {
   last_error?: string;
   held?: { digest: string; format: string; counts: Record<string, number>; unsupported?: Record<string, number>; reason: string; fetched_at: string } | null;
   applied?: string;
+  /** Consecutive failed attempts (the scheduler retries sooner while small). */
+  failures?: number;
+}
+
+/** One "update all rule-sets" job. */
+export interface RuleSetBulkJob {
+  id: string;
+  state: "running" | "done";
+  total: number;
+  done: number;
+  failed: string[];
+  skipped: string[];
+  started_at: string;
+  finished_at?: string;
 }
 
 export interface RuleRef {
@@ -3061,7 +3075,7 @@ export interface SniffHealth {
 /** One probe of the forwarder's self-check (internal/sniff/selfcheck.go). */
 export interface SniffProbe {
   server: string;
-  /** answer | nxdomain | rcode | connected | timeout | send_refused | refused | unreachable | malformed | error | not_run */
+  /** answer | nxdomain | rcode | connected | timeout | slow (UDP timed out, TCP 53 connected: passes with a warning) | send_refused | refused | unreachable | malformed | error | not_run */
   outcome: string;
   rcode?: number;
   reached: boolean;
@@ -3077,6 +3091,8 @@ export interface SniffSelfCheckTarget {
   /** ok | failed | unchecked */
   status: string;
   reason?: string;
+  /** set when the target passed only through slow resolvers */
+  warning?: string;
   resolvers?: SniffProbe[] | null;
   connect?: SniffProbe | null;
 }

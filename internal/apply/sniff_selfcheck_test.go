@@ -60,6 +60,24 @@ func TestSniffSelfCheckInstall(t *testing.T) {
 			t.Fatalf("%+v", res.Host.Steps)
 		}
 	})
+	// The production false positive: exit resolvers answer the root
+	// question only after seconds, but their TCP port opens. Installed,
+	// with a warning, not compensated.
+	t.Run("slow resolvers", func(t *testing.T) {
+		r := newRig(t)
+		r.sim.sn.check = "slow"
+		res, err := r.applier().Apply(compileTopo(t, sniffTopo(true, "")), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st := stepNamed(res.Host.Steps, "sniff self-check"); st == nil || !st.OK {
+			t.Fatalf("%+v", res.Host.Steps)
+		}
+		w := strings.Join(res.Host.Warnings, "\n")
+		if !strings.Contains(w, "group:hk") || !strings.Contains(w, "解析器慢") || r.sim.sn.unit != "active" {
+			t.Fatalf("%s", w)
+		}
+	})
 	for name, c := range map[string]struct {
 		mode, code, text string
 	}{

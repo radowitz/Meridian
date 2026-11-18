@@ -73,17 +73,24 @@ const (
 	SelfCheckQType = "NS"
 	selfCheckQType = 2
 
-	SelfCheckQueryTimeout = 2 * time.Second
+	// SelfCheckQueryTimeout: some resolvers answer the root question only
+	// after their own slow recursion (seen: SERVFAIL after 2–3 s while A
+	// queries take 30–180 ms), so the wait is generous.
+	SelfCheckQueryTimeout = 5 * time.Second
 	// SelfCheckRecheckTimeout bounds the probe of a resolver the forwarder
 	// already knows as silent (demoted: Resolver.HealthDemoteFor): the
 	// periodic run re-checks it without waiting the full query timeout for
 	// it every time. An answer within it ends the demotion at once.
-	SelfCheckRecheckTimeout = 500 * time.Millisecond
+	SelfCheckRecheckTimeout = 2 * time.Second
 	SelfCheckConnectTimeout = 3 * time.Second
-	SelfCheckBudget         = 8 * time.Second
-	SelfCheckConcurrency    = 8
-	SelfCheckMaxTargets     = 64
-	SelfCheckMaxResolvers   = 4
+	// SelfCheckBudget: a DNS probe takes at most SelfCheckQueryTimeout
+	// plus, after a timeout, SelfCheckConnectTimeout (the TCP follow-up);
+	// with SelfCheckConcurrency workers a typical rule set (a few dozen
+	// probes) finishes in two or three rounds.
+	SelfCheckBudget       = 20 * time.Second
+	SelfCheckConcurrency  = 16
+	SelfCheckMaxTargets   = 64
+	SelfCheckMaxResolvers = 4
 	// SelfCheckMaxAge is how old a result may be to count as evidence for
 	// an install (EvaluateSelfCheck).
 	SelfCheckMaxAge = 2 * time.Minute
@@ -105,11 +112,15 @@ const (
 
 // Probe outcomes. Reached: answer, nxdomain, rcode (DNS) and connected (TCP).
 const (
-	OutcomeAnswer      = "answer"       // NOERROR
-	OutcomeNXDomain    = "nxdomain"     // NXDOMAIN
-	OutcomeRcode       = "rcode"        // another rcode (SERVFAIL, REFUSED…): the resolver answered
-	OutcomeConnected   = "connected"    // TCP handshake completed
-	OutcomeTimeout     = "timeout"      // nothing came back in time
+	OutcomeAnswer    = "answer"    // NOERROR
+	OutcomeNXDomain  = "nxdomain"  // NXDOMAIN
+	OutcomeRcode     = "rcode"     // another rcode (SERVFAIL, REFUSED…): the resolver answered
+	OutcomeConnected = "connected" // TCP handshake completed
+	OutcomeTimeout   = "timeout"   // nothing came back in time
+	// OutcomeSlow: the UDP question timed out but a TCP connection to the
+	// same resolver through the same mark opened: the path is proven, the
+	// resolver is only slow with this question. Passes, with a warning.
+	OutcomeSlow        = "slow"
 	OutcomeSendRefused = "send_refused" // the kernel refused the send (EPERM/EACCES: dropped on the way out)
 	OutcomeRefused     = "refused"      // ICMP port unreachable (UDP) or RST (TCP)
 	OutcomeUnreachable = "unreachable"  // no route / host or network unreachable
@@ -150,8 +161,11 @@ type SelfCheckTarget struct {
 	Default bool   `json:"default,omitempty"`
 	// Status: ok (a resolver answered and, where done, the connection
 	// opened), failed, unchecked (no resolver, or over the limits).
-	Status    string           `json:"status"`
-	Reason    string           `json:"reason,omitempty"`
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
+	// Warning: the target passed only because a resolver was slow
+	// (OutcomeSlow) and none answered in time.
+	Warning   string           `json:"warning,omitempty"`
 	Resolvers []SelfCheckProbe `json:"resolvers,omitempty"`
 	Connect   *SelfCheckProbe  `json:"connect,omitempty"`
 }
@@ -297,10 +311,24 @@ func (s *Server) TriggerSelfCheck(trigger string) {
 		s.sc.last = res
 		s.sc.mu.Unlock()
 		<-s.sc.run
+		if w := warnings(res); res.OK && w != "" {
+			s.logf("meridian-sniff: self-check (%s, generation %d) passed with warnings: %s", trigger, res.Generation, w)
+		}
 		if !res.OK {
 			s.logf("meridian-sniff: self-check (%s, generation %d) failed for the default target %s: %s", trigger, res.Generation, res.Default, defaultReason(res))
 		}
 	}()
+}
+
+// warnings joins the targets' warnings into one line.
+func warnings(c *SelfCheck) string {
+	var w []string
+	for _, t := range c.Targets {
+		if t.Warning != "" {
+			w = append(w, t.Target+"："+t.Warning)
+		}
+	}
+	return strings.Join(w, "；")
 }
 
 func defaultReason(c *SelfCheck) string {
@@ -420,7 +448,7 @@ feed:
 		if e.Status == TargetUnchecked {
 			continue
 		}
-		e.Status, e.Reason = judgeTarget(e)
+		e.Status, e.Reason, e.Warning = judgeTarget(e)
 		for _, p := range e.Resolvers {
 			res.Incomplete = res.Incomplete || p.Outcome == OutcomeNotRun
 		}
@@ -438,24 +466,32 @@ feed:
 }
 
 // judgeTarget: ok when a resolver answered and the connection probe (if
-// any) opened.
-func judgeTarget(e *SelfCheckTarget) (string, string) {
+// any) opened. A resolver that did not answer in time but whose TCP port
+// opened through the same mark (OutcomeSlow) also proves the path: ok with
+// a warning when no resolver answered. Anything else fails (fail closed).
+func judgeTarget(e *SelfCheckTarget) (status, reason, warning string) {
 	var reached bool
-	var why []string
+	var why, slow []string
 	for _, p := range e.Resolvers {
-		if p.Reached {
+		switch {
+		case p.Reached:
 			reached = true
-			continue
+		case p.Outcome == OutcomeSlow:
+			slow = append(slow, "解析器 "+p.Server+" "+OutcomeText(p.Outcome))
+		default:
+			why = append(why, "解析器 "+p.Server+" "+OutcomeText(p.Outcome))
 		}
-		why = append(why, "解析器 "+p.Server+" "+OutcomeText(p.Outcome))
 	}
-	if !reached {
-		return TargetFailed, strings.Join(why, "；")
+	if !reached && len(slow) == 0 {
+		return TargetFailed, strings.Join(why, "；"), ""
 	}
 	if e.Connect != nil && !e.Connect.Reached {
-		return TargetFailed, "解析器有回答，但到 " + e.Connect.Server + " 的 TCP 连接" + OutcomeText(e.Connect.Outcome)
+		return TargetFailed, "解析器的路径可用，但到 " + e.Connect.Server + " 的 TCP 连接" + OutcomeText(e.Connect.Outcome), ""
 	}
-	return TargetOK, ""
+	if !reached {
+		return TargetOK, "", strings.Join(slow, "；")
+	}
+	return TargetOK, "", ""
 }
 
 // OutcomeText is a probe outcome in plain words.
@@ -471,6 +507,8 @@ func OutcomeText(o string) string {
 		return "已建立"
 	case OutcomeTimeout:
 		return "超时，没有任何回应"
+	case OutcomeSlow:
+		return "没有按时回答，但 TCP 53 可以连通（路径可用，解析器慢）"
 	case OutcomeSendRefused:
 		return "发送被本机拒绝（在出站路径上被丢弃）"
 	case OutcomeRefused:
@@ -502,7 +540,8 @@ func (s *Server) probeDNS(ctx context.Context, server string, t Target) (p SelfC
 	defer func() {
 		d := time.Since(start)
 		p.DurationMS = d.Milliseconds()
-		if p.Outcome != OutcomeNotRun {
+		// slow is neither an answer nor a silent path: not recorded.
+		if p.Outcome != OutcomeNotRun && p.Outcome != OutcomeSlow {
 			s.Resolver.observe(server, t.dnsMark(), p.Outcome, d, "selfcheck")
 		}
 	}()
@@ -516,6 +555,15 @@ func (s *Server) probeDNS(ctx context.Context, server string, t Target) (p SelfC
 	resp, err := s.Resolver.exchange(qctx, t, server, q)
 	if err != nil {
 		p.Outcome, p.Error = classifyNetErr(qctx, err), clipErr(err)
+		// A timeout alone does not tell a dead path from a slow resolver:
+		// try a TCP connection to the same resolver through the same mark
+		// (bounded by the run's budget). Only a completed handshake counts.
+		if p.Outcome == OutcomeTimeout && ctx.Err() == nil {
+			if c := s.probeConnect(ctx, server, t.dnsMark()); c.Reached {
+				p.Outcome = OutcomeSlow
+				p.Error = clipErr(fmt.Errorf("udp: %s; tcp connected in %d ms", p.Error, c.DurationMS))
+			}
+		}
 		return p
 	}
 	rcode, err := parseSelfCheckReply(resp, id)
@@ -601,9 +649,18 @@ func selfCheckQuery() ([]byte, uint16, error) {
 }
 
 // parseSelfCheckReply: a response (QR) to our id with our question (root,
-// NS, IN); returns its rcode. Answer records are not read.
+// NS, IN); returns its rcode. Answer records are not read. An error reply
+// (rcode != 0) with an empty question section is accepted too: SmartDNS
+// answers a failed upstream lookup with a bare 12-byte header
+// (QDCOUNT 0, SERVFAIL), which still proves the resolver answered.
 func parseSelfCheckReply(b []byte, id uint16) (int, error) {
-	if len(b) < 17 || binary.BigEndian.Uint16(b) != id || b[2]&0x80 == 0 {
+	if len(b) < 12 || binary.BigEndian.Uint16(b) != id || b[2]&0x80 == 0 {
+		return 0, errors.New("reply does not match the query")
+	}
+	if rcode := int(b[3] & 0x0f); rcode != 0 && binary.BigEndian.Uint16(b[4:]) == 0 {
+		return rcode, nil
+	}
+	if len(b) < 17 {
 		return 0, errors.New("reply does not match the query")
 	}
 	if binary.BigEndian.Uint16(b[4:]) != 1 || b[12] != 0 || binary.BigEndian.Uint16(b[13:]) != selfCheckQType || binary.BigEndian.Uint16(b[15:]) != 1 {
@@ -665,6 +722,8 @@ func EvaluateSelfCheck(c *SelfCheck, wantSHA string, notBefore, now time.Time) V
 			v.Reason = "默认目标 " + t.Target + " 的路径不通：" + t.Reason
 		case t.Default && t.Status == TargetUnchecked:
 			v.Notes = append(v.Notes, "默认目标 "+t.Target+" 没有自检："+t.Reason)
+		case t.Warning != "":
+			v.Notes = append(v.Notes, "目标 "+t.Target+" 通过但有警告："+t.Warning)
 		case t.Status == TargetFailed:
 			v.Failing = append(v.Failing, t.Target+"："+t.Reason)
 		}
