@@ -1,0 +1,117 @@
+# The panel writes Meridian's own host files through the bind mounts below,
+# and asks meridian-host (deploy/debian/meridian-host.service, on the host)
+# for every runtime action: daemon-reload, starting meridian.service and the
+# generated units, health checks and removal of owned interfaces/tables.
+# The container itself has no NET_ADMIN, no /dev/net/tun and no systemd: if
+# meridian-host is not reachable, "install" fails explicitly.
+# Host networking is kept only so the panel can bind MERIDIAN_BIND (LAN address).
+# Mesh is intentionally not defined here. It does not run on the home gateway.
+# The hub's generated bundle has etc/meridian/mesh-sidecar.compose.yml instead.
+services:
+  meridian:
+    # Written to deploy/.env by deploy/debian/install.sh / upgrade.sh:
+    # a prebuilt image (ghcr.io/<owner>/meridian:<version>), a loaded
+    # archive, a meridian-rollback:<backup> tag, or the local build.
+    image: ${MERIDIAN_IMAGE:-meridian:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    network_mode: host
+    volumes:
+      # Panel database (holds WireGuard private keys) and panel.token stay in
+      # the named volume. Only the SmartDNS domain sets are host directories,
+      # so the resolver container can read them without seeing the database.
+      - meridian-data:/var/lib/meridian
+      # Servers, SSH credentials (passwords, private keys) and Cloudflare
+      # accounts with their tokens: a volume of their own, never part of
+      # the data directory's snapshots, journals or anything copied out of
+      # meridian-data. The panel keeps the directory 0700 and every file
+      # 0600 and refuses a file that is more open. No encryption at rest:
+      # whoever can read this volume (root on the gateway) can use them.
+      - meridian-secrets:/var/lib/meridian-secrets
+      - /var/lib/meridian/geosite:/var/lib/meridian/geosite
+      - /var/lib/meridian/keywords:/var/lib/meridian/keywords
+      - /etc/wireguard:/etc/wireguard
+      - /etc/nftables.d:/etc/nftables.d
+      - /etc/sysctl.d:/etc/sysctl.d
+      - /etc/smartdns:/etc/smartdns
+      - /etc/meridian:/etc/meridian
+      - /etc/systemd/system:/etc/systemd/system
+      - /etc/iproute2/rt_tables.d:/etc/iproute2/rt_tables.d
+      - /usr/local/sbin:/usr/local/sbin
+      # Host execution boundary: the root-only socket directory (kept across
+      # agent restarts) and its token, read-only. Created by install.sh.
+      - /run/meridian-host:/run/meridian-host
+      - /etc/meridian-host/agent.token:/run/secrets/meridian-host.token:ro
+    environment:
+      # The gateway's LAN address the installer confirmed (deploy/.env,
+      # MERIDIAN_BIND=<lan-ip>:8787). Unset: the panel keeps the stored
+      # topology's panel_bind (upgrades) or, on a fresh install, listens on
+      # 127.0.0.1:8787 only (open it through an SSH tunnel for setup).
+      MERIDIAN_BIND: ${MERIDIAN_BIND:-}
+      # At boot the LAN address can appear after the container starts
+      # (allow-hotplug + DHCP). The panel waits up to this long for it,
+      # logging "meridian-bind-waiting" every 10 s and "meridian-bind-ready"
+      # when it listens; then it exits with "meridian-bind-not-ready" and
+      # the restart policy below starts it again. It never binds 0.0.0.0.
+      # See the logs with: docker compose logs meridian
+      MERIDIAN_BIND_WAIT: 180s
+      MERIDIAN_DATA: /var/lib/meridian
+      MERIDIAN_SECRETS_DIR: /var/lib/meridian-secrets
+      MERIDIAN_WEB_DIR: /usr/share/meridian/web
+      MERIDIAN_HOST_SOCKET: /run/meridian-host/agent.sock
+      MERIDIAN_HOST_TOKEN_FILE: /run/secrets/meridian-host.token
+      # Panel-delivered binaries (wstunnel, SmartDNS for remote exits): the
+      # image carries them read-only at /usr/share/meridian/artifacts,
+      # fetched and verified when it was built (deploy/Dockerfile). To use
+      # another verified copy instead, mount it read-only and point this at
+      # it; files are still checked against the pins compiled into the
+      # panel (internal/artifacts/artifacts.lock), so this cannot change the
+      # version or digest. The gateway's own wstunnel (WSS client) is written
+      # through the /usr/local/sbin mount above by the install transaction.
+      # MERIDIAN_ARTIFACTS_DIR: /usr/share/meridian/artifacts
+    restart: unless-stopped
+
+  # The DNS split resolver. deploy/debian/install.sh creates it (and starts
+  # it when /etc/smartdns/smartdns.conf already exists); the first
+  # "安装到本机" writes the config and meridian-host starts it. By hand:
+  #   docker compose --profile dns up -d
+  # Every path the generated config loads is mounted read-only at the same
+  # path (compile.SmartDNSSharedDirs): DoT certificate, geosite and keyword
+  # domain sets. NET_ADMIN is required for nftset writes into inet meridian.
+  # Verify on the gateway with deploy/verify-smartdns.sh (Linux + Docker).
+  # Pin the image digest before production; do not rely on :latest long-term:
+  # set MERIDIAN_SMARTDNS_IMAGE=pymumu/smartdns@sha256:<digest> in deploy/.env
+  # (upgrade.sh keeps it; the release workflow does not rebuild this image).
+  # The fixed container name lets meridian-host restart it after an install
+  # changes smartdns.conf (it never takes a container name from the panel).
+  smartdns:
+    profiles: ["dns"]
+    container_name: meridian-smartdns
+    image: ${MERIDIAN_SMARTDNS_IMAGE:-pymumu/smartdns:latest}
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - /etc/smartdns:/etc/smartdns:ro
+      - /etc/meridian/dns:/etc/meridian/dns:ro
+      - /var/lib/meridian/geosite:/var/lib/meridian/geosite:ro
+      - /var/lib/meridian/keywords:/var/lib/meridian/keywords:ro
+      # The only writable mount: the audit file of the DNS query journal
+      # (settings dns_log, off by default; compile.SmartDNSWritableDirs).
+      # Unused, and empty, while the journal is off. install.sh creates the
+      # directory 0700 root; the reader's unit prepares a regular 0600 file
+      # in it before the resolver is restarted with the audit log on. A
+      # container created before this line existed has no such mount: the
+      # panel then reports the query journal as unavailable until the
+      # container is recreated (docker compose --profile dns up -d).
+      - /var/lib/meridian-dnslog/raw:/var/lib/meridian-dnslog/raw
+    restart: unless-stopped
+    # The image has no ENTRYPOINT (its CMD is "/usr/sbin/smartdns -f -x"), so
+    # the binary must be named here; with only flags the container fails to
+    # start ("exec: -f: executable file not found").
+    command: ["/usr/sbin/smartdns", "-f", "-x", "-c", "/etc/smartdns/smartdns.conf"]
+
+volumes:
+  meridian-data:
+  meridian-secrets:

@@ -1,0 +1,1141 @@
+// Package api is the LAN-only control plane. It refuses to listen on all
+// interfaces unless MERIDIAN_ALLOW_ANY_BIND=1.
+package api
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/radowitz/meridian/internal/acceptance"
+	"github.com/radowitz/meridian/internal/apply"
+	"github.com/radowitz/meridian/internal/artifacts"
+	"github.com/radowitz/meridian/internal/compile"
+	"github.com/radowitz/meridian/internal/credentials"
+	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/hostexec"
+	"github.com/radowitz/meridian/internal/mesh"
+	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/provision"
+	"github.com/radowitz/meridian/internal/sshexec"
+	"github.com/radowitz/meridian/internal/store"
+	"github.com/radowitz/meridian/internal/validate"
+)
+
+type Server struct {
+	Store   *store.Store
+	DataDir string
+	WebDir  string
+	// Token is required on /api except /api/health. An empty token disables
+	// the check so unit tests can call the handler directly. main always sets one.
+	Token string
+	// Auth is the panel's credential state (setup.go). When set it replaces
+	// Token: before initialisation every /api path except the setup ones is
+	// refused, afterwards its token is required. main always sets it.
+	Auth *Auth
+	// SeedExample stores defaults.Example() when no topology is stored
+	// (tests and the demo only; a real install never loads the example).
+	SeedExample bool
+	// HostRoot is where an install writes host files. Empty means "/".
+	// Tests point it at a temp dir.
+	HostRoot string
+	// Host is the host execution boundary (a hostexec.Client to
+	// meridian-host). main always sets it; an install without it fails
+	// explicitly instead of skipping service activation.
+	Host apply.Runtime
+	// Activate is a test shim used when Host is nil (see apply.Applier).
+	Activate func() error
+	// MeshCF and MeshRemote replace the Cloudflare client and the SSH
+	// executor of the Mesh deployment (tests only; nil means the real ones).
+	MeshCF     func(mesh.Credentials) (mesh.Cloudflare, error)
+	MeshRemote func() mesh.Remote
+	// SSHDial replaces the TCP dialer of SSH connections to managed
+	// servers (tests only; nil means net.Dialer).
+	SSHDial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// SSHPool lends authenticated SSH connections across the steps of one
+	// operation flow and remembers rate-limited endpoints
+	// (sshexec.Pool; nil means a default pool, created on first use).
+	SSHPool   *sshexec.Pool
+	sshPoolMu sync.Mutex
+	// meshHostMu serialises writes of the Mesh host detections.
+	meshHostMu sync.Mutex
+	// CloudflareAPIBase replaces the Cloudflare API base URL of the token
+	// permission check (tests only).
+	CloudflareAPIBase string
+	// RemoteStatus reads the remote-access interface's peer status through
+	// the host agent (hostexec.Client in main). Nil: runtime unavailable.
+	RemoteStatus RemoteStatusRuntime
+	// Upstream reads which path and hub carry the gateway's traffic (the
+	// gateway's upstream record, through the host agent; hostexec.Client in
+	// main). Nil: with a backup hub the carrying hub is unknown.
+	Upstream UpstreamRuntime
+	// GatewayGroups reads the gateway's own region-group state (direct
+	// exits) through the host agent (hostexec.Client in main).
+	GatewayGroups GatewayGroupsRuntime
+	// Traffic reads the gateway's forwarded-throughput counters through the
+	// host agent (hostexec.Client in main). Nil: unavailable.
+	Traffic TrafficRuntime
+	traffic trafficLast
+	// Sniff reads the name-sniffing forwarder's status through the host
+	// agent (hostexec.Client in main). Nil: unavailable.
+	Sniff SniffRuntime
+	// DNSLog is the host agent's DNS query journal requests (dns_journal.go;
+	// hostexec.Client in main). Nil: the journal is unavailable.
+	DNSLog DNSLogRuntime
+	// LinkLog is the host agent's link journal requests (link_journal.go;
+	// hostexec.Client in main). Nil: the journal is unavailable.
+	LinkLog LinkLogRuntime
+	// gatewayInSync overrides the "gateway files match the topology" read
+	// of the keyword state (tests only; nil: the install manifest).
+	gatewayInSync func(model.Topology) bool
+	// kw caches the keyword state for a few seconds (keyword_state.go).
+	kw kwCache
+	// Prober is the host agent's read-only unlock probe (the same
+	// hostexec.Client as Host in main). Nil: the panel cannot probe and the
+	// scheduler records that, without inventing results.
+	Prober ProbeRuntime
+	// ProbeJobTimeout bounds one probe job; zero means 15 minutes.
+	ProbeJobTimeout time.Duration
+	// Lists is the host agent's list update action (the same
+	// hostexec.Client in main). Nil: "update now" answers 503.
+	Lists ListsRuntime
+	// listsMu guards listsJob, the one list update that may run at a time.
+	listsMu  sync.Mutex
+	listsJob *listsJob
+	// mu covers read-modify-write of the unlock, pool and probe-job documents.
+	mu sync.Mutex
+	// groupHubMu guards groupHubBusy: one read of the hub's group state
+	// at a time.
+	groupHubMu   sync.Mutex
+	groupHubBusy bool
+	// jobMu guards job, the one probe job that may run at a time.
+	jobMu sync.Mutex
+	job   *jobHandle
+	// identMu guards the last seen exit identities and their change
+	// generations (exit_identity.go).
+	identMu   sync.Mutex
+	identOnce sync.Once
+	identLast map[string]string
+	identGen  map[string]uint64
+	// keyMu serialises key resolution so two installs cannot generate two keys.
+	keyMu sync.Mutex
+	// autoMu keeps one automatic unlock install evaluation at a time
+	// (autoapply.go); clock is its time source (nil: time.Now), and
+	// autoMutate a test seam that alters the bundle compiled with the new
+	// decisions before the allow-list check (tests only).
+	autoMu sync.Mutex
+	// rulesAuto coalesces automatic rule installs (rules_autoapply.go).
+	rulesAuto  rulesAutoState
+	clock      func() time.Time
+	autoMutate func(*compile.Bundle)
+	// Artifacts are the panel-delivered binaries (internal/artifacts),
+	// loaded and verified at startup. Nil: none available; installs that
+	// need one are refused by the preflight.
+	Artifacts *artifacts.Bundle
+	// SecretsDir holds the credential store (servers, SSH credentials,
+	// Cloudflare accounts and their secrets). Empty means <DataDir>/secrets.
+	// It is never part of a snapshot, the topology or an export.
+	SecretsDir string
+	credMu     sync.Mutex
+	creds      *credentials.Store
+	// resMu keeps node → server and server → credential references
+	// consistent across topology saves and deletions.
+	resMu sync.Mutex
+	// raMu serialises remote-access changes with the WireGuard secret
+	// garbage collection (a new PSK is stored before the topology names it).
+	raMu sync.Mutex
+	// HostPreflight is meridian-host's read-only install pre-check
+	// (hostexec.Client in main). Nil: taken from Host when it implements
+	// it; an install to a real host without it is refused.
+	HostPreflight HostPreflightRuntime
+	// provMu guards provBusy (one preflight or provision per node), the
+	// deployment id and the provision outcomes.
+	// Rule-sets (rulesets.go): RuleSetDir is where active contents are
+	// written (default /var/lib/meridian/geosite/rulesets, shared with the
+	// host); RuleSetFetch replaces the downloader (tests); ListsDir is the
+	// gateway lists dir the rule tester reads (default /var/lib/meridian).
+	RuleSetDir   string
+	RuleSetFetch func(o RuleSetFetchOptions) RuleSetFetcher
+	ListsDir     string
+	rsOnce       sync.Once
+	rsState      *ruleSetState
+
+	provMu   sync.Mutex
+	provBusy map[string]bool
+
+	// deployMu guards the stored run of the ordered deployment guide
+	// (deploy_plan.go); deployBoot identifies this panel process, so an
+	// in-flight step stored by another (a restart) is shown as
+	// interrupted, never as done. autoInstalling is set while the
+	// unattended unlock install holds the gateway node lock.
+	// dnsMu guards dnsChecks, the last fixed exit resolver check per exit
+	// (dns.go; in memory only).
+	dnsMu     sync.Mutex
+	dnsChecks map[string]hostexec.DNSCheckResult
+
+	// wizardMu serialises writes of the setup wizard record (wizard.go).
+	wizardMu sync.Mutex
+
+	deployMu       sync.Mutex
+	deployBoot     string
+	deployBootOnce sync.Once
+	autoInstalling atomic.Bool
+
+	// Drill is the host agent's acceptance actions: the read-only tunnel
+	// path check and the three drills (acceptance.go; hostexec.Client in
+	// main). Nil: they are unavailable.
+	Drill DrillRuntime
+	// AccPoll is the pause between two looks at a running drill (default
+	// 2s) and AccDrillLimit how long one drill is followed (tests).
+	AccPoll, AccDrillLimit time.Duration
+	// accMu guards accJob (the one acceptance item being carried out) and
+	// accStore; accConfirm holds the drill confirmations.
+	accMu      sync.Mutex
+	accJob     *accJob
+	accStore   *acceptance.Store
+	accConfirm acceptance.Confirmations
+}
+
+// localNodeID is the node whose files an install writes on this host.
+const localNodeID = "gw"
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", s.health)
+	s.registerSetup(mux)
+	s.registerTemplates(mux)
+	s.registerWizard(mux)
+	mux.HandleFunc("GET /api/meta", s.meta)
+	mux.HandleFunc("GET /api/topology", s.getTopology)
+	mux.HandleFunc("PUT /api/topology", s.putTopology)
+	mux.HandleFunc("POST /api/topology/allocations", s.postAllocations)
+	mux.HandleFunc("POST /api/validate", s.postValidate)
+	mux.HandleFunc("POST /api/compile", s.postCompile)
+	mux.HandleFunc("POST /api/diff", s.postDiff)
+	mux.HandleFunc("POST /api/apply", s.postApply)
+	mux.HandleFunc("POST /api/rollback", s.postRollback)
+	mux.HandleFunc("GET /api/host", s.getHost)
+	mux.HandleFunc("GET /api/status", s.getStatus)
+	mux.HandleFunc("GET /api/upstream", s.getUpstream)
+	mux.HandleFunc("GET /api/traffic", s.getTraffic)
+	mux.HandleFunc("GET /api/sniff", s.getSniff)
+	mux.HandleFunc("PUT /api/sniff", s.putSniff)
+	mux.HandleFunc("POST /api/sniff/selfcheck", s.postSniffSelfCheck)
+	mux.HandleFunc("GET /api/sniff/journal", s.getSniffJournal)
+	mux.HandleFunc("POST /api/sniff/journal/clear", s.postSniffJournalClear)
+	mux.HandleFunc("GET /api/sniff/devices", s.getSniffDevices)
+	mux.HandleFunc("PUT /api/sniff/devices/{addr}/label", s.putDeviceLabel)
+	mux.HandleFunc("DELETE /api/sniff/devices/{addr}/label", s.deleteDeviceLabel)
+	mux.HandleFunc("GET /api/sniff/journal/related", s.getSniffJournalRelated)
+	mux.HandleFunc("GET /api/dns-log", s.getDNSLog)
+	mux.HandleFunc("PUT /api/dns-log", s.putDNSLog)
+	mux.HandleFunc("GET /api/dns-log/journal", s.getDNSJournal)
+	mux.HandleFunc("GET /api/dns-log/devices", s.getDNSDevices)
+	mux.HandleFunc("POST /api/dns-log/clear", s.postDNSLogClear)
+	mux.HandleFunc("GET /api/dns-log/related", s.getDNSLogRelated)
+	mux.HandleFunc("GET /api/link-log", s.getLinkLog)
+	mux.HandleFunc("GET /api/link-log/current", s.getLinkLogCurrent)
+	mux.HandleFunc("GET /api/link-log/events", s.getLinkLogEvents)
+	mux.HandleFunc("POST /api/link-log/clear", s.postLinkLogClear)
+	mux.HandleFunc("POST /api/host/recover", s.postHostRecover)
+	mux.HandleFunc("POST /api/provision", s.postProvision)
+	mux.HandleFunc("GET /api/pools", s.getPools)
+	mux.HandleFunc("POST /api/pools/health", s.postPoolHealth)
+	mux.HandleFunc("GET /api/unlock", s.getUnlock)
+	mux.HandleFunc("POST /api/unlock/report", s.postUnlockReport)
+	mux.HandleFunc("POST /api/unlock/run", s.postUnlockRun)
+	mux.HandleFunc("GET /api/unlock/jobs", s.getUnlockJobs)
+	mux.HandleFunc("GET /api/unlock/jobs/{id}", s.getUnlockJob)
+	mux.HandleFunc("GET /api/unlock/catalog", s.getUnlockCatalog)
+	mux.HandleFunc("GET /api/unlock/results", s.getUnlockResults)
+	mux.HandleFunc("GET /api/unlock/matrix", s.getUnlockMatrix)
+	mux.HandleFunc("POST /api/unlock/adopt", s.postUnlockAdopt)
+	mux.HandleFunc("POST /api/unlock/results/prune", s.postUnlockResultsPrune)
+	mux.HandleFunc("POST /api/unlock/jobs/{id}/cancel", s.postUnlockJobCancel)
+	mux.HandleFunc("GET /api/leakcheck", s.getLeakcheck)
+	mux.HandleFunc("GET /api/mesh", s.getMesh)
+	mux.HandleFunc("PUT /api/mesh/credentials", s.putMeshCredentials)
+	mux.HandleFunc("DELETE /api/mesh/credentials", s.deleteMeshCredentials)
+	mux.HandleFunc("POST /api/mesh/deploy", s.postMeshDeploy)
+	mux.HandleFunc("POST /api/mesh/withdraw", s.postMeshWithdraw)
+	mux.HandleFunc("POST /api/mesh/detect", s.postMeshDetect)
+	s.registerResources(mux)
+	s.registerRegionGroups(mux)
+	s.registerLists(mux)
+	s.registerRemoteAccess(mux)
+	s.registerSSHOps(mux)
+	s.registerPreflight(mux)
+	mux.HandleFunc("GET /api/artifacts", s.getArtifacts)
+	s.registerWithdraw(mux)
+	s.registerWSS(mux)
+	s.registerRuleSets(mux)
+	s.registerRulesImport(mux)
+	s.registerDeploy(mux)
+	s.registerDNS(mux)
+	s.registerAcceptance(mux)
+	if s.WebDir != "" {
+		mux.Handle("/", newStaticHandler(s.WebDir)) // static.go: cache classes, 404 for missing files
+	}
+	return s.withAuth(mux)
+}
+
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := s.Token
+		if s.Auth != nil {
+			token = s.Auth.Token()
+			if token == "" && strings.HasPrefix(r.URL.Path, "/api/") && !publicAPIPath(r.URL.Path) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "面板还没有初始化：先设置管理员账户", "code": AuthSetupRequired})
+				return
+			}
+		}
+		if token == "" || publicAPIPath(r.URL.Path) || !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if !strings.HasPrefix(got, prefix) || !constTimeEq(strings.TrimPrefix(got, prefix), token) {
+			writeErr(w, http.StatusUnauthorized, errors.New("需要面板口令"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func constTimeEq(got, want string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// LoadOrCreateToken returns MERIDIAN_TOKEN when set, otherwise a token stored
+// at path with mode 0600. The value is never logged.
+func LoadOrCreateToken(envValue, path string) (string, error) {
+	if strings.TrimSpace(envValue) != "" {
+		if strings.ContainsAny(envValue, "\r\n") {
+			return "", errors.New("MERIDIAN_TOKEN 不能包含换行")
+		}
+		return strings.TrimSpace(envValue), nil
+	}
+	if b, err := os.ReadFile(path); err == nil {
+		tok := strings.TrimSpace(string(b))
+		if tok != "" && !strings.ContainsAny(tok, "\r\n") {
+			return tok, nil
+		}
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	tok := hex.EncodeToString(raw)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return tok, nil
+}
+
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "meridian"})
+}
+
+func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"transports": []string{
+			string(model.TransportDirectWG),
+			string(model.TransportWGOverWSS),
+			string(model.TransportUDPWSSFailover),
+			string(model.TransportIXReplacementWSS),
+			string(model.TransportDedicatedLine),
+			string(model.TransportCFMesh),
+		},
+		"roles":       []string{"gateway", "relay", "ix", "hub", "exit"},
+		"match_types": []string{"domain", "suffix", "keyword", "geosite", "cidr", "geoip", "asn"},
+		"modes":       []string{string(model.GroupAuto), string(model.GroupManual)},
+		"on_failure":  []string{string(model.OnFailureHold), string(model.OnFailureFallback)},
+		"phase":       3,
+		"features": []string{
+			"pools",
+			"region-groups",
+			"mesh-sidecar",
+			"unlock-hysteresis",
+			"pure-v6",
+			"nat64-reserved",
+			"leak-checklist",
+			"remote-access",
+		},
+	})
+}
+
+func (s *Server) topology() (model.Topology, error) {
+	t, ok, err := s.Store.Load()
+	if err != nil {
+		return model.Topology{}, err
+	}
+	if !ok {
+		// A fresh install starts from an empty topology (no nodes, no
+		// addresses); nothing is saved until the operator saves one. Tests
+		// that want the example fixture set SeedExample.
+		if !s.SeedExample {
+			return defaults.Empty(), nil
+		}
+		t = defaults.Example()
+		if err := s.Store.Save(t); err != nil {
+			return model.Topology{}, err
+		}
+	}
+	return t, nil
+}
+
+func (s *Server) getTopology(w http.ResponseWriter, r *http.Request) {
+	t, err := s.topology()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, store.Redact(t))
+}
+
+func (s *Server) putTopology(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	t, err := decodeTopoBytes(body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// What the request said about the independent resources, before the
+	// stored blocks are put in (topology_contract.go).
+	sent := presenceOf(body)
+	asSent := t
+	// ?import=1: the document replaces the stored one wholesale (an export
+	// brought back): its own allocation table counts, every slot the stored
+	// topology used is retired. Without it the stored table is
+	// authoritative (store.Save).
+	imported := r.URL.Query().Get("import") == "1"
+	// remote_access is owned by /api/remote-access: a whole-document save
+	// (the topology editor) keeps the stored block, whatever it sent.
+	s.raMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			s.raMu.Unlock()
+		}
+	}()
+	cur, err := s.topology()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	// Service groups, rule-sets, the import mapping, remote access and the
+	// sniff setting have their own endpoints: a whole-document save keeps
+	// the stored blocks and refuses, as a whole, a request that carries a
+	// different value (topology_contract.go). ?import=1 writes all of them
+	// except remote access.
+	if refused := checkIndependent(sent, asSent, cur, imported); len(refused) > 0 {
+		writeIndependentRefusal(w, &errIndependentChanged{fields: refused})
+		return
+	}
+	keepIndependent(&t, cur, imported)
+	// Validate what will be stored: the slots the store will keep or give
+	// (the save reconciles again under the store lock, with the same result
+	// unless another save slipped in between).
+	if imported {
+		store.ReconcileImport(cur.Allocations, &t)
+	} else {
+		model.ReconcileAllocations(cur.Allocations, &t)
+	}
+	res := validate.Run(t)
+	draft := r.URL.Query().Get("draft") == "1" || t.Settings.Draft
+	if res.HasErrors() && !draft {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":  "拓扑校验未通过，未保存。可带 ?draft=1 保存草稿。",
+			"issues": res.Issues,
+			"paths":  res.Paths,
+		})
+		return
+	}
+	// Server references can only be checked with the credential store; a
+	// topology without any can still be saved while the store is broken.
+	cs, cerr := s.credStore()
+	if cerr != nil {
+		for _, n := range t.Nodes {
+			if n.ServerID != "" || model.IsExternal(n) && !draft {
+				writeResErr(w, cerr)
+				return
+			}
+		}
+	}
+	s.resMu.Lock()
+	if cs != nil {
+		if err := checkNodeServers(cs, t); err != nil {
+			s.resMu.Unlock()
+			writeResErr(w, err)
+			return
+		}
+		if !draft {
+			if err := checkExternalCredentials(cs, t); err != nil {
+				s.resMu.Unlock()
+				writeResErr(w, err)
+				return
+			}
+			if err := checkDNSAccountCredentials(cs, t); err != nil {
+				s.resMu.Unlock()
+				writeResErr(w, err)
+				return
+			}
+		}
+	}
+	// The same check again under the store lock, against the document as
+	// stored at the moment of the write.
+	if err := s.Store.SaveGuarded(t, imported, independentGuard(sent, asSent, imported)); err != nil {
+		s.resMu.Unlock()
+		if writeIndependentRefusal(w, err) {
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	// Old ssh_* fields typed into a node become a server right away.
+	merr := cerr
+	if cs != nil {
+		merr = s.migrateNodesLocked(cs)
+		// An imported fixed-path topology: the fields move out (random
+		// path and certificate instead), as at startup.
+		if werr := s.migrateWSS(cs); werr != nil && merr == nil {
+			merr = werr
+		}
+		// An imported rule-set URL with a credential: it moves into the
+		// credential store, as at startup.
+		if rerr := s.migrateRuleSetSecrets(cs); rerr != nil && merr == nil {
+			merr = rerr
+		}
+	}
+	s.resMu.Unlock()
+	stored, _ := s.topology()
+	// Group orders or choices may have changed with the document.
+	s.afterGroupChange(stored, "")
+	if merr != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"topology":        store.Redact(stored),
+			"issues":          res.Issues,
+			"paths":           res.Paths,
+			"draft":           draft,
+			"migration_error": merr.Error(),
+		})
+		return
+	}
+	out := map[string]any{
+		"topology": store.Redact(stored),
+		"issues":   res.Issues,
+		"paths":    res.Paths,
+		"draft":    draft,
+	}
+	// A changed rule list may take the automatic rule install
+	// (rules_autoapply.go); the install's secret bookkeeping takes raMu.
+	s.raMu.Unlock()
+	locked = false
+	if before := rulePartsOf(cur); canonJSON(before) != canonJSON(rulePartsOf(stored)) {
+		var f fastApply
+		switch {
+		case draft || imported:
+			f = rulesSkip("草稿或导入的拓扑需要到部署页安装")
+		case nonRuleCanon(store.Redact(cur)) != nonRuleCanon(store.Redact(stored)):
+			f = rulesSkip("这次保存还改了规则以外的内容，需要到部署页安装")
+		default:
+			f = s.rulesAutoAfterSave(before, "rules")
+		}
+		withRulesAuto(out, f)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) postValidate(w http.ResponseWriter, r *http.Request) {
+	t, err := s.bodyOrStored(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, validate.Run(t))
+}
+
+func (s *Server) postCompile(w http.ResponseWriter, r *http.Request) {
+	t, err := s.bodyOrStored(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	b, err := s.compileTopo(t)
+	if err != nil {
+		var ve *compile.ValidationError
+		if errors.As(err, &ve) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"error":  err.Error(),
+				"issues": ve.Result.Issues,
+				"paths":  ve.Result.Paths,
+			})
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"order":       b.Order,
+		"issues":      b.Issues,
+		"paths":       b.Paths,
+		"group_paths": b.GroupPaths,
+		"files":       b.Files,
+	})
+}
+
+func (s *Server) postDiff(w http.ResponseWriter, r *http.Request) {
+	t, err := s.bodyOrStored(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	b, err := s.compileTopo(t)
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	ap := s.applier(false)
+	diff, err := ap.Diff(b.Canonical())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	// installed: the gateway files an install would add, change or remove
+	// compared with what is installed now (by hash; null when nothing is
+	// installed). It answers "what will an install change" when the text
+	// diff above is empty because the change was applied but not installed.
+	inst, err := ap.InstalledDiff(b)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"diff": diff, "order": b.Order, "issues": b.Issues, "installed": inst})
+}
+
+type applyBody struct {
+	DryRun  bool `json:"dry_run"`
+	Install bool `json:"install"`
+	// PreflightID is the reviewed install pre-check (POST /api/host/preflight).
+	// Required for the first install; the check is re-run before any install.
+	PreflightID string `json:"preflight_id,omitempty"`
+	// gated (never decoded): the caller holds the gateway node lock and has
+	// run the preflight gate for this install itself (the ordered
+	// deployment guide, deploy_plan.go).
+	gated bool
+}
+
+// Error codes of POST /api/apply, POST /api/rollback and POST /api/host/recover.
+// Every refusal and failure carries one in "code"; the panel decides on the
+// code, never on the message text. A missing or unhealthy host agent is
+// codeHostUnavailable ("host_unavailable", 503 when there is none).
+const (
+	codeLegacyRefused          = "legacy_install_refused" // 409: an old install without a manifest cannot be adopted
+	codeTxnPending             = "transaction_pending"    // 409: an unfinished host transaction must be recovered first
+	codePeerKeysMissing        = "peer_keys_missing"      // 422: peers in the gateway's WireGuard configs have no usable public key
+	codeTopologyInvalid        = "topology_invalid"       // 422: the stored topology does not validate (issues)
+	codeLANMismatch            = "lan_interface_mismatch" // 422: as topology_invalid, the gateway LAN interface disagrees
+	codeActivationCompensated  = "activation_failed_compensated"
+	codeActivationUncompensate = "activation_failed_uncompensated"
+	codeCommitFailed           = "commit_failed"           // 500: host converged, bookkeeping failed; recover finishes it
+	codeNothingToRollback      = "nothing_to_rollback"     // 409
+	codeRollbackModeRequired   = "rollback_mode_required"  // 409: installed host, neither install nor snapshot_only
+	codeGatewayKey             = "gateway_key_unavailable" // 409: the gateway private key cannot be resolved
+	codeHostStateMalformed     = "host_state_malformed"    // 500
+	codeApplyFailed            = "apply_failed"            // fallback
+	// codeAutoChanged: an automatic install found the compiled bundle no
+	// longer equal to the one its conditions were checked for (409).
+	codeAutoChanged = "auto_apply_changed"
+)
+
+func writeCoded(w http.ResponseWriter, status int, code, msg string, extra map[string]any) {
+	body := map[string]any{"error": msg, "code": code}
+	for k, v := range extra {
+		body[k] = v
+	}
+	writeJSON(w, status, body)
+}
+
+// refuseInvalid answers 422 topology_invalid (or lan_interface_mismatch
+// when that is among the errors) for a validation failure.
+func refuseInvalid(w http.ResponseWriter, err error) bool {
+	var ve *compile.ValidationError
+	if !errors.As(err, &ve) {
+		return false
+	}
+	code := codeTopologyInvalid
+	for _, iss := range ve.Result.Issues {
+		if iss.Severity == validate.SeverityError && iss.Code == "lan_interface_mismatch" {
+			code = codeLANMismatch
+		}
+	}
+	writeCoded(w, http.StatusUnprocessableEntity, code, err.Error(), map[string]any{"issues": ve.Result.Issues})
+	return true
+}
+
+func (s *Server) postApply(w http.ResponseWriter, r *http.Request) {
+	var body applyBody
+	if err := decodeOptional(r, &body); err != nil {
+		writeCoded(w, http.StatusBadRequest, codeBadRequest, err.Error(), nil)
+		return
+	}
+	// No install while an acceptance drill changes the host (acceptance.go).
+	if body.Install && !body.DryRun && s.refuseDuringDrill(w) {
+		return
+	}
+	s.applyGateway(w, r, body, nil)
+}
+
+// autoInstall is an automatic install of an unlock decision (autoapply.go).
+// The caller holds the gateway node lock and has already run the host
+// preflight for exactly this bundle; decisions are the ones it checked and
+// canonical the bundle it checked them for.
+type autoInstall struct {
+	decisions map[string]string
+	canonical string
+	// peerSync: the remote-access fast path (remote_fast.go); the install
+	// must change only mra.conf and is activated by the agent's peer sync.
+	peerSync bool
+}
+
+// applyGateway is the one gateway install / snapshot path: POST /api/apply
+// and the automatic install of an unlock decision both run it. With auto
+// set the preflight gate is skipped (the caller ran it under the node
+// lock), the key is only reused, never generated, and the compiled bundle
+// must be exactly the one the caller checked.
+func (s *Server) applyGateway(w http.ResponseWriter, r *http.Request, body applyBody, auto *autoInstall) {
+	install := body.Install && !body.DryRun
+	var t model.Topology
+	var key string
+	var err error
+	if install {
+		// A peer without a usable public key would only be caught by
+		// "wg setconf" after the host was touched. Refuse first: before the
+		// key is generated, before any file is written or snapshot moves.
+		// Compile, preview and diff keep accepting such a topology.
+		if pre, err := s.topology(); err == nil {
+			pb, err := s.compileTopo(pre)
+			if err == nil && refusePeerKeys(w, pb) {
+				return
+			}
+			if err != nil && refuseInvalid(w, err) {
+				return
+			}
+			// The install pre-check (meridian-host's read-only preflight)
+			// runs before the gateway key is generated or anything is
+			// written: blocking findings, a stale or changed review, or a
+			// first install without one are refused here.
+			if err == nil && auto == nil && !body.gated && !s.gateGatewayInstall(w, r, provision.FilesFor(pb.Files, localNodeID), body.PreflightID) {
+				return
+			}
+		}
+		// First install generates and stores the gateway key; later installs
+		// reuse it. Resolution happens before compile so peers see the
+		// matching public key, and before any host file is written. An
+		// automatic install never generates one.
+		policy := provision.KeyGenerateIfMissing
+		if auto != nil {
+			policy = provision.KeyReuse
+		}
+		t, key, err = s.resolveKey(localNodeID, policy)
+		if err != nil {
+			writeCoded(w, http.StatusConflict, codeGatewayKey, err.Error(), nil)
+			return
+		}
+	} else {
+		t, err = s.topology()
+		if err != nil {
+			writeCoded(w, http.StatusInternalServerError, credentials.CodeStorage, err.Error(), nil)
+			return
+		}
+	}
+	// The decisions are taken once: the bundle is compiled with them and
+	// they are what the install records as installed.
+	dec := s.unlockDecisions(t)
+	if auto != nil {
+		dec = auto.decisions
+	}
+	b, err := s.compileWith(t, dec)
+	if err != nil {
+		if refuseInvalid(w, err) {
+			return
+		}
+		writeCoded(w, http.StatusBadRequest, codeTopologyInvalid, err.Error(), nil)
+		return
+	}
+	if auto != nil && b.Canonical() != auto.canonical {
+		writeCoded(w, http.StatusConflict, codeAutoChanged, "拓扑或决定在检查之后变了，这次自动安装没有执行", nil)
+		return
+	}
+	if install && refusePeerKeys(w, b) {
+		return
+	}
+	ap := s.applier(body.Install)
+	ap.PrivateKey = key
+	if install {
+		ap.Secrets = s.wgSecrets()
+	}
+	ap.PeerSync = auto != nil && auto.peerSync
+	res, err := ap.Apply(b, body.DryRun)
+	if install {
+		ok, unknown := wssInstallResult(err)
+		msg := ""
+		if err != nil {
+			msg = apply.RedactSecrets(err.Error(), key, ap.Secrets)
+		}
+		s.recordWSS(localNodeID, b, ok, unknown, msg)
+	}
+	if err != nil {
+		writeTxnErr(w, err, key, http.StatusInternalServerError, ap.Secrets)
+		return
+	}
+	if !body.DryRun {
+		if install {
+			s.recordInstalledDecisions(dec)
+			// The query journal was turned off by this install: its records
+			// go now that the install has succeeded (dns_journal.go).
+			s.dnsLogAfterCommit(res.Host)
+		} else {
+			s.clearUnlockPending()
+		}
+		s.GCRemoteSecrets()
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// refusePeerKeys answers 422 when the local node's WireGuard configs in b
+// name a peer whose public key is missing, the placeholder or malformed.
+func refusePeerKeys(w http.ResponseWriter, b *compile.Bundle) bool {
+	probs := b.PeerKeyProblems(localNodeID)
+	if len(probs) == 0 {
+		return false
+	}
+	seen := map[string]bool{}
+	var peers []string
+	for _, p := range probs {
+		if !seen[p.Peer] {
+			seen[p.Peer] = true
+			peers = append(peers, p.Peer)
+		}
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"code": codePeerKeysMissing,
+		"error": fmt.Sprintf("拒绝安装：本机 WireGuard 配置里这些对端节点没有可用的公钥（缺失、仍是占位符或格式不对）：%s。"+
+			"先在对端生成密钥（「生成脚本」/ provision 的 generate_keys）或在拓扑里填入 44 字符的 base64 公钥；宿主上没有写入任何文件。",
+			strings.Join(peers, "、")),
+		"peer_key_problems": probs,
+	})
+	return true
+}
+
+type rollbackBody struct {
+	// Install makes it a runtime rollback: host files, interfaces, units and
+	// tables follow the previous snapshot in the same transaction.
+	Install bool `json:"install"`
+	// SnapshotOnly explicitly asks for a data-dir-only swap on a host that
+	// has Meridian installed. Without it such a request is refused.
+	SnapshotOnly bool `json:"snapshot_only"`
+}
+
+func (s *Server) postRollback(w http.ResponseWriter, r *http.Request) {
+	var body rollbackBody
+	if err := decodeOptional(r, &body); err != nil {
+		writeCoded(w, http.StatusBadRequest, codeBadRequest, err.Error(), nil)
+		return
+	}
+	if body.Install && body.SnapshotOnly {
+		writeCoded(w, http.StatusBadRequest, codeBadRequest, "install 与 snapshot_only 不能同时设置", nil)
+		return
+	}
+	if body.Install && s.refuseDuringDrill(w) {
+		return
+	}
+	ap := s.applier(body.Install)
+	ap.SnapshotOnly = body.SnapshotOnly
+	if body.Install {
+		_, key, err := s.resolveKey(localNodeID, provision.KeyReuse)
+		if err != nil {
+			writeCoded(w, http.StatusConflict, codeGatewayKey, err.Error(), nil)
+			return
+		}
+		ap.PrivateKey = key
+		ap.Secrets = s.wgSecrets()
+	}
+	rep, err := ap.RollbackReport()
+	if body.Install && err == nil {
+		// The previous snapshot may carry earlier WSS material: the
+		// gateway's WSS ends are unknown until installed again.
+		s.markWSSNode(localNodeID, model.WSSStageUnknown, "网关运行时回滚到上一个快照")
+	}
+	if err != nil {
+		writeTxnErr(w, err, ap.PrivateKey, http.StatusConflict, ap.Secrets)
+		return
+	}
+	s.GCRemoteSecrets()
+	mode := "snapshot"
+	if body.Install {
+		mode = "runtime"
+		s.dnsLogAfterCommit(rep)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "rolled_back", "mode": mode, "host": rep})
+}
+
+// writeTxnErr maps install/rollback failures to a status and a stable code.
+// A failed host transaction carries its report (steps, diff, whether it was
+// compensated).
+func writeTxnErr(w http.ResponseWriter, err error, key string, fallback int, secrets ...map[string]string) {
+	msg := apply.RedactSecret(err.Error(), key)
+	for _, m := range secrets {
+		msg = apply.RedactSecrets(msg, "", m)
+	}
+	var te *apply.TxnError
+	switch {
+	case errors.Is(err, apply.ErrNoHostExec):
+		writeCoded(w, http.StatusServiceUnavailable, codeHostUnavailable, msg, nil)
+	case errors.Is(err, apply.ErrHostAgentFailed):
+		writeCoded(w, fallback, codeHostUnavailable, msg, nil)
+	case errors.Is(err, apply.ErrPending):
+		writeCoded(w, http.StatusConflict, codeTxnPending, msg, nil)
+	case errors.Is(err, apply.ErrRuntimeRollbackRequired):
+		writeCoded(w, http.StatusConflict, codeRollbackModeRequired, msg, nil)
+	case errors.Is(err, apply.ErrLegacyInstall):
+		writeCoded(w, http.StatusConflict, codeLegacyRefused, msg, nil)
+	case errors.Is(err, apply.ErrNoPrevious):
+		writeCoded(w, http.StatusConflict, codeNothingToRollback, msg, nil)
+	case errors.Is(err, apply.ErrWithdrawnState):
+		writeCoded(w, http.StatusConflict, codeGatewayWithdrawn, msg, nil)
+	case errors.As(err, &te):
+		code := codeActivationUncompensate
+		switch {
+		case te.Compensated:
+			code = codeActivationCompensated
+		case te.CompErr == nil:
+			code = codeCommitFailed
+		}
+		writeCoded(w, http.StatusInternalServerError, code, msg, map[string]any{
+			"compensated": te.Compensated,
+			"host":        te.Report,
+		})
+	case errors.Is(err, apply.ErrMalformedState):
+		writeCoded(w, http.StatusInternalServerError, codeHostStateMalformed, msg, nil)
+	default:
+		writeCoded(w, fallback, codeApplyFailed, msg, nil)
+	}
+}
+
+// getHost reports what is installed on the host, any unfinished
+// transaction and whether the host execution boundary answers.
+func (s *Server) getHost(w http.ResponseWriter, r *http.Request) {
+	ap := s.applier(true)
+	inst, err := ap.Installed()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	pending, err := ap.Pending()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	agent := map[string]any{"ok": false}
+	switch {
+	case s.Host != nil:
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		_, perr := s.Host.Do(ctx, hostexec.Request{Action: hostexec.ActionHealth, RequestID: "status-" + randHex(4)})
+		cancel()
+		agent["ok"] = perr == nil
+		if perr != nil {
+			agent["error"] = perr.Error()
+		}
+	case s.Activate != nil:
+		agent["ok"] = true
+		agent["error"] = "test shim"
+	default:
+		agent["error"] = apply.ErrNoHostExec.Error()
+	}
+	var installed any
+	if !inst.Empty() {
+		installed = map[string]any{
+			"version": inst.Version, "created_at": inst.CreatedAt, "files": len(inst.Files),
+			"interfaces": inst.Interfaces, "units": inst.Units, "nft_tables": inst.NFTTables,
+			"route_tables": inst.RouteTables, "dns": inst.DNS, "origin": inst.Origin, "withdrawn": inst.Withdrawn(),
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"installed": installed, "pending": pending, "agent": agent})
+}
+
+// postHostRecover compensates (or finishes) an unfinished host transaction.
+func (s *Server) postHostRecover(w http.ResponseWriter, r *http.Request) {
+	if s.refuseDuringDrill(w) {
+		return
+	}
+	rep, err := s.RecoverHost()
+	if err != nil {
+		writeTxnErr(w, err, "", http.StatusConflict)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "recovered", "host": rep})
+}
+
+// RecoverHost runs apply.Recover with the gateway key. main calls it at
+// startup so a transaction interrupted by a restart is not left half-done.
+func (s *Server) RecoverHost() (*apply.HostReport, error) {
+	ap := s.applier(true)
+	if p, err := ap.Pending(); err != nil || p == nil {
+		return nil, err
+	}
+	// The key is needed only to rewrite WireGuard configs; a gateway that
+	// never had one cannot have them installed.
+	if _, key, err := s.resolveKey(localNodeID, provision.KeyReuse); err == nil {
+		ap.PrivateKey = key
+	}
+	ap.Secrets = s.wgSecrets()
+	rep, err := ap.Recover()
+	if err != nil {
+		return rep, errors.New(apply.RedactSecrets(err.Error(), ap.PrivateKey, ap.Secrets))
+	}
+	// A commit finished by the recovery may be the one that turned the DNS
+	// query journal off.
+	s.dnsLogAfterCommit(rep)
+	return rep, nil
+}
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// resolveKey loads the topology, resolves nodeID's private key under policy
+// and persists a generated key or a filled-in public key before returning.
+func (s *Server) resolveKey(nodeID string, policy provision.KeyPolicy) (model.Topology, string, error) {
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
+	t, err := s.topology()
+	if err != nil {
+		return model.Topology{}, "", err
+	}
+	key, changed, err := provision.ResolveNodeKey(&t, nodeID, policy)
+	if err != nil {
+		return model.Topology{}, "", err
+	}
+	if changed {
+		if err := s.Store.Save(t); err != nil {
+			return model.Topology{}, "", err
+		}
+	}
+	return t, key, nil
+}
+
+func (s *Server) applier(install bool) apply.Applier {
+	a := apply.Applier{DataDir: s.DataDir, Install: install, LocalID: localNodeID, HostRoot: s.HostRoot, Host: s.Host, Activate: s.Activate}
+	// The gateway's binaries (wstunnel for a WSS client) come from the same
+	// verified bundle as the remote nodes'. main always loads one; a nil
+	// bundle (bare test servers) leaves binaries unmanaged.
+	if s.Artifacts != nil {
+		a.Artifacts, a.Arch = s.Artifacts, artifacts.UnameArch(runtime.GOARCH)
+	}
+	return a
+}
+
+func (s *Server) bodyOrStored(r *http.Request) (model.Topology, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return model.Topology{}, err
+	}
+	if len(strings.TrimSpace(string(body))) == 0 || string(body) == "{}" {
+		return s.topology()
+	}
+	var t model.Topology
+	if err := json.Unmarshal(body, &t); err != nil {
+		return model.Topology{}, err
+	}
+	if len(t.Nodes) == 0 {
+		return s.topology()
+	}
+	// Legacy pool fields in a submitted document become region groups,
+	// exactly as the store would read them.
+	model.MigrateRegionGroups(&t)
+	// The working copy compiles with the slots a save would give it: the
+	// stored table is authoritative, whatever the document carries.
+	cur, err := s.topology()
+	if err != nil {
+		return model.Topology{}, err
+	}
+	model.ReconcileAllocations(cur.Allocations, &t)
+	return t, nil
+}
+
+// decodeTopoBytes decodes a whole topology document (unknown fields are
+// ignored, as before) and migrates legacy pool fields.
+func decodeTopoBytes(body []byte) (model.Topology, error) {
+	var t model.Topology
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&t); err != nil {
+		return model.Topology{}, err
+	}
+	model.MigrateRegionGroups(&t)
+	return t, nil
+}
+
+func decodeOptional(r *http.Request, dest any) error {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return nil
+	}
+	return json.Unmarshal(body, dest)
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, code int, err error) {
+	writeJSON(w, code, map[string]string{"error": err.Error()})
+}
+
+// CheckBind rejects wildcard listeners. The panel is LAN-only.
+func CheckBind(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		if os.Getenv("MERIDIAN_ALLOW_ANY_BIND") != "1" {
+			return errors.New("面板只监听局域网地址，拒绝 0.0.0.0 / ::。开发时请设置 MERIDIAN_BIND=127.0.0.1:8787")
+		}
+	}
+	return nil
+}

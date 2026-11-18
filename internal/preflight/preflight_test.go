@@ -1,0 +1,2138 @@
+package preflight
+
+import (
+	"fmt"
+	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/radowitz/meridian/internal/artifacts"
+	"github.com/radowitz/meridian/internal/compile"
+	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/mtu"
+	"github.com/radowitz/meridian/internal/validate"
+)
+
+// nodeFiles is provision.FilesFor for the example topology (that package
+// imports this one, so it is reimplemented here).
+func nodeFiles(t *testing.T, id string) map[string]string {
+	t.Helper()
+	b, err := compile.Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for p, body := range b.Files {
+		if strings.HasPrefix(p, "nodes/"+id+"/") {
+			out["/"+strings.TrimPrefix(p, "nodes/"+id+"/")] = body
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("no files for %s", id)
+	}
+	return out
+}
+
+// fixture reads testdata/name, puts a "path" line for every file of fp
+// where @PATHS@ stands (absent unless paths overrides it) followed by
+// extra, and parses it.
+func fixture(t *testing.T, name string, fp Footprint, paths map[string]string, extra string) Report {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, p := range fp.PreflightPaths() {
+		if v, ok := paths[p]; ok {
+			b.WriteString("path " + p + " " + v + "\n")
+		} else {
+			b.WriteString("path " + p + " absent\n")
+		}
+	}
+	b.WriteString(extra)
+	r := Parse(strings.Replace(string(raw), "@PATHS@\n", b.String(), 1))
+	if !r.Complete {
+		t.Fatalf("%s: fixture incomplete: %v", name, r.Notes)
+	}
+	return r
+}
+
+func codes(ev Evaluation, sev string) []string {
+	var out []string
+	for _, f := range ev.Findings {
+		if sev == "" || f.Severity == sev {
+			out = append(out, f.Code)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func has(ev Evaluation, sev, code string) bool {
+	for _, f := range ev.Findings {
+		if f.Code == code && (sev == "" || f.Severity == sev) {
+			return true
+		}
+	}
+	return false
+}
+
+func find(ev Evaluation, code string) []Finding {
+	var out []Finding
+	for _, f := range ev.Findings {
+		if f.Code == code {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func remote(node string) Context {
+	return Context{Artifacts: testArts, NodeID: node, Deployment: "dep-test"}
+}
+
+// testArts are the panel's pinned binaries, all available (the real pins
+// of internal/artifacts: names, versions, digests and sizes).
+var testArts = func() []Artifact {
+	var out []Artifact
+	for _, p := range artifacts.Pins() {
+		out = append(out, Artifact{Name: p.Name, Version: p.Version, Arch: p.Arch, SHA256: p.SHA256, Size: p.Size, Available: true})
+	}
+	return out
+}()
+
+// Every finding carries a code, a message and, when it blocks, what to do.
+func checkShape(t *testing.T, ev Evaluation) {
+	t.Helper()
+	for _, f := range ev.Findings {
+		if f.Code == "" || f.Message == "" || f.Severity == "" {
+			t.Fatalf("finding without code/message/severity: %+v", f)
+		}
+		if f.Severity == Blocking && f.Action == "" {
+			t.Fatalf("blocking finding without an action: %+v", f)
+		}
+	}
+	if ev.Blocking != (ev.Counts.Blocking > 0) {
+		t.Fatalf("blocking flag %v vs count %d", ev.Blocking, ev.Counts.Blocking)
+	}
+}
+
+// ------------------------------------------------------------ footprint ---
+
+func TestFootprintOfExitHubRelay(t *testing.T) {
+	exit := FootprintOf(nodeFiles(t, "hk-resi"))
+	if len(exit.Interfaces) != 1 || exit.Interfaces[0].Name != "m04" || exit.Interfaces[0].ListenPort != 0 ||
+		joinPrefixes(exit.Interfaces[0].Addresses) != "10.66.11.2/30, fd66:0:0:11::2/64" {
+		t.Fatalf("exit interfaces %+v", exit.Interfaces)
+	}
+	// The exit resolver is the panel-delivered SmartDNS, not a package.
+	if !exit.DNS || !exit.Forward4 || !exit.Forward6 || !exit.SysctlAll || strings.Join(exit.Binaries, ",") != "smartdns" {
+		t.Fatalf("exit flags %+v", exit)
+	}
+	for _, p := range exit.Packages {
+		if p.Package == "smartdns" {
+			t.Fatalf("smartdns must not be an apt package any more: %+v", exit.Packages)
+		}
+	}
+	if strings.Join(exit.ArtifactPaths(), ",") != "/usr/local/sbin/meridian-smartdns" || !containsStr(exit.PreflightPaths(), "/usr/local/sbin/meridian-smartdns") {
+		t.Fatalf("exit artifact paths %v", exit.ArtifactPaths())
+	}
+	var dns []string
+	for _, l := range exit.Listens {
+		if l.Owner == "smartdns" {
+			dns = append(dns, l.Proto+" "+l.Addr.String())
+		}
+		if l.Wildcard {
+			t.Fatalf("exit resolver must bind tunnel addresses only: %+v", l)
+		}
+	}
+	sort.Strings(dns)
+	if strings.Join(dns, ",") != "tcp 10.66.11.2,tcp fd66:0:0:11::2,udp 10.66.11.2,udp fd66:0:0:11::2" {
+		t.Fatalf("exit dns listens %v", dns)
+	}
+	if strings.Join(exit.NFTTables, ",") != "inet meridian" || !containsInt(exit.Tables, 150) {
+		t.Fatalf("exit nft %v tables %v", exit.NFTTables, exit.Tables)
+	}
+	routes := map[string]bool{}
+	for _, r := range exit.Routes {
+		routes[r.Dst.String()+" "+r.Dev] = true
+	}
+	if !routes["10.66.200.0/24 m04"] || !routes["192.0.2.0/24 m04"] || !routes["10.66.0.0/16 "] {
+		t.Fatalf("exit routes %+v", exit.Routes)
+	}
+
+	relay := FootprintOf(nodeFiles(t, "access"))
+	if strings.Join(relay.Binaries, ",") != "wstunnel" {
+		t.Fatalf("relay binaries %v", relay.Binaries)
+	}
+	var ls []string
+	for _, l := range relay.Listens {
+		ls = append(ls, l.Proto+" "+l.Addr.String()+" "+itoa(l.Port))
+	}
+	sort.Strings(ls)
+	want := "tcp 0.0.0.0 443,udp 127.0.0.1 52000,udp :: 51820,udp :: 51821"
+	if strings.Join(ls, ",") != want {
+		t.Fatalf("relay listens %v", ls)
+	}
+	if len(relay.Rules) == 0 || relay.Rules[0].Priority < 18000 {
+		t.Fatalf("relay rules %+v", relay.Rules)
+	}
+
+	hub := FootprintOf(nodeFiles(t, "hk-hub"))
+	if containsStr(hub.NFTTables, "inet meridian_mesh") || hub.Mesh {
+		t.Fatalf("hub nft %v docker %v", hub.NFTTables, hub.Docker)
+	}
+
+	gw := FootprintOf(nodeFiles(t, "gw"))
+	if !containsStr(gw.Marks, "0x4d72") || !containsStr(gw.NFTTables, "inet meridian_guard") {
+		t.Fatalf("gateway marks %v nft %v", gw.Marks, gw.NFTTables)
+	}
+	// The gateway's WSS client runs the panel-delivered wstunnel; its
+	// SmartDNS is the Compose container (no binary).
+	if strings.Join(gw.Binaries, ",") != "wstunnel" {
+		t.Fatalf("gateway binaries %v", gw.Binaries)
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestBundleDigestChangesWithContent(t *testing.T) {
+	a := map[string]string{"/etc/a": "x", "/etc/b": "y"}
+	b := map[string]string{"/etc/b": "y", "/etc/a": "x"}
+	if BundleDigest(a) != BundleDigest(b) {
+		t.Fatal("digest depends on map order")
+	}
+	b["/etc/a"] = "x2"
+	if BundleDigest(a) == BundleDigest(b) {
+		t.Fatal("digest ignores content")
+	}
+	c := map[string]string{"/etc/a\x00/etc/b": ""}
+	if BundleDigest(c) == BundleDigest(map[string]string{"/etc/a": "", "/etc/b": ""}) {
+		t.Fatal("digest is ambiguous")
+	}
+}
+
+// ------------------------------------------------------------ evaluator ---
+
+func TestCleanDebian13ExitPasses(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, ""), fp, remote("hk-resi"))
+	checkShape(t, ev)
+	if ev.Blocking || ev.Ownership != OwnNone {
+		t.Fatalf("clean host blocked: %v / %s", codes(ev, Blocking), ev.Ownership)
+	}
+	if !has(ev, Info, CodeForwardEnable) || has(ev, "", CodeNFTFlush) || has(ev, "", CodeDNSListeners) {
+		t.Fatalf("clean host findings %v", codes(ev, ""))
+	}
+	var pkgs, ifaces []string
+	for _, c := range ev.Changes {
+		switch c.Kind {
+		case "package":
+			pkgs = append(pkgs, c.Resource)
+		case "interface":
+			ifaces = append(ifaces, c.Action+" "+c.Resource)
+		}
+	}
+	if strings.Join(pkgs, ",") != "wireguard-tools" || strings.Join(ifaces, ",") != "create m04" {
+		t.Fatalf("changes pkgs=%v ifaces=%v", pkgs, ifaces)
+	}
+	// The resolver binary is planned as a panel transfer of the pinned
+	// x86_64 build, not an apt install.
+	pin, _ := artifacts.PinFor("smartdns", "x86_64")
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Action != "install" || !ev.Binaries[0].Transfer || ev.Binaries[0].SHA256 != pin.SHA256 ||
+		ev.Binaries[0].Path != "/usr/local/sbin/meridian-smartdns" || ev.Platform != "Debian 13 x86_64" {
+		t.Fatalf("binary plan %+v platform %q", ev.Binaries, ev.Platform)
+	}
+	bin := false
+	for _, c := range ev.Changes {
+		bin = bin || (c.Kind == "binary" && c.Action == "install" && c.Resource == "/usr/local/sbin/meridian-smartdns" && strings.Contains(c.Detail, pin.Version))
+	}
+	if !bin || !has(ev, Info, CodeMemoryBudget) || !has(ev, Info, CodePlatform) {
+		t.Fatalf("binary change / budget missing: %v %+v", codes(ev, ""), ev.Changes)
+	}
+	// The host already has exactly the pinned digest: no transfer.
+	r := fixture(t, "clean-debian13.txt", fp, map[string]string{"/usr/local/sbin/meridian-smartdns": fmt.Sprintf("file %d no %s", pin.Size, pin.SHA256)}, "")
+	ev = Evaluate(r, fp, remote("hk-resi"))
+	if ev.Blocking || len(ev.Binaries) != 1 || ev.Binaries[0].Action != "keep" || ev.Binaries[0].Transfer {
+		t.Fatalf("matching digest must skip the transfer: %+v %v", ev.Binaries, codes(ev, Blocking))
+	}
+	// A file at Meridian's path that is not ours and not the pin: refused.
+	r = fixture(t, "clean-debian13.txt", fp, map[string]string{"/usr/local/sbin/meridian-smartdns": "file 100 no " + strings.Repeat("3", 64)}, "")
+	ev = Evaluate(r, fp, remote("hk-resi"))
+	if po := find(ev, CodePathOccupied); len(po) != 1 || po[0].Resource != "/usr/local/sbin/meridian-smartdns" || ev.Binaries[0].Action != "refuse" {
+		t.Fatalf("foreign file at the binary path: %v %+v", codes(ev, ""), ev.Binaries)
+	}
+}
+
+// The panel holds no verified copy (missing, digest mismatch at load) or
+// no copy for this architecture: the install is refused, the resolver is
+// never skipped.
+func TestArtifactUnavailableBlocks(t *testing.T) {
+	exit := FootprintOf(nodeFiles(t, "hk-resi"))
+	broken := append([]Artifact(nil), testArts...)
+	for i := range broken {
+		if broken[i].Name == "smartdns" && broken[i].Arch == "x86_64" {
+			broken[i].Available, broken[i].Error = false, "smartdns-x86_64 的 SHA-256 是 00，固定的是 8a：拒绝使用"
+		}
+	}
+	ev := Evaluate(fixture(t, "clean-debian13.txt", exit, nil, ""), exit, Context{NodeID: "hk-resi", Deployment: "dep-test", Artifacts: broken})
+	checkShape(t, ev)
+	sm := find(ev, CodeSmartDNSMissing)
+	if len(sm) != 1 || sm[0].Severity != Blocking || !strings.Contains(sm[0].Message, "SHA-256") || !strings.Contains(sm[0].Message, "不会跳过") || ev.Binaries[0].Action != "refuse" {
+		t.Fatalf("digest mismatch at the panel: %+v", sm)
+	}
+	// No artifacts loaded at all: the relay's wstunnel is refused too.
+	relay := FootprintOf(nodeFiles(t, "access"))
+	ev = Evaluate(fixture(t, "clean-debian13.txt", relay, nil, ""), relay, Context{NodeID: "access", Deployment: "dep-test"})
+	if !has(ev, Blocking, CodeWstunnelMissing) {
+		t.Fatalf("relay without wstunnel artifact %v", codes(ev, ""))
+	}
+}
+
+// Per-architecture selection: the aarch64 host gets the aarch64 pin.
+func TestArtifactPerArch(t *testing.T) {
+	relay := FootprintOf(nodeFiles(t, "access"))
+	r := fixture(t, "clean-debian13.txt", relay, nil, "")
+	r.OSID, r.OSVersion, r.Arch = "ubuntu", "20.04", "aarch64"
+	ev := Evaluate(r, relay, remote("access"))
+	pin, _ := artifacts.PinFor("wstunnel", "aarch64")
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Arch != "aarch64" || ev.Binaries[0].SHA256 != pin.SHA256 || ev.Binaries[0].Size != pin.Size {
+		t.Fatalf("aarch64 selection %+v", ev.Binaries)
+	}
+	x86, _ := artifacts.PinFor("wstunnel", "x86_64")
+	if x86.SHA256 == pin.SHA256 {
+		t.Fatal("the two architectures must have different pins")
+	}
+}
+
+// Ubuntu 20.04 on aarch64 with kernel 5.15, no nft binary, iptables-legacy
+// and Docker's FORWARD DROP, ~440 MB of RAM: a supported platform now.
+// nftables is planned as an apt install, the resolver as the aarch64 build
+// of the pinned SmartDNS, the legacy backend is reported with how the two
+// coexist; Docker's FORWARD DROP still blocks (handled in a later step).
+func TestUbuntu2004Arm64Supported(t *testing.T) {
+	// The host's NIC is enp0s6 (S1: the WAN interface is checked); the
+	// node names it.
+	fp := FootprintOf(filesWAN(t, "hk-resi", "enp0s6"))
+	ev := Evaluate(fixture(t, "ubuntu2004-arm64.txt", fp, nil, ""), fp, remote("hk-resi"))
+	checkShape(t, ev)
+	if strings.Join(codes(ev, Blocking), ",") != CodeForwardDrop {
+		t.Fatalf("only Docker's FORWARD DROP may block: %v", codes(ev, Blocking))
+	}
+	for _, c := range []string{CodeOSUnsupported, CodeArchUnsupported, CodeKernelTooOld, CodeNoApt, CodePortInUse, CodePackageUnavailable} {
+		if has(ev, "", c) {
+			t.Fatalf("unexpected %s: %v", c, codes(ev, ""))
+		}
+	}
+	if !has(ev, Warning, CodeLowMemory) || !has(ev, Info, CodeIptablesLegacy) || !has(ev, Info, CodeDNSListeners) || !has(ev, Info, CodePlatform) || !has(ev, Info, CodeMemoryBudget) {
+		t.Fatalf("findings %v", codes(ev, ""))
+	}
+	if fd := find(ev, CodeForwardDrop); len(fd) != 1 || !strings.Contains(fd[0].Message, "iptables filter 表 FORWARD 策略 DROP") {
+		t.Fatalf("forward drop %+v", fd)
+	}
+	if ev.Platform != "Ubuntu 20.04 aarch64" {
+		t.Fatalf("platform %q", ev.Platform)
+	}
+	// ufw installed but inactive is not a firewall manager in the way;
+	// netfilter-persistent active is reported.
+	if has(ev, "", CodeFirewallManager) || !has(ev, Info, CodeNetfilterPersis) {
+		t.Fatalf("ufw / netfilter-persistent %v", codes(ev, ""))
+	}
+	leg := find(ev, CodeIptablesLegacy)[0].Message
+	for _, s := range []string{"不切换后端", "netfilter 钩子", "drop 都是最终的", "不检查 legacy 链里的单条规则"} {
+		if !strings.Contains(leg, s) {
+			t.Fatalf("legacy coexistence statement lacks %q: %s", s, leg)
+		}
+	}
+	installs := false
+	for _, c := range ev.Changes {
+		installs = installs || (c.Kind == "package" && c.Resource == "nftables" && strings.Contains(c.Detail, "0.9.3"))
+	}
+	if !installs {
+		t.Fatalf("missing nft binary is not shown as a package install with its candidate: %+v", ev.Changes)
+	}
+	pin, _ := artifacts.PinFor("smartdns", "aarch64")
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Arch != "aarch64" || ev.Binaries[0].SHA256 != pin.SHA256 || ev.Binaries[0].Action != "install" {
+		t.Fatalf("aarch64 resolver %+v", ev.Binaries)
+	}
+	var nft PackageState
+	for _, p := range ev.Packages {
+		if p.Package == "nftables" {
+			nft = p
+		}
+	}
+	if nft.Action != "install" || nft.Candidate != "0.9.3-2" || nft.Present {
+		t.Fatalf("nftables plan %+v", nft)
+	}
+	// Without Docker's FORWARD DROP the host is installable.
+	raw := strings.Replace(string(mustRead(t, "testdata/ubuntu2004-arm64.txt")), "ipt ipv4 -P FORWARD DROP\n", "ipt ipv4 -P FORWARD ACCEPT\n", 1)
+	ev = Evaluate(parseWithPaths(t, raw, fp, nil), fp, remote("hk-resi"))
+	if ev.Blocking {
+		t.Fatalf("Ubuntu 20.04 arm64 without FORWARD DROP blocked: %v", codes(ev, Blocking))
+	}
+	// apt has no candidate for nftables: refused with the reason.
+	raw = strings.Replace(raw, "pkg nftables - 0.9.3-2\n", "pkg nftables - -\n", 1)
+	ev = Evaluate(parseWithPaths(t, raw, fp, nil), fp, remote("hk-resi"))
+	if pu := find(ev, CodePackageUnavailable); len(pu) != 1 || pu[0].Resource != "nftables" || pu[0].Severity != Blocking {
+		t.Fatalf("no candidate %v", codes(ev, ""))
+	}
+}
+
+// Debian 12 x86_64 with ~200 MB available on ~940 MB: an exit installs
+// (wireguard-tools from apt with its candidate, the pinned SmartDNS, not
+// Debian 12's older smartdns package).
+func TestDebian12ExitPasses(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	ev := Evaluate(fixture(t, "debian12.txt", fp, nil, ""), fp, remote("hk-resi"))
+	checkShape(t, ev)
+	if ev.Blocking || ev.Platform != "Debian 12 x86_64" || !has(ev, Info, CodeMemoryBudget) {
+		t.Fatalf("debian 12 %v %q", codes(ev, ""), ev.Platform)
+	}
+	wg := false
+	for _, c := range ev.Changes {
+		wg = wg || (c.Kind == "package" && c.Resource == "wireguard-tools" && strings.Contains(c.Detail, "1.0.20210914-1+b1"))
+		if c.Kind == "package" && c.Resource == "smartdns" {
+			t.Fatal("Debian 12's smartdns package must not be installed")
+		}
+	}
+	if !wg || len(ev.Binaries) != 1 || ev.Binaries[0].Name != "smartdns" || ev.Binaries[0].Action != "install" {
+		t.Fatalf("debian 12 plan %+v %+v", ev.Changes, ev.Binaries)
+	}
+}
+
+// Supported platforms only: Debian 12/13 on x86_64, Ubuntu 20.04 on
+// aarch64. Other releases, distributions and combinations are refused.
+func TestPlatformMatrix(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	for _, tc := range []struct {
+		id, ver, arch, want string
+	}{
+		{"debian", "12", "x86_64", ""},
+		{"debian", "13", "x86_64", ""},
+		{"ubuntu", "20.04", "aarch64", ""},
+		{"debian", "13", "aarch64", CodeArchUnsupported},
+		{"ubuntu", "20.04", "x86_64", CodeArchUnsupported},
+		{"ubuntu", "22.04", "aarch64", CodeOSUnsupported},
+		{"debian", "11", "x86_64", CodeOSUnsupported},
+		{"centos", "9", "x86_64", CodeOSUnsupported},
+		{"debian", "13", "armv7l", CodeArchUnsupported},
+	} {
+		r := fixture(t, "clean-debian13.txt", fp, nil, "")
+		r.OSID, r.OSVersion, r.Arch, r.OSPretty = tc.id, tc.ver, tc.arch, tc.id+" "+tc.ver
+		ev := Evaluate(r, fp, remote("hk-resi"))
+		if tc.want == "" {
+			if ev.Blocking || ev.Platform == "" {
+				t.Fatalf("%+v refused: %v", tc, codes(ev, Blocking))
+			}
+			continue
+		}
+		if !has(ev, Blocking, tc.want) || ev.Platform != "" {
+			t.Fatalf("%+v: want %s, got %v", tc, tc.want, codes(ev, ""))
+		}
+		if f := find(ev, tc.want)[0]; !strings.Contains(f.Message+f.Action, "Debian 12 x86_64") && tc.want == CodeOSUnsupported {
+			t.Fatalf("refusal does not name the supported platforms: %+v", f)
+		}
+	}
+}
+
+// The memory budget: a resolver plan below it is blocked (never run
+// without its resolver), above it passes; a node without a resolver only
+// gets a warning; an update does not count what already runs.
+func TestMemoryBudget(t *testing.T) {
+	exit := FootprintOf(nodeFiles(t, "hk-resi"))
+	need := int64(MemHeadroomKB + MemSmartDNSKB)
+	for _, tc := range []struct {
+		avail int64
+		sev   string
+	}{{need - 1, Blocking}, {need, Info}, {200 * 1024, Info}, {-1, Blocking}} {
+		r := fixture(t, "clean-debian13.txt", exit, nil, "")
+		r.MemAvailKB = tc.avail
+		ev := Evaluate(r, exit, remote("hk-resi"))
+		mb := find(ev, CodeMemoryBudget)
+		if len(mb) != 1 || mb[0].Severity != tc.sev {
+			t.Fatalf("avail %d: %+v", tc.avail, mb)
+		}
+		if tc.sev == Blocking && (!strings.Contains(mb[0].Message, "不会跳过") && tc.avail >= 0) {
+			t.Fatalf("explanation %+v", mb[0])
+		}
+	}
+	// The real hosts: ~200 MB available on 440 MB and on 940 MB total.
+	for _, total := range []int64{450560, 962560} {
+		r := fixture(t, "clean-debian13.txt", exit, nil, "")
+		r.MemTotalKB, r.MemAvailKB = total, 200*1024
+		if ev := Evaluate(r, exit, remote("hk-resi")); has(ev, Blocking, CodeMemoryBudget) {
+			t.Fatalf("total %d: %v", total, codes(ev, ""))
+		}
+	}
+	// A relay (no resolver) below its budget: warning only.
+	relay := FootprintOf(nodeFiles(t, "access"))
+	r := fixture(t, "clean-debian13.txt", relay, nil, "")
+	r.MemAvailKB = 40 * 1024
+	if mb := find(Evaluate(r, relay, remote("access")), CodeMemoryBudget); len(mb) != 1 || mb[0].Severity != Warning {
+		t.Fatalf("relay budget %+v", mb)
+	}
+}
+
+// A resolver config without a bind line or with a wildcard bind refuses
+// the install (SmartDNS binds [::]:53 when no bind is given).
+func TestResolverBindUnsafe(t *testing.T) {
+	files := nodeFiles(t, "hk-resi")
+	conf := files["/etc/smartdns/smartdns.conf"]
+	var kept []string
+	for _, l := range strings.Split(conf, "\n") {
+		if !strings.HasPrefix(l, "bind") {
+			kept = append(kept, l)
+		}
+	}
+	files["/etc/smartdns/smartdns.conf"] = strings.Join(kept, "\n")
+	fp := FootprintOf(files)
+	if ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, ""), fp, remote("hk-resi")); !has(ev, Blocking, CodeResolverBind) {
+		t.Fatalf("no bind: %v", codes(ev, ""))
+	}
+	files["/etc/smartdns/smartdns.conf"] = conf + "bind [::]:53\n"
+	fp = FootprintOf(files)
+	if ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, ""), fp, remote("hk-resi")); !has(ev, Blocking, CodeResolverBind) {
+		t.Fatalf("wildcard bind: %v", codes(ev, ""))
+	}
+}
+
+// Docker sets FORWARD DROP (iptables-nft: visible both as iptables policy
+// and as table ip filter): one blocking finding per family, with the
+// explanation and without any instruction for the panel to change it.
+func TestDockerForwardDropBlocks(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	ev := Evaluate(fixture(t, "docker-forward-drop.txt", fp, nil, ""), fp, remote("hk-resi"))
+	checkShape(t, ev)
+	fd := find(ev, CodeForwardDrop)
+	if len(fd) != 2 || fd[0].Severity != Blocking {
+		t.Fatalf("forward drop findings %+v", fd)
+	}
+	for _, f := range fd {
+		if !strings.Contains(f.Message, "policy accept") || !strings.Contains(f.Message, "Docker") || !strings.Contains(f.Action, "不会替你改") {
+			t.Fatalf("explanation missing: %+v", f)
+		}
+		if strings.Count(f.Message, "FORWARD") > 3 {
+			t.Fatalf("duplicated sources: %s", f.Message)
+		}
+	}
+	if !has(ev, Info, CodeDocker) || !has(ev, Info, CodeNFTOther) || has(ev, "", CodePortInUse) {
+		t.Fatalf("findings %v", codes(ev, ""))
+	}
+	// The ipv4 finding names one source only (iptables-nft shows the
+	// same policy twice).
+	if !strings.Contains(fd[0].Resource+fd[1].Resource, "ipv4") || strings.Contains(fd[0].Message+fd[1].Message, "ip filter 的链 FORWARD") {
+		t.Fatalf("dedupe: %+v", fd)
+	}
+	// A nft-only drop (no iptables policy) is reported from the chain.
+	r := fixture(t, "docker-forward-drop.txt", fp, nil, "")
+	r.Policies = nil
+	r.Chains = append(r.Chains, Chain{Table: "inet filter", Name: "forward", Type: "filter", Hook: "forward", Priority: "0", Policy: "drop"})
+	ev = Evaluate(r, fp, remote("hk-resi"))
+	if fd := find(ev, CodeForwardDrop); len(fd) != 2 || !strings.Contains(fd[0].Message, "inet filter") {
+		t.Fatalf("nft-only drop %+v", fd)
+	}
+}
+
+// wg0/wg1/wg2 exist; UDP 51820 is taken; wg1 uses 10.66.11.0/24 and a
+// route for 10.66.0.0/16; wg2 uses 10.67.0.0/24 (remote access default).
+func TestExistingWireGuard(t *testing.T) {
+	exit := FootprintOf(nodeFiles(t, "hk-resi"))
+	ev := Evaluate(fixture(t, "existing-wireguard.txt", exit, nil, ""), exit, remote("hk-resi"))
+	checkShape(t, ev)
+	ao := find(ev, CodeAddressOverlap)
+	if len(ao) != 1 || !strings.Contains(ao[0].Message, "wg1") || !strings.Contains(ao[0].Message, "10.66.11.2/30") {
+		t.Fatalf("address overlap %+v", ao)
+	}
+	ro := find(ev, CodeRouteOverlap)
+	if len(ro) != 1 || !strings.Contains(ro[0].Message, "更具体") || ro[0].Resource != "10.66.200.0/24" || !strings.Contains(ro[0].Message, "10.66.0.0/16 dev wg1") {
+		t.Fatalf("route overlap %+v", ro)
+	}
+	for _, f := range ev.Findings {
+		if strings.Contains(f.Message, "10.67.0") && f.Severity != Info || strings.Contains(f.Resource, "10.8.0") {
+			t.Fatalf("unrelated subnet flagged: %+v", f)
+		}
+	}
+	if !has(ev, Info, CodeWireGuard) || has(ev, "", CodeInterfaceExists) {
+		t.Fatalf("findings %v", codes(ev, ""))
+	}
+
+	relay := FootprintOf(nodeFiles(t, "access"))
+	ev = Evaluate(fixture(t, "existing-wireguard.txt", relay, nil, ""), relay, remote("access"))
+	pu := find(ev, CodePortInUse)
+	var ports []string
+	for _, f := range pu {
+		ports = append(ports, f.Resource)
+		if !strings.Contains(f.Message, "WireGuard 接口 wg") {
+			t.Fatalf("owner not named: %+v", f)
+		}
+	}
+	sort.Strings(ports)
+	if strings.Join(ports, ",") != "udp [::]:51820,udp [::]:51821" {
+		t.Fatalf("ports %v", ports)
+	}
+	// An interface name the bundle would create, already in use.
+	r := fixture(t, "existing-wireguard.txt", exit, nil, "")
+	r.Links = append(r.Links, "m04")
+	ev = Evaluate(r, exit, remote("hk-resi"))
+	if !has(ev, Blocking, CodeInterfaceExists) {
+		t.Fatalf("interface exists not reported: %v", codes(ev, ""))
+	}
+}
+
+// 443/80 taken by nginx, another wstunnel on 8080 and on 127.0.0.1:52000.
+func TestPortsTaken(t *testing.T) {
+	relay := FootprintOf(nodeFiles(t, "access"))
+	ev := Evaluate(fixture(t, "ports-taken.txt", relay, nil, ""), relay, remote("access"))
+	checkShape(t, ev)
+	var res []string
+	for _, f := range find(ev, CodePortInUse) {
+		res = append(res, f.Resource)
+	}
+	sort.Strings(res)
+	if strings.Join(res, ",") != "tcp 0.0.0.0:443,udp 127.0.0.1:52000" {
+		t.Fatalf("ports %v (%v)", res, codes(ev, ""))
+	}
+	for _, f := range find(ev, CodePortInUse) {
+		if strings.Contains(f.Resource, "443") && !strings.Contains(f.Message, "nginx") {
+			t.Fatalf("443 owner %+v", f)
+		}
+	}
+	if has(ev, "", CodeWstunnelMissing) {
+		t.Fatal("wstunnel present but reported missing")
+	}
+}
+
+// Port 53: systemd-resolved on loopback and WARP on loopback and its
+// overlay address are not conflicts; a wildcard resolver or one on the
+// exact tunnel address is.
+func TestPort53(t *testing.T) {
+	exit := FootprintOf(nodeFiles(t, "hk-resi"))
+	ev := Evaluate(fixture(t, "warp.txt", exit, nil, ""), exit, remote("hk-resi"))
+	checkShape(t, ev)
+	if has(ev, "", CodePortInUse) || !has(ev, Info, CodeDNSListeners) || !has(ev, Info, CodeWARP) {
+		t.Fatalf("warp host %v", codes(ev, ""))
+	}
+	w := find(ev, CodeWARP)[0]
+	for _, s := range []string{"warp-svc", "CloudflareWARP", "inet cloudflare-warp", "100.96.0.12/32"} {
+		if !strings.Contains(w.Message, s) {
+			t.Fatalf("warp message lacks %s: %s", s, w.Message)
+		}
+	}
+	// WARP's "not from all fwmark … lookup 65743" sits before main.
+	if rp := find(ev, CodeRulePrecedes); len(rp) != 1 || rp[0].Severity != Warning || !strings.Contains(rp[0].Message, "65743") {
+		t.Fatalf("rule precedes %+v", rp)
+	}
+	if !has(ev, Info, CodeNetfilterPersis) || has(ev, "", CodeTableInUse) {
+		t.Fatalf("findings %v", codes(ev, ""))
+	}
+
+	wild := fixture(t, "clean-debian13.txt", exit, nil, "ss udp UNCONN 0 0 0.0.0.0:53 0.0.0.0:* users:((\"dnsmasq\",pid=77,fd=4))\n")
+	ev = Evaluate(wild, exit, remote("hk-resi"))
+	if pu := find(ev, CodePortInUse); len(pu) != 1 || !strings.Contains(pu[0].Message, "dnsmasq") || !strings.Contains(pu[0].Resource, "10.66.11.2:53") {
+		t.Fatalf("wildcard resolver %+v", pu)
+	}
+	exact := fixture(t, "clean-debian13.txt", exit, nil, "ss tcp LISTEN 0 10 [fd66:0:0:11::2]:53 [::]:* users:((\"unbound\",pid=78,fd=4))\n")
+	ev = Evaluate(exact, exit, remote("hk-resi"))
+	if pu := find(ev, CodePortInUse); len(pu) != 1 || !strings.Contains(pu[0].Resource, "fd66:0:0:11::2") {
+		t.Fatalf("exact resolver %+v", pu)
+	}
+}
+
+// A relay that is empty with forwarding disabled: the install turns it on
+// (planned change, info) and the panel delivers the pinned wstunnel for
+// the host's architecture (no manual install, nothing downloaded there).
+func TestEmptyRelay(t *testing.T) {
+	relay := FootprintOf(nodeFiles(t, "access"))
+	ev := Evaluate(fixture(t, "clean-debian13.txt", relay, nil, ""), relay, remote("access"))
+	checkShape(t, ev)
+	if ev.Blocking || has(ev, "", CodeWstunnelMissing) || !has(ev, Info, CodeForwardEnable) || !has(ev, Info, CodeArtifact) {
+		t.Fatalf("empty relay %v", codes(ev, ""))
+	}
+	pin, _ := artifacts.PinFor("wstunnel", "x86_64")
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Name != "wstunnel" || ev.Binaries[0].Action != "install" || !ev.Binaries[0].Transfer || ev.Binaries[0].SHA256 != pin.SHA256 {
+		t.Fatalf("wstunnel plan %+v", ev.Binaries)
+	}
+	sysctl := false
+	for _, c := range ev.Changes {
+		sysctl = sysctl || c.Kind == "sysctl" && c.Resource == "net.ipv4.ip_forward=1"
+	}
+	if !sysctl {
+		t.Fatal("forwarding change not planned")
+	}
+}
+
+// A relay that already has a WireGuard tunnel and port forwarders, no
+// firewall rules: the tunnel's port is a conflict, the forwarders are not.
+func TestBusyRelay(t *testing.T) {
+	relay := FootprintOf(nodeFiles(t, "access"))
+	extra := "link wg0\nwglink wg0\nwgport wg0 51830\naddr wg0 10.20.0.1/24\n" +
+		"ss udp UNCONN 0 0 0.0.0.0:51830 0.0.0.0:*\n" +
+		"ss tcp LISTEN 0 128 0.0.0.0:10001 0.0.0.0:* users:((\"realm\",pid=91,fd=3))\n" +
+		"ss tcp LISTEN 0 128 0.0.0.0:10002 0.0.0.0:* users:((\"realm\",pid=91,fd=4))\n" +
+		"ss udp UNCONN 0 0 0.0.0.0:10003 0.0.0.0:* users:((\"gost\",pid=92,fd=4))\n" +
+		"cmd wstunnel yes\n"
+	ev := Evaluate(fixture(t, "clean-debian13.txt", relay, nil, extra), relay, remote("access"))
+	checkShape(t, ev)
+	if ev.Blocking {
+		t.Fatalf("busy relay without overlap blocked: %v", codes(ev, Blocking))
+	}
+	if !has(ev, Info, CodeWireGuard) {
+		t.Fatalf("%v", codes(ev, ""))
+	}
+}
+
+func TestPrivilegesAndPlatform(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	for _, tc := range []struct {
+		from, to, code string
+	}{
+		{"uid 0", "uid 1000", CodeNotRoot},
+		{"arch x86_64", "arch armv7l", CodeArchUnsupported},
+		{"kernel 6.12.12-amd64", "kernel 5.4.0-150-generic", CodeKernelTooOld},
+		{"systemd yes", "systemd no", CodeNoSystemd},
+		{"os-version \"13\"", "os-version \"11\"", CodeOSUnsupported},
+		{"cmd apt-get yes", "cmd apt-get no", CodeNoApt},
+	} {
+		raw, _ := os.ReadFile("testdata/clean-debian13.txt")
+		var b strings.Builder
+		for _, p := range fp.PreflightPaths() {
+			b.WriteString("path " + p + " absent\n")
+		}
+		text := strings.Replace(strings.Replace(string(raw), "@PATHS@\n", b.String(), 1), tc.from+"\n", tc.to+"\n", 1)
+		ev := Evaluate(Parse(text), fp, remote("hk-resi"))
+		if !has(ev, Blocking, tc.code) {
+			t.Fatalf("%s → %s: want %s, got %v", tc.from, tc.to, tc.code, codes(ev, ""))
+		}
+	}
+}
+
+// ------------------------------------------------------------ ownership ---
+
+func TestOwnership(t *testing.T) {
+	files := nodeFiles(t, "hk-resi")
+	fp := FootprintOf(files)
+	const h1 = "1111111111111111111111111111111111111111111111111111111111111111"
+	const h2 = "2222222222222222222222222222222222222222222222222222222222222222"
+	present := map[string]string{}
+	var man strings.Builder
+	man.WriteString("manifest-begin\nmanifest meridian-node-manifest 1\nmanifest node hk-resi\nmanifest deployment dep-test\n")
+	for _, p := range fp.Files {
+		present[p] = "file 100 yes " + h1
+		man.WriteString("manifest file " + p + " " + h1 + "\n")
+	}
+	man.WriteString("manifest iface m04\nmanifest nft inet meridian\nmanifest table 100\nmanifest table 102\nmanifest table 150\nmanifest unit meridian-unlock.timer\nmanifest-end\n")
+	running := "link m04\naddr m04 10.66.11.2/30\nnft table inet meridian {\nrtable4 150 route\n" +
+		"ss udp UNCONN 0 0 10.66.11.2:53 0.0.0.0:* users:((\"smartdns\",pid=55,fd=4))\n" +
+		"route4 10.66.200.0/24 dev m04 scope link\n" +
+		"route4 blackhole 10.66.0.0/16 metric 32767\nroute4 blackhole 10.66.200.0/24 metric 32767\nroute4 blackhole 192.0.2.0/24 metric 32767\n"
+
+	// Ours, same node: an update without conflicts.
+	ev := Evaluate(fixture(t, "clean-debian13.txt", fp, present, man.String()+running), fp, remote("hk-resi"))
+	checkShape(t, ev)
+	if ev.Ownership != OwnSame || ev.Blocking || !has(ev, Info, CodeOwnInstall) {
+		t.Fatalf("same: %s %v", ev.Ownership, codes(ev, ""))
+	}
+	// A managed file changed on the host since the install.
+	changed := map[string]string{}
+	for k, v := range present {
+		changed[k] = v
+	}
+	changed["/etc/sysctl.d/99-meridian.conf"] = "file 100 yes " + h2
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, changed, man.String()+running), fp, remote("hk-resi"))
+	if mf := find(ev, CodeModifiedSince); len(mf) != 1 || mf[0].Resource != "/etc/sysctl.d/99-meridian.conf" || ev.Blocking {
+		t.Fatalf("modified %v", codes(ev, ""))
+	}
+	// Ours, but another node of this panel / another panel.
+	for _, ctx := range []Context{{Artifacts: testArts, NodeID: "hk-resi-2", Deployment: "dep-test"}, {Artifacts: testArts, NodeID: "hk-resi", Deployment: "dep-other"}} {
+		ev = Evaluate(fixture(t, "clean-debian13.txt", fp, present, man.String()+running), fp, ctx)
+		if ev.Ownership != OwnOther || !has(ev, Blocking, CodeManagedByOther) || !has(ev, Blocking, CodeInterfaceExists) || !has(ev, Blocking, CodeNFTTableExists) {
+			t.Fatalf("other %+v: %s %v", ctx, ev.Ownership, codes(ev, ""))
+		}
+	}
+	// Not ours: Meridian-marked files without a manifest (legacy) and a
+	// foreign SmartDNS config at our path.
+	legacy := map[string]string{"/etc/wireguard/m04.conf": "file 500 yes " + h1, "/etc/smartdns/smartdns.conf": "file 2048 no " + h2}
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, legacy, ""), fp, remote("hk-resi"))
+	if ev.Ownership != OwnLegacy || !has(ev, Blocking, CodeLegacyInstall) {
+		t.Fatalf("legacy %s %v", ev.Ownership, codes(ev, ""))
+	}
+	po := find(ev, CodePathOccupied)
+	if len(po) != 1 || po[0].Resource != "/etc/smartdns/smartdns.conf" || !strings.Contains(po[0].Action, "不会覆盖") {
+		t.Fatalf("occupied %+v", po)
+	}
+	// A directory at a file path.
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, map[string]string{"/etc/meridian/forwarding.conf": "dir 0 no -"}, ""), fp, remote("hk-resi"))
+	if !has(ev, Blocking, CodePathOccupied) {
+		t.Fatalf("dir at path %v", codes(ev, ""))
+	}
+	// Unreadable manifest, interrupted earlier run, compensated run with leftovers.
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "manifest-begin\nmanifest garbage\nmanifest-end\n"), fp, remote("hk-resi"))
+	if ev.Ownership != OwnUnknown || !has(ev, Blocking, CodeManifestUnreadable) {
+		t.Fatalf("unreadable %s %v", ev.Ownership, codes(ev, ""))
+	}
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "journal-begin\njournal state running\njournal run r1\njournal-end\n"), fp, remote("hk-resi"))
+	if !has(ev, Blocking, CodePreviousRun) {
+		t.Fatalf("running journal %v", codes(ev, ""))
+	}
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "journal-begin\njournal state compensated\njournal leftover package wireguard-tools\njournal-end\n"), fp, remote("hk-resi"))
+	if !has(ev, Warning, CodePreviousLeftovers) || ev.Blocking {
+		t.Fatalf("compensated journal %v", codes(ev, ""))
+	}
+	// Foreign Meridian-named resources without any file: table in use,
+	// nft table present.
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "rtable4 150 route\nrtname 150 vpn\nnft table inet meridian {\n"), fp, remote("hk-resi"))
+	if !has(ev, Blocking, CodeTableInUse) || !has(ev, Blocking, CodeNFTTableExists) || !has(ev, Warning, CodeTableName) {
+		t.Fatalf("foreign tables %v", codes(ev, ""))
+	}
+}
+
+// Gateway mode: ownership comes from the install manifest; Docker's
+// FORWARD DROP blocks; a foreign fwmark collides.
+func TestGatewayMode(t *testing.T) {
+	files := nodeFiles(t, "gw")
+	fp := FootprintOf(files)
+	ev := Evaluate(fixture(t, "docker-forward-drop.txt", fp, nil, ""), fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true})
+	checkShape(t, ev)
+	if !has(ev, Blocking, CodeForwardDrop) || ev.Ownership != OwnNone {
+		t.Fatalf("gateway %s %v", ev.Ownership, codes(ev, ""))
+	}
+	for _, c := range ev.Changes {
+		if c.Kind == "state" {
+			t.Fatal("gateway plan names the remote node manifest")
+		}
+	}
+	marked := map[string]string{"/etc/wireguard/m02.conf": "file 400 yes -"}
+	r := fixture(t, "clean-debian13.txt", fp, marked, "rule4 100:	from all fwmark 0x101 lookup 51820\n")
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true})
+	if !has(ev, Blocking, CodeFwmarkInUse) || has(ev, "", CodeLegacyInstall) {
+		t.Fatalf("gateway fwmark/legacy %v", codes(ev, ""))
+	}
+	owned := &Owned{Files: map[string]string{"/etc/wireguard/m02.conf": ""}, Interfaces: []string{"m02"}, NFTTables: []string{"inet meridian"}}
+	r = fixture(t, "clean-debian13.txt", fp, marked, "link m02\nnft table inet meridian {\n")
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
+	if ev.Ownership != OwnSame || has(ev, "", CodeInterfaceExists) || has(ev, "", CodeNFTTableExists) {
+		t.Fatalf("gateway owned %s %v", ev.Ownership, codes(ev, ""))
+	}
+	// An update: the previous install's own rules (some name no Meridian
+	// table) are not conflicts; a foreign rule with the same mark still is.
+	owned.Tables = []int{100, 102, 150}
+	ours := "rule4 17000:\tfrom all fwmark 0x4d72 lookup main\nrule4 17200:\tfrom all fwmark 0x101 lookup 102\nrule4 17600:\tfrom all fwmark 0x101 unreachable\n"
+	r = fixture(t, "clean-debian13.txt", fp, marked, "link m02\nnft table inet meridian {\n"+ours)
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
+	if has(ev, "", CodeFwmarkInUse) || has(ev, "", CodeRulePriority) {
+		t.Fatalf("own rules flagged: %v", codes(ev, ""))
+	}
+	r = fixture(t, "clean-debian13.txt", fp, marked, "link m02\nnft table inet meridian {\n"+ours+"rule4 900:\tfrom all fwmark 0x101 lookup 77\n")
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
+	if !has(ev, Blocking, CodeFwmarkInUse) {
+		t.Fatalf("foreign rule with our mark not flagged: %v", codes(ev, ""))
+	}
+}
+
+func TestEnvironmentWarnings(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "access"))
+	// nftables.service enabled with a flushing config is blocking since S1
+	// (TestNFTFlushBlocks); this test keeps the service disabled.
+	extra := "unit ufw.service active enabled 1\nipt ipv4 -P INPUT DROP\ncmd wstunnel yes\n" +
+		"rule4 18100:	from 10.9.0.0/24 lookup 99\n"
+	r := fixture(t, "clean-debian13.txt", fp, nil, extra)
+	ev := Evaluate(r, fp, remote("access"))
+	for _, c := range []string{CodeFirewallManager, CodeInputDrop, CodeRulePriority} {
+		if !has(ev, Warning, c) {
+			t.Fatalf("missing warning %s: %v", c, codes(ev, ""))
+		}
+	}
+	if ev.Blocking {
+		t.Fatalf("warnings blocked: %v", codes(ev, Blocking))
+	}
+}
+
+// --------------------------------------------------------------- parser ---
+
+func TestParseRejectsGarbageAndTruncation(t *testing.T) {
+	for name, text := range map[string]string{
+		"empty":      "",
+		"garbage":    "Welcome to Ubuntu\nlast login: never\n\x1b[31mred\x1b[0m\n",
+		"no end":     Header + "\nuid 0\narch x86_64\n",
+		"cut header": "meridian-pre",
+		"oversized":  Header + "\n" + strings.Repeat("note "+strings.Repeat("x", 300)+"\n", MaxReport/300+10) + EndMarker + "\n",
+		"many lines": Header + "\n" + strings.Repeat("x\n", maxLines+10) + EndMarker + "\n",
+	} {
+		r := Parse(text)
+		if r.Complete {
+			t.Fatalf("%s: parsed as complete", name)
+		}
+		ev := Evaluate(r, FootprintOf(nodeFiles(t, "hk-resi")), remote("hk-resi"))
+		if !ev.Blocking || !has(ev, Blocking, CodeReportIncomplete) {
+			t.Fatalf("%s: not blocking: %v", name, codes(ev, ""))
+		}
+	}
+}
+
+func TestParseHostileValues(t *testing.T) {
+	long := strings.Repeat("A", 5000)
+	text := Header + "\n" +
+		"os-pretty \x1b]0;pwned\x07Debian‮ evil \x00\n" +
+		"arch " + long + "\n" +
+		"path /etc/shadow file 10 yes " + strings.Repeat("a", 64) + "\n" +
+		"path /etc/wireguard/../../etc/shadow file 1 no -\n" +
+		"path /etc/wireguard/m04.conf file 5 yes not-a-hash\n" +
+		"addr eth0;rm 10.0.0.1/24\n" +
+		"addr eth0 not-an-address\n" +
+		"ss tcp LISTEN 0 1 0.0.0.0:99999 0.0.0.0:*\n" +
+		"ss tcp LISTEN 0 1 0.0.0.0:443 0.0.0.0:* users:((\"$(id)\",pid=1,fd=1))\n" +
+		"rule4 garbage\n" +
+		"route4 local 10.0.0.1 dev lo\n" +
+		"unit x\n" +
+		"manifest node intruder\n" + // outside manifest-begin/end: ignored
+		"\xff\xfe invalid utf8\n" +
+		EndMarker + "\n" +
+		"uid 0\n" // after the end line: ignored
+	r := Parse(text)
+	if !r.Complete {
+		t.Fatalf("notes %v", r.Notes)
+	}
+	if strings.ContainsAny(r.OSPretty, "\x1b\x07\x00‮") || len([]rune(r.Arch)) > maxField {
+		t.Fatalf("not cleaned: %q / %d", r.OSPretty, len(r.Arch))
+	}
+	if _, ok := r.Paths["/etc/shadow"]; ok {
+		t.Fatal("path outside the allowed prefixes accepted")
+	}
+	if len(r.Paths) != 1 || r.Paths["/etc/wireguard/m04.conf"].SHA256 != "" {
+		t.Fatalf("paths %+v", r.Paths)
+	}
+	if len(r.Addrs) != 0 || len(r.Rules) != 0 || len(r.Routes) != 0 || len(r.Units) != 0 || r.Manifest != nil || r.UID != -1 {
+		t.Fatalf("hostile lines accepted: %+v", r)
+	}
+	if len(r.Listeners) != 1 || r.Listeners[0].Process != "" || r.Listeners[0].Port != 443 {
+		t.Fatalf("listeners %+v", r.Listeners)
+	}
+}
+
+func TestParseLines(t *testing.T) {
+	r := Parse(Header + "\n" +
+		"ss udp   UNCONN 0 0 [fe80::1%eth0]:546 [::]:* users:((\"dhcpcd\",pid=12,fd=3))\n" +
+		"ss tcp   LISTEN 0 4096 *:9090 *:*\n" +
+		"rule4 32765:\tnot from all fwmark 0x100cf lookup 65743\n" +
+		"rule4 17600:\tfrom all fwmark 0x101 unreachable\n" +
+		"route6 blackhole fd66::/48 dev lo metric 32767 pref medium\n" +
+		"addr veth1@if5 10.1.0.1/24\n" +
+		"addr wg9 10.2.0.1\n" +
+		EndMarker + "\n")
+	if len(r.Listeners) != 2 || r.Listeners[0].Addr.String() != "fe80::1" || r.Listeners[0].PID != 12 || !r.Listeners[1].Wildcard {
+		t.Fatalf("listeners %+v", r.Listeners)
+	}
+	if len(r.Rules) != 2 || !r.Rules[0].Not || r.Rules[0].Fwmark != "0x100cf" || r.Rules[0].Table != "65743" || r.Rules[1].Action != "unreachable" {
+		t.Fatalf("rules %+v", r.Rules)
+	}
+	if len(r.Routes) != 1 || r.Routes[0].Type != "blackhole" || r.Routes[0].Metric != 32767 {
+		t.Fatalf("routes %+v", r.Routes)
+	}
+	if len(r.Addrs) != 2 || r.Addrs[0].Iface != "veth1" || r.Addrs[1].Prefix.String() != "10.2.0.1/32" {
+		t.Fatalf("addrs %+v", r.Addrs)
+	}
+}
+
+// --------------------------------------------------------------- script ---
+
+func TestValidatePaths(t *testing.T) {
+	// Every path of every node of the example is accepted.
+	b, err := compile.Compile(defaults.Example())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byNode := map[string][]string{}
+	for p := range b.Files {
+		if !strings.HasPrefix(p, "nodes/") {
+			continue
+		}
+		parts := strings.SplitN(strings.TrimPrefix(p, "nodes/"), "/", 2)
+		byNode[parts[0]] = append(byNode[parts[0]], "/"+parts[1])
+	}
+	for n, ps := range byNode {
+		if err := ValidatePaths(ps); err != nil {
+			t.Fatalf("%s: %v", n, err)
+		}
+	}
+	for _, bad := range []string{
+		"", "/", "etc/wireguard/m01.conf", "/etc/passwd", "/etc/shadow", "/root/.ssh/authorized_keys",
+		"/etc/wireguard/", "/etc/wireguard", "/etc/wireguard/../shadow", "/etc/wireguard/./m01.conf", "/etc/wireguard//m01.conf",
+		"/etc/wireguard/m01.conf;id", "/etc/wireguard/$(id)", "/etc/wireguard/`id`", "/etc/wireguard/a b", "/etc/wireguard/a\nb",
+		"/etc/wireguard/a'b", "/etc/wireguard/a\"b", "/etc/wireguard/*", "/etc/wireguard/a|b", "/etc/wireguard/a&b", "/etc/wireguard/-n",
+		"/etc/wireguard/" + strings.Repeat("a", 200), "/etc/wireguardX/m01.conf", "/usr/local/bin/wstunnel", "/etc/wireguard/ü",
+	} {
+		if bad == "/etc/wireguard/-n" {
+			// A leading dash is harmless after "--" (the script never passes
+			// a path as an option), but keep it valid only if the rules say so.
+			continue
+		}
+		if ValidPath(bad) {
+			t.Fatalf("accepted %q", bad)
+		}
+		if _, err := Args([]string{bad}); err == nil {
+			t.Fatalf("Args accepted %q", bad)
+		}
+	}
+	many := make([]string, MaxPaths+1)
+	for i := range many {
+		many[i] = "/etc/meridian/f" + strconv.Itoa(i)
+	}
+	if err := ValidatePaths(many); err == nil {
+		t.Fatal("too many paths accepted")
+	}
+	if err := ValidatePaths([]string{"/etc/meridian/a", "/etc/meridian/a"}); err == nil {
+		t.Fatal("duplicate accepted")
+	}
+	args, err := Args([]string{"/etc/meridian/a"})
+	if err != nil || len(args) != 1 || args[0] != "'/etc/meridian/a'" {
+		t.Fatalf("args %v %v", args, err)
+	}
+}
+
+func TestScriptSyntaxAndReadOnly(t *testing.T) {
+	s := Script()
+	if _, err := exec.LookPath("bash"); err == nil {
+		cmd := exec.Command("bash", "-n")
+		cmd.Stdin = strings.NewReader(s)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("bash -n: %v\n%s", err, out)
+		}
+	}
+	if _, err := exec.LookPath("sh"); err == nil {
+		// The script is bash; sh -n only catches gross breakage here.
+		_ = exec.Command("sh", "-n").Run()
+	}
+	if path, err := exec.LookPath("shellcheck"); err == nil {
+		cmd := exec.Command(path, "-s", "bash", "-S", "warning", "-")
+		cmd.Stdin = strings.NewReader(s)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("shellcheck: %v\n%s", err, out)
+		}
+	}
+	// No command that changes the host may appear in the script.
+	for _, bad := range []string{
+		"rm ", "mv ", "cp ", "tee ", "install ", "mkdir", "touch ", "chmod", "chown", "ln ",
+		"systemctl start", "systemctl stop", "systemctl restart", "systemctl enable", "systemctl disable", "systemctl daemon",
+		"nft add", "nft delete", "nft flush", "nft -f", "ip link add", "ip link del", "ip link set", "ip addr add", "ip route add",
+		"ip route replace", "ip route del", "ip rule add", "ip rule del", "iptables -A", "iptables -I", "iptables -D", "iptables -P",
+		"iptables -F", "sysctl -w", "apt-get install", "apt-get update", "apt-get remove", "dpkg -i", "modprobe", "wg set", "wg-quick up", "wg-quick down", "wg setconf", "wg syncconf", "docker run", "curl -", "wget ",
+		"eval ", "source ", "exec ", "$(cat", "sudo",
+	} {
+		if strings.Contains(s, bad) {
+			t.Fatalf("script contains %q", bad)
+		}
+	}
+	// The only output redirections go to /dev/null.
+	for _, line := range strings.Split(s, "\n") {
+		rest := strings.NewReplacer(">/dev/null", "", "2>&1", "").Replace(line)
+		if strings.Contains(rest, ">") {
+			t.Fatalf("script redirects output: %s", line)
+		}
+	}
+	if !strings.Contains(s, "head -c 262145") || MaxReport+1 != 262145 {
+		t.Fatal("output bound does not match MaxReport")
+	}
+	if !strings.Contains(s, "</dev/null") {
+		t.Fatal("commands must not read the script's stdin")
+	}
+}
+
+// Runs the script locally (read-only) with valid and invalid arguments: it
+// must always produce a complete, parseable report and refuse the invalid
+// path itself (defence in depth behind ValidatePaths).
+func TestScriptRunsLocally(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("no bash")
+	}
+	cmd := exec.Command("bash", "-s", "--", "/etc/meridian/no-such-file-for-test", "/etc/passwd", "/etc/meridian/a;id", "route4:192.0.2.1", "route4:192.0.2.1;id", "route6:2001:db8::1", "route4:2001:db8::1")
+	cmd.Stdin = strings.NewReader(Script())
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("script failed: %v", err)
+	}
+	if len(out) > MaxReport+1 {
+		t.Fatalf("output %d bytes", len(out))
+	}
+	r := Parse(string(out))
+	if !r.Complete {
+		t.Fatalf("local run incomplete: %v\n%s", r.Notes, out)
+	}
+	if pi, ok := r.Paths["/etc/meridian/no-such-file-for-test"]; !ok || pi.Exists {
+		t.Fatalf("path %+v %v", pi, ok)
+	}
+	if _, ok := r.Paths["/etc/passwd"]; ok || strings.Count(string(out), "note path argument refused") != 2 {
+		t.Fatalf("invalid arguments were not refused by the script:\n%s", out)
+	}
+	if strings.Contains(string(out), "root:") {
+		t.Fatal("file content leaked into the report")
+	}
+	// Route lookups: answered (an interface, or "-" where this host has no
+	// ip command or no route), hostile ones refused by the script itself.
+	if _, ok := r.UpRoutes["4 192.0.2.1"]; !ok {
+		t.Fatalf("no answer for the route lookup:\n%s", out)
+	}
+	if _, ok := r.UpRoutes["6 2001:db8::1"]; !ok {
+		t.Fatalf("no answer for the IPv6 route lookup:\n%s", out)
+	}
+	if strings.Count(string(out), "note route argument refused") != 2 {
+		t.Fatalf("invalid route arguments were not refused by the script:\n%s", out)
+	}
+}
+
+// ------------------------------------------ updates of our own install ---
+
+// gatewayOwned is the install manifest of the example gateway as the
+// panel holds it (apply.Installed): every file, interface, unit, table.
+func gatewayOwned(fp Footprint) *Owned {
+	o := &Owned{Files: map[string]string{}, DNS: fp.DNS, Tables: fp.Tables, NFTTables: fp.NFTTables}
+	for _, f := range fp.Files {
+		o.Files[f] = ""
+	}
+	for _, i := range fp.Interfaces {
+		o.Interfaces = append(o.Interfaces, i.Name)
+	}
+	for _, u := range fp.Units {
+		if !strings.HasSuffix(u, ".timer") {
+			o.Units = append(o.Units, u)
+		}
+	}
+	return o
+}
+
+func allPresent(fp Footprint) map[string]string {
+	m := map[string]string{}
+	for _, p := range fp.Files {
+		m[p] = "file 100 yes " + strings.Repeat("c", 64)
+	}
+	return m
+}
+
+// The real case, sanitized: a gateway running the previous install, its
+// SmartDNS as the compose container meridian-smartdns (host network), the
+// wstunnel clients as units of the install, the transit addresses on lo.
+// The host agent cannot see process names (no CAP_SYS_PTRACE); sockets are
+// attributed by their cgroup. An update without a real conflict passes.
+func TestGatewayUpdateOfOwnInstallIsNotBlocked(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "gw"))
+	if !containsAddr(fp.LoAddrs, netip.MustParseAddr("fd66:0:0:ff::a")) {
+		t.Fatalf("lo addresses %v", fp.LoAddrs)
+	}
+	ctx := Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: gatewayOwned(fp)}
+	r := fixture(t, "gateway-installed.txt", fp, allPresent(fp), "")
+	ev := Evaluate(r, fp, ctx)
+	checkShape(t, ev)
+	if ev.Blocking || ev.Ownership != OwnSame {
+		t.Fatalf("own install blocked: %s %+v", ev.Ownership, find(ev, CodePortInUse))
+	}
+	for _, c := range []string{CodeSmartDNSMissing, CodePortInUse, CodeRouteOverlap, CodeAddressOverlap, CodeFwmarkInUse, CodeTableInUse, CodeForwardDrop} {
+		if has(ev, "", c) {
+			t.Fatalf("false %s: %+v", c, find(ev, c))
+		}
+	}
+	if g := find(ev, CodeGatewayDNS); len(g) != 1 || !strings.Contains(g[0].Message, "meridian-smartdns") {
+		t.Fatalf("dns runtime %+v", g)
+	}
+	for _, ch := range ev.Changes {
+		if ch.Kind == "package" {
+			t.Fatalf("the gateway install installs no package: %+v", ch)
+		}
+	}
+
+	// A foreign resolver next to our install still blocks, named.
+	r = fixture(t, "gateway-installed.txt", fp, allPresent(fp),
+		"ss udp UNCONN 0 0 192.0.2.88:53 0.0.0.0:*\nssc udp UNCONN 0 0 192.0.2.88:53 0.0.0.0:* cgroup:/system.slice/dnsmasq.service\n")
+	ev = Evaluate(r, fp, ctx)
+	if pu := find(ev, CodePortInUse); len(pu) != 1 || !strings.Contains(pu[0].Message, "服务 dnsmasq.service") || !ev.Blocking {
+		t.Fatalf("foreign :53 %+v", pu)
+	}
+	// A listener in another container's cgroup is not ours.
+	other := strings.Replace(string(mustRead(t, "testdata/gateway-installed.txt")),
+		"container meridian-smartdns 1111111111111111111111111111111111111111111111111111111111111111 true",
+		"container meridian-smartdns 3333333333333333333333333333333333333333333333333333333333333333 true", 1)
+	ev = Evaluate(parseWithPaths(t, other, fp, allPresent(fp)), fp, ctx)
+	if pu := find(ev, CodePortInUse); len(pu) != 3 || !strings.Contains(pu[0].Message, "容器 111111111111") {
+		t.Fatalf("other container %+v", pu)
+	}
+	// A unit the manifest does not list holds a wstunnel port.
+	foreign := strings.Replace(string(mustRead(t, "testdata/gateway-installed.txt")),
+		"cgroup:/system.slice/wstunnel-client-gw-access.service", "cgroup:/system.slice/wstunnel-other.service", 1)
+	ev = Evaluate(parseWithPaths(t, foreign, fp, allPresent(fp)), fp, ctx)
+	if pu := find(ev, CodePortInUse); len(pu) != 1 || pu[0].Resource != "udp 127.0.0.1:52002" || !strings.Contains(pu[0].Message, "wstunnel-other.service") {
+		t.Fatalf("foreign unit %+v", pu)
+	}
+	// The same host state without a manifest (a first install) is blocked:
+	// nothing is ours without evidence.
+	ev = Evaluate(fixture(t, "gateway-installed.txt", fp, nil, ""), fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true})
+	for _, c := range []string{CodePortInUse, CodeInterfaceExists, CodeNFTTableExists, CodeRouteOverlap} {
+		if !has(ev, Blocking, c) {
+			t.Fatalf("first install: missing %s: %v", c, codes(ev, ""))
+		}
+	}
+	// No cgroup facts (an older ss): fail closed.
+	nocg := regexp.MustCompile(`(?m)^ssc .*\n`).ReplaceAllString(string(mustRead(t, "testdata/gateway-installed.txt")), "")
+	ev = Evaluate(parseWithPaths(t, nocg, fp, allPresent(fp)), fp, ctx)
+	if pu := find(ev, CodePortInUse); len(pu) == 0 || !strings.Contains(pu[0].Message, "看不到名字") {
+		t.Fatalf("without cgroups %+v", pu)
+	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func parseWithPaths(t *testing.T, raw string, fp Footprint, paths map[string]string) Report {
+	t.Helper()
+	var b strings.Builder
+	for _, p := range fp.PreflightPaths() {
+		if v, ok := paths[p]; ok {
+			b.WriteString("path " + p + " " + v + "\n")
+		} else {
+			b.WriteString("path " + p + " absent\n")
+		}
+	}
+	r := Parse(strings.Replace(raw, "@PATHS@\n", b.String(), 1))
+	if !r.Complete {
+		t.Fatalf("incomplete: %v", r.Notes)
+	}
+	return r
+}
+
+// installedByUs renders what a host looks like after this panel installed
+// fp for node: the manifest, every interface with its addresses and
+// WireGuard port, the transit addresses on lo, the main-table routes and
+// rules of the bundle, its tables and nft tables, the units' sockets.
+func installedByUs(fp Footprint, node, dep string) string {
+	var b strings.Builder
+	b.WriteString("manifest-begin\nmanifest meridian-node-manifest 1\nmanifest node " + node + "\nmanifest deployment " + dep + "\n")
+	for _, p := range fp.Files {
+		b.WriteString("manifest file " + p + " " + strings.Repeat("c", 64) + "\n")
+	}
+	for _, i := range fp.Interfaces {
+		b.WriteString("manifest iface " + i.Name + "\n")
+	}
+	for _, u := range fp.Units {
+		b.WriteString("manifest unit " + u + "\n")
+	}
+	for _, n := range fp.NFTTables {
+		b.WriteString("manifest nft " + n + "\n")
+	}
+	for _, n := range fp.Tables {
+		b.WriteString("manifest table " + strconv.Itoa(n) + "\n")
+	}
+	b.WriteString("manifest-end\n")
+	for _, i := range fp.Interfaces {
+		b.WriteString("link " + i.Name + "\nwglink " + i.Name + "\n")
+		for _, a := range i.Addresses {
+			b.WriteString("addr " + i.Name + " " + a.String() + "\n")
+		}
+		if i.ListenPort > 0 {
+			p := strconv.Itoa(i.ListenPort)
+			b.WriteString("wgport " + i.Name + " " + p + "\nss udp UNCONN 0 0 0.0.0.0:" + p + " 0.0.0.0:*\nss udp UNCONN 0 0 [::]:" + p + " [::]:*\n")
+		}
+	}
+	for _, a := range fp.LoAddrs {
+		fam := "route4"
+		if a.Addr().Is6() {
+			fam = "route6"
+		}
+		b.WriteString("addr lo " + a.String() + "\n" + fam + " " + a.Addr().String() + " dev lo proto kernel metric 256 pref medium\n")
+	}
+	for _, r := range fp.Routes {
+		if r.Table != 0 {
+			continue
+		}
+		fam := "route4"
+		if r.Family == 6 {
+			fam = "route6"
+		}
+		if r.Blackhole {
+			b.WriteString(fam + " blackhole " + r.Dst.String() + " metric " + strconv.Itoa(r.Metric) + "\n")
+		} else if r.Dev != "" {
+			b.WriteString(fam + " " + r.Dst.String() + " dev " + r.Dev + " scope link\n")
+		}
+	}
+	for _, r := range fp.Rules {
+		b.WriteString("rule" + strconv.Itoa(r.Family) + " " + strconv.Itoa(r.Priority) + ":\t" + r.Selector + "\n")
+	}
+	for _, n := range fp.Tables {
+		b.WriteString("rtable4 " + strconv.Itoa(n) + " route\nrtable4 " + strconv.Itoa(n) + " default\n")
+	}
+	for _, n := range fp.NFTTables {
+		b.WriteString("nft table " + n + " {\n")
+	}
+	for _, l := range fp.Listens {
+		if l.Owner == "smartdns" || strings.Contains(l.Owner, ".service") {
+			unit := l.Owner
+			if unit == "smartdns" {
+				unit = "smartdns.service"
+			}
+			addr := l.Addr.String()
+			if l.Addr.Is6() {
+				addr = "[" + addr + "]"
+			}
+			kind := map[string]string{"tcp": "LISTEN", "udp": "UNCONN"}[l.Proto]
+			line := l.Proto + " " + kind + " 0 0 " + addr + ":" + strconv.Itoa(l.Port) + " 0.0.0.0:*"
+			b.WriteString("ss " + line + "\nssc " + line + " cgroup:/system.slice/" + unit + "\n")
+		}
+	}
+	return b.String()
+}
+
+// A remote node updated by this panel: its own interfaces, WireGuard
+// ports, wstunnel and smartdns sockets, lo transit addresses, routes,
+// rules, tables and nft tables are not conflicts.
+func TestRemoteUpdateOfOwnInstallIsNotBlocked(t *testing.T) {
+	for _, node := range []string{"hk-hub", "access", "hk-resi", "hk-ix"} {
+		fp := FootprintOf(nodeFiles(t, node))
+		state := installedByUs(fp, node, "dep-test") + "cmd wstunnel yes\ncmd smartdns yes\n"
+		r := fixture(t, "clean-debian13.txt", fp, allPresent(fp), state)
+		ev := Evaluate(r, fp, remote(node))
+		checkShape(t, ev)
+		if ev.Ownership != OwnSame || ev.Blocking {
+			t.Fatalf("%s: own install blocked (%s): %v %+v", node, ev.Ownership, codes(ev, Blocking), ev.Findings[:min(3, len(ev.Findings))])
+		}
+		for _, c := range []string{CodePortInUse, CodeRouteOverlap, CodeAddressOverlap, CodeFwmarkInUse, CodeTableInUse, CodeInterfaceExists, CodeNFTTableExists} {
+			if has(ev, "", c) {
+				t.Fatalf("%s: false %s: %+v", node, c, find(ev, c))
+			}
+		}
+		// Another node's or another panel's install: everything blocks.
+		ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: node, Deployment: "dep-other"})
+		if !has(ev, Blocking, CodeManagedByOther) || !has(ev, Blocking, CodeInterfaceExists) {
+			t.Fatalf("%s: other deployment %v", node, codes(ev, ""))
+		}
+		if len(fp.Listens) > 0 && !has(ev, Blocking, CodePortInUse) {
+			t.Fatalf("%s: other deployment, listeners not blocking: %v", node, codes(ev, ""))
+		}
+	}
+	// Ours, but a foreign process also holds the WSS port.
+	fp := FootprintOf(nodeFiles(t, "access"))
+	state := installedByUs(fp, "access", "dep-test") + "cmd wstunnel yes\n" +
+		"ss tcp LISTEN 0 511 [::]:443 [::]:* users:((\"nginx\",pid=77,fd=6))\n"
+	ev := Evaluate(fixture(t, "clean-debian13.txt", fp, allPresent(fp), state), fp, remote("access"))
+	if pu := find(ev, CodePortInUse); len(pu) != 1 || !strings.Contains(pu[0].Message, "nginx") {
+		t.Fatalf("foreign 443 next to ours %+v", pu)
+	}
+}
+
+// filesWAN is nodeFiles of the example with the node's wan_interface set
+// ("" = unset).
+func filesWAN(t *testing.T, id, wan string) map[string]string {
+	t.Helper()
+	topo := defaults.Example()
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == id {
+			topo.Nodes[i].WANInterface = wan
+		}
+	}
+	return filesOf(t, topo, id)
+}
+
+// filesOf is nodeFiles for any topology.
+func filesOf(t *testing.T, topo model.Topology, id string) map[string]string {
+	t.Helper()
+	b, err := compile.Compile(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for p, body := range b.Files {
+		if strings.HasPrefix(p, "nodes/"+id+"/") {
+			out["/"+strings.TrimPrefix(p, "nodes/"+id+"/")] = body
+		}
+	}
+	return out
+}
+
+func portSources(topo model.Topology, id string) []PortSource {
+	var out []PortSource
+	for _, u := range validate.NodePorts(topo, id) {
+		out = append(out, PortSource{Proto: u.Proto, Port: u.Port, Loopback: u.Loopback, What: u.What, Kind: u.Kind, ID: u.ID, Field: u.Field})
+	}
+	return out
+}
+
+// The port plan validate.NodePorts gives every node is exactly what its
+// rendered bundle binds (read back by FootprintOf): the remedy names the
+// field that really sets the port.
+func TestPortPlanMatchesBundle(t *testing.T) {
+	topo := defaults.Example()
+	for _, n := range topo.Nodes {
+		if n.Role == model.RoleIX {
+			continue
+		}
+		fp := FootprintOf(filesOf(t, topo, n.ID))
+		var got, want []string
+		for _, l := range fp.Listens {
+			if l.Owner == "smartdns" {
+				continue
+			}
+			got = append(got, fmt.Sprintf("%s/%d/%v", l.Proto, l.Port, l.Addr.IsLoopback()))
+		}
+		for _, u := range validate.NodePorts(topo, n.ID) {
+			want = append(want, fmt.Sprintf("%s/%d/%v", u.Proto, u.Port, u.Loopback))
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%s: bundle binds %v, plan says %v", n.ID, got, want)
+		}
+	}
+}
+
+// Real hosts: UDP 51820 taken by pre-existing WireGuard. The finding names
+// the link field; changing it in the topology changes the listener's
+// bundle, its footprint and the dialer's Endpoint together, and the
+// preflight then passes the ports.
+func TestPortReconfigurationEndToEnd(t *testing.T) {
+	topo := defaults.Example()
+	const node = "access"
+	fp := FootprintOf(filesOf(t, topo, node))
+	ev := Evaluate(fixture(t, "existing-wireguard.txt", fp, nil, ""), fp, Context{Artifacts: testArts, NodeID: node, Deployment: "dep-test", Ports: portSources(topo, node)})
+	pu := find(ev, CodePortInUse)
+	if len(pu) != 2 {
+		t.Fatalf("port findings %+v", pu)
+	}
+	moved := map[string]int{}
+	for _, f := range pu {
+		if f.Fix == nil || f.Fix.Kind != "link" || f.Fix.Field != "wg_port" || !strings.Contains(f.Action, f.Fix.ID) || !strings.Contains(f.Action, "WireGuard 端口") {
+			t.Fatalf("finding without a usable fix: %+v", f)
+		}
+		if _, ok := moved[f.Fix.ID]; !ok {
+			moved[f.Fix.ID] = 52820 + 10*len(moved)
+		}
+	}
+	var dialers []string
+	for i := range topo.Links {
+		if p, ok := moved[topo.Links[i].ID]; ok {
+			topo.Links[i].WGPort = p
+		}
+	}
+	if res := validate.Run(topo); res.HasErrors() {
+		t.Fatalf("reconfigured topology invalid: %+v", res.Issues)
+	}
+	for _, lp := range validate.TunnelPorts(topo) {
+		if p, ok := moved[lp.LinkID]; ok {
+			if lp.Listener != node || lp.WG != p {
+				t.Fatalf("plan %+v", lp)
+			}
+			dialers = append(dialers, lp.Dialer)
+		}
+	}
+	fp2 := FootprintOf(filesOf(t, topo, node))
+	for _, p := range moved {
+		found := false
+		for _, l := range fp2.Listens {
+			found = found || (l.Proto == "udp" && l.Port == p)
+		}
+		if !found {
+			t.Fatalf("footprint lacks udp %d: %+v", p, fp2.Listens)
+		}
+	}
+	// The dialers' configs dial the new port (or reach it through their
+	// local wstunnel, whose server forwards to the new port).
+	for _, d := range dialers {
+		all := ""
+		for _, body := range filesOf(t, topo, d) {
+			all += body
+		}
+		ok := false
+		for _, p := range moved {
+			ok = ok || strings.Contains(all, fmt.Sprintf(":%d", p))
+		}
+		if !ok {
+			t.Fatalf("dialer %s does not use the new port", d)
+		}
+	}
+	ev = Evaluate(fixture(t, "existing-wireguard.txt", fp2, nil, ""), fp2, Context{Artifacts: testArts, NodeID: node, Deployment: "dep-test", Ports: portSources(topo, node)})
+	if has(ev, "", CodePortInUse) {
+		t.Fatalf("still in use: %+v", find(ev, CodePortInUse))
+	}
+
+	// The same through the node's listen_port: a node listening on one
+	// link without wg_port takes it.
+	topo = defaults.Example()
+	var lid string
+	for _, lp := range validate.TunnelPorts(topo) {
+		if lp.Listener == node && lid == "" {
+			lid = lp.LinkID
+		}
+	}
+	for i := range topo.Links {
+		if topo.Links[i].ID == lid {
+			topo.Links[i].WGPort = 0
+		}
+	}
+	for i := range topo.Nodes {
+		if topo.Nodes[i].ID == node {
+			topo.Nodes[i].ListenPort = 53999
+		}
+	}
+	if res := validate.Run(topo); res.HasErrors() {
+		t.Fatalf("listen_port topology invalid: %+v", res.Issues)
+	}
+	if !strings.Contains(strings.Join(mapValues(filesOf(t, topo, node)), ""), "ListenPort = 53999") {
+		t.Fatal("listen_port not rendered")
+	}
+}
+
+func mapValues(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
+	}
+	return out
+}
+
+// Validation rejects collisions between a node's own listeners, reserved
+// ports and an ambiguous listen_port.
+func TestPortValidation(t *testing.T) {
+	codesOf := func(topo model.Topology) string {
+		var out []string
+		for _, i := range validate.Run(topo).Issues {
+			if strings.HasPrefix(i.Code, "port_") {
+				out = append(out, i.Code+":"+i.Field)
+			}
+		}
+		sort.Strings(out)
+		return strings.Join(out, ",")
+	}
+	base := defaults.Example()
+	if c := codesOf(base); c != "" {
+		t.Fatalf("example has port issues: %s", c)
+	}
+	// A node that listens on two links.
+	by := map[string][]string{}
+	for _, lp := range validate.TunnelPorts(base) {
+		by[lp.Listener] = append(by[lp.Listener], lp.LinkID)
+	}
+	var who string
+	var mine []string
+	for n, ls := range by {
+		if len(ls) >= 2 && (who == "" || n < who) {
+			who, mine = n, ls
+		}
+	}
+	if who == "" {
+		t.Fatalf("no node listens on two links: %v", by)
+	}
+	set := func(f func(*model.Topology)) model.Topology {
+		topo := defaults.Example()
+		f(&topo)
+		return topo
+	}
+	same := set(func(topo *model.Topology) {
+		for i := range topo.Links {
+			if topo.Links[i].ID == mine[0] || topo.Links[i].ID == mine[1] {
+				topo.Links[i].WGPort = 51999
+			}
+		}
+	})
+	if c := codesOf(same); !strings.Contains(c, "port_conflict:wg_port") {
+		t.Fatalf("own collision: %s", c)
+	}
+	dns := set(func(topo *model.Topology) {
+		for i := range topo.Links {
+			if topo.Links[i].ID == mine[0] {
+				topo.Links[i].WGPort = 53
+			}
+		}
+	})
+	if c := codesOf(dns); !strings.Contains(c, "port_reserved:wg_port") {
+		t.Fatalf("reserved: %s", c)
+	}
+	amb := set(func(topo *model.Topology) {
+		for i := range topo.Links {
+			if topo.Links[i].ID == mine[0] || topo.Links[i].ID == mine[1] {
+				topo.Links[i].WGPort = 0
+			}
+		}
+		for i := range topo.Nodes {
+			if topo.Nodes[i].ID == who {
+				topo.Nodes[i].ListenPort = 51999
+			}
+		}
+	})
+	if c := codesOf(amb); !strings.Contains(c, "port_ambiguous:listen_port") {
+		t.Fatalf("ambiguous: %s", c)
+	}
+	wss := set(func(topo *model.Topology) {
+		for i := range topo.Nodes {
+			if topo.Nodes[i].ID == "access" {
+				topo.Nodes[i].WSSListenPort = 22
+			}
+		}
+	})
+	hasTCP := false
+	for _, u := range validate.NodePorts(wss, "access") {
+		hasTCP = hasTCP || u.Proto == "tcp"
+	}
+	if c := codesOf(wss); !hasTCP || !strings.Contains(c, "port_reserved:wss_listen_port") {
+		t.Fatalf("wss on 22 (access has a WSS server: %v): %s", hasTCP, c)
+	}
+}
+
+// An exit this version installed: the panel-delivered resolver
+// (meridian-smartdns.service, process "meridian-smartd") holds its tunnel
+// addresses, the binary is recorded in the manifest with the pinned digest.
+// The update is not blocked, the binary is kept without a transfer, and
+// the memory budget does not count the resolver that already runs.
+func TestRemoteUpdateWithDeliveredResolver(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	pin, _ := artifacts.PinFor("smartdns", "x86_64")
+	state := strings.Replace(installedByUs(fp, "hk-resi", "dep-test"), "manifest-end\n",
+		"manifest file /usr/local/sbin/meridian-smartdns "+pin.SHA256+"\nmanifest artifact smartdns "+pin.Version+" /usr/local/sbin/meridian-smartdns "+pin.SHA256+"\nmanifest-end\n", 1)
+	state = strings.ReplaceAll(state, "cgroup:/system.slice/smartdns.service", "cgroup:/system.slice/meridian-smartdns.service")
+	state += "ss udp UNCONN 0 0 10.66.11.2:53 0.0.0.0:* users:((\"meridian-smartd\",pid=91,fd=7))\n"
+	present := allPresent(fp)
+	present["/usr/local/sbin/meridian-smartdns"] = fmt.Sprintf("file %d no %s", pin.Size, pin.SHA256)
+	r := fixture(t, "clean-debian13.txt", fp, present, state)
+	if r.Manifest == nil || len(r.Manifest.Artifacts) != 1 || r.Manifest.Artifacts[0].SHA256 != pin.SHA256 {
+		t.Fatalf("manifest artifacts %+v", r.Manifest)
+	}
+	r.MemAvailKB = MemHeadroomKB + 1024 // tight, but the resolver already runs
+	ev := Evaluate(r, fp, remote("hk-resi"))
+	checkShape(t, ev)
+	if ev.Blocking || ev.Ownership != OwnSame {
+		t.Fatalf("own install with the delivered resolver blocked: %v %+v", codes(ev, Blocking), find(ev, CodePortInUse))
+	}
+	if len(ev.Binaries) != 1 || ev.Binaries[0].Action != "keep" || ev.Binaries[0].Transfer {
+		t.Fatalf("binary plan %+v", ev.Binaries)
+	}
+	if mb := find(ev, CodeMemoryBudget); len(mb) != 1 || mb[0].Severity != Info {
+		t.Fatalf("budget %+v", mb)
+	}
+	// The same binary recorded with an older digest: replaced (ours).
+	state2 := strings.Replace(state, "manifest file /usr/local/sbin/meridian-smartdns "+pin.SHA256, "manifest file /usr/local/sbin/meridian-smartdns "+strings.Repeat("e", 64), 1)
+	present["/usr/local/sbin/meridian-smartdns"] = "file 100 no " + strings.Repeat("e", 64)
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, present, state2), fp, remote("hk-resi"))
+	if ev.Blocking || ev.Binaries[0].Action != "replace" || !ev.Binaries[0].Transfer {
+		t.Fatalf("older own binary: %v %+v", codes(ev, Blocking), ev.Binaries)
+	}
+}
+
+// A topology change removed exits or groups: the previous install's transit
+// addresses are still on lo. On a real gateway the update was blocked with
+// route_overlap ("fd66::/48 dev m01 … fd66:0:0:ff::c dev lo"). They are this
+// install's own (inside Meridian's transit prefixes, on a host it already
+// manages): not a conflict, and listed as removed. The same addresses on a
+// host this install does not manage, or an address outside the transit
+// prefixes, still block.
+func TestGatewayStaleTransitAddressesAreOurs(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "gw"))
+	if len(fp.LoNets) != 2 {
+		t.Fatalf("transit prefixes from the routes script: %v", fp.LoNets)
+	}
+	stale := "addr lo 10.66.200.77/32\naddr lo fd66:0:0:ff::4d/128\n" +
+		"route6 fd66:0:0:ff::4d dev lo proto kernel metric 256 pref medium\n"
+	ctx := Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: gatewayOwned(fp)}
+	ev := Evaluate(fixture(t, "gateway-installed.txt", fp, allPresent(fp), stale), fp, ctx)
+	checkShape(t, ev)
+	if ev.Blocking || ev.Ownership != OwnSame || has(ev, "", CodeRouteOverlap) || has(ev, "", CodeAddressOverlap) {
+		t.Fatalf("stale transit addresses of our own install block the update: %+v %+v", find(ev, CodeRouteOverlap), find(ev, CodeAddressOverlap))
+	}
+	removed := map[string]bool{}
+	for _, ch := range ev.Changes {
+		if ch.Kind == "address" && ch.Action == "remove" {
+			removed[ch.Resource] = true
+		}
+	}
+	if !removed["lo 10.66.200.77/32"] || !removed["lo fd66:0:0:ff::4d/128"] || len(removed) != 2 {
+		t.Fatalf("removals listed: %v", removed)
+	}
+
+	// An address on lo outside the transit prefixes is nobody we know.
+	foreign := "addr lo fd66:0:0:7::1/128\nroute6 fd66:0:0:7::1 dev lo proto kernel metric 256 pref medium\n"
+	ev = Evaluate(fixture(t, "gateway-installed.txt", fp, allPresent(fp), foreign), fp, ctx)
+	if !ev.Blocking || !has(ev, "", CodeRouteOverlap) {
+		t.Fatalf("a foreign lo address inside fd66::/48 must still block: %+v", ev.Findings)
+	}
+}
+
+// With unlisted_domestic_dns the gateway runs meridian-dns-split on
+// 127.0.0.1:5356 (UDP and TCP); the pre-check must see that listen as the
+// unit's, and nothing of it without the setting.
+func TestFootprintDNSSplitListen(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		topo := defaults.Example()
+		topo.Settings.UnlistedDomesticDNS = on
+		b, err := compile.Compile(topo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{}
+		for p, body := range b.Files {
+			if strings.HasPrefix(p, "nodes/gw/") {
+				files["/"+strings.TrimPrefix(p, "nodes/gw/")] = body
+			}
+		}
+		fp := FootprintOf(files)
+		got := map[string]bool{}
+		for _, l := range fp.Listens {
+			if l.Owner == compile.DNSSplitUnit {
+				if l.Addr.String() != "127.0.0.1" || l.Port != 5356 || l.Wildcard {
+					t.Fatalf("dns-split listen %+v", l)
+				}
+				got[l.Proto] = true
+			}
+		}
+		if on != (got["udp"] && got["tcp"]) || (!on && len(got) > 0) {
+			t.Fatalf("setting %v: dns-split listens %v", on, got)
+		}
+		hasUnit := false
+		for _, u := range fp.Units {
+			hasUnit = hasUnit || u == compile.DNSSplitUnit
+		}
+		if hasUnit != on {
+			t.Fatalf("setting %v: unit in footprint %v", on, hasUnit)
+		}
+	}
+}
+
+// An update lists the previous install's interfaces that the new bundle no
+// longer has as "remove" changes: on the gateway every one the installed
+// manifest names (the install transaction removes them), on a remote node
+// the Meridian-named ones its own manifest names (the provision script
+// removes them). Seen on a real gateway: the install removed them correctly
+// but the reviewed plan did not say so.
+func TestUpdateListsRemovedInterfaces(t *testing.T) {
+	files := nodeFiles(t, "gw")
+	fp := FootprintOf(files)
+	planned := map[string]bool{}
+	for _, i := range fp.Interfaces {
+		planned[i.Name] = true
+	}
+	if planned["m77"] || planned["m78"] {
+		t.Fatal("pick interface names the example does not plan")
+	}
+	owned := &Owned{Files: map[string]string{"/etc/wireguard/m02.conf": ""}, Interfaces: []string{"m02", "m77", "m78"}}
+	r := fixture(t, "clean-debian13.txt", fp, nil, "link m02\nlink m77\n")
+	ev := Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
+	removed := map[string]string{}
+	for _, c := range ev.Changes {
+		if c.Kind == "interface" && c.Action == "remove" {
+			removed[c.Resource] = c.Detail
+		}
+	}
+	if len(removed) != 2 || !strings.Contains(removed["m77"], "先删除") || !strings.Contains(removed["m78"], "已经没有") {
+		t.Fatalf("gateway removals %v", removed)
+	}
+	if _, ok := removed["m02"]; ok {
+		t.Fatal("a planned interface listed as removed")
+	}
+	// No previous install: nothing to remove.
+	ev = Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true})
+	for _, c := range ev.Changes {
+		if c.Action == "remove" && c.Kind == "interface" {
+			t.Fatalf("first install lists a removal: %+v", c)
+		}
+	}
+}
+
+func TestRemoteUpdateListsRemovedInterfaces(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "tw"))
+	man := "manifest-begin\nmanifest node tw\nmanifest deployment dep-test\nmanifest iface m14\nmanifest iface m77\nmanifest iface wg9\nmanifest-end\n"
+	ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "link m14\nlink m77\n"+man), fp, remote("tw"))
+	var removed []string
+	for _, c := range ev.Changes {
+		if c.Kind == "interface" && c.Action == "remove" {
+			removed = append(removed, c.Resource)
+		}
+	}
+	if ev.Ownership != OwnSame || strings.Join(removed, ",") != "m77" {
+		t.Fatalf("%s removals %v", ev.Ownership, removed)
+	}
+}
+
+// With a file comparison, the change list names only the files that differ
+// (no blanket "replace"), files with a secret that could not be compared
+// say so, removed files say whether they stay, and the unchanged ones are
+// counted in FileChanges. Without one (first install) nothing changes.
+func TestFileChangesFromComparison(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "access"))
+	state := installedByUs(fp, "access", "dep-test") + "cmd wstunnel yes\ncmd smartdns yes\n"
+	r := fixture(t, "clean-debian13.txt", fp, allPresent(fp), state)
+	if len(fp.Files) < 3 {
+		t.Fatalf("fixture has %d files", len(fp.Files))
+	}
+	changed, secret, rest := fp.Files[0], fp.Files[1], fp.Files[2:]
+	ctx := remote("access")
+	ctx.Files = &FileComparison{Basis: BasisHost, Changed: []string{changed}, NotCompared: []string{secret}, Unchanged: rest,
+		Removed: []string{"/etc/meridian/gone.conf"}, RemovedKept: true}
+	ev := Evaluate(r, fp, ctx)
+	byPath := map[string]Change{}
+	for _, c := range ev.Changes {
+		if c.Kind == "file" {
+			if c.Action == "replace" {
+				t.Fatalf("file listed as replace: %+v", c)
+			}
+			byPath[c.Resource] = c
+		}
+	}
+	if len(byPath) != 3 || byPath[changed].Action != "change" || byPath[secret].Action != "not_compared" ||
+		byPath["/etc/meridian/gone.conf"].Action != "remove" || !strings.Contains(byPath["/etc/meridian/gone.conf"].Detail, "撤回时移除") {
+		t.Fatalf("file changes %+v", byPath)
+	}
+	fc := ev.FileChanges
+	if fc == nil || len(fc.Unchanged) != len(rest) || fc.Changes() != 3 || !strings.Contains(fc.Summary, "未比较 1 个") {
+		t.Fatalf("summary %+v", fc)
+	}
+	// Nothing differs: no file entry at all, and the summary says so.
+	ctx.Files = &FileComparison{Basis: BasisHost, Unchanged: fp.Files}
+	ev = Evaluate(r, fp, ctx)
+	for _, c := range ev.Changes {
+		if c.Kind == "file" {
+			t.Fatalf("unchanged file listed: %+v", c)
+		}
+	}
+	if ev.FileChanges == nil || !strings.HasPrefix(ev.FileChanges.Summary, "没有文件变化") {
+		t.Fatalf("%+v", ev.FileChanges)
+	}
+	// No comparison: every managed file is listed as before.
+	ev = Evaluate(r, fp, remote("access"))
+	n := 0
+	for _, c := range ev.Changes {
+		if c.Kind == "file" && c.Action == "replace" {
+			n++
+		}
+	}
+	if ev.FileChanges != nil || n != len(fp.Files) {
+		t.Fatalf("without comparison: %d of %d listed, %+v", n, len(fp.Files), ev.FileChanges)
+	}
+}
+
+// ------------------------------------------------------------- uplinks ---
+
+// uplinkCtx is remote(node) with the node's tunnel legs.
+func uplinkCtx(t *testing.T, node string) Context {
+	t.Helper()
+	cs, err := compile.UplinkCarriers(defaults.Example(), node)
+	if err != nil || len(cs) == 0 {
+		t.Fatalf("carriers of %s: %v %v", node, cs, err)
+	}
+	ctx := remote(node)
+	ctx.Uplinks = cs
+	return ctx
+}
+
+func uplinkOf(t *testing.T, ev Evaluation, iface string) UplinkFact {
+	t.Helper()
+	for _, f := range ev.Uplinks {
+		if f.Iface == iface {
+			return f
+		}
+	}
+	t.Fatalf("no uplink fact for %s: %+v", iface, ev.Uplinks)
+	return UplinkFact{}
+}
+
+func TestParseUplinkLines(t *testing.T) {
+	r := Parse(Header + "\nlinkmtu eth0 1472\nlinkmtu veth1@if4 1500\nlinkmtu bad;rm 1500\nlinkmtu eth1 99999999\nlinkmtu eth2 x\n" +
+		"uproute 4 192.0.2.1 eth0 -\nuproute 4 192.0.2.2 eth0 1400\nuproute 6 2001:db8::1 - -\nuproute 4 192.0.2.3 eth0;id 1400\n" +
+		"uproute 4 2001:db8::1 eth0 -\nuproute 4 192.0.2.04 eth0 -\n" + EndMarker + "\n")
+	if !r.Complete || r.LinkMTU["eth0"] != 1472 || r.LinkMTU["veth1"] != 1500 || len(r.LinkMTU) != 2 {
+		t.Fatalf("linkmtu %+v", r.LinkMTU)
+	}
+	if u := r.UpRoutes["4 192.0.2.1"]; u.Dev != "eth0" || u.MTU != 0 {
+		t.Fatalf("route %+v", u)
+	}
+	if u := r.UpRoutes["4 192.0.2.2"]; u.Dev != "eth0" || u.MTU != 1400 {
+		t.Fatalf("route with mtu %+v", u)
+	}
+	if u, ok := r.UpRoutes["6 2001:db8::1"]; !ok || u.Dev != "" {
+		t.Fatalf("no route %+v %v", u, ok)
+	}
+	if u := r.UpRoutes["4 192.0.2.3"]; u.Dev != "" {
+		t.Fatalf("hostile dev kept: %+v", u)
+	}
+	if len(r.UpRoutes) != 4 {
+		t.Fatalf("invalid uproute lines kept: %+v", r.UpRoutes)
+	}
+}
+
+func TestValidRoute(t *testing.T) {
+	for _, ok := range []string{"route4:192.0.2.1", "route6:2001:db8::1"} {
+		if !ValidRoute(ok) {
+			t.Fatalf("%s refused", ok)
+		}
+	}
+	for _, bad := range []string{"route4:2001:db8::1", "route6:192.0.2.1", "route6:::ffff:192.0.2.1", "route4:192.0.2.01", "route6:2001:DB8::1",
+		"route6:fe80::1%eth0", "route4:192.0.2.1;id", "route4:example.net", "route5:192.0.2.1", "tcp4:192.0.2.1:1"} {
+		if ValidRoute(bad) {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+	if _, err := ArgsWithRoutes(nil, nil, []string{"route4:192.0.2.1", "route4:192.0.2.1"}); err == nil {
+		t.Fatal("duplicate route accepted")
+	}
+	many := []string{}
+	for i := 0; i <= MaxRoutes; i++ {
+		many = append(many, fmt.Sprintf("route4:192.0.%d.%d", i/200, i%200+1))
+	}
+	if _, err := ArgsWithRoutes(nil, nil, many); err == nil {
+		t.Fatal("too many routes accepted")
+	}
+	args, err := ArgsWithRoutes([]string{"/etc/wireguard/m04.conf"}, nil, []string{"route4:192.0.2.1"})
+	if err != nil || strings.Join(args, " ") != "'/etc/wireguard/m04.conf' 'route4:192.0.2.1'" {
+		t.Fatalf("args %v %v", args, err)
+	}
+}
+
+// The exit hk-resi dials the hub (m04, tunnel MTU 1420, outer IPv4) and
+// its uplink is 1472 (the measured case): a new install blocks with the
+// shortfall and the suggestion; 1500 fits; a lower route MTU counts.
+func TestUplinkMTUEvaluation(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	ctx := uplinkCtx(t, "hk-resi")
+	peer := ctx.Uplinks[0].Peer
+	if peer == "" || ctx.Uplinks[0].TunnelMTU != 1420 || ctx.Uplinks[0].Iface != "m04" {
+		t.Fatalf("carrier %+v", ctx.Uplinks[0])
+	}
+
+	// Fits.
+	ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "linkmtu lo 65536\nlinkmtu eth0 1500\nuproute 4 "+peer+" eth0 -\n"), fp, ctx)
+	checkShape(t, ev)
+	if f := uplinkOf(t, ev, "m04"); f.Status != UplinkFits || f.Dev != "eth0" || f.UplinkMTU != 1500 || f.MaxInner != 1420 || ev.Blocking || !has(ev, Info, CodeUplinkMTU) {
+		t.Fatalf("1500 must fit: %+v %v", f, codes(ev, ""))
+	}
+
+	// Does not fit, interface not installed yet: blocking, with the end,
+	// the shortfall and the suggestion, and the link's MTU field as fix.
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "linkmtu lo 65536\nlinkmtu eth0 1472\nuproute 4 "+peer+" eth0 -\n"), fp, ctx)
+	checkShape(t, ev)
+	f := uplinkOf(t, ev, "m04")
+	if f.Status != UplinkTooSmall || f.Shortfall != 8 || f.Suggested != 1408 || f.MaxInner != 1408 || f.Deployed {
+		t.Fatalf("1472: %+v", f)
+	}
+	ts := find(ev, CodeUplinkMTUTooSmall)
+	if len(ts) != 1 || ts[0].Severity != Blocking || ts[0].Resource != "m04" || ts[0].Fix == nil || ts[0].Fix.Kind != "link" || ts[0].Fix.ID != "hkresi-hub" || ts[0].Fix.Field != "mtu" {
+		t.Fatalf("finding %+v", ts)
+	}
+	for _, want := range []string{"hk-resi", "eth0", "1472", "1480", "超出 8 字节", "1408"} {
+		if !strings.Contains(ts[0].Message+ts[0].Action, want) {
+			t.Fatalf("finding does not say %q: %s / %s", want, ts[0].Message, ts[0].Action)
+		}
+	}
+
+	// A route MTU below the interface's is the limit.
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "linkmtu eth0 1500\nuproute 4 "+peer+" eth0 1450\n"), fp, ctx)
+	if f := uplinkOf(t, ev, "m04"); f.Status != UplinkTooSmall || f.UplinkMTU != 1450 || f.DevMTU != 1500 || f.RouteMTU != 1450 || f.Suggested != 1376 {
+		t.Fatalf("route mtu: %+v", f)
+	}
+}
+
+// Unknown is never verified and never blocks: an old report (no interface
+// MTUs, no route answers), no route to the peer, an incomplete report.
+func TestUplinkMTUUnknown(t *testing.T) {
+	fp := FootprintOf(nodeFiles(t, "hk-resi"))
+	ctx := uplinkCtx(t, "hk-resi")
+	peer := ctx.Uplinks[0].Peer
+	for name, extra := range map[string]string{
+		"old report":       "",
+		"no route answer":  "linkmtu eth0 1472\n",
+		"no route to peer": "linkmtu eth0 1472\nuproute 4 " + peer + " - -\n",
+		"no mtu for dev":   "linkmtu lo 65536\nuproute 4 " + peer + " eth9 -\n",
+	} {
+		ev := Evaluate(fixture(t, "clean-debian13.txt", fp, nil, extra), fp, ctx)
+		checkShape(t, ev)
+		f := uplinkOf(t, ev, "m04")
+		if f.Status != UplinkUnknown || f.Reason == "" || f.UplinkMTU != 0 || has(ev, "", CodeUplinkMTUTooSmall) || !has(ev, Info, CodeUplinkMTUUnknown) || ev.Blocking {
+			t.Fatalf("%s: %+v %v", name, f, codes(ev, ""))
+		}
+	}
+	r := Parse(Header + "\nlinkmtu eth0 1472\nuproute 4 " + peer + " eth0 -\n") // no end line
+	ev := Evaluate(r, fp, ctx)
+	if f := uplinkOf(t, ev, "m04"); f.Status != UplinkUnknown || has(ev, "", CodeUplinkMTUTooSmall) {
+		t.Fatalf("incomplete report: %+v", f)
+	}
+	// No legs: nothing about uplinks at all.
+	ev = Evaluate(fixture(t, "clean-debian13.txt", fp, nil, "linkmtu eth0 1472\n"), fp, remote("hk-resi"))
+	if ev.Uplinks != nil || has(ev, "", CodeUplinkMTUUnknown) {
+		t.Fatalf("no carriers: %+v", ev.Uplinks)
+	}
+}
+
+// An installed leg (its interface is Meridian's on this host) only warns;
+// a listener without a fixed peer uses the default route; IPv6 outer
+// costs 80; a WSS leg is never judged by the uplink MTU.
+func TestUplinkMTUDeployedDefaultRouteV6WSS(t *testing.T) {
+	gwFP := FootprintOf(nodeFiles(t, "gw"))
+	owned := gatewayOwned(gwFP)
+	legs := []mtu.Carrier{
+		{LinkID: "l-udp", Iface: "m02", Mode: mtu.ModeUDP, Family: 4, Peer: "192.0.2.20", Dials: true, TunnelMTU: 1420, Field: "mtu"},
+		{LinkID: "l-new", Iface: "m60", Mode: mtu.ModeUDP, Family: 4, PeerWhy: "对端拨入", TunnelMTU: 1420, Field: "mtu"},
+		{LinkID: "l-v6", Iface: "m61", Mode: mtu.ModeUDP, Family: 6, Peer: "2001:db8::20", TunnelMTU: 1420, Field: "mtu"},
+		{LinkID: "l-wss", Iface: "m02w", Mode: mtu.ModeWSS, Family: 4, Peer: "192.0.2.20", Dials: true, TunnelMTU: 1360, Field: "wss_mtu"},
+	}
+	extra := "linkmtu eth0 1472\nuproute 4 192.0.2.20 eth0 -\nuproute 6 2001:db8::20 eth0 -\nroute4 default via 192.0.2.9 dev eth1 metric 50\nlinkmtu eth1 1500\n"
+	r := Parse(strings.Replace(string(mustRead(t, "testdata/gateway-installed.txt")), EndMarker, extra+EndMarker, 1))
+	if !r.Complete {
+		t.Fatalf("fixture: %v", r.Notes)
+	}
+	ev := Evaluate(r, gwFP, Context{NodeID: "gw", Deployment: "dep-test", Gateway: true, Owned: owned, Artifacts: testArts, Uplinks: legs})
+	checkShape(t, ev)
+	if !containsStr(owned.Interfaces, "m02") {
+		t.Fatalf("the gateway manifest does not own m02: %v", owned.Interfaces)
+	}
+	dep := uplinkOf(t, ev, "m02")
+	if dep.Status != UplinkTooSmall || !dep.Deployed {
+		t.Fatalf("deployed leg %+v", dep)
+	}
+	for _, f := range find(ev, CodeUplinkMTUTooSmall) {
+		if f.Resource == "m02" && f.Severity != Warning {
+			t.Fatalf("a deployed leg must warn, not block: %+v", f)
+		}
+	}
+	// The lowest-metric default route carries the listener: the fixture's
+	// own (eth0, no metric = 0), not eth1 (metric 50, MTU 1500).
+	if f := uplinkOf(t, ev, "m60"); f.Status != UplinkTooSmall || f.Dev != "eth0" || f.UplinkMTU != 1472 || !strings.Contains(f.Reason, "默认路由") {
+		t.Fatalf("default route leg %+v", f)
+	}
+	if f := uplinkOf(t, ev, "m61"); f.Status != UplinkTooSmall || f.Shortfall != 28 || f.Suggested != 1392 {
+		t.Fatalf("IPv6 outer %+v", f)
+	}
+	for _, f := range find(ev, CodeUplinkMTUTooSmall) {
+		if f.Resource == "m61" && f.Severity != Blocking {
+			t.Fatalf("a new leg must block: %+v", f)
+		}
+	}
+	if f := uplinkOf(t, ev, "m02w"); f.Status != UplinkTCP || f.WSS == nil || f.WSS.Segments != 2 || !has(ev, Info, CodeUplinkMTUWSS) {
+		t.Fatalf("wss leg %+v", f)
+	}
+	// Judged again for the suggested MTU, the same observation fits.
+	if j := dep.Rejudge(func() mtu.Carrier { c := dep.Carrier; c.TunnelMTU = dep.Suggested; return c }()); j.Status != UplinkFits || j.MaxInner != 1408 {
+		t.Fatalf("rejudged %+v", j)
+	}
+}
+
+// TestTunnelMTUChangeAndDrift: an existing managed tunnel whose running MTU
+// ("linkmtu", read-only) differs from its config's says "MTU A → B" in the
+// change list and is a drift warning (also when nothing else changes);
+// an equal MTU says it stays; no MTU in the report claims nothing.
+func TestTunnelMTUChangeAndDrift(t *testing.T) {
+	files := nodeFiles(t, "gw")
+	fp := FootprintOf(files)
+	var plan IfacePlan
+	for _, ip := range fp.Interfaces {
+		if ip.Name == "m02" {
+			plan = ip
+		}
+	}
+	if plan.MTU <= 0 || !strings.Contains(files["/etc/wireguard/m02.conf"], fmt.Sprintf("MTU = %d\n", plan.MTU)) {
+		t.Fatalf("footprint MTU of m02 %d is not its config's", plan.MTU)
+	}
+	marked := map[string]string{"/etc/wireguard/m02.conf": "file 400 yes -"}
+	owned := &Owned{Files: map[string]string{"/etc/wireguard/m02.conf": ""}, Interfaces: []string{"m02"}, NFTTables: []string{"inet meridian"}}
+	detail := func(ev Evaluation) string {
+		for _, c := range ev.Changes {
+			if c.Kind == "interface" && c.Resource == "m02" {
+				return c.Detail
+			}
+		}
+		t.Fatalf("no interface change for m02: %+v", ev.Changes)
+		return ""
+	}
+	run := func(extra string) Evaluation {
+		r := fixture(t, "clean-debian13.txt", fp, marked, "link m02\nnft table inet meridian {\n"+extra)
+		return Evaluate(r, fp, Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: owned})
+	}
+	ev := run(fmt.Sprintf("linkmtu m02 %d\n", plan.MTU+8))
+	if d := detail(ev); !strings.Contains(d, fmt.Sprintf("MTU %d → %d", plan.MTU+8, plan.MTU)) || !strings.Contains(d, "不断开") {
+		t.Errorf("drift: change %q", d)
+	}
+	if !has(ev, Warning, CodeTunnelMTUDrift) || has(ev, Blocking, CodeTunnelMTUDrift) {
+		t.Errorf("drift: findings %v", codes(ev, ""))
+	}
+	ev = run(fmt.Sprintf("linkmtu m02 %d\n", plan.MTU))
+	if d := detail(ev); !strings.Contains(d, fmt.Sprintf("MTU %d 不变", plan.MTU)) || has(ev, "", CodeTunnelMTUDrift) {
+		t.Errorf("equal: change %q, findings %v", d, codes(ev, ""))
+	}
+	ev = run("")
+	if d := detail(ev); strings.Contains(d, "不变") || strings.Contains(d, "→") || has(ev, "", CodeTunnelMTUDrift) {
+		t.Errorf("no MTU read: change %q, findings %v", d, codes(ev, ""))
+	}
+}
+
+func TestTunnelMTUDriftAndNodeState(t *testing.T) {
+	plans := []IfacePlan{{Name: "m02", MTU: 1408}, {Name: "m02w", MTU: 1360}, {Name: "mra"}}
+	if d, read := TunnelMTUDrift(plans, nil); read || d != nil {
+		t.Errorf("nothing read: %v %v", d, read)
+	}
+	if d, read := TunnelMTUDrift(plans, map[string]int{"m02": 1408, "m02w": 1360, "eth0": 1472}); !read || len(d) != 0 {
+		t.Errorf("in sync: %v %v", d, read)
+	}
+	if d, read := TunnelMTUDrift(plans, map[string]int{"m02": 1412, "eth0": 1472}); !read || strings.Join(d, ",") != "m02 1412→1408,m02w missing→1360" {
+		t.Errorf("drift: %v %v", d, read)
+	}
+	if d, read := TunnelMTUDrift([]IfacePlan{{Name: "mra"}}, nil); !read || d != nil {
+		t.Errorf("no configured MTU: %v %v", d, read)
+	}
+	st := ParseNodeState(NodeStateHeader + "\nmanifest node tw\nlinkmtu lo 65536\nlinkmtu m02 1412\nlinkmtu bad;name 1\nlinkmtu m03 nope\n" + NodeStateEnd + "\n")
+	if !st.Complete || len(st.LinkMTU) != 2 || st.LinkMTU["m02"] != 1412 || st.LinkMTU["lo"] != 65536 {
+		t.Errorf("node state link MTUs %+v", st.LinkMTU)
+	}
+}
+
+// A relay of a sharing topology this version installed: its speed-test
+// endpoint (meridian-speedtest.socket) is socket-activated, so systemd
+// (pid 1) holds 9277 on the tunnel addresses. Reinstalling must not report
+// its own socket as a port conflict; a foreign process on the port still
+// does.
+func TestSpeedTestSocketOwnedBySystemd(t *testing.T) {
+	b, err := compile.Compile(defaults.SharedRelaysExample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var relay string
+	for _, n := range defaults.SharedRelaysExample().SharingRelays() {
+		relay = n.ID
+		break
+	}
+	files := map[string]string{}
+	for p, body := range b.Files {
+		if strings.HasPrefix(p, "nodes/"+relay+"/") {
+			files[strings.TrimPrefix(p, "nodes/"+relay)] = body
+		}
+	}
+	fp := FootprintOf(files)
+	var addrs []string
+	for _, lp := range fp.Listens {
+		if lp.Owner == "meridian-speedtest.socket" {
+			addrs = append(addrs, lp.Addr.String())
+		}
+	}
+	if len(addrs) == 0 {
+		t.Fatal("no speed-test listener in the footprint")
+	}
+	ss := func(proc string, pid int) string {
+		out := ""
+		for _, a := range addrs {
+			out += fmt.Sprintf("ss tcp LISTEN 0 4096 %s:9277 0.0.0.0:* users:((\"%s\",pid=%d,fd=40))\n", a, proc, pid)
+		}
+		return out
+	}
+	state := installedByUs(fp, relay, "dep-test") + ss("systemd", 1)
+	r := fixture(t, "clean-debian13.txt", fp, allPresent(fp), state)
+	ev := Evaluate(r, fp, remote(relay))
+	if ev.Ownership != OwnSame || len(find(ev, CodePortInUse)) != 0 {
+		t.Fatalf("own speed-test socket reported: %v %+v", ev.Ownership, find(ev, CodePortInUse))
+	}
+	state = installedByUs(fp, relay, "dep-test") + ss("nginx", 4242)
+	r = fixture(t, "clean-debian13.txt", fp, allPresent(fp), state)
+	if ev := Evaluate(r, fp, remote(relay)); len(find(ev, CodePortInUse)) == 0 {
+		t.Fatal("a foreign process on 9277 was not reported")
+	}
+}

@@ -1,0 +1,407 @@
+package sshexec
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/pem"
+	"errors"
+	"net"
+	"strings"
+	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"fmt"
+	"github.com/radowitz/meridian/internal/credentials"
+	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/preflight"
+	"github.com/radowitz/meridian/internal/sshexec/sshtest"
+)
+
+func randHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+type fixture struct {
+	srv  *sshtest.Server
+	cs   *credentials.Store
+	conn *Connector
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	srv, err := sshtest.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.Close)
+	cs, err := credentials.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetHandler(func(cmd, stdin string) (string, uint32) {
+		if cmd == TestCommand {
+			return "MERIDIAN_ARCH=x86_64\nMERIDIAN_KERNEL=6.12.0-test\nPRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nMERIDIAN_WAN=ens3\n", 0
+		}
+		return "ran " + cmd + " with " + stdin, 0
+	})
+	return &fixture{srv: srv, cs: cs, conn: &Connector{Store: cs, HandshakeTimeout: 5 * time.Second}}
+}
+
+func (f *fixture) server(t *testing.T, auth, cred string) model.Server {
+	t.Helper()
+	sv, err := f.cs.CreateServer(credentials.ServerInput{Name: "s-" + randHex(3), Address: f.srv.Host, Port: f.srv.Port, User: "ops", Auth: auth, CredentialID: cred})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sv
+}
+
+func (f *fixture) trust(t *testing.T, id string) {
+	t.Helper()
+	d, err := f.conn.Discover(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.cs.TrustHostKey(id, d.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func encryptedKey(t *testing.T, pass string) (string, ssh.PublicKey) {
+	t.Helper()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var blk *pem.Block
+	var err error
+	if pass == "" {
+		blk, err = ssh.MarshalPrivateKey(priv, "test")
+	} else {
+		blk, err = ssh.MarshalPrivateKeyWithPassphrase(priv, "test", []byte(pass))
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, _ := ssh.NewPublicKey(pub)
+	return string(pem.EncodeToMemory(blk)), k
+}
+
+func TestDiscoverDoesNotAuthenticate(t *testing.T) {
+	f := newFixture(t)
+	pw := "pw-" + randHex(8)
+	f.srv.SetPassword(pw)
+	c, _ := f.cs.CreateSSHCredential("p", "", credentials.SSHSecretInput{Kind: credentials.KindPassword, Password: pw})
+	sv := f.server(t, model.AuthPassword, c.ID)
+	d, err := f.conn.Discover(context.Background(), sv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Fingerprint != f.srv.Fingerprint() || d.KeyType != ssh.KeyAlgoED25519 || d.MatchesPinned {
+		t.Fatalf("discovery %+v", d)
+	}
+	if f.srv.AuthAttempts() != 0 || len(f.srv.Commands()) != 0 {
+		t.Fatalf("discovery authenticated or ran something: %d %v", f.srv.AuthAttempts(), f.srv.Commands())
+	}
+	got, _ := f.cs.Server(sv.ID)
+	if got.HostKey.State != model.HostKeyDiscovered || got.HostKey.Seen != d.Fingerprint {
+		t.Fatalf("not recorded: %+v", got.HostKey)
+	}
+	// Discovered is not trusted: nothing runs, nothing authenticates.
+	if _, err := f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "echo hi"); CodeOf(err) != CodeUntrusted {
+		t.Fatalf("untrusted server ran: %v", err)
+	}
+	if _, err := f.conn.Test(context.Background(), sv.ID); CodeOf(err) != CodeUntrusted {
+		t.Fatalf("untrusted server tested: %v", err)
+	}
+	if f.srv.AuthAttempts() != 0 {
+		t.Fatal("authenticated against an untrusted server")
+	}
+}
+
+func TestPasswordAuthEndToEnd(t *testing.T) {
+	f := newFixture(t)
+	pw := "pw-" + randHex(8)
+	f.srv.SetPassword(pw)
+	c, err := f.cs.CreateSSHCredential("p", "", credentials.SSHSecretInput{Kind: credentials.KindPassword, Password: pw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := f.server(t, model.AuthPassword, c.ID)
+	f.trust(t, sv.ID)
+	// The host echoes the password back: it must be scrubbed.
+	f.srv.SetHandler(func(cmd, stdin string) (string, uint32) { return "out " + pw + " " + stdin, 0 })
+	res, err := f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "echo MERIDIAN_OK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AuthMethod != AuthPassword || res.Fingerprint != f.srv.Fingerprint() || res.CredentialID != c.ID {
+		t.Fatalf("result %+v", res)
+	}
+	if strings.Contains(res.Output, pw) || !strings.Contains(res.Output, "echo MERIDIAN_OK") {
+		t.Fatalf("output %q", res.Output)
+	}
+	if cmds := f.srv.Commands(); len(cmds) != 1 || cmds[0] != "bash -s" {
+		t.Fatalf("script not sent on stdin: %v", cmds)
+	}
+	// Wrong password after the host changed it: auth_failed, no secret.
+	f.srv.SetPassword("other-" + randHex(4))
+	_, err = f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "x")
+	if CodeOf(err) != CodeAuthFailed || strings.Contains(err.Error(), pw) {
+		t.Fatalf("auth failure: %v", err)
+	}
+	// Rotation in place: the new secret is used under the same ID.
+	pw2 := "pw2-" + randHex(8)
+	f.srv.SetPassword(pw2)
+	if _, err := f.cs.RotateSSHCredential(c.ID, credentials.SSHSecretInput{Password: pw2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "x"); err != nil {
+		t.Fatalf("rotated credential: %v", err)
+	}
+}
+
+func TestShortPasswordScrubbed(t *testing.T) {
+	f := newFixture(t)
+	pw := "Zq7"
+	f.srv.SetPassword(pw)
+	c, _ := f.cs.CreateSSHCredential("p", "", credentials.SSHSecretInput{Kind: credentials.KindPassword, Password: pw})
+	sv := f.server(t, model.AuthPassword, c.ID)
+	f.trust(t, sv.ID)
+	f.srv.SetHandler(func(cmd, stdin string) (string, uint32) { return "leak Zq7 leak", 1 })
+	res, err := f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "x")
+	if CodeOf(err) != CodeCommandFailed || strings.Contains(res.Output, pw) || strings.Contains(err.Error(), pw) {
+		t.Fatalf("%v %q", err, res.Output)
+	}
+}
+
+func TestKeyAuthWithAndWithoutPassphrase(t *testing.T) {
+	for _, pass := range []string{"", "pp-" + randHex(6)} {
+		f := newFixture(t)
+		pemText, pub := encryptedKey(t, pass)
+		f.srv.SetAuthorizedKey(pub)
+		c, err := f.cs.CreateSSHCredential("k", "", credentials.SSHSecretInput{Kind: credentials.KindPrivateKey, PrivateKey: pemText, Passphrase: pass})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sv := f.server(t, model.AuthKey, c.ID)
+		f.trust(t, sv.ID)
+		ct, err := f.conn.Test(context.Background(), sv.ID)
+		if err != nil || !ct.OK || ct.AuthMethod != AuthKey || ct.Arch != "x86_64" || ct.OS != "Debian GNU/Linux 13 (trixie)" || ct.Kernel != "6.12.0-test" || ct.WANInterface != "ens3" {
+			t.Fatalf("passphrase %v: %+v %v", pass != "", ct, err)
+		}
+		if cmds := f.srv.Commands(); cmds[len(cmds)-1] != TestCommand {
+			t.Fatalf("test ran %q", cmds)
+		}
+		// Another key on the host side: auth_failed.
+		_, other := encryptedKey(t, "")
+		f.srv.SetAuthorizedKey(other)
+		ct, err = f.conn.Test(context.Background(), sv.ID)
+		if err != nil || ct.OK || ct.Code != CodeAuthFailed {
+			t.Fatalf("wrong key: %+v %v", ct, err)
+		}
+		if pass != "" && strings.Contains(ct.Error, pass) {
+			t.Fatal("passphrase in error")
+		}
+	}
+}
+
+func TestMismatchRefusedBeforeAuthentication(t *testing.T) {
+	f := newFixture(t)
+	pw := "pw-" + randHex(8)
+	f.srv.SetPassword(pw)
+	c, _ := f.cs.CreateSSHCredential("p", "", credentials.SSHSecretInput{Kind: credentials.KindPassword, Password: pw})
+	sv := f.server(t, model.AuthPassword, c.ID)
+	f.trust(t, sv.ID)
+	pinned := f.srv.Fingerprint()
+	f.srv.SetHostKey(sshtest.NewHostKey())
+	before := f.srv.AuthAttempts()
+	_, err := f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "x")
+	if CodeOf(err) != CodeMismatch {
+		t.Fatalf("mismatch: %v", err)
+	}
+	if f.srv.AuthAttempts() != before {
+		t.Fatal("authenticated against a host presenting another key")
+	}
+	got, _ := f.cs.Server(sv.ID)
+	if got.HostKey.State != model.HostKeyMismatch || got.HostKey.Fingerprint != pinned || got.HostKey.Seen != f.srv.Fingerprint() {
+		t.Fatalf("pin not kept: %+v", got.HostKey)
+	}
+	// Refused up front from now on, still without authenticating.
+	if _, err := f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "x"); CodeOf(err) != CodeMismatch {
+		t.Fatalf("second attempt: %v", err)
+	}
+	if f.srv.AuthAttempts() != before || len(f.srv.Commands()) != 0 {
+		t.Fatal("ran on mismatched host")
+	}
+	// Explicit re-trust of the new key.
+	if _, err := f.cs.TrustHostKey(sv.ID, f.srv.Fingerprint()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "x"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeploymentPinEnforced(t *testing.T) {
+	f := newFixture(t)
+	pw := "pw-" + randHex(8)
+	f.srv.SetPassword(pw)
+	c, _ := f.cs.CreateSSHCredential("p", "", credentials.SSHSecretInput{Kind: credentials.KindPassword, Password: pw})
+	sv := f.server(t, model.AuthPassword, c.ID)
+	f.trust(t, sv.ID)
+	tg := Target{ServerID: sv.ID, CredentialID: c.ID, Address: sv.Address, Port: sv.Port, User: sv.User, Fingerprint: f.srv.Fingerprint()}
+	if _, err := f.conn.RunScript(context.Background(), tg, "x"); err != nil {
+		t.Fatal(err)
+	}
+	bad := tg
+	bad.Fingerprint = "SHA256:" + strings.Repeat("A", 43)
+	if _, err := f.conn.RunScript(context.Background(), bad, "x"); CodeOf(err) != CodePinMismatch {
+		t.Fatalf("pin: %v", err)
+	}
+	bad = tg
+	bad.User = "root"
+	if _, err := f.conn.RunScript(context.Background(), bad, "x"); CodeOf(err) != CodeTargetChanged {
+		t.Fatalf("target: %v", err)
+	}
+}
+
+func TestUnreachable(t *testing.T) {
+	f := newFixture(t)
+	sv := f.server(t, model.AuthKey, "")
+	f.srv.Close()
+	_, err := f.conn.Discover(context.Background(), sv.ID)
+	if c := CodeOf(err); c != CodeUnreachable && c != CodeTimeout {
+		t.Fatalf("%v", err)
+	}
+}
+
+// sshd with PasswordAuthentication no advertises only publickey: a password
+// credential is never tried, which is not a rejected password.
+func TestPasswordNotOfferedIsNotAuthFailed(t *testing.T) {
+	f := newFixture(t)
+	pw := "pw-" + randHex(8)
+	f.srv.SetPassword(pw)
+	f.srv.OfferOnly("publickey")
+	c, err := f.cs.CreateSSHCredential("p", "", credentials.SSHSecretInput{Kind: credentials.KindPassword, Password: pw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := f.server(t, model.AuthPassword, c.ID)
+	f.trust(t, sv.ID)
+	ct, err := f.conn.Test(context.Background(), sv.ID)
+	if err != nil || ct.OK || ct.Code != CodeAuthMethodUnavailable {
+		t.Fatalf("password not offered: %+v %v", ct, err)
+	}
+	for _, want := range []string{"不接受密码登录", "publickey", "PasswordAuthentication"} {
+		if !strings.Contains(ct.Error, want) {
+			t.Fatalf("message %q lacks %q", ct.Error, want)
+		}
+	}
+	if strings.Contains(ct.Error, pw) || f.srv.AuthAttempts() != 0 {
+		t.Fatalf("password was sent or leaked: attempts=%d %q", f.srv.AuthAttempts(), ct.Error)
+	}
+	// RunScript (provision, Mesh) carries the same code.
+	_, err = f.conn.RunScript(context.Background(), Target{ServerID: sv.ID}, "x")
+	if CodeOf(err) != CodeAuthMethodUnavailable {
+		t.Fatalf("run: %v", err)
+	}
+	// Offered and wrong: still auth_failed, and the message says it was tried.
+	f.srv.OfferOnly()
+	f.srv.SetPassword("other-" + randHex(4))
+	ct, _ = f.conn.Test(context.Background(), sv.ID)
+	if ct.Code != CodeAuthFailed || !strings.Contains(ct.Error, "拒绝了") {
+		t.Fatalf("wrong password: %+v", ct)
+	}
+}
+
+// A server that only takes passwords: a key credential is not offered.
+func TestKeyNotOfferedIsNotAuthFailed(t *testing.T) {
+	f := newFixture(t)
+	pemText, pub := encryptedKey(t, "")
+	f.srv.SetAuthorizedKey(pub)
+	f.srv.SetPassword("pw-" + randHex(8))
+	f.srv.OfferOnly("password")
+	c, err := f.cs.CreateSSHCredential("k", "", credentials.SSHSecretInput{Kind: credentials.KindPrivateKey, PrivateKey: pemText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := f.server(t, model.AuthKey, c.ID)
+	f.trust(t, sv.ID)
+	ct, err := f.conn.Test(context.Background(), sv.ID)
+	if err != nil || ct.OK || ct.Code != CodeAuthMethodUnavailable {
+		t.Fatalf("key not offered: %+v %v", ct, err)
+	}
+	for _, want := range []string{"不接受密钥登录", "password", "PubkeyAuthentication"} {
+		if !strings.Contains(ct.Error, want) {
+			t.Fatalf("message %q lacks %q", ct.Error, want)
+		}
+	}
+	if f.srv.AuthAttempts() != 0 {
+		t.Fatalf("probe-only methods sent a credential: %d attempts", f.srv.AuthAttempts())
+	}
+	// Both offered, key rejected: auth_failed.
+	f.srv.OfferOnly()
+	_, other := encryptedKey(t, "")
+	f.srv.SetAuthorizedKey(other)
+	ct, _ = f.conn.Test(context.Background(), sv.ID)
+	if ct.Code != CodeAuthFailed {
+		t.Fatalf("wrong key: %+v", ct)
+	}
+}
+
+// The preflight's arguments are checked before anything connects.
+func TestRunPreflightRefusesBadArgs(t *testing.T) {
+	dialed := false
+	c := &Connector{Dial: func(context.Context, string, string) (net.Conn, error) { dialed = true; return nil, errors.New("no") }}
+	for _, args := range [][]string{
+		{"/etc/wireguard/m01.conf"},       // not quoted
+		{"'/etc/wireguard/m01.conf'; id"}, // trailing command
+		{"'/etc/wireguard/$(id)'"},        // substitution
+		{"'/etc/wireguard/../../shadow'"}, // traversal
+		{"'relative'"},                    // not absolute
+		{"'/etc/wireguard/a b'"},          // space
+		{"'/etc/wireguard/a'\n'/etc/x'"},  // newline
+		{"'tcp4:198.51.100.66:1080; id'"}, // probe with a trailing command
+		{"'tcp4:198.51.100.66:99999'"},    // probe port out of range
+		{"'tcp4:example.net:1080'"},       // probe by name
+		{"'tcp4:2001:db8::1:1080'"},       // probe to IPv6
+		{"tcp4:198.51.100.66:1080"},       // probe not quoted
+		{"'tcp4:198.51.100.66:1080''x'"},  // probe with glued text
+		{"'route4:192.0.2.1; id'"},        // route lookup with a trailing command
+		{"'route4:2001:db8::1'"},          // IPv6 address in a route4 lookup
+		{"'route6:fe80::1%eth0'"},         // zone
+		{"'route4:192.0.2.01'"},           // not canonical
+		{"route4:192.0.2.1"},              // route lookup not quoted
+	} {
+		_, err := c.RunPreflight(context.Background(), Target{ServerID: "srv"}, args)
+		if CodeOf(err) != CodeBadArgs {
+			t.Fatalf("%q: %v", args, err)
+		}
+	}
+	if dialed {
+		t.Fatal("dialed with refused arguments")
+	}
+	// A carrier's preflight carries the paths plus one TCP connect probe per
+	// external exit ('tcp4:<IPv4>:<port>'): accepted. Refusing it here made every preflight of a carrier fail on
+	// a real host.
+	if err := checkPreflightArgs([]string{"'/etc/wireguard/m01.conf'", "'tcp4:198.51.100.66:1080'"}); err != nil {
+		t.Fatalf("a valid probe argument was refused: %v", err)
+	}
+	// A tunnel leg's uplink check: route lookups are accepted next to
+	// paths and probes.
+	if err := checkPreflightArgs([]string{"'/etc/wireguard/m01.conf'", "'tcp4:198.51.100.66:1080'", "'route4:192.0.2.10'", "'route6:2001:db8::10'"}); err != nil {
+		t.Fatalf("valid route lookups were refused: %v", err)
+	}
+	// More probes than the script accepts are refused.
+	many := []string{}
+	for i := 0; i <= preflight.MaxProbes; i++ {
+		many = append(many, fmt.Sprintf("'tcp4:192.0.2.%d:1080'", i+1))
+	}
+	if _, err := c.RunPreflight(context.Background(), Target{ServerID: "srv"}, many); CodeOf(err) != CodeBadArgs {
+		t.Fatalf("too many probes: %v", err)
+	}
+}

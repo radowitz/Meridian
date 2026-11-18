@@ -1,0 +1,1498 @@
+package api
+
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/radowitz/meridian/internal/credentials"
+	"github.com/radowitz/meridian/internal/defaults"
+	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/sshexec"
+	"github.com/radowitz/meridian/internal/sshexec/sshtest"
+)
+
+// The ordered deployment guide (deploy_plan.go). The order is tested as a
+// pure function on the documentation topologies; the run against the local
+// SSH stand-ins (sshtest), the fake host preflight and the activation shim.
+// No remote host is contacted.
+
+// ------------------------------------------------------------------ order ---
+
+// orderTopo: two relays, the IX as primary hub (SSH through a port-forward
+// on the first relay), a backup hub, a relay exit with a nested exit behind
+// it, a plain exit carrying an external SOCKS exit.
+func orderTopo() model.Topology {
+	t := defaults.NestedExample()
+	sh := defaults.SharedRelaysExample()
+	for _, n := range sh.Nodes {
+		if n.ID == "access2" {
+			t.Nodes = append(t.Nodes, n)
+		}
+	}
+	for _, l := range sh.Links {
+		if strings.Contains(l.ID, "access2") {
+			t.Links = append(t.Links, l)
+		}
+	}
+	ex := defaults.ExternalExample()
+	for _, n := range ex.Nodes {
+		if n.ID == "myext" {
+			t.Nodes = append(t.Nodes, n)
+		}
+	}
+	return t
+}
+
+// orderServers gives every managed node a direct server; the IX's is the
+// first relay's public address on another port (a TCP port-forward).
+func orderServers(t model.Topology) (model.Topology, map[string]model.Server) {
+	out := map[string]model.Server{}
+	for i := range t.Nodes {
+		n := &t.Nodes[i]
+		if !n.Managed || n.Role == model.RoleGateway {
+			continue
+		}
+		id := "srv-" + n.ID
+		n.ServerID = id
+		out[id] = model.Server{ID: id, Name: n.ID, Address: fmt.Sprintf("192.0.2.%d", 10+i), Port: 22, User: "root", CredentialID: "c1",
+			HostKey: model.HostKey{State: model.HostKeyTrusted, Fingerprint: "SHA256:" + n.ID}}
+	}
+	access, _ := t.NodeByID("access")
+	sv := out["srv-ix"]
+	sv.Address, sv.Port = access.EndpointV4, 2222
+	out["srv-ix"] = sv
+	sv = out["srv-access"]
+	sv.Address = access.EndpointV4
+	out["srv-access"] = sv
+	return t, out
+}
+
+func allPending(t model.Topology) map[string]bool {
+	p := map[string]bool{}
+	for _, n := range t.Nodes {
+		if n.Managed {
+			p[n.ID] = true
+		}
+	}
+	return p
+}
+
+func orderIDs(steps []orderedStep) []string {
+	var out []string
+	for _, s := range steps {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+func stepOf(steps []orderedStep, id string) orderedStep {
+	for _, s := range steps {
+		if s.ID == id {
+			return s
+		}
+	}
+	return orderedStep{}
+}
+
+func TestDeployOrderNestedRelaysHubs(t *testing.T) {
+	topo, servers := orderServers(orderTopo())
+	steps, notes := deployOrder(topo, servers, allPending(topo), true)
+	got := strings.Join(orderIDs(steps), ",")
+	// Nested exit before its relay exit, exits before the backup hub, the
+	// backup before the primary (the IX), hubs before both relays, the
+	// gateway last; the external SOCKS exit has no step at all.
+	if want := "twnat,dc1,dc2,hkb,ix,access,access2,gw"; got != want {
+		t.Fatalf("order %s, want %s (notes %v)", got, want, notes)
+	}
+	if len(notes) != 0 {
+		t.Fatalf("notes %v", notes)
+	}
+	for _, id := range []string{"twnat", "dc1", "dc2", "hkb", "ix", "access", "access2", "gw"} {
+		if stepOf(steps, id).Reason == "" {
+			t.Fatalf("%s has no reason", id)
+		}
+	}
+	if r := stepOf(steps, "dc1").Reason; !strings.Contains(r, "中继出口") {
+		t.Fatalf("relay exit reason %q", r)
+	}
+	if r := stepOf(steps, "dc2").Reason; !strings.Contains(r, "外部 SOCKS 出口") {
+		t.Fatalf("carrier reason %q", r)
+	}
+	if r := stepOf(steps, "access").Reason; !strings.Contains(r, "2 台中继") {
+		t.Fatalf("relay reason %q", r)
+	}
+	if r := stepOf(steps, "hkb").Reason; !strings.Contains(r, "备用枢纽") {
+		t.Fatalf("backup hub reason %q", r)
+	}
+	// The IX's SSH goes through a port-forward on the first relay: an edge
+	// (already satisfied by the tiers), warned on both.
+	if w := strings.Join(stepOf(steps, "ix").Warnings, "|"); !strings.Contains(w, "端口转发") {
+		t.Fatalf("ix warnings %q", w)
+	}
+	if w := strings.Join(stepOf(steps, "access").Warnings, "|"); !strings.Contains(w, "端口转发") {
+		t.Fatalf("access warnings %q", w)
+	}
+	// Only what is pending: an unchanged node has no step and changes
+	// nothing else's order.
+	p := allPending(topo)
+	delete(p, "dc2")
+	delete(p, "access2")
+	steps, _ = deployOrder(topo, servers, p, true)
+	if got := strings.Join(orderIDs(steps), ","); got != "twnat,dc1,hkb,ix,access,gw" {
+		t.Fatalf("partial order %s", got)
+	}
+}
+
+func TestDeployOrderManagementChannels(t *testing.T) {
+	topo, servers := orderServers(orderTopo())
+	// dc2 is managed through a jump over the first relay, twnat through its
+	// tunnel address; the second relay's SSH is a port-forward on dc1.
+	sv := servers["srv-dc2"]
+	sv.Channel = &model.ManagementChannel{Mode: model.ChannelJump, ViaServerID: "srv-access"}
+	servers["srv-dc2"] = sv
+	sv = servers["srv-twnat"]
+	sv.Channel = &model.ManagementChannel{Mode: model.ChannelTunnel, Address: "10.66.1.2"}
+	servers["srv-twnat"] = sv
+	dc1, _ := topo.NodeByID("dc1")
+	sv = servers["srv-access2"]
+	sv.Address, sv.Port = dc1.EndpointV4, 2200
+	servers["srv-access2"] = sv
+	servers["srv-dc1"] = func() model.Server { s := servers["srv-dc1"]; s.Address = dc1.EndpointV4; return s }()
+
+	steps, notes := deployOrder(topo, servers, allPending(topo), false)
+	ids := orderIDs(steps)
+	pos := map[string]int{}
+	for i, id := range ids {
+		pos[id] = i
+	}
+	if len(notes) != 0 {
+		t.Fatalf("notes %v", notes)
+	}
+	// access2 moved ahead of dc1 (its SSH goes through dc1's host), the
+	// gateway is still last, the jump target before its jump host.
+	if pos["access2"] > pos["dc1"] || ids[len(ids)-1] != "gw" || pos["dc2"] > pos["access"] {
+		t.Fatalf("order %v", ids)
+	}
+	if r := stepOf(steps, "access2").Reason; !strings.Contains(r, "因管理通道提前") {
+		t.Fatalf("access2 reason %q", r)
+	}
+	if w := strings.Join(stepOf(steps, "dc2").Warnings, "|"); !strings.Contains(w, "跳转管理") {
+		t.Fatalf("dc2 warnings %q", w)
+	}
+	if w := strings.Join(stepOf(steps, "access").Warnings, "|"); !strings.Contains(w, "经这台服务器跳转管理") {
+		t.Fatalf("access warnings %q", w)
+	}
+	w := strings.Join(stepOf(steps, "twnat").Warnings, "|")
+	if !strings.Contains(w, "经隧道地址 10.66.1.2") || !strings.Contains(w, "隧道还不存在") {
+		t.Fatalf("twnat warnings %q", w)
+	}
+	// Contradicting channels (dc1 jumps through access2, whose SSH goes
+	// through dc1's host): the base order, said so.
+	sv = servers["srv-dc1"]
+	sv.Channel = &model.ManagementChannel{Mode: model.ChannelJump, ViaServerID: "srv-access2"}
+	servers["srv-dc1"] = sv
+	steps, notes = deployOrder(topo, servers, allPending(topo), true)
+	if len(notes) != 1 || !strings.Contains(notes[0], "成环") || orderIDs(steps)[len(steps)-1] != "gw" {
+		t.Fatalf("cycle: %v %v", orderIDs(steps), notes)
+	}
+}
+
+func TestTopologyVersionIgnoresPositionsKeysAndRemoteAccess(t *testing.T) {
+	a := defaults.Example()
+	v := topologyVersion(a)
+	b := defaults.Example()
+	b.Nodes[1].X, b.Nodes[1].Y, b.Nodes[1].PrivateKey = 999, 999, "secret"
+	b.RemoteAccess = &model.RemoteAccess{Enabled: true}
+	if topologyVersion(b) != v {
+		t.Fatal("positions, private keys or remote access changed the version")
+	}
+	if a.Nodes[1].PrivateKey != "" {
+		t.Fatal("the input was modified")
+	}
+	b.Nodes[1].WANInterface = "ens9"
+	if topologyVersion(b) == v {
+		t.Fatal("a real change kept the version")
+	}
+}
+
+// -------------------------------------------------------------------- run ---
+
+// deployFix is the example topology with every managed remote node on its
+// own trusted server: the nodes named in sshNodes on an SSH stand-in, the
+// others on documentation addresses and recorded as installed with
+// exactly their current content (so the plan skips them). The gateway
+// installs through the activation shim with the fake host preflight.
+type deployFix struct {
+	s      *Server
+	hp     *fakeHostPreflight
+	act    int
+	failGW bool
+	mu     sync.Mutex
+	srv    map[string]*sshtest.Server
+	sid    map[string]string
+	extra  map[string]string
+	script map[string]func(stdin string) (string, uint32)
+	host   map[string]string
+	runs   map[string]int
+	// state: how the host answers the read-back of its record right after
+	// the script ("" normal, "fail": the command fails, "cut": the answer
+	// has no end line).
+	state map[string]string
+}
+
+func newDeployFix(t *testing.T, sshNodes ...string) *deployFix {
+	t.Helper()
+	s := newTest(t)
+	s.HostRoot = t.TempDir()
+	f := &deployFix{s: s, hp: &fakeHostPreflight{}, srv: map[string]*sshtest.Server{}, sid: map[string]string{}, extra: map[string]string{},
+		script: map[string]func(string) (string, uint32){}, host: map[string]string{}, runs: map[string]int{}, state: map[string]string{}}
+	s.HostPreflight = f.hp
+	s.Activate = func() error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.act++
+		if f.failGW {
+			f.failGW = false // the compensating activation succeeds
+			return errors.New("synthetic activation failure")
+		}
+		return nil
+	}
+	do(s, http.MethodGet, "/api/topology", nil)
+	pw := "pw-" + rnd(t, 8)
+	rr := do(s, http.MethodPost, "/api/ssh-credentials", mustJSON(map[string]any{"name": "pw", "kind": "password", "password": pw}))
+	var c struct{ Credential credView }
+	decode(t, rr, &c)
+	cs, err := s.credStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	isSSH := map[string]bool{}
+	for _, n := range sshNodes {
+		isSSH[n] = true
+	}
+	topo, _, _ := s.Store.Load()
+	for i := range topo.Nodes {
+		n := &topo.Nodes[i]
+		if !n.Managed || n.Role == model.RoleGateway {
+			continue
+		}
+		if isSSH[n.ID] {
+			node := n.ID
+			srv := startSSH(t)
+			srv.SetPassword(pw)
+			srv.SetHandler(func(cmd, stdin string) (string, uint32) { return f.answer(node, cmd, stdin) })
+			sv, err := cs.CreateServer(credentials.ServerInput{Name: "机器 " + node, Address: srv.Host, Port: srv.Port, User: "root", Auth: model.AuthPassword, CredentialID: c.Credential.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cs.ObserveHostKey(sv.ID, "ssh-ed25519", srv.Fingerprint()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := cs.TrustHostKey(sv.ID, srv.Fingerprint()); err != nil {
+				t.Fatal(err)
+			}
+			f.srv[node], f.sid[node] = srv, sv.ID
+			n.ServerID = sv.ID
+			continue
+		}
+		sv, err := cs.CreateServer(credentials.ServerInput{Name: "机器 " + n.ID, Address: fmt.Sprintf("192.0.2.%d", 10+i), Port: 22, User: "root", Auth: model.AuthPassword, CredentialID: c.Credential.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256([]byte("example host key " + n.ID))
+		fp := "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:])
+		if _, err := cs.ObserveHostKey(sv.ID, "ssh-ed25519", fp); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cs.TrustHostKey(sv.ID, fp); err != nil {
+			t.Fatal(err)
+		}
+		f.sid[n.ID] = sv.ID
+		n.ServerID = sv.ID
+	}
+	if err := s.Store.Save(topo); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ensureNodeKeys(); err != nil {
+		t.Fatal(err)
+	}
+	f.markInSync(t, func(id string) bool { return !isSSH[id] })
+	return f
+}
+
+// markInSync records the selected remote nodes as installed with exactly
+// their current content on their current server.
+func (f *deployFix) markInSync(t *testing.T, sel func(string) bool) {
+	t.Helper()
+	l, err := f.s.liveDeploy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range l.t.Nodes {
+		if !n.Managed || n.Role == model.RoleGateway || !sel(n.ID) {
+			continue
+		}
+		id := l.idents[n.ID]
+		f.s.saveOutcome(provisionOutcome{NodeID: n.ID, ServerID: id.ServerID, Address: id.Address, Port: id.Port, Fingerprint: id.Fingerprint,
+			User: id.User, CredentialID: id.CredentialID, Bundle: l.bundles[n.ID], At: time.Now().UTC(), OK: true, Outcome: "installed", Run: "run-seed",
+			Verify: &nodeVerify{At: time.Now().UTC(), State: verifyOK, Source: "post_install", HostBundle: l.bundles[n.ID]}})
+	}
+}
+
+func (f *deployFix) answer(node, cmd, stdin string) (string, uint32) {
+	f.mu.Lock()
+	extra, script := f.extra[node]+hostLinkMTU(f.host[node]), f.script[node]
+	f.mu.Unlock()
+	if out, ok := cleanPreflight(cmd, stdin, extra); ok {
+		return out, 0
+	}
+	if cmd == "bash -s" && strings.Contains(stdin, "echo MERIDIAN_PROVISION_OK") {
+		out, code := "MERIDIAN_PROVISION_OK\n", uint32(0)
+		if script != nil {
+			out, code = script(stdin)
+		}
+		f.mu.Lock()
+		f.runs[node]++
+		f.host[node] = defaultHostRecord(stdin, out, f.host[node])
+		f.mu.Unlock()
+		return out, code
+	}
+	if cmd == sshexec.NodeStateCommand {
+		f.mu.Lock()
+		h, mode := f.host[node], f.state[node]
+		f.mu.Unlock()
+		switch mode {
+		case "fail":
+			return "cat: /var/lib/meridian/node/manifest: Input/output error\n", 1
+		case "cut":
+			return "meridian-node-state 1\n" + h, 0
+		}
+		return "meridian-node-state 1\n" + h + "meridian-node-state-end\n", 0
+	}
+	return "unexpected", 1
+}
+
+func (f *deployFix) setScript(node string, fn func(string) (string, uint32)) {
+	f.mu.Lock()
+	f.script[node] = fn
+	f.mu.Unlock()
+}
+
+func (f *deployFix) scripts(node string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runs[node]
+}
+
+type deployResp struct {
+	Run *struct {
+		ID          string            `json:"id"`
+		State       string            `json:"state"`
+		StopReason  string            `json:"stop_reason"`
+		Stale       bool              `json:"stale"`
+		StaleReason string            `json:"stale_reason"`
+		Affected    []string          `json:"affected"`
+		Current     string            `json:"current"`
+		Steps       []deployStepView  `json:"steps"`
+		Skipped     []planSkip        `json:"skipped"`
+		Preflight   *preflightRecord  `json:"preflight"`
+		Summary     *runSummary       `json:"summary"`
+		Events      []deployEvent     `json:"events"`
+		Extra       map[string]string `json:"-"`
+	} `json:"run"`
+	Plan            *deployPlan `json:"plan"`
+	TopologyVersion string      `json:"topology_version"`
+	Code            string      `json:"code"`
+	Error           string      `json:"error"`
+	RetryAfter      int         `json:"retry_after"`
+}
+
+func (f *deployFix) call(t *testing.T, method, path string, body any, want int) deployResp {
+	t.Helper()
+	var raw []byte
+	if body != nil {
+		raw = mustJSON(body)
+	}
+	rr := do(f.s, method, path, raw)
+	var out deployResp
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("%s %s: %v %s", method, path, err, rr.Body.String())
+	}
+	if want != 0 && rr.Code != want {
+		t.Fatalf("%s %s: %d (want %d) %s", method, path, rr.Code, want, rr.Body.String())
+	}
+	return out
+}
+
+func (f *deployFix) get(t *testing.T) deployResp {
+	t.Helper()
+	return f.call(t, http.MethodGet, "/api/deploy", nil, http.StatusOK)
+}
+
+func (f *deployFix) start(t *testing.T) string {
+	t.Helper()
+	out := f.call(t, http.MethodPost, "/api/deploy/runs", map[string]any{}, http.StatusOK)
+	if out.Run == nil || out.Run.ID == "" {
+		t.Fatal("no run")
+	}
+	return out.Run.ID
+}
+
+func (f *deployFix) preflight(t *testing.T, run, node string, want int) deployResp {
+	t.Helper()
+	return f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/preflight", map[string]any{"node_id": node}, want)
+}
+
+func (f *deployFix) install(t *testing.T, run, node string, want int) deployResp {
+	t.Helper()
+	cur := f.step(t, node)
+	return f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/install", map[string]any{"node_id": node, "preflight_id": cur.PreflightID}, want)
+}
+
+func (f *deployFix) step(t *testing.T, node string) deployStepView {
+	t.Helper()
+	out := f.get(t)
+	if out.Run == nil {
+		t.Fatal("no run")
+	}
+	for _, st := range out.Run.Steps {
+		if st.NodeID == node {
+			return st
+		}
+	}
+	t.Fatalf("no step %s", node)
+	return deployStepView{}
+}
+
+func stepIDs(out deployResp) string {
+	var ids []string
+	for _, st := range out.Run.Steps {
+		ids = append(ids, st.NodeID)
+	}
+	return strings.Join(ids, ",")
+}
+
+// The whole run: plan, skip, order, per-node preflight and confirmation,
+// install, health; the gateway last; logins per node as in the single-node
+// flow.
+func TestDeployRunHappyPath(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	plan := f.get(t).Plan
+	if plan == nil || len(plan.Steps) != 3 {
+		t.Fatalf("plan %+v", plan)
+	}
+	if got := plan.Steps[0].NodeID + "," + plan.Steps[1].NodeID + "," + plan.Steps[2].NodeID; got != "sg,tw,gw" {
+		t.Fatalf("plan order %s", got)
+	}
+	skipped := map[string]string{}
+	for _, sk := range plan.Skipped {
+		skipped[sk.NodeID] = sk.Kind
+	}
+	if skipped["us"] != "in_sync" || skipped["access"] != "in_sync" || skipped["ix"] != "unmanaged" {
+		t.Fatalf("skipped %v", skipped)
+	}
+	run := f.start(t)
+	// Install without a reviewed preflight: refused, nothing ran.
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/install", map[string]any{"node_id": "sg", "preflight_id": "pf-x"}, http.StatusConflict)
+	// Out of order: refused.
+	if out := f.preflight(t, run, "tw", http.StatusConflict); out.Code != codeDeployNotCurrent {
+		t.Fatalf("out of order: %+v", out)
+	}
+	for _, node := range []string{"sg", "tw"} {
+		out := f.preflight(t, run, node, http.StatusOK)
+		st := f.step(t, node)
+		if st.Phase != phaseReview || !st.CanInstall || !st.ConfirmationValid || out.Run.Preflight == nil || out.Run.Preflight.ID != st.PreflightID {
+			t.Fatalf("%s after preflight: %+v", node, st)
+		}
+		if len(out.Run.Preflight.Changes) == 0 {
+			t.Fatalf("%s: the review shows no changes", node)
+		}
+		f.install(t, run, node, http.StatusOK)
+		st = f.step(t, node)
+		if st.Phase != phaseDone || st.Outcome != "installed" || st.Health == nil || st.Health.Verify != verifyOK || st.Health.Source != "remote_script" {
+			t.Fatalf("%s after install: %+v", node, st)
+		}
+		// One preflight and one install of the single-node flow: the pooled
+		// login carries the re-run and the script.
+		if l := f.srv[node].Logins(); l > 2 {
+			t.Fatalf("%s: %d logins", node, l)
+		}
+	}
+	f.preflight(t, run, "gw", http.StatusOK)
+	out := f.install(t, run, "gw", http.StatusOK)
+	st := f.step(t, "gw")
+	if st.Phase != phaseDone || st.Health == nil || st.Health.Source != "gateway_transaction" || f.act != 1 {
+		t.Fatalf("gateway: %+v (activations %d)", st, f.act)
+	}
+	if out.Run.State != runDone {
+		t.Fatalf("run %s", out.Run.State)
+	}
+	// Every step was installed and checked in this run: the full statement.
+	if sm := out.Run.Summary; sm == nil || !sm.AllChecked || len(sm.Adopted)+len(sm.InSync) != 0 || !strings.Contains(sm.Text, "健康检查通过") {
+		t.Fatalf("summary %+v", out.Run.Summary)
+	}
+	for _, st := range out.Run.Steps {
+		if st.Completion != completionInstalled {
+			t.Fatalf("%s completion %q", st.NodeID, st.Completion)
+		}
+	}
+	// Every node is now in sync: nothing to plan, no new run.
+	if p := f.get(t).Plan; len(p.Steps) != 0 {
+		t.Fatalf("still pending: %+v", p.Steps)
+	}
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs", map[string]any{}, http.StatusConflict); out.Code != codeDeployNothing {
+		t.Fatalf("%+v", out)
+	}
+}
+
+// A compensated install stops the run; the next node cannot be started;
+// the re-check reads the host and the retry is an explicit confirmation.
+func TestDeployRunStopsOnCompensationAndRecovers(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	f.setScript("sg", func(string) (string, uint32) { return "MERIDIAN_COMPENSATING exit=1\nMERIDIAN_COMPENSATED\n", 1 })
+	f.preflight(t, run, "sg", http.StatusOK)
+	out := f.install(t, run, "sg", http.StatusOK)
+	st := f.step(t, "sg")
+	if out.Run.State != runStopped || st.Phase != phaseFailed || st.Outcome != "compensated" || st.CanInstall {
+		t.Fatalf("after compensation: %s %+v", out.Run.State, st)
+	}
+	if !strings.Contains(out.Run.StopReason, "已补偿") {
+		t.Fatalf("stop reason %q", out.Run.StopReason)
+	}
+	if out := f.preflight(t, run, "tw", http.StatusConflict); out.Code != codeDeployNotCurrent {
+		t.Fatalf("next node started: %+v", out)
+	}
+	// Install again without a re-check: refused.
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/install", map[string]any{"node_id": "sg", "preflight_id": st.PreflightID}, http.StatusConflict)
+	if n := f.scripts("sg"); n != 1 {
+		t.Fatalf("scripts %d", n)
+	}
+	f.setScript("sg", nil)
+	out = f.preflight(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); st.Phase != phaseReview || out.Run.State != runActive {
+		t.Fatalf("after the re-check: %s %+v", out.Run.State, st)
+	}
+	f.install(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); st.Phase != phaseDone {
+		t.Fatalf("retry: %+v", st)
+	}
+	// tw is next now; sg stays done.
+	f.preflight(t, run, "tw", http.StatusOK)
+}
+
+// An unknown outcome stops the run; the re-check finds the content on the
+// host and adopts it instead of installing again.
+func TestDeployRunUnknownThenAdoptsHostRecord(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	f.setScript("sg", func(string) (string, uint32) { return "garbled\n", 1 })
+	f.preflight(t, run, "sg", http.StatusOK)
+	bundle := f.step(t, "sg").ReviewBundle
+	out := f.install(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); out.Run.State != runStopped || st.Phase != phaseUnknown {
+		t.Fatalf("unknown: %s %+v", out.Run.State, st)
+	}
+	// What the host really did: the run completed.
+	f.mu.Lock()
+	f.extra["sg"] = "manifest-begin\nmanifest node sg\nmanifest deployment " + mustDeployment(t, f.s) + "\nmanifest server " + f.sid["sg"] +
+		"\nmanifest bundle " + bundle + "\nmanifest-end\njournal-begin\njournal state done\njournal run run-x\njournal-end\n"
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	st := f.step(t, "sg")
+	if st.Phase != phaseDone || st.Outcome != "adopted" || st.Evidence != "host_record" || f.scripts("sg") != 1 {
+		t.Fatalf("adopt: %+v scripts %d", st, f.scripts("sg"))
+	}
+	if ns := nodeState(t, f.s, "sg"); ns.State != nodeInSync {
+		t.Fatalf("node state %+v", ns)
+	}
+	if g := f.get(t); g.Run.State != runActive || g.Run.Current != "tw" {
+		t.Fatalf("run %s current %s", g.Run.State, g.Run.Current)
+	}
+}
+
+// A topology save while a plan is open: the run is stale until re-planned;
+// the re-plan keeps what is still valid and says what it dropped.
+func TestDeployPlanInvalidatedByTopologyChange(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	f.preflight(t, run, "sg", http.StatusOK)
+	reviewedJP := f.step(t, "sg").PreflightID
+	// Moving a node on the canvas is not a change.
+	if _, err := f.s.Store.Update(func(tp *model.Topology) (bool, error) {
+		tp.Nodes[3].X += 40
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if g := f.get(t); g.Run.Stale {
+		t.Fatal("stale after a canvas move")
+	}
+	// A real change of tw's files.
+	if _, err := f.s.Store.Update(func(tp *model.Topology) (bool, error) {
+		for i := range tp.Nodes {
+			if tp.Nodes[i].ID == "tw" {
+				tp.Nodes[i].WANInterface = "ens9"
+			}
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	g := f.get(t)
+	if !g.Run.Stale || !strings.Contains(strings.Join(g.Run.Affected, ","), "tw") || strings.Contains(strings.Join(g.Run.Affected, ","), "sg") {
+		t.Fatalf("stale %v affected %v", g.Run.Stale, g.Run.Affected)
+	}
+	if out := f.install(t, run, "sg", http.StatusConflict); out.Code != codeDeployPlanStale {
+		t.Fatalf("%+v", out)
+	}
+	if f.scripts("sg") != 0 {
+		t.Fatal("installed on a stale plan")
+	}
+	out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/replan", map[string]any{}, http.StatusOK)
+	if out.Run.Stale || stepIDs(out) != "sg,tw,gw" {
+		t.Fatalf("replan %v %s", out.Run.Stale, stepIDs(out))
+	}
+	// sg's content did not change: its reviewed preflight stays.
+	if st := f.step(t, "sg"); st.PreflightID != reviewedJP || !st.CanInstall {
+		t.Fatalf("sg after replan %+v", st)
+	}
+	f.install(t, run, "sg", http.StatusOK)
+	// tw's review is made after the change; a later change of tw's content
+	// invalidates that review with the reason, and the install is refused.
+	f.preflight(t, run, "tw", http.StatusOK)
+	if _, err := f.s.Store.Update(func(tp *model.Topology) (bool, error) {
+		for i := range tp.Nodes {
+			if tp.Nodes[i].ID == "tw" {
+				tp.Nodes[i].WANInterface = "ens10"
+			}
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out = f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/replan", map[string]any{}, http.StatusOK)
+	st := f.step(t, "tw")
+	if st.Phase != phasePending || !strings.Contains(st.Invalidated, "内容变了") || st.PreflightID != "" {
+		t.Fatalf("tw after replan %+v", st)
+	}
+	if f.scripts("tw") != 0 {
+		t.Fatal("tw installed")
+	}
+	_ = out
+}
+
+// A server identity change between review and confirmation invalidates
+// the confirmation (not the run) and says why.
+func TestDeployConfirmationInvalidatedByIdentityChange(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	f.preflight(t, run, "sg", http.StatusOK)
+	rr := do(f.s, http.MethodPost, "/api/ssh-credentials", mustJSON(map[string]any{"name": "pw2", "kind": "password", "password": "pw-other-" + rnd(t, 4)}))
+	var c struct{ Credential credView }
+	decode(t, rr, &c)
+	if rr := do(f.s, http.MethodPatch, "/api/servers/"+f.sid["sg"], mustJSON(map[string]any{"credential_id": c.Credential.ID})); rr.Code != 200 {
+		t.Fatalf("patch: %d %s", rr.Code, rr.Body.String())
+	}
+	st := f.step(t, "sg")
+	if st.CanInstall || st.ConfirmationValid || !strings.Contains(strings.Join(st.Changes, "|"), "服务器身份变了") {
+		t.Fatalf("after identity change %+v", st)
+	}
+	out := f.install(t, run, "sg", http.StatusConflict)
+	if out.Code != codeDeployInvalidated || !strings.Contains(out.Error, "服务器身份变了") {
+		t.Fatalf("%+v", out)
+	}
+	if st := f.step(t, "sg"); st.Phase != phasePending || !strings.Contains(st.Invalidated, "服务器身份变了") || f.scripts("sg") != 0 {
+		t.Fatalf("after refusal %+v", st)
+	}
+}
+
+// One run at a time; one step at a time.
+func TestDeployNoDoubleStart(t *testing.T) {
+	f := newDeployFix(t, "sg")
+	run := f.start(t)
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs", map[string]any{}, http.StatusConflict); out.Code != codeDeployRunActive {
+		t.Fatalf("%+v", out)
+	}
+	// A step in flight in this process: every other action waits.
+	f.s.deployMu.Lock()
+	r := f.s.loadRunLocked()
+	r.Steps[0].Phase, r.Steps[0].Boot = phaseInstalling, f.s.bootID()
+	f.s.saveRunLocked(r)
+	f.s.deployMu.Unlock()
+	if out := f.preflight(t, run, "sg", http.StatusConflict); out.Code != codeDeployStepRunning {
+		t.Fatalf("%+v", out)
+	}
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/cancel", map[string]any{}, http.StatusConflict); out.Code != codeDeployStepRunning {
+		t.Fatalf("%+v", out)
+	}
+	if g := f.get(t); g.Run.Steps[0].Phase != phaseInstalling || !g.Run.Steps[0].InFlight {
+		t.Fatalf("%+v", g.Run.Steps[0])
+	}
+	// A stale plan version from the operator's screen: refused.
+	f.s.deployMu.Lock()
+	r = f.s.loadRunLocked()
+	r.Steps[0].Phase, r.Steps[0].Boot = phasePending, ""
+	r.State = runCancelled
+	f.s.saveRunLocked(r)
+	f.s.deployMu.Unlock()
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs", map[string]any{"topology_version": "0000"}, http.StatusConflict); out.Code != codeDeployPlanStale {
+		t.Fatalf("%+v", out)
+	}
+	f.start(t)
+}
+
+// A panel restart with a step in flight: the install is unknown (never
+// done) and stops the run; an interrupted preflight goes back to pending.
+func TestDeployRestartWithStepInFlight(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	f.start(t)
+	f.s.deployMu.Lock()
+	r := f.s.loadRunLocked()
+	r.Steps[0].Phase, r.Steps[0].Boot, r.Steps[0].PreflightID = phaseInstalling, "boot-old", "pf-old"
+	f.s.saveRunLocked(r)
+	f.s.deployMu.Unlock()
+
+	// The restarted panel: same store, a new process.
+	s2 := &Server{Store: f.s.Store, DataDir: f.s.DataDir, HostRoot: f.s.HostRoot, Artifacts: f.s.Artifacts, HostPreflight: f.hp, Activate: f.s.Activate}
+	f2 := &deployFix{s: s2}
+	g := f2.get(t)
+	st := g.Run.Steps[0]
+	if g.Run.State != runStopped || st.Phase != phaseUnknown || st.Outcome != "interrupted" || st.PreflightID != "" || st.InFlight {
+		t.Fatalf("after restart: %s %+v", g.Run.State, st)
+	}
+	if !strings.Contains(g.Run.StopReason, "面板重启") {
+		t.Fatalf("stop reason %q", g.Run.StopReason)
+	}
+	// Persisted: a second restart sees the same.
+	s3 := &Server{Store: f.s.Store, DataDir: f.s.DataDir}
+	s3.deployMu.Lock()
+	if r := s3.loadRunLocked(); r.Steps[0].Phase != phaseUnknown {
+		t.Fatalf("not persisted: %+v", r.Steps[0])
+	}
+	s3.deployMu.Unlock()
+
+	// An interrupted preflight is read-only: back to pending.
+	s2.deployMu.Lock()
+	r = s2.loadRunLocked()
+	r.Steps[0].Phase, r.Steps[0].Boot, r.State = phasePreflight, "boot-older", runActive
+	s2.saveRunLocked(r)
+	s2.deployMu.Unlock()
+	if st := f2.get(t).Run.Steps[0]; st.Phase != phasePending || st.Outcome != "interrupted" {
+		t.Fatalf("interrupted preflight %+v", st)
+	}
+}
+
+// A server that refuses the panel's source address: the step waits for
+// retry_after and the guide does not connect before it.
+func TestDeployRespectsRetryAfter(t *testing.T) {
+	f := newDeployFix(t, "sg")
+	run := f.start(t)
+	f.srv["sg"].RefuseBeforeBanner("Not allowed at this time")
+	f.preflight(t, run, "sg", http.StatusOK)
+	st := f.step(t, "sg")
+	if st.Phase != phasePending || st.Code != sshexec.CodeRateLimited || st.RetryAt == nil || st.WaitSeconds <= 0 || st.CanPreflight || !st.NotExecuted {
+		t.Fatalf("rate limited %+v", st)
+	}
+	accepted := f.srv["sg"].Accepted()
+	out := f.preflight(t, run, "sg", http.StatusConflict)
+	if out.Code != codeDeployWait || out.RetryAfter <= 0 {
+		t.Fatalf("%+v", out)
+	}
+	if f.srv["sg"].Accepted() != accepted || f.srv["sg"].Logins() != 0 {
+		t.Fatal("the guide connected during the wait")
+	}
+}
+
+// The gateway step and the unattended unlock install never run at the same
+// time: the guide refuses while the automatic install holds the gateway,
+// and the automatic install defers while a run is open.
+func TestDeployGatewayAndUnattendedInstall(t *testing.T) {
+	f := newDeployFix(t)
+	run := f.start(t)
+	if g := f.get(t); stepIDs(g) != "gw" {
+		t.Fatalf("steps %s", stepIDs(g))
+	}
+	// The automatic install holds the gateway.
+	if !f.s.lockNode(localNodeID) {
+		t.Fatal("lock")
+	}
+	f.s.autoInstalling.Store(true)
+	f.preflight(t, run, "gw", http.StatusOK)
+	st := f.step(t, "gw")
+	if st.Phase != phasePending || !strings.Contains(st.Message, "无人值守的解锁自动安装") {
+		t.Fatalf("busy: %+v", st)
+	}
+	f.s.autoInstalling.Store(false)
+	f.s.unlockNode(localNodeID)
+
+	// The other way round: an open run defers the automatic install.
+	f.s.clock = func() time.Time { return time.Now() }
+	if _, err := f.s.Store.Update(func(tp *model.Topology) (bool, error) {
+		tp.Settings.UnlockProbe = &model.UnlockProbeSettings{AutoApply: true}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.s.mu.Lock()
+	d := f.s.loadAuto()
+	d.Recorded, d.Installed = true, map[string]string{"x": "y"}
+	f.s.saveAuto(d)
+	f.s.mu.Unlock()
+	if c := f.s.maybeAutoApply("test"); c == nil || c.Code != AutoBusy || !strings.Contains(c.Message, "按顺序部署引导") {
+		t.Fatalf("auto: %+v", c)
+	}
+	// The topology changed (settings): re-plan, then the gateway install;
+	// the first activation fails and is compensated: stopped, then
+	// recovered by a re-check and a confirmed retry.
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/replan", map[string]any{}, http.StatusOK)
+	f.mu.Lock()
+	f.failGW = true
+	f.mu.Unlock()
+	f.preflight(t, run, "gw", http.StatusOK)
+	out := f.install(t, run, "gw", http.StatusOK)
+	if st := f.step(t, "gw"); out.Run.State != runStopped || st.Phase != phaseFailed || st.Outcome != "compensated" {
+		t.Fatalf("compensated: %s %+v", out.Run.State, st)
+	}
+	f.preflight(t, run, "gw", http.StatusOK)
+	out = f.install(t, run, "gw", http.StatusOK)
+	if st := f.step(t, "gw"); out.Run.State != runDone || st.Phase != phaseDone || st.Health == nil || st.Health.Source != "gateway_transaction" || !st.Health.Committed {
+		t.Fatalf("retry: %s %+v", out.Run.State, st)
+	}
+	// Done: the automatic install is no longer deferred by the guide.
+	if c := f.s.maybeAutoApply("test"); c != nil && strings.Contains(c.Message, "按顺序部署引导") {
+		t.Fatalf("still deferred: %+v", c)
+	}
+}
+
+// The status bar knows the open run.
+func TestDeployRunInStatus(t *testing.T) {
+	f := newDeployFix(t, "sg")
+	status := func() *deployStatus {
+		t.Helper()
+		rr := do(f.s, http.MethodGet, "/api/status", nil)
+		var out struct {
+			DeployRun *deployStatus `json:"deploy_run"`
+		}
+		if rr.Code != 200 || json.Unmarshal(rr.Body.Bytes(), &out) != nil {
+			t.Fatalf("%d %s", rr.Code, rr.Body.String())
+		}
+		return out.DeployRun
+	}
+	if st := status(); st != nil {
+		t.Fatalf("%+v", st)
+	}
+	run := f.start(t)
+	if st := status(); st == nil || st.ID != run || st.Current != "sg" || st.Total != 2 || st.State != runActive {
+		t.Fatalf("%+v", st)
+	}
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/cancel", map[string]any{}, http.StatusOK)
+	if st := status(); st != nil {
+		t.Fatalf("after cancel %+v", st)
+	}
+}
+
+// The script reports success but the host's record is not read back
+// (the read fails, or its answer is cut short): the step is unknown, the
+// run stops, the next node is not offered; the re-check reads the record
+// and adopts the content without running the install a second time.
+func TestDeployUnverifiedReadBackStopsAndRecovers(t *testing.T) {
+	for _, mode := range []string{"fail", "cut"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newDeployFix(t, "sg", "tw")
+			run := f.start(t)
+			f.mu.Lock()
+			f.state["sg"] = mode
+			f.mu.Unlock()
+			f.preflight(t, run, "sg", http.StatusOK)
+			bundle := f.step(t, "sg").ReviewBundle
+			out := f.install(t, run, "sg", http.StatusOK)
+			st := f.step(t, "sg")
+			if out.Run.State != runStopped || st.Phase != phaseUnknown || st.Outcome != "unknown" || st.Health == nil || st.Health.Verify == verifyOK {
+				t.Fatalf("after an unverified read-back: %s %+v", out.Run.State, st)
+			}
+			if !strings.Contains(out.Run.StopReason, "脚本报告成功") || !strings.Contains(out.Run.StopReason, "没有读回") {
+				t.Fatalf("stop reason %q", out.Run.StopReason)
+			}
+			if f.scripts("sg") != 1 {
+				t.Fatalf("scripts %d", f.scripts("sg"))
+			}
+			// The dependent node is not offered, and the run is not done.
+			if out := f.preflight(t, run, "tw", http.StatusConflict); out.Code != codeDeployNotCurrent {
+				t.Fatalf("next node offered: %+v", out)
+			}
+			if g := f.get(t); g.Run.Current != "sg" || g.Run.State == runDone {
+				t.Fatalf("run %s current %s", g.Run.State, g.Run.Current)
+			}
+			for _, x := range f.get(t).Run.Steps {
+				if x.NodeID == "tw" && (x.CanPreflight || x.CanInstall) {
+					t.Fatalf("tw actionable: %+v", x)
+				}
+			}
+			// A topology-independent re-plan keeps the unknown step even
+			// though the panel's own record says "installed".
+			f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/replan", map[string]any{}, http.StatusOK)
+			if st := f.step(t, "sg"); st.Phase != phaseUnknown {
+				t.Fatalf("replan dropped the unknown step: %+v", st)
+			}
+			// The re-check: the preflight reads the host's record, which shows
+			// the content; adopted, not installed again.
+			f.mu.Lock()
+			f.state["sg"] = ""
+			f.extra["sg"] = "manifest-begin\nmanifest node sg\nmanifest deployment " + mustDeployment(t, f.s) + "\nmanifest server " + f.sid["sg"] +
+				"\nmanifest bundle " + bundle + "\nmanifest-end\njournal-begin\njournal state done\njournal run " + st.Run + "\njournal-end\n"
+			f.mu.Unlock()
+			f.preflight(t, run, "sg", http.StatusOK)
+			st = f.step(t, "sg")
+			if st.Phase != phaseDone || st.Outcome != "adopted" || st.Evidence != "host_record" || f.scripts("sg") != 1 {
+				t.Fatalf("re-check: %+v scripts %d", st, f.scripts("sg"))
+			}
+			if g := f.get(t); g.Run.State != runActive || g.Run.Current != "tw" {
+				t.Fatalf("run %s current %s", g.Run.State, g.Run.Current)
+			}
+		})
+	}
+}
+
+// The re-check after an unverified read-back when the record still does
+// not show the content: the operator reviews and confirms again.
+func TestDeployUnverifiedReadBackRecheckWithoutRecord(t *testing.T) {
+	f := newDeployFix(t, "sg")
+	run := f.start(t)
+	f.mu.Lock()
+	f.state["sg"] = "fail"
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	f.install(t, run, "sg", http.StatusOK)
+	f.mu.Lock()
+	f.state["sg"] = ""
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	st := f.step(t, "sg")
+	if st.Phase != phaseReview || !st.CanInstall || f.scripts("sg") != 1 {
+		t.Fatalf("re-check without a record: %+v scripts %d", st, f.scripts("sg"))
+	}
+	f.install(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); st.Phase != phaseDone || st.Health == nil || st.Health.Verify != verifyOK {
+		t.Fatalf("confirmed retry: %+v", st)
+	}
+}
+
+// A node the panel records as installed without a verified read-back
+// (single-node flow, or a record from before the read-back) is not
+// skipped: it gets a step, and its preflight adopts the content when the
+// host's record shows it.
+func TestDeployPlanUnverifiedInSyncNodeGetsStep(t *testing.T) {
+	f := newDeployFix(t, "sg")
+	l, err := f.s.liveDeploy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.s.updateOutcome("sg", func(o *provisionOutcome) {
+		id := l.idents["sg"]
+		*o = provisionOutcome{NodeID: "sg", ServerID: id.ServerID, Address: id.Address, Port: id.Port, Fingerprint: id.Fingerprint,
+			User: id.User, CredentialID: id.CredentialID, Bundle: l.bundles["sg"], At: time.Now().UTC(), OK: true, Outcome: "installed", Run: "run-u",
+			Installed: true, InstalledBundle: l.bundles["sg"], InstalledRun: "run-u",
+			InstalledTarget: &targetIdentity{ServerID: id.ServerID, Address: id.Address, Port: id.Port, User: id.User, Fingerprint: id.Fingerprint, CredentialID: id.CredentialID},
+			Verify:          &nodeVerify{At: time.Now().UTC(), State: verifyUnread, Source: "post_install"}}
+	})
+	if ns := nodeState(t, f.s, "sg"); ns.State != nodeInSync {
+		t.Fatalf("setup: %+v", ns)
+	}
+	plan := f.get(t).Plan
+	var found *planStep
+	for i := range plan.Steps {
+		if plan.Steps[i].NodeID == "sg" {
+			found = &plan.Steps[i]
+		}
+	}
+	if found == nil || !strings.Contains(strings.Join(found.Warnings, "|"), "没有读回") {
+		t.Fatalf("plan %+v", plan.Steps)
+	}
+	run := f.start(t)
+	f.mu.Lock()
+	f.extra["sg"] = "manifest-begin\nmanifest node sg\nmanifest deployment " + mustDeployment(t, f.s) + "\nmanifest server " + f.sid["sg"] +
+		"\nmanifest bundle " + l.bundles["sg"] + "\nmanifest-end\n"
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); st.Phase != phaseDone || st.Outcome != "adopted" || st.Evidence != "host_record" || f.scripts("sg") != 0 {
+		t.Fatalf("adopt: %+v scripts %d", st, f.scripts("sg"))
+	}
+}
+
+// A run that ends with installed and adopted steps: the completion state,
+// the event and the status never claim a health check for the adopted one.
+func TestDeployRunSummaryWithAdoptedStep(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	f.preflight(t, run, "sg", http.StatusOK)
+	f.install(t, run, "sg", http.StatusOK)
+	// tw's host already holds the content: adopted, not installed.
+	tw := f.step(t, "tw")
+	f.mu.Lock()
+	f.extra["tw"] = "manifest-begin\nmanifest node tw\nmanifest deployment " + mustDeployment(t, f.s) + "\nmanifest server " + f.sid["tw"] +
+		"\nmanifest bundle " + tw.PlanBundle + "\nmanifest-end\njournal-begin\njournal state done\njournal run run-z\njournal-end\n"
+	f.mu.Unlock()
+	f.preflight(t, run, "tw", http.StatusOK)
+	if st := f.step(t, "tw"); st.Phase != phaseDone || st.Completion != completionAdopted || f.scripts("tw") != 0 {
+		t.Fatalf("tw %+v", st)
+	}
+	f.preflight(t, run, "gw", http.StatusOK)
+	out := f.install(t, run, "gw", http.StatusOK)
+	if out.Run.State != runDone {
+		t.Fatalf("run %s", out.Run.State)
+	}
+	sm := out.Run.Summary
+	if sm == nil || sm.AllChecked || len(sm.Installed) != 2 || len(sm.Adopted) != 1 || sm.Adopted[0] != tw.NodeName {
+		t.Fatalf("summary %+v", sm)
+	}
+	if !strings.Contains(sm.Text, "没有重新检查健康："+tw.NodeName) || strings.Contains(sm.Text, "全部") {
+		t.Fatalf("summary text %q", sm.Text)
+	}
+	last := out.Run.Events[len(out.Run.Events)-1].Text
+	if !strings.Contains(last, "采纳") || strings.Contains(last, "安装和健康检查通过") || strings.Contains(last, "全部 ") {
+		t.Fatalf("event %q", last)
+	}
+	// Stored: a restarted panel reads the same statement.
+	s2 := &Server{Store: f.s.Store, DataDir: f.s.DataDir}
+	s2.deployMu.Lock()
+	r := s2.loadRunLocked()
+	s2.deployMu.Unlock()
+	if r.Summary == nil || r.Summary.AllChecked || len(r.Summary.Adopted) != 1 {
+		t.Fatalf("stored %+v", r.Summary)
+	}
+}
+
+// Only adopted steps: nothing is described as installed or health-checked.
+func TestDeploySummaryAllAdopted(t *testing.T) {
+	r := &deployRun{Steps: []deployStep{
+		{planStep: planStep{NodeID: "a", NodeName: "甲"}, Phase: phaseDone, Completion: completionAdopted},
+		{planStep: planStep{NodeID: "b", NodeName: "乙"}, Phase: phaseDone, Completion: completionInSync},
+	}}
+	completeRun(r, time.Now())
+	if r.Summary.AllChecked || len(r.Summary.Installed) != 0 || !strings.Contains(r.Summary.Text, "没有节点在这次运行中安装") || strings.Contains(r.Summary.Text, "健康检查通过") {
+		t.Fatalf("%+v", r.Summary)
+	}
+}
+
+// ------------------------------------------------------------------- skip ---
+
+// depRun is a run over orderTopo's order with the plan's tiers and hard
+// predecessors (what stepDeps decides from).
+func depRun(t *testing.T, topo model.Topology, servers map[string]model.Server) *deployRun {
+	t.Helper()
+	steps, _ := deployOrder(topo, servers, allPending(topo), true)
+	r := &deployRun{State: runActive, DepModel: depModel}
+	for _, o := range steps {
+		n, _ := topo.NodeByID(o.ID)
+		kind := "remote"
+		if n.Role == model.RoleGateway {
+			kind = "gateway"
+		}
+		r.Steps = append(r.Steps, deployStep{planStep: planStep{NodeID: o.ID, NodeName: o.ID, Kind: kind, Tier: o.Tier, After: hardAfter(topo, servers, n)}, Phase: phasePending})
+	}
+	return r
+}
+
+func skipOn(r *deployRun, ids ...string) *deployRun {
+	c := *r
+	c.Steps = append([]deployStep(nil), r.Steps...)
+	for _, id := range ids {
+		c.Steps[c.stepIndex(id)].Skip = &stepSkip{Kind: "blocked", Reason: "test"}
+	}
+	return &c
+}
+
+func waitingIDs(r *deployRun) map[string]string {
+	out := map[string]string{}
+	for i, w := range r.waits() {
+		out[r.Steps[i].NodeID] = strings.Join(w, ",")
+	}
+	return out
+}
+
+// The dependency rule: a skipped node holds the nodes that depend on it
+// (its relay exit, every nearer tier from the backup hub on, the gateway,
+// nodes managed through it), transitively; nodes of the same tier and
+// unrelated exits continue.
+func TestDeploySkipDependencies(t *testing.T) {
+	topo, servers := orderServers(orderTopo())
+	r := depRun(t, topo, servers)
+	if got := stepIDsOf(r); got != "twnat,dc1,dc2,hkb,ix,access,access2,gw" {
+		t.Fatalf("order %s", got)
+	}
+	cases := []struct {
+		skip    string
+		current string
+		waiting map[string]string
+	}{
+		// The nested exit: its relay exit waits; the other exit does not.
+		{"twnat", "dc2", map[string]string{"dc1": "twnat", "hkb": "twnat", "ix": "twnat", "access": "twnat", "access2": "twnat", "gw": "twnat"}},
+		// A plain exit (the carrier of the external exit): the other exits
+		// continue; hubs, IX, relays and the gateway wait.
+		{"dc2", "twnat", map[string]string{"hkb": "dc2", "ix": "dc2", "access": "dc2", "access2": "dc2", "gw": "dc2"}},
+		// The backup hub: the primary (later tier) and everything nearer.
+		{"hkb", "twnat", map[string]string{"ix": "hkb", "access": "hkb", "access2": "hkb", "gw": "hkb"}},
+		// One relay: the other relay continues, the gateway waits.
+		{"access", "twnat", map[string]string{"gw": "access"}},
+	}
+	for _, c := range cases {
+		s := skipOn(r, c.skip)
+		got := waitingIDs(s)
+		for id, want := range c.waiting {
+			if got[id] != want {
+				t.Errorf("skip %s: %s waits for %q, want %q", c.skip, id, got[id], want)
+			}
+		}
+		for id, w := range got {
+			if _, ok := c.waiting[id]; !ok && w != "" {
+				t.Errorf("skip %s: %s waits for %q", c.skip, id, w)
+			}
+		}
+		if cur := s.current(); cur < 0 || s.Steps[cur].NodeID != c.current {
+			t.Errorf("skip %s: current %d", c.skip, cur)
+		}
+		if h := strings.Join(r.holdsIfSkipped(r.stepIndex(c.skip)), ","); len(strings.Split(h, ",")) != len(c.waiting) {
+			t.Errorf("skip %s: holds %q, want %v", c.skip, h, c.waiting)
+		}
+	}
+	// With the earlier steps done and access skipped: access2 is current, then
+	// nothing but the gateway is left, and it waits: the run has settled.
+	s := skipOn(r, "access")
+	for i := range s.Steps {
+		if id := s.Steps[i].NodeID; id != "access" && id != "access2" && id != "gw" {
+			s.Steps[i].Phase = phaseDone
+		}
+	}
+	if cur := s.current(); s.Steps[cur].NodeID != "access2" || s.settled() {
+		t.Fatalf("current %d settled %v", cur, s.settled())
+	}
+	s.Steps[s.stepIndex("access2")].Phase = phaseDone
+	if s.current() != -1 || !s.settled() {
+		t.Fatal("not settled with only the skipped relay and the waiting gateway left")
+	}
+	// A failed or unknown step stays current whatever was skipped before.
+	s = skipOn(r, "twnat")
+	s.Steps[s.stepIndex("dc2")].Phase = phaseUnknown
+	if cur := s.current(); s.Steps[cur].NodeID != "dc2" {
+		t.Fatalf("current %d with an unknown step", cur)
+	}
+	// A management channel through a node is a dependency even across
+	// tiers: access2's SSH goes through a port-forward on dc1's host, so dc1
+	// waits when access2 is skipped.
+	topo2, servers2 := orderServers(orderTopo())
+	dc1, _ := topo2.NodeByID("dc1")
+	sv := servers2["srv-access2"]
+	sv.Address, sv.Port = dc1.EndpointV4, 2200
+	servers2["srv-access2"] = sv
+	servers2["srv-dc1"] = func() model.Server { s := servers2["srv-dc1"]; s.Address = dc1.EndpointV4; return s }()
+	r2 := depRun(t, topo2, servers2)
+	if got := waitingIDs(skipOn(r2, "access2"))["dc1"]; got != "access2" {
+		t.Fatalf("dc1 waits for %q", got)
+	}
+	// A run stored before the dependency rule: everything after a skip waits.
+	old := skipOn(r, "dc2")
+	old.DepModel = 0
+	if w := waitingIDs(old); w["twnat"] != "" || w["dc1"] != "" || w["hkb"] != "dc2" || w["gw"] != "dc2" {
+		t.Fatalf("old run %v", w)
+	}
+	old = skipOn(r, "twnat")
+	old.DepModel = 0
+	if w := waitingIDs(old); w["dc2"] != "twnat" {
+		t.Fatalf("old run %v", w)
+	}
+}
+
+func stepIDsOf(r *deployRun) string {
+	var ids []string
+	for _, st := range r.Steps {
+		ids = append(ids, st.NodeID)
+	}
+	return strings.Join(ids, ",")
+}
+
+// otherManifest makes a host's preflight blocking (its manifest belongs to
+// another node and deployment).
+const otherManifest = "manifest-begin\nmanifest node other\nmanifest deployment dep-other\nmanifest-end\n"
+
+// A blocked node is skipped: the independent exit continues and is
+// installed, the hub and the gateway wait and say for whom; the skipped
+// node stays pending and is named in the summary of a run that ends
+// partial; returning to it installs it in its place, nothing done is
+// installed again, and the run then completes.
+func TestDeploySkipBlockedNodeContinuesIndependentOnes(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw", "hk-hub")
+	run := f.start(t)
+	if got := stepIDs(f.get(t)); got != "sg,tw,hk-hub,gw" {
+		t.Fatalf("order %s", got)
+	}
+	// Not current, never tried: refused.
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "tw"}, http.StatusConflict); out.Code != codeDeployNotCurrent {
+		t.Fatalf("skip a later step: %+v", out)
+	}
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "sg"}, http.StatusConflict); out.Code != codeDeploySkipRefused {
+		t.Fatalf("skip before any preflight: %+v", out)
+	}
+	f.mu.Lock()
+	f.extra["sg"] = otherManifest
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	first := f.step(t, "sg")
+	if first.Phase != phaseBlocked || !first.CanSkip || strings.Join(first.SkipHolds, ",") != "hk-hub,gw" {
+		t.Fatalf("blocked first %+v", first)
+	}
+	out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "sg"}, http.StatusOK)
+	first = f.step(t, "sg")
+	if first.Skip == nil || first.Skip.Kind != "blocked" || !strings.Contains(first.Skip.Reason, "预检阻断") || first.Phase == phaseDone || first.Completion != "" || first.CanSkip || !first.CanUnskip {
+		t.Fatalf("skipped first %+v", first)
+	}
+	if out.Run.Current != "tw" || out.Run.State != runActive {
+		t.Fatalf("after skip: %s %s", out.Run.State, out.Run.Current)
+	}
+	if ev := out.Run.Events[len(out.Run.Events)-1].Text; !strings.Contains(ev, "跳过") || !strings.Contains(ev, "继续等待") {
+		t.Fatalf("event %q", ev)
+	}
+	for _, id := range []string{"hk-hub", "gw"} {
+		if st := f.step(t, id); strings.Join(st.WaitingFor, ",") != "sg" || st.CanPreflight {
+			t.Fatalf("%s %+v", id, st)
+		}
+	}
+	// A dependent step cannot be started; the refusal names the node.
+	if out := f.preflight(t, run, "hk-hub", http.StatusConflict); out.Code != codeDeployNotCurrent || !strings.Contains(out.Error, "依赖已跳过") {
+		t.Fatalf("dependent started: %+v", out)
+	}
+	if out := f.preflight(t, run, "sg", http.StatusConflict); out.Code != codeDeployNotCurrent || !strings.Contains(out.Error, "已跳过") {
+		t.Fatalf("skipped one started: %+v", out)
+	}
+	f.preflight(t, run, "tw", http.StatusOK)
+	out = f.install(t, run, "tw", http.StatusOK)
+	// Nothing left to act on: the run ends partial, never done.
+	if out.Run.State != runPartial || out.Run.Current != "" {
+		t.Fatalf("after sg: %s current %q", out.Run.State, out.Run.Current)
+	}
+	sm := out.Run.Summary
+	if sm == nil || sm.AllChecked || len(sm.Skipped) != 1 || sm.Skipped[0].NodeID != "sg" || len(sm.Waiting) != 2 || !strings.Contains(sm.Text, "没有全部完成") {
+		t.Fatalf("summary %+v", sm)
+	}
+	if !strings.Contains(sm.Text, "等 "+first.NodeName) || strings.Contains(sm.Text, "全部 ") {
+		t.Fatalf("summary text %q", sm.Text)
+	}
+	// Not open: a status bar shows no run; a skipped node was never contacted again.
+	if ds := f.s.deployStatusOf(); ds != nil {
+		t.Fatalf("partial run in status %+v", ds)
+	}
+	if f.scripts("sg") != 0 || f.srv["hk-hub"].Logins() != 0 {
+		t.Fatalf("first scripts %d, hub logins %d", f.scripts("sg"), f.srv["hk-hub"].Logins())
+	}
+	// Persisted: a restarted panel sees the same skip and the same state.
+	s2 := &Server{Store: f.s.Store, DataDir: f.s.DataDir}
+	s2.deployMu.Lock()
+	r := s2.loadRunLocked()
+	s2.deployMu.Unlock()
+	if r.State != runPartial || r.Steps[r.stepIndex("sg")].Skip == nil || r.current() != -1 {
+		t.Fatalf("stored %+v", r)
+	}
+
+	// Back to first: the run reopens with first current and a fresh preflight.
+	out = f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/unskip", map[string]any{"node_id": "sg"}, http.StatusOK)
+	if out.Run.State != runActive || out.Run.Current != "sg" || out.Run.Summary != nil {
+		t.Fatalf("after unskip: %s %q", out.Run.State, out.Run.Current)
+	}
+	if st := f.step(t, "sg"); st.Skip != nil || st.Phase != phasePending || st.PreflightID != "" || !st.CanPreflight {
+		t.Fatalf("unskipped first %+v", st)
+	}
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/unskip", map[string]any{"node_id": "sg"}, http.StatusConflict); out.Code != codeDeployNotSkipped {
+		t.Fatalf("unskip twice: %+v", out)
+	}
+	f.mu.Lock()
+	f.extra["sg"] = ""
+	f.mu.Unlock()
+	for _, n := range []string{"sg", "hk-hub", "gw"} {
+		f.preflight(t, run, n, http.StatusOK)
+		out = f.install(t, run, n, http.StatusOK)
+	}
+	if out.Run.State != runDone || out.Run.Summary == nil || !out.Run.Summary.AllChecked || len(out.Run.Summary.Skipped) != 0 {
+		t.Fatalf("end %s %+v", out.Run.State, out.Run.Summary)
+	}
+	// sg, done before, was not installed again.
+	if f.scripts("tw") != 1 || f.scripts("sg") != 1 || f.scripts("hk-hub") != 1 {
+		t.Fatalf("scripts sg %d first %d hub %d", f.scripts("tw"), f.scripts("sg"), f.scripts("hk-hub"))
+	}
+}
+
+// An unreachable server and a server in its rate-limit wait can be
+// skipped; the wait still holds after returning to it.
+func TestDeploySkipUnreachableAndWaiting(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	f.srv["sg"].RefuseBeforeBanner("Not allowed at this time")
+	f.preflight(t, run, "sg", http.StatusOK)
+	first := f.step(t, "sg")
+	if first.WaitSeconds <= 0 || !first.CanSkip || strings.Join(first.SkipHolds, ",") != "gw" {
+		t.Fatalf("waiting first %+v", first)
+	}
+	accepted := f.srv["sg"].Accepted()
+	out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "sg"}, http.StatusOK)
+	if out.Run.Current != "tw" || f.step(t, "sg").Skip.Kind != "waiting" {
+		t.Fatalf("after skip %+v", out.Run)
+	}
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/unskip", map[string]any{"node_id": "sg"}, http.StatusOK)
+	if st := f.step(t, "sg"); st.WaitSeconds <= 0 || st.CanPreflight || st.RetryAt == nil {
+		t.Fatalf("the wait was dropped: %+v", st)
+	}
+	if out := f.preflight(t, run, "sg", http.StatusConflict); out.Code != codeDeployWait {
+		t.Fatalf("contacted in the wait: %+v", out)
+	}
+	if f.srv["sg"].Accepted() != accepted {
+		t.Fatal("the guide connected during the wait")
+	}
+	// Skipped again; sg is current. A login failure on sg is skippable
+	// too ("unreachable": nothing was executed).
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "sg"}, http.StatusOK)
+	f.srv["tw"].SetPassword("another-" + rnd(t, 6))
+	f.preflight(t, run, "tw", http.StatusOK)
+	sg := f.step(t, "tw")
+	if sg.Outcome != "not_started" || !sg.CanSkip {
+		t.Fatalf("login failure %+v", sg)
+	}
+	out = f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "tw"}, http.StatusOK)
+	if out.Run.State != runPartial || len(out.Run.Summary.Skipped) != 2 || out.Run.Summary.Skipped[1].Kind != "unreachable" {
+		t.Fatalf("both skipped: %s %+v", out.Run.State, out.Run.Summary)
+	}
+	if w := out.Run.Summary.Waiting; len(w) != 1 || w[0].NodeID != "gw" || len(w[0].WaitsFor) != 2 {
+		t.Fatalf("waiting %+v", w)
+	}
+	// A partial run is closed: a new run can start (it replaces it).
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "gw"}, http.StatusConflict); out.Code != codeDeployRunClosed {
+		t.Fatalf("skip in a closed run: %+v", out)
+	}
+}
+
+// What cannot be skipped: an unknown outcome (resolved first), a failed
+// install, a reviewed step, a done step, a verify-only step, an in-flight
+// step; and the request's own validation and authentication.
+func TestDeploySkipRefusals(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	skip := func(node string, want int) deployResp {
+		t.Helper()
+		return f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": node}, want)
+	}
+	f.preflight(t, run, "sg", http.StatusOK)
+	if out := skip("sg", http.StatusConflict); out.Code != codeDeploySkipRefused || f.step(t, "sg").CanSkip {
+		t.Fatalf("reviewed step: %+v", out)
+	}
+	f.setScript("sg", func(string) (string, uint32) { return "garbled\n", 1 })
+	f.install(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); st.Phase != phaseUnknown || st.CanSkip {
+		t.Fatalf("unknown %+v", st)
+	}
+	if out := skip("sg", http.StatusConflict); out.Code != codeDeploySkipUnknown || !strings.Contains(out.Error, "结果不明") {
+		t.Fatalf("unknown step skipped: %+v", out)
+	}
+	if out := skip("tw", http.StatusConflict); out.Code != codeDeployNotCurrent {
+		t.Fatalf("past an unknown step: %+v", out)
+	}
+	// A re-check that cannot reach the host keeps the step unknown: still
+	// not skippable.
+	f.srv["sg"].SetPassword("another-" + rnd(t, 6))
+	f.preflight(t, run, "sg", http.StatusOK)
+	if st := f.step(t, "sg"); st.Phase != phaseUnknown || st.CanSkip {
+		t.Fatalf("unknown after an unreachable re-check %+v", st)
+	}
+	if out := skip("sg", http.StatusConflict); out.Code != codeDeploySkipUnknown {
+		t.Fatalf("%+v", out)
+	}
+
+	// Stored-state cases: failed, in flight, done, verify-only.
+	set := func(fn func(r *deployRun)) {
+		f.s.deployMu.Lock()
+		r := f.s.loadRunLocked()
+		fn(r)
+		f.s.saveRunLocked(r)
+		f.s.deployMu.Unlock()
+	}
+	set(func(r *deployRun) { r.Steps[0].Phase, r.Steps[0].Outcome = phaseFailed, "compensated" })
+	if out := skip("sg", http.StatusConflict); out.Code != codeDeploySkipUnknown {
+		t.Fatalf("failed step skipped: %+v", out)
+	}
+	set(func(r *deployRun) { r.Steps[0].Phase, r.Steps[0].Boot = phaseInstalling, f.s.bootID() })
+	if out := skip("sg", http.StatusConflict); out.Code != codeDeployStepRunning {
+		t.Fatalf("in-flight step skipped: %+v", out)
+	}
+	if out := f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/unskip", map[string]any{"node_id": "sg"}, http.StatusConflict); out.Code != codeDeployStepRunning {
+		t.Fatalf("unskip in flight: %+v", out)
+	}
+	set(func(r *deployRun) {
+		r.Steps[0].Phase, r.Steps[0].Boot, r.Steps[0].Completion = phaseDone, "", completionInstalled
+	})
+	if out := skip("sg", http.StatusConflict); out.Code != codeDeploySkipRefused {
+		t.Fatalf("done step skipped: %+v", out)
+	}
+	set(func(r *deployRun) { r.Steps[1].VerifyOnly = true })
+	if out := skip("tw", http.StatusConflict); out.Code != codeDeploySkipRefused || !strings.Contains(out.Error, "只需核对") {
+		t.Fatalf("verify-only step skipped: %+v", out)
+	}
+	// Validation: unknown node, unknown run, unknown field.
+	if out := skip("nope", http.StatusNotFound); out.Code != credentials.CodeNotFound {
+		t.Fatalf("%+v", out)
+	}
+	f.call(t, http.MethodPost, "/api/deploy/runs/deploy-none/skip", map[string]any{"node_id": "sg"}, http.StatusNotFound)
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "sg", "force": true}, http.StatusBadRequest)
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/unskip", map[string]any{"node_id": "sg", "x": 1}, http.StatusBadRequest)
+	// Authentication: both actions need the panel's token.
+	f.s.Token = "test-token"
+	for _, p := range []string{"skip", "unskip"} {
+		if rr := do(f.s, http.MethodPost, "/api/deploy/runs/"+run+"/"+p, mustJSON(map[string]any{"node_id": "sg"})); rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s without token: %d", p, rr.Code)
+		}
+	}
+}
+
+// A skip survives a re-plan and a panel restart; an in-flight step of
+// another boot still becomes unknown (never done) and is resolved first.
+func TestDeploySkipSurvivesReplanAndRestart(t *testing.T) {
+	f := newDeployFix(t, "sg", "tw")
+	run := f.start(t)
+	f.mu.Lock()
+	f.extra["sg"] = otherManifest
+	f.mu.Unlock()
+	f.preflight(t, run, "sg", http.StatusOK)
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "sg"}, http.StatusOK)
+	f.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/replan", map[string]any{}, http.StatusOK)
+	if st := f.step(t, "sg"); st.Skip == nil || f.get(t).Run.Current != "tw" {
+		t.Fatalf("after replan %+v", st)
+	}
+	// sg's install interrupted by a restart: unknown, current, not skippable.
+	f.s.deployMu.Lock()
+	r := f.s.loadRunLocked()
+	i := r.stepIndex("tw")
+	r.Steps[i].Phase, r.Steps[i].Boot = phaseInstalling, "boot-old"
+	f.s.saveRunLocked(r)
+	f.s.deployMu.Unlock()
+	s2 := &Server{Store: f.s.Store, DataDir: f.s.DataDir, HostRoot: f.s.HostRoot, Artifacts: f.s.Artifacts, HostPreflight: f.hp, Activate: f.s.Activate}
+	f2 := &deployFix{s: s2}
+	g := f2.get(t)
+	if g.Run.State != runStopped || g.Run.Current != "tw" {
+		t.Fatalf("after restart %s %q", g.Run.State, g.Run.Current)
+	}
+	for _, st := range g.Run.Steps {
+		if st.NodeID == "sg" && (st.Skip == nil || !st.CanUnskip) {
+			t.Fatalf("skip lost %+v", st)
+		}
+		if st.NodeID == "tw" && (st.Phase != phaseUnknown || st.CanSkip) {
+			t.Fatalf("sg %+v", st)
+		}
+	}
+	if out := f2.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "tw"}, http.StatusConflict); out.Code != codeDeploySkipUnknown {
+		t.Fatalf("%+v", out)
+	}
+}

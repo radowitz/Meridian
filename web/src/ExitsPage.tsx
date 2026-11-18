@@ -1,0 +1,2072 @@
+import { MeshLegQuality } from "./MeshLegQuality";
+// 出口: region groups are the main view of exits. A region (香港, 美国 …)
+// holds one or more groups; each group has an ordered member list, a mode
+// (自动 / 手动) and two live lines kept apart: 实际使用, only from the hub's
+// own report (actual.state "ok", read over SSH with a fixed command), and
+// 面板推算, the panel's computation from health samples, never shown as the
+// member in use.
+// Every change edits the stored topology only (apply_required): the top bar
+// and an inline notice say so until it is installed.
+// Below the groups, 出口节点 lists every exit with what kind it is: a nested
+// exit (reached through a relay exit, via_exit), an external SOCKS exit
+// (an unmanaged SOCKS5 proxy behind a managed carrier exit) or one with a
+// dynamic DNS endpoint (endpoint_host). Those settings are written into the
+// stored topology with one PUT /api/topology, like the topology editor's
+// save; the SOCKS username and password never pass through here (only the
+// credential's ID does).
+
+import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  HolderOutlined,
+  InfoCircleOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  StarOutlined,
+} from "@ant-design/icons";
+import {
+  Alert,
+  App as AntApp,
+  AutoComplete,
+  Button,
+  Checkbox,
+  Drawer,
+  Dropdown,
+  Form,
+  Input,
+  InputNumber,
+  Popover,
+  Radio,
+  Select,
+  Space,
+  Tooltip,
+  Typography,
+} from "antd";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import * as api from "./api";
+import type { ApiError } from "./api";
+import { href, useRouter, useStatus, useTopologyDoc } from "./state";
+import { RELAY_STATUS, RelaySharingView } from "./RelaySharing";
+import { ACTUAL_CODE, CarryingLine, HUB_TIER, actualTag } from "./status_words";
+import { isExternalExit, isNestedExit } from "./types";
+import type {
+  Sharing,
+  Carrying,
+  Issue,
+  Link as TLink,
+  GroupActualView,
+  GroupHubActual,
+  GroupHubState,
+  HubTier,
+  GroupMemberView,
+  GroupThresholds,
+  Node,
+  RegionGroup,
+  RegionGroupInput,
+  RegionGroupView,
+  RegionGroupsView,
+  SOCKSCredentialView,
+  Topology,
+} from "./types";
+import {
+  type FactItem,
+  ApiErrorAlert,
+  ApplyRequiredNotice,
+  Facts,
+  DataView,
+  EllipsisText,
+  EmptyState,
+  IssueList,
+  Link,
+  Mono,
+  Page,
+  RefList,
+  RefusedDialog,
+  REGION_CODES,
+  SafetyNotice,
+  Fold,
+  PROBLEM,
+  SplitStatus,
+  StatusTag,
+  TimeText,
+  groupLabel,
+  joinReasons,
+  isDuplicateGroupName,
+  regionLabel,
+  showFieldError,
+  useAction,
+  useApi,
+  useConfirmDanger,
+  noteRateLimited,
+  RateLimitNote,
+  useServerCooldown,
+  Note,
+} from "./ui";
+
+// ------------------------------------------------------------ vocabulary ---
+
+/** Why the group uses what it uses (state.reason / target_reason). */
+export const GROUP_REASON: Record<string, string> = {
+  preferred: "自动：实际顺序里第一个成员",
+  chosen: "手动指定",
+  constraint: "指定的成员不满足组的约束，改用第一个符合条件的成员",
+  failover: "前面的成员不可用，自动切到后面的成员",
+  fallback: "指定成员不可用，临时回落",
+  held: "目标不可用，按设置保持不切换",
+  mesh: "所有 WireGuard 成员都不可用，走 Mesh 备路",
+  none: "没有可用成员",
+};
+
+const RETURN_BLOCK: Record<string, string> = {
+  target_down: "首选仍不可用",
+  target_last_failed: "首选最近一次检测失败",
+  recovery_timer: "首选恢复后要持续正常一段时间才切回",
+  switch_cooldown: "刚切换过，冷却中",
+};
+
+export const ON_FAILURE: Record<"hold" | "fallback", { title: string; desc: string }> = {
+  hold: {
+    title: "保持并告警",
+    desc: "指定成员不可用时仍然用它（流量会断），只在面板告警；适合宁可断也不能换出口的服务。",
+  },
+  fallback: {
+    title: "临时回落并告警",
+    desc: "指定成员不可用时临时改用组里下一个可用成员，恢复后自动切回指定成员，同时告警。",
+  },
+};
+
+const MESH_ACTIVE = "mmesh";
+
+// ------------------------------------------------------- actual (hub) ---
+
+/** Where a group's actual state was judged from (dual hub topologies). */
+function readFrom(a: { hub_tier?: HubTier; hub_name?: string; hub_node?: string; server_name?: string }): string {
+  if (!a.hub_tier && !a.hub_name && !a.hub_node) return "";
+  return `读自 ${a.hub_tier ? HUB_TIER[a.hub_tier] + " " : ""}${a.hub_name || a.hub_node || ""}${a.server_name ? `（服务器 ${a.server_name}）` : ""}`;
+}
+
+/** The fix for a non-ok actual state: a link or the refresh button. */
+function ActualFix({ a, hub, onRefresh, refreshing }: { a: GroupActualView; hub?: GroupHubState; onRefresh?: () => void; refreshing?: boolean }) {
+  const refresh = onRefresh ? (
+    <Button size="small" icon={<ReloadOutlined />} loading={refreshing} onClick={onRefresh} disabled={hub ? !hub.readable : false}>
+      重新读取
+    </Button>
+  ) : null;
+  switch (a.code) {
+    case "no_hub":
+      return <Link to={href("topology")}>在拓扑里添加枢纽</Link>;
+    case "hub_no_server":
+      return <Link to={href("topology", hub?.hub_node)}>为枢纽节点选择服务器</Link>;
+    case "server_not_ready":
+      return hub?.server_id ? <Link to={href("servers", hub.server_id)}>到服务器页确认指纹和凭据</Link> : <Link to={href("servers")}>到服务器页</Link>;
+    case "hub_identity_changed":
+      // The old report is not the current hub's: read the current one, or
+      // first make it readable (a new address or port needs its key
+      // confirmed again).
+      if (hub && !hub.readable) {
+        return hub.server_id ? <Link to={href("servers", hub.server_id)}>到服务器页确认指纹和凭据</Link> : <Link to={href("topology", hub.hub_node)}>为枢纽节点选择服务器</Link>;
+      }
+      return refresh;
+    case "plan_differs":
+    case "state_missing":
+      return (
+        <Space size={4}>
+          <Link to={href("deploy")}>到部署页为枢纽装机</Link>
+          {refresh}
+        </Space>
+      );
+    case "static_only":
+    case "plan_unavailable":
+      return null;
+    default:
+      return refresh;
+  }
+}
+
+/** Hub-reported hop in words (member name, Mesh, or no member). */
+function hopName(name: (id: string) => string, a: GroupActualView): string {
+  if (a.active) return name(a.active);
+  return a.hop === "blackhole" ? "无（路由表为黑洞，流量被丢弃）" : "—";
+}
+
+function stripView(g: RegionGroupView): RegionGroup {
+  const out: RegionGroup = { id: g.id, name: g.name, members: [...g.members], mode: g.mode };
+  if (g.region) out.region = g.region;
+  if (g.chosen) out.chosen = g.chosen;
+  if (g.on_failure) out.on_failure = g.on_failure;
+  if (g.require_residential) out.require_residential = true;
+  if (g.exclude_residential) out.exclude_residential = true;
+  if (g.require_v6) out.require_v6 = true;
+  if (g.notes) out.notes = g.notes;
+  if (g.migrated_from) out.migrated_from = g.migrated_from;
+  return out;
+}
+
+export function MemberAttrs({ m }: { m: { ix_bound?: boolean; residential?: boolean; egress_v6?: boolean } }) {
+  return (
+    <>
+      {m.ix_bound ? (
+        <Tooltip title="出口绑定在 IX 专线上：在组里自动排到最前">
+          <span className="state-word" tabIndex={0}>IX 绑定</span>
+        </Tooltip>
+      ) : null}
+      {m.residential ? <span className="state-word">住宅（家宽）</span> : null}
+      {m.egress_v6 ? <span className="state-word">IPv6</span> : null}
+    </>
+  );
+}
+
+function memberHealth(m: GroupMemberView, observed: boolean): ReactNode {
+  if (!observed || !m.health) return <Typography.Text type="secondary">无健康样本</Typography.Text>;
+  const h = m.health;
+  const tip = (
+    <span>
+      连续失败 {h.fails} 次 · 连续成功 {h.goods} 次
+      {h.last_at ? (
+        <>
+          <br />
+          上次样本 {new Date(h.last_at).toLocaleString()}
+        </>
+      ) : null}
+    </span>
+  );
+  return h.up ? (
+    <StatusTag kind="ok" title={tip}>
+      可用
+    </StatusTag>
+  ) : (
+    <StatusTag kind="failed" title={tip}>
+      不可用
+    </StatusTag>
+  );
+}
+
+// ----------------------------------------------------------- group card ---
+
+function moved<T>(list: T[], from: number, to: number): T[] {
+  const next = [...list];
+  const [x] = next.splice(from, 1);
+  next.splice(to, 0, x);
+  return next;
+}
+
+function GroupCard({
+  g,
+  names,
+  thresholds,
+  highlighted,
+  onChanged,
+  onDeleted,
+  onEdit,
+  hub,
+  dual,
+  onRefresh,
+  refreshing,
+  allGroups,
+  nodes,
+  sharedReports,
+}: {
+  g: RegionGroupView;
+  /** Topology nodes by ID: nested / external exits get their badges in the member list. */
+  nodes?: Map<string, Node>;
+  /** Every group: decides whether this one's name needs region + ID to be unambiguous. */
+  allGroups: readonly RegionGroupView[];
+  names: Map<string, string>;
+  thresholds: GroupThresholds | undefined;
+  hub?: GroupHubState;
+  /** Backup hub topology: say which hub the actual state was read from. */
+  dual?: boolean;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  /** Hub reports with the same unusable cause in every group (hubReportKey). */
+  sharedReports?: Set<string>;
+  highlighted: boolean;
+  onChanged: (g: RegionGroupView, what: string) => void;
+  onDeleted: (id: string) => void;
+  onEdit: () => void;
+}) {
+  const act = useAction();
+  const confirm = useConfirmDanger();
+  const [refused, setRefused] = useState<ApiError | null>(null);
+  const [order, setOrder] = useState<string[] | null>(null);
+  const [drag, setDrag] = useState<number | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setOrder(null);
+  }, [g.members.join("\u0000")]);
+  useEffect(() => {
+    if (highlighted) ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [highlighted]);
+
+  const name = (id: string) => (id === MESH_ACTIVE ? "Mesh 备路" : names.get(id) ?? id);
+  // Unambiguous name for titles, labels and messages (region + ID when another group has the same name).
+  const label = groupLabel(g, allGroups);
+  const duplicate = isDuplicateGroupName(g, allGroups);
+  const statusById = new Map(g.member_status.map((m) => [m.id, m]));
+  const userOrder = order ?? g.members;
+  const dirtyOrder = order !== null && order.join() !== g.members.join();
+  const eligible = g.member_status.filter((m) => m.eligible);
+  const effectiveDiffers =
+    g.effective_order.join() !== g.members.filter((id) => statusById.get(id)?.eligible).join() ||
+    g.member_status.some((m) => !m.eligible);
+
+  const patch = (body: Partial<RegionGroupInput>, what: string, key: string) =>
+    act.run(async () => {
+      const r = await api.updateGroup(g.id, body);
+      onChanged(r.group, what);
+    }, key);
+
+  const setMode = (mode: "auto" | "manual") => {
+    if (mode === g.mode) return;
+    if (mode === "auto") {
+      void patch({ mode: "auto" }, "已改成自动模式", "mode");
+      return;
+    }
+    const inUse = g.actual.state === "ok" && g.actual.active !== MESH_ACTIVE ? g.actual.active : "";
+    const chosen = inUse || g.target || eligible[0]?.id;
+    if (!chosen) return;
+    void patch({ mode: "manual", chosen, on_failure: "hold" }, `已改成手动模式，指定 ${name(chosen)}`, "mode");
+  };
+
+  const st = g.model;
+  const observed = st.observed;
+  const a = g.actual;
+  const aok = a.state === "ok";
+  const tag = actualTag(a);
+  const source = dual ? readFrom(a) : "";
+  const thresholdText = thresholds
+    ? `连续 ${thresholds.fails_need} 次检测失败判定不可用；恢复后连续 ${thresholds.recovers_need} 次成功、并且距上次切换满 ${Math.round(thresholds.cooldown_sec / 60)} 分钟才切回。`
+    : "";
+
+  return (
+    <div ref={ref} className={`group-card${highlighted ? " highlighted" : ""}`} data-testid={`group-${g.id}`}>
+      <div className="group-card-head">
+        <div className="group-card-title">
+          <Typography.Text strong style={{ fontSize: 15 }}>
+            {g.name}
+          </Typography.Text>
+          <Typography.Text type="secondary" className="mono-small">
+            {g.id}
+          </Typography.Text>
+          {duplicate ? (
+            <Tooltip title="另有一个地区组同名；按地区和 ID 区分，选择器里也会显示它们">
+              <StatusTag kind="attention" data-testid={`dup-name-${g.id}`}>
+                同名 · {regionLabel(g.region)}
+              </StatusTag>
+            </Tooltip>
+          ) : null}
+          {g.is_default ? (
+            <Tooltip title="没有命中任何规则的境外流量走这个组">
+              <span className="inline-status" tabIndex={0}>
+                <StarOutlined aria-hidden /> 默认组
+              </span>
+            </Tooltip>
+          ) : null}
+        </div>
+        <Radio.Group
+          size="small"
+          optionType="button"
+          buttonStyle="solid"
+          value={g.mode}
+          disabled={!!act.busy || (g.mode === "auto" && eligible.length === 0)}
+          onChange={(e) => setMode(e.target.value)}
+          options={[
+            { value: "auto", label: "自动" },
+            { value: "manual", label: "手动" },
+          ]}
+          aria-label={`${label} 的模式`}
+        />
+      </div>
+      <Space size={[4, 4]} wrap style={{ marginBottom: 8 }}>
+        {g.require_residential ? <span className="muted">要求住宅</span> : null}
+        {g.exclude_residential ? <span className="muted">排除住宅</span> : null}
+        {g.require_v6 ? <span className="muted">要求 IPv6</span> : null}
+        {g.mesh_backup ? (
+          <Tooltip title="所有 WireGuard 成员都不可用时，经 Cloudflare Mesh 备路出去（数据面未验证）">
+            <span className="muted">Mesh 备路</span>
+          </Tooltip>
+        ) : null}
+        {!g.switchable ? (
+          <Tooltip title="枢纽不能在这个组的成员之间动态切换（成员只能经中继或 Mesh 到达）；只会使用静态选中的成员">
+            <StatusTag kind="attention">不能动态切换</StatusTag>
+          </Tooltip>
+        ) : null}
+      </Space>
+
+      {/* Live lines. 实际使用 comes only from the hub's report (actual.state
+          "ok"); otherwise it is unknown with the reason and the fix. The
+          panel's model is a separate, labelled line. */}
+      <div className={`group-live${aok && a.alert ? " alert" : ""}`} data-testid="group-live">
+        <Space size={[6, 4]} wrap data-testid="group-actual" data-state={a.state}>
+          <Typography.Text type="secondary">实际使用</Typography.Text>
+          {aok ? (
+            <>
+              <Typography.Text strong>{hopName(name, a)}</Typography.Text>
+              <Typography.Text type="secondary">·</Typography.Text>
+              <span>{GROUP_REASON[a.reason ?? ""] ?? a.reason}</span>
+              <Typography.Text type="secondary">· 上次切换</Typography.Text>
+              <TimeText value={a.last_switch} empty="启动以来未切换" />
+              <Typography.Text type="secondary">· 读取于</Typography.Text>
+              <TimeText value={a.read_at} />
+              <StatusTag kind={tag.kind} title="枢纽切换服务记录的实际路由（从枢纽路由表读出），经 SSH 固定命令读回。">
+                {tag.label}
+              </StatusTag>
+              {source ? (
+                <Typography.Text type="secondary" data-testid="group-actual-source">
+                  实测 · {source}
+                </Typography.Text>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <Typography.Text strong>{a.state === "not_switchable" ? "不适用" : "未知"}</Typography.Text>
+              <SplitStatus kind={tag.kind} label={tag.label} title={a.message} />
+              {a.read_at && a.state !== "not_switchable" ? (
+                <>
+                  <Typography.Text type="secondary">读取于</Typography.Text>
+                  <TimeText value={a.read_at} />
+                </>
+              ) : null}
+              {source ? (
+                <Typography.Text type="secondary" data-testid="group-actual-source">
+                  {source}
+                </Typography.Text>
+              ) : null}
+            </>
+          )}
+        </Space>
+        {!aok ? (
+          <div className="group-actual-why" data-testid="group-actual-why">
+            {/* One line, the cause said once (the code's text is dropped when the message already contains it). */}
+            <div className="group-actual-why-line">
+              <EllipsisText className="group-actual-why-text" text={joinReasons([ACTUAL_CODE[a.code ?? ""] ?? a.code, a.message])} />
+              <ActualFix a={a} hub={hub} onRefresh={onRefresh} refreshing={refreshing} />
+            </div>
+            {a.state === "switch_failed" && a.reported ? (
+              <div className="state-line">
+                枢纽报告（未确认）：路由表 {a.reported.hop === "blackhole" ? "黑洞" : name(a.reported.hop)}
+                {a.reported.want ? `，想切到 ${name(a.reported.want)}` : ""}
+                {a.reported.failed_at ? (
+                  <>
+                    ，失败于 <TimeText value={a.reported.failed_at} />
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+            {a.code === "carrying_unknown" && g.actual_by_hub && g.actual_by_hub.length > 0 ? (
+              <HubReports rows={g.actual_by_hub} name={name} shared={sharedReports} />
+            ) : null}
+          </div>
+        ) : null}
+        {aok && a.clock_skew_sec !== undefined && hub && Math.abs(a.clock_skew_sec) > hub.skew_warn_sec ? (
+          <div className="state-line">
+            <Typography.Text type="warning">枢纽时钟与面板相差 {Math.abs(a.clock_skew_sec)} 秒</Typography.Text>（时间已换算）
+          </div>
+        ) : null}
+        {aok && a.alert ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: 8 }}
+            message={<span data-testid="group-alert">{a.alert_message || "这个组需要处理"}</span>}
+          />
+        ) : null}
+
+        <div className="group-model" data-testid="group-model">
+          <Space size={[6, 4]} wrap>
+            <Tooltip title="面板按网关送来的健康样本自行推算的状态（source: panel_model），不是从枢纽读回的实际路由。">
+              <Typography.Text type="secondary" className="state-word" tabIndex={0}>面板推算</Typography.Text>
+            </Tooltip>
+            {observed ? (
+              <>
+                <Typography.Text>{st.active ? name(st.active) : "无可用成员"}</Typography.Text>
+                <Typography.Text type="secondary">· {GROUP_REASON[st.reason] ?? st.reason}</Typography.Text>
+                {st.last_switch ? (
+                  <>
+                    <Typography.Text type="secondary">· 推算切换于</Typography.Text>
+                    <TimeText value={st.last_switch} />
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Typography.Text type="secondary">按配置应使用</Typography.Text>
+                <Typography.Text>{st.active ? name(st.active) : "—"}</Typography.Text>
+                <Typography.Text type="secondary" data-status="unverified" title="还没有收到这个组的健康样本：这是按配置计算的目标，不代表枢纽上实际在用。">
+                  未验证 · 无健康样本
+                </Typography.Text>
+              </>
+            )}
+          </Space>
+          {observed && st.alert ? (
+            <div className="state-line" data-testid="group-model-alert">
+              <Typography.Text type="warning">面板推算：{st.alert_message || "这个组需要处理"}</Typography.Text>
+            </div>
+          ) : null}
+          {observed && st.return_blocked_by ? (
+            <div className="state-line">
+              推算未切回 {name(g.target)}：{RETURN_BLOCK[st.return_blocked_by] ?? st.return_blocked_by}
+              {st.return_not_before ? (
+                <>
+                  ，最早 <TimeText value={st.return_not_before} />
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {g.mode === "manual" ? (
+        <div className="group-manual">
+          <Space wrap align="center">
+            <Typography.Text>指定成员</Typography.Text>
+            <Select
+              size="small"
+              style={{ minWidth: 200 }}
+              value={g.chosen || undefined}
+              aria-label={`${label} 的指定成员`}
+              disabled={!!act.busy}
+              onChange={(chosen: string) => void patch({ chosen }, `已指定 ${name(chosen)}`, "chosen")}
+              options={g.member_status.map((m) => ({
+                value: m.id,
+                label: `${m.name || m.id}${m.eligible ? "" : "（不符合组约束）"}`,
+                disabled: !m.eligible,
+              }))}
+            />
+          </Space>
+          <Radio.Group
+            style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}
+            value={g.on_failure_effective ?? g.on_failure ?? "hold"}
+            disabled={!!act.busy}
+            onChange={(e) => void patch({ on_failure: e.target.value }, `指定成员不可用时：${ON_FAILURE[e.target.value as "hold"].title}`, "on_failure")}
+            aria-label={`${label} 指定成员不可用时`}
+          >
+            {(["hold", "fallback"] as const).map((k) => (
+              <Radio key={k} value={k}>
+                <Tooltip title={ON_FAILURE[k].desc}>
+                  <Typography.Text strong>{ON_FAILURE[k].title}</Typography.Text>
+                </Tooltip>
+              </Radio>
+            ))}
+          </Radio.Group>
+        </div>
+      ) : null}
+
+      <div className="group-members-head">
+        <Typography.Text type="secondary" title={g.mode === "auto" ? "自动模式按这个顺序尝试" : undefined}>
+          成员顺序
+        </Typography.Text>
+        {thresholdText && g.mode === "auto" ? (
+          <Tooltip title={thresholdText}>
+            <Typography.Text type="secondary" style={{ fontSize: 12, cursor: "help" }}>
+              <InfoCircleOutlined /> 切换规则
+            </Typography.Text>
+          </Tooltip>
+        ) : null}
+      </div>
+      {userOrder.length === 0 ? (
+        <div className="state-line">还没有成员</div>
+      ) : (
+        <ol className="member-list" aria-label={`${label} 的成员`}>
+          {userOrder.map((id, i) => {
+            const m = statusById.get(id);
+            const excluded = !m || !m.eligible;
+            return (
+              <li
+                key={id}
+                className={`member-row${excluded ? " excluded" : ""}${drag === i ? " dragging" : ""}`}
+                data-testid={`member-${g.id}-${id}`}
+                onDragOver={(e) => {
+                  if (drag === null) return;
+                  e.preventDefault();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (drag === null || drag === i) return;
+                  setOrder(moved(userOrder, drag, i));
+                  setDrag(null);
+                }}
+              >
+                <span
+                  className="member-handle"
+                  draggable
+                  onDragStart={(e) => {
+                    setDrag(i);
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", id);
+                  }}
+                  onDragEnd={() => setDrag(null)}
+                  title="拖动排序"
+                  aria-hidden
+                >
+                  <HolderOutlined />
+                </span>
+                <span className="member-pos">{i + 1}</span>
+                <div className="member-main">
+                  <Space size={[4, 2]} wrap className="member-line">
+                    <Tooltip title={m?.name || id} trigger={["hover", "focus"]} mouseEnterDelay={0.2}>
+                      <span className="ellipsis-text member-name">
+                        <Link to={href("topology", id)}>{m?.name || id}</Link>
+                      </span>
+                    </Tooltip>
+                    {m ? <MemberAttrs m={m} /> : null}
+                    {nodes?.get(id) ? <ExitKindTags node={nodes.get(id)!} name={name} /> : null}
+                    {m?.actual_active ? (
+                      <Tooltip title="枢纽报告这个组的路由表正在使用它">
+                        <span className="state-word state-on" tabIndex={0}>使用中</span>
+                      </Tooltip>
+                    ) : null}
+                    {m && !m.actual_active && observed && m.model_active ? (
+                      <Tooltip title="面板按健康样本推算组在用它，未经枢纽确认">
+                        <span className="state-word" tabIndex={0}>推算在用</span>
+                      </Tooltip>
+                    ) : null}
+                    {m && g.target === id && !m.actual_active ? (
+                      <Tooltip title="按配置应使用的成员">
+                        <span className="state-word" tabIndex={0}>目标</span>
+                      </Tooltip>
+                    ) : null}
+                    {g.mode === "manual" && g.chosen === id ? <span className="state-word">指定</span> : null}
+                    {excluded ? <span className="muted">已排除</span> : m && m.position !== m.user_position ? (
+                      <span className="muted">实际第 {m.position + 1} 位</span>
+                    ) : null}
+                    {m?.switchable === false ? <StatusTag kind="attention">不能动态切到</StatusTag> : null}
+                  </Space>
+                  {m && m.reasons.length > 0 ? (
+                    <ul className="member-reasons">
+                      {m.reasons.map((r) => (
+                        <li key={r.code}>{r.message}</li>
+                      ))}
+                    </ul>
+                  ) : !m ? (
+                    <ul className="member-reasons">
+                      <li>这个出口不在拓扑里了。</li>
+                    </ul>
+                  ) : null}
+                </div>
+                <div className="member-health">{m ? memberHealth(m, observed) : null}</div>
+                <Space size={2} className="member-move">
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<ArrowUpOutlined />}
+                    disabled={i === 0 || !!act.busy}
+                    aria-label={`上移 ${m?.name || id}`}
+                    onClick={() => setOrder(moved(userOrder, i, i - 1))}
+                  />
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<ArrowDownOutlined />}
+                    disabled={i === userOrder.length - 1 || !!act.busy}
+                    aria-label={`下移 ${m?.name || id}`}
+                    onClick={() => setOrder(moved(userOrder, i, i + 1))}
+                  />
+                </Space>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {dirtyOrder ? (
+        <div className="order-bar">
+          <Typography.Text>顺序已调整，保存后生效（安装后网关才按新顺序切换）。</Typography.Text>
+          <Space>
+            <Button size="small" onClick={() => setOrder(null)}>
+              撤销
+            </Button>
+            <Button size="small" type="primary" loading={act.busy === "order"} onClick={() => void patch({ members: order! }, "成员顺序已保存", "order")}>
+              保存顺序
+            </Button>
+          </Space>
+        </div>
+      ) : null}
+      {effectiveDiffers && !dirtyOrder ? (
+        <Typography.Paragraph className="effective-order" data-testid="effective-order">
+          <Typography.Text type="secondary">实际顺序：</Typography.Text>
+          {g.effective_order.length > 0 ? g.effective_order.map(name).join(" → ") : "没有符合条件的成员"}
+          <Typography.Text type="secondary">（和你排的顺序不同，原因见各成员）</Typography.Text>
+        </Typography.Paragraph>
+      ) : null}
+
+      <ApiErrorAlert error={act.error} onClose={act.clear} style={{ marginTop: 8, marginBottom: 0 }} />
+      <div className="group-card-foot">
+        <Popover
+          trigger="click"
+          title="引用这个组的地方"
+          content={<RefList refs={g.in_use_by} empty="没有规则引用这个组" />}
+        >
+          <Button size="small" type="link" style={{ paddingInline: 0 }}>
+            {g.in_use_by.length > 0 ? `被 ${g.in_use_by.length} 处引用` : "未被引用"}
+          </Button>
+        </Popover>
+        <Space size={4} wrap>
+          {!g.is_default ? (
+            <Button
+              size="small"
+              loading={act.busy === "default"}
+              onClick={() =>
+                act.run(async () => {
+                  const r = await api.setDefaultGroup(g.id);
+                  onChanged(r.group, `${label} 已设为默认组`);
+                }, "default")
+              }
+            >
+              设为默认
+            </Button>
+          ) : null}
+          <Button size="small" icon={<EditOutlined />} onClick={onEdit}>
+            编辑
+          </Button>
+          <Button
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={() =>
+              confirm({
+                title: `删除地区组「${label}」？`,
+                consequence:
+                  g.in_use_by.length > 0
+                    ? "这个组还被规则、规则集或默认组设置引用，删除会被拒绝；先把引用改到别的组。"
+                    : "组从拓扑里移除，出口本身不受影响；安装后网关上不再有这个组的路由表。",
+                okText: "删除",
+                onOk: () =>
+                  act.run(
+                    async () => {
+                      await api.deleteGroup(g.id);
+                      onDeleted(g.id);
+                    },
+                    "delete",
+                    (e) => {
+                      if (e.code === "in_use") {
+                        setRefused(e);
+                        act.clear();
+                      }
+                    },
+                  ),
+              })
+            }
+          >
+            删除
+          </Button>
+        </Space>
+      </div>
+      <RefusedDialog error={refused} title={`地区组「${label}」仍被引用，未删除`} onClose={() => setRefused(null)} />
+    </div>
+  );
+}
+
+/** "tier:code:message" of a hub report that is not usable; the same key in every group means one shared cause. */
+export function hubReportKey(r: GroupHubActual): string {
+  return r.state === "ok" ? "" : `${r.tier}:${r.state}:${r.code ?? ""}:${r.message ?? ""}`;
+}
+
+/**
+ * Hub reports whose (unusable) state is the same in every group: they are
+ * said once in the hub bar, and a card shows only a short tag per hub.
+ */
+export function sharedHubReports(groups: readonly RegionGroupView[]): Set<string> {
+  const withReports = groups.filter((g) => g.actual.code === "carrying_unknown" && (g.actual_by_hub?.length ?? 0) > 0);
+  const out = new Set<string>();
+  if (withReports.length < 2) return out;
+  const first = withReports[0].actual_by_hub ?? [];
+  for (const r of first) {
+    const k = hubReportKey(r);
+    if (k && withReports.every((g) => (g.actual_by_hub ?? []).some((x) => hubReportKey(x) === k))) out.add(k);
+  }
+  return out;
+}
+
+/** Reason text of a hub report (code text and message, said once). */
+function hubReportReason(r: GroupHubActual): string {
+  return joinReasons([ACTUAL_CODE[r.code ?? ""] ?? r.code ?? r.state, r.message]);
+}
+
+/**
+ * Each hub's own judgement of a group while the carrying hub is unknown:
+ * shown for diagnosis only, never as the member in use. A report whose cause
+ * is shared by every group is a short tag here (reason in the tooltip); the
+ * cause itself is said once in the hub bar.
+ */
+function HubReports({ rows, name, shared }: { rows: GroupHubActual[]; name: (id: string) => string; shared?: Set<string> }) {
+  return (
+    <div className="group-hub-reports" data-testid="group-hub-reports">
+      <Typography.Text type="secondary">各枢纽报告（未确认承载）：</Typography.Text>
+      {rows.map((r) => {
+        const t = actualTag({ ...r, alert: r.alert ?? false } as GroupActualView);
+        const hub = `${HUB_TIER[r.tier]} ${r.hub_name || r.hub_node}`;
+        if (shared?.has(hubReportKey(r))) {
+          return (
+            <Tooltip key={`${r.tier}:${r.hub_node}`} title={`${hub}：${hubReportReason(r)}（所有地区组相同，见上方「枢纽运行状态」）`}>
+              <span className="hub-report-short" tabIndex={0} data-testid={`hub-report-${r.tier}`} data-shared="true">
+                <span className="hub-report-name">{HUB_TIER[r.tier]}</span>
+                <SplitStatus kind={t.kind} label={t.label} detail="hidden" />
+                <span className="sr-only">{hubReportReason(r)}</span>
+              </span>
+            </Tooltip>
+          );
+        }
+        return (
+          <div key={`${r.tier}:${r.hub_node}`} className="hub-report-row" data-testid={`hub-report-${r.tier}`}>
+            <span className="hub-report-name">{hub}</span>
+            {r.state === "ok" ? (
+              <Typography.Text>报告在用 {r.active ? name(r.active) : r.hop === "blackhole" ? "无（黑洞）" : "—"}</Typography.Text>
+            ) : (
+              <EllipsisText className="hub-report-why" text={hubReportReason(r)} />
+            )}
+            <SplitStatus kind={r.state === "ok" ? "unverified" : t.kind} label={r.state === "ok" ? "未确认承载" : t.label} title={r.message} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------- hub bar ---
+
+/** Why a hub cannot be used now, with its fix (one line), or null. */
+function HubCause({ hub, cooldown, testId }: { hub: GroupHubState; cooldown: number; testId?: boolean }) {
+  const lr = hub.last_read;
+  const limited = !!lr && lr.ssh_code === "ssh_rate_limited";
+  if (!hub.readable) {
+    return (
+      <span className="hub-cause" data-testid={testId ? "hub-not-readable" : undefined}>
+        <EllipsisText className="hub-cause-text" text={joinReasons([ACTUAL_CODE[hub.not_readable_code ?? ""] ?? hub.not_readable_code, hub.not_readable_message])} />
+        <ActualFix a={{ state: "unavailable", code: hub.not_readable_code, active: "", alert: false, last_switch: null, read_at: null, hub_reported_at: null, deployed_matches: null }} hub={hub} />
+      </span>
+    );
+  }
+  if (lr && lr.current_hub === false) {
+    return (
+      <span className="hub-cause" data-testid={testId ? "hub-identity-changed" : undefined}>
+        <EllipsisText className="hub-cause-text" text={lr.identity_message || ACTUAL_CODE.hub_identity_changed} />
+      </span>
+    );
+  }
+  if (lr && !lr.ok && lr.error) {
+    // A read error may say what did (not) run: it wraps instead of being cut.
+    return (
+      <span className="hub-cause wrap">
+        <span className="hub-cause-text wrap">{lr.error}</span>
+        {limited ? <RateLimitNote seconds={cooldown} /> : null}
+      </span>
+    );
+  }
+  return null;
+}
+
+/**
+ * The last read of a hub as one short tag. `unreadableFirst` (backup hub
+ * rows): a hub that cannot be read says so instead of its last read; the
+ * single hub bar always shows the last read and gives the cause in its own row.
+ */
+function ReadTag({ hub, unreadableFirst }: { hub: GroupHubState; unreadableFirst?: boolean }) {
+  const lr = hub.last_read;
+  if (unreadableFirst && !hub.readable) {
+    return (
+      <StatusTag kind="attention" title={hub.not_readable_message}>
+        不能读取
+      </StatusTag>
+    );
+  }
+  if (!lr) return <StatusTag kind="unverified">未读取</StatusTag>;
+  return (
+    <span className="inline-status">
+      <TimeText value={lr.read_at} />
+      {lr.current_hub === false ? (
+        <StatusTag kind="unverified" title={lr.identity_message}>
+          不是当前枢纽
+        </StatusTag>
+      ) : lr.ok ? (
+        <StatusTag kind="ok">读取成功</StatusTag>
+      ) : (
+        <StatusTag kind="failed" title={lr.error}>
+          读取失败
+        </StatusTag>
+      )}
+    </span>
+  );
+}
+
+/** One hub of a backup hub topology as one row: tier, name and server, last read, cause and fix. */
+function HubRow({ hub, shared }: { hub: GroupHubState; shared?: string[] }) {
+  const lr = hub.last_read;
+  const limited = !!lr && lr.ssh_code === "ssh_rate_limited";
+  useEffect(() => {
+    if (limited && lr) noteRateLimited(hub.server_id, lr.retry_after ?? 60, Date.parse(lr.read_at));
+  }, [limited, lr, hub.server_id]);
+  const cooldown = useServerCooldown(hub.server_id);
+  return (
+    <div className="hub-line" data-testid={`hub-row-${hub.tier ?? "primary"}`} data-carrying={hub.carrying ? "true" : "false"}>
+      <span className="hub-line-tier">
+        <Typography.Text strong>{HUB_TIER[hub.tier ?? "primary"]}</Typography.Text>
+        {hub.carrying ? <span className="status-text">承载中</span> : null}
+      </span>
+      <EllipsisText className="hub-line-name" text={`${hub.hub_name || hub.hub_node || "—"}${hub.server_name ? ` · 服务器 ${hub.server_name}` : ""}${hub.plan_id ? ` · 计划 ${hub.plan_id.slice(0, 12)}` : ""}`} />
+      <span className="hub-line-read">
+        <ReadTag hub={hub} unreadableFirst />
+      </span>
+      <span className="hub-line-cause">
+        <HubCause hub={hub} cooldown={cooldown} />
+        {(shared ?? []).map((t) => (
+          <EllipsisText key={t} className="hub-cause-text" text={`各地区组的报告：${t}`} />
+        ))}
+      </span>
+    </div>
+  );
+}
+
+/** Backup hub topology: which hub carries, then every hub on one row. */
+function DualHubStateBar({
+  hubs,
+  carrying,
+  onRefresh,
+  refreshing,
+  sharedReports,
+}: {
+  hubs: GroupHubState[];
+  carrying: Carrying;
+  onRefresh: () => void;
+  refreshing: boolean;
+  /** Per hub node: the unusable report every group has (said here once). */
+  sharedReports?: Map<string, string[]>;
+}) {
+  const readable = hubs.some((h) => h.readable);
+  const busy = refreshing || hubs.some((h) => h.refreshing);
+  const first = hubs[0];
+  return (
+    <div className="hub-state-bar" data-testid="hub-state-bar" data-mode="dual">
+      <div className="hub-bar-head">
+        <Typography.Text strong>枢纽运行状态</Typography.Text>
+        <CarryingLine c={carrying} />
+        <Tooltip
+          title={`读取全部枢纽：经服务器管理的 SSH 通道（已确认的主机指纹、保存的凭据）各执行一条固定的只读命令，并读取网关记录的上游路径。${
+            first ? `枢纽切换服务每 ${first.loop_interval_sec} 秒记录一次；心跳超过 ${first.stale_after_sec} 秒或读取超过 ${Math.round(first.read_max_age_sec / 60)} 分钟即视为过期。` : ""
+          }`}
+        >
+          <Button size="small" icon={<ReloadOutlined />} loading={busy} disabled={!readable} onClick={onRefresh}>
+            读取枢纽状态
+          </Button>
+        </Tooltip>
+      </div>
+      {hubs.map((h) => (
+        <HubRow key={`${h.tier}:${h.hub_node}`} hub={h} shared={h.hub_node ? sharedReports?.get(h.hub_node) : undefined} />
+      ))}
+      <Note>{"只有承载中的枢纽的报告算作实际使用；承载枢纽由网关的上游记录决定，面板不自行推断。"}</Note>
+    </div>
+  );
+}
+
+/**
+ * Where the 实际使用 lines come from: the hub's server, the last read and a
+ * refresh button. A hub that cannot be read says why and links to the fix.
+ */
+function HubStateBar({ hub, onRefresh, refreshing }: { hub: GroupHubState | undefined; onRefresh: () => void; refreshing: boolean }) {
+  const lr = hub?.last_read;
+  const limited = !!lr && lr.ssh_code === "ssh_rate_limited";
+  useEffect(() => {
+    if (limited && lr) noteRateLimited(hub?.server_id, lr.retry_after ?? 60, Date.parse(lr.read_at));
+  }, [limited, lr, hub?.server_id]);
+  const cooldown = useServerCooldown(hub?.server_id);
+  if (!hub) return null;
+  const rules = `枢纽切换服务每 ${hub.loop_interval_sec} 秒记录一次；心跳超过 ${hub.stale_after_sec} 秒或读取超过 ${Math.round(hub.read_max_age_sec / 60)} 分钟即视为过期。`;
+  const cause = <HubCause hub={hub} cooldown={cooldown} testId />;
+  return (
+    <div className="hub-state-bar" data-testid="hub-state-bar">
+      <div className="hub-bar-head">
+        <Typography.Text strong>枢纽运行状态</Typography.Text>
+        <Tooltip title={`经服务器管理的 SSH 通道（已确认的主机指纹、保存的凭据）执行一条固定的只读命令。${rules}`}>
+          <Button size="small" icon={<ReloadOutlined />} loading={refreshing || hub.refreshing} disabled={!hub.readable || cooldown > 0} onClick={onRefresh}>
+            {cooldown > 0 ? `${cooldown} 秒后可读取` : "读取枢纽状态"}
+          </Button>
+        </Tooltip>
+      </div>
+      <Facts
+        labelMin={72}
+        items={[
+          ...(hub.hub_node ? ([["枢纽", `${hub.hub_name || hub.hub_node}${hub.server_name ? ` · 服务器 ${hub.server_name}` : ""}`]] as FactItem[]) : []),
+          ["上次读取", <ReadTag key="r" hub={hub} />],
+          ...((!hub.readable || (lr && (lr.current_hub === false || (!lr.ok && lr.error))) ? [["原因", cause]] : []) as FactItem[]),
+        ]}
+      />
+    </div>
+  );
+}
+
+/** Reads the hub once when the page opens, if it is readable and the last read is older than a minute. */
+const AUTO_REFRESH_AFTER_MS = 60_000;
+
+// ---------------------------------------------------------------- drawer ---
+
+interface FormValues {
+  name: string;
+  id?: string;
+  region?: string;
+  members: string[];
+  mode: "auto" | "manual";
+  chosen?: string;
+  on_failure?: "hold" | "fallback";
+  constraint: "none" | "require" | "exclude";
+  require_v6: boolean;
+  notes?: string;
+}
+
+function exitOption(n: Node) {
+  const attrs = [n.region ? regionLabel(n.region) : null, n.ix_bound ? "IX 绑定" : null, n.residential ? "住宅" : null, n.egress_v6 ? "IPv6" : null]
+    .filter(Boolean)
+    .join(" · ");
+  return { value: n.id, label: `${n.name}（${n.id}）${attrs ? ` · ${attrs}` : ""}` };
+}
+
+function GroupDrawer({
+  open,
+  group,
+  exits,
+  others,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  group: RegionGroupView | null;
+  exits: Node[];
+  /** The existing groups: a name that another group already has gets a hint. */
+  others?: readonly RegionGroupView[];
+  onClose: () => void;
+  onSaved: (g: RegionGroupView, created: boolean) => void;
+}) {
+  const [form] = Form.useForm<FormValues>();
+  const act = useAction();
+  const [fieldHandled, setFieldHandled] = useState(false);
+  const mode = Form.useWatch("mode", form) ?? group?.mode ?? "auto";
+  const typedName = (Form.useWatch("name", form) as string | undefined) ?? group?.name ?? "";
+  const sameName = typedName.trim()
+    ? (others ?? []).filter((o) => o.id !== group?.id && o.name.trim().toLocaleLowerCase() === typedName.trim().toLocaleLowerCase())
+    : [];
+  const members = Form.useWatch("members", form) ?? group?.members ?? [];
+  const regions = useMemo(() => {
+    const set = new Set<string>(REGION_CODES);
+    exits.forEach((n) => n.region && set.add(n.region));
+    return [...set].map((c) => ({ value: c, label: regionLabel(c) }));
+  }, [exits]);
+
+  const initial: FormValues = group
+    ? {
+        name: group.name,
+        region: group.region,
+        members: group.members,
+        mode: group.mode,
+        chosen: group.chosen,
+        on_failure: group.on_failure ?? "hold",
+        constraint: group.require_residential ? "require" : group.exclude_residential ? "exclude" : "none",
+        require_v6: !!group.require_v6,
+        notes: group.notes,
+      }
+    : { name: "", members: [], mode: "auto", on_failure: "hold", constraint: "none", require_v6: false };
+
+  async function save() {
+    let v: FormValues;
+    try {
+      v = await form.validateFields();
+    } catch {
+      return;
+    }
+    const body: RegionGroupInput = {
+      id: group ? group.id : v.id?.trim() || "",
+      name: v.name.trim(),
+      region: (v.region ?? "").trim().toLowerCase(),
+      members: v.members ?? [],
+      mode: v.mode,
+      require_residential: v.constraint === "require",
+      exclude_residential: v.constraint === "exclude",
+      require_v6: v.require_v6,
+      notes: v.notes ?? "",
+    };
+    if (v.mode === "manual") {
+      body.chosen = v.chosen;
+      body.on_failure = v.on_failure ?? "hold";
+    }
+    const fields = ["name", "id", "region", "members", "mode", "chosen", "on_failure", "require_v6", "notes"];
+    const onError = (e: ApiError) =>
+      setFieldHandled(
+        showFieldError(form, e, fields, { require_residential: "constraint", exclude_residential: "constraint" }) ||
+          (e.field === "require_residential" || e.field === "exclude_residential"
+            ? (form.setFields([{ name: "constraint", errors: [e.message] }]), true)
+            : false),
+      );
+    setFieldHandled(false);
+    const res = await act.run(
+      async () => {
+        if (group) {
+          const { id: _id, ...patch } = body;
+          void _id;
+          return (await api.updateGroup(group.id, patch)).group;
+        }
+        if (!body.id) delete (body as Partial<RegionGroupInput>).id;
+        return (await api.createGroup(body)).group;
+      },
+      "save",
+      onError,
+    );
+    if (res) onSaved(res, !group);
+  }
+
+  return (
+    <Drawer
+      title={group ? `编辑地区组「${group.name}」` : "新建地区组"}
+      open={open}
+      onClose={onClose}
+      width={560}
+      destroyOnHidden
+      footer={
+        <Space>
+          <Button onClick={onClose}>取消</Button>
+          <Button type="primary" loading={act.busy === "save"} onClick={() => void save()}>
+            {group ? "保存" : "创建"}
+          </Button>
+        </Space>
+      }
+    >
+      {act.error && !fieldHandled ? <ApiErrorAlert error={act.error} /> : null}
+      <Form form={form} layout="vertical" initialValues={initial} requiredMark="optional" autoComplete="off">
+        <Form.Item
+          name="name"
+          label="名称"
+          rules={[{ required: true, message: "请填写名称" }]}
+          extra={
+            sameName.length > 0 ? (
+              <span data-testid="group-same-name">
+                已有同名地区组 {sameName.map((o) => `${o.id}（${regionLabel(o.region)}）`).join("、")}。可以保存；列表和选择器会附上地区和 ID 区分它们，起个不同的名字更好认。
+              </span>
+            ) : undefined
+          }
+        >
+          <Input placeholder="例如 日本" />
+        </Form.Item>
+        {!group ? (
+          <Form.Item name="id" label="ID" extra={<Note>{"留空按地区或名称自动生成。规则和链接用它引用这个组，创建后不能改。"}</Note>}>
+            <Input className="mono" placeholder="例如 hk" />
+          </Form.Item>
+        ) : null}
+        <Form.Item name="region" label="国家或地区" extra={<Note>{"用于在出口页分区显示；一个地区可以有多个组，例如机房和住宅。"}</Note>}>
+          <AutoComplete options={regions} placeholder="例如 hk、us、jp" filterOption={(i, o) => !!o && (o.value + o.label).toLowerCase().includes(i.toLowerCase())} />
+        </Form.Item>
+        <Form.Item
+          name="members"
+          label="成员"
+          extra={<Note>{"按选择的先后排序；创建后可以在卡片上拖动或用箭头调整。IX 绑定的出口会自动排在最前。"}</Note>}
+        >
+          <Select mode="multiple" options={exits.map(exitOption)} placeholder="选择出口" optionFilterProp="label" aria-label="成员" />
+        </Form.Item>
+        <Form.Item name="constraint" label="住宅约束">
+          <Radio.Group>
+            <Space direction="vertical">
+              <Radio value="none">不限</Radio>
+              <Radio value="require">
+                要求住宅 <Note inline>— 只用家宽出口；要求家宽的规则（如 Netflix）必须指向这样的组</Note>
+              </Radio>
+              <Radio value="exclude">
+                排除住宅 <Typography.Text type="secondary">— 不用家宽出口，例如默认境外组</Typography.Text>
+              </Radio>
+            </Space>
+          </Radio.Group>
+        </Form.Item>
+        <Form.Item name="require_v6" valuePropName="checked" extra={<Note>{"只用有 IPv6 出口能力的成员；要求 IPv6 的规则必须指向这样的组。"}</Note>}>
+          <Checkbox>要求 IPv6</Checkbox>
+        </Form.Item>
+        <Form.Item name="mode" label="模式">
+          <Radio.Group optionType="button" buttonStyle="solid" options={[{ value: "auto", label: "自动" }, { value: "manual", label: "手动" }]} />
+        </Form.Item>
+        {mode === "manual" ? (
+          <>
+            <Form.Item name="chosen" label="指定成员" rules={[{ required: true, message: "手动模式要指定一个成员" }]}>
+              <Select
+                options={exits.filter((n) => members.includes(n.id)).map(exitOption)}
+                placeholder={members.length ? "从成员里选一个" : "先选择成员"}
+                aria-label="指定成员"
+              />
+            </Form.Item>
+            <Form.Item name="on_failure" label="指定成员不可用时">
+              <Radio.Group>
+                <Space direction="vertical">
+                  {(["hold", "fallback"] as const).map((k) => (
+                    <Radio key={k} value={k}>
+                      <Tooltip title={ON_FAILURE[k].desc}>{ON_FAILURE[k].title}</Tooltip>
+                    </Radio>
+                  ))}
+                </Space>
+              </Radio.Group>
+            </Form.Item>
+          </>
+        ) : null}
+        <Form.Item name="notes" label="备注">
+          <Input.TextArea rows={2} />
+        </Form.Item>
+      </Form>
+    </Drawer>
+  );
+}
+
+// ---------------------------------------------------- exit kinds ---
+
+/** What an external SOCKS exit carries and how, stated wherever one is configured. */
+export const EXTERNAL_LIMITS: string[] = [
+  "只承载 IPv4 上的 TCP。",
+  "UDP（包括 QUIC / HTTP/3）在承载节点上直接拒绝，绝不改从别的出口发出。",
+  "路由到它的域名在承载节点上由一个专用解析组解析：上游查询经这个 SOCKS 代理以 TCP 发往 1.1.1.1 / 8.8.8.8；没有回退，代理不给应答时这个域名就解析失败。",
+  "不返回 AAAA（这些域名没有 IPv6 地址）。",
+  "健康检测：每 10 秒经代理发一次 DNS over TCP 查询。",
+  "面板从不登录那台代理设备，也不为它生成安装包；它所在的隧道和接口也不归面板管理。",
+];
+
+/** The limitations block of external SOCKS exits. */
+export function ExternalLimits({ style }: { style?: React.CSSProperties }) {
+  return (
+    <Alert
+      type="warning"
+      showIcon
+      style={{ marginBottom: 12, ...style }}
+      data-testid="external-limits"
+      message="外部 SOCKS 出口的限制"
+      description={
+        <>
+          <ul style={{ margin: 0, paddingInlineStart: 18 }}>
+            {EXTERNAL_LIMITS.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+          <Note inline>以上是面板生成的配置的设计行为，尚未在真实设备上验证。</Note>
+        </>
+      }
+    />
+  );
+}
+
+/** Badges of a nested exit (经 <relay> 中继), an external SOCKS exit and a dynamic DNS endpoint. */
+export function ExitKindTags({ node, name }: { node: Node; name: (id: string) => string }) {
+  return (
+    <>
+      {isNestedExit(node) ? (
+        <Tooltip title={`经 ${name(node.via_exit!)} 中继：这个出口的唯一隧道连到中继出口，再由中继出口经枢纽到达；它不直接连枢纽。`}>
+          <span className="state-word" tabIndex={0} data-testid={`nested-tag-${node.id}`}>
+            经 {name(node.via_exit!)} 中继
+          </span>
+        </Tooltip>
+      ) : null}
+      {isExternalExit(node) ? (
+        <Tooltip title={`承载出口 ${name(node.external!.carrier)} 上经 SOCKS5 代理出去；只承载 IPv4 上的 TCP，UDP 被拒绝。`}>
+          <span className="state-word" tabIndex={0} data-testid={`external-tag-${node.id}`}>
+            外部 SOCKS · 仅 TCP · 仅 IPv4
+          </span>
+        </Tooltip>
+      ) : null}
+      {node.role === "exit" && node.endpoint_host ? (
+        <Tooltip title={`动态域名端点 ${node.endpoint_host}：拨它的节点按域名解析，握手超过 150 秒未更新时重新解析。`}>
+          <span className="state-word" tabIndex={0}>动态域名</span>
+        </Tooltip>
+      ) : null}
+    </>
+  );
+}
+
+/** Which order a change to a nested or external exit must be provisioned in. */
+export function DeployOrder({ node, name }: { node: Pick<Node, "via_exit" | "external">; name: (id: string) => string }) {
+  if (node.external?.carrier) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        data-testid="deploy-order"
+        message="部署顺序"
+        description={<Note>{`安装或修改这个外部 SOCKS 出口：先在「部署」页重新下发承载出口 ${name(node.external.carrier)}，再下发两个枢纽（主、备；只有一个枢纽时就是它），最后安装网关。外部出口本身不装机。这个顺序未在真实设备上验证。`}</Note>}
+      />
+    );
+  }
+  if (node.via_exit) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        data-testid="deploy-order"
+        message="部署顺序"
+        description={<Note>{`安装或修改这个嵌套出口：先在「部署」页重新下发中继出口 ${name(node.via_exit)}，再下发这个出口，然后两个枢纽（主、备；只有一个枢纽时就是它），最后安装网关。这个顺序未在真实设备上验证。`}</Note>}
+      />
+    );
+  }
+  return null;
+}
+
+/** Managed exits that may carry an external exit or relay a nested one: neither nested nor external. */
+function plainManagedExits(t: Topology): Node[] {
+  return t.nodes.filter((n) => n.role === "exit" && n.managed && !isNestedExit(n) && !isExternalExit(n));
+}
+
+const NODE_ID_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const HOST_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/** The direct_wg links from an exit to its relay exit (enabled, not standby). */
+function relayLinks(t: Topology, from: string, to: string): TLink[] {
+  return t.links.filter((l) => l.from === from && l.to === to && l.transport === "direct_wg" && l.enabled && !l.standby);
+}
+
+function newLinkId(t: Topology, from: string, to: string): string {
+  let id = `${from}-${to}`;
+  for (let i = 2; t.links.some((l) => l.id === id); i++) id = `${from}-${to}-${i}`;
+  return id;
+}
+
+interface ExternalValues {
+  id?: string;
+  name: string;
+  region?: string;
+  residential: boolean;
+  carrier?: string;
+  socks_address?: string;
+  socks_port?: number;
+  interface?: string;
+  credential_id?: string;
+}
+
+/** The topology with this external exit written in (shape the backend validates: managed:false, IPv4 TCP only). */
+export function withExternalExit(t: Topology, v: ExternalValues, existing: Node | null): Topology {
+  const id = existing ? existing.id : (v.id ?? "").trim();
+  const base: Node = existing ? { ...existing } : ({ id, x: 80 + (t.nodes.length % 6) * 40, y: 80 + (t.nodes.length % 6) * 30 } as Node);
+  for (const k of [
+    "server_id",
+    "ssh_host",
+    "ssh_port",
+    "ssh_user",
+    "endpoint_v4",
+    "endpoint_v6",
+    "endpoint_host",
+    "listen_port",
+    "public_key",
+    "private_key",
+    "via_exit",
+    "v6_workaround",
+    "dualstack_relay",
+    "wss_listen_port",
+    "pool",
+    "pool_priority",
+  ] as const)
+    delete base[k];
+  const node: Node = {
+    ...base,
+    id,
+    name: v.name.trim(),
+    role: "exit",
+    managed: false,
+    path_v4: true,
+    path_v6: false,
+    egress_v4: true,
+    egress_v6: false,
+    nat_dial_out: false,
+    residential: !!v.residential,
+    ix_bound: false,
+    external: {
+      carrier: v.carrier ?? "",
+      socks_address: (v.socks_address ?? "").trim(),
+      socks_port: v.socks_port ?? 0,
+      interface: (v.interface ?? "").trim(),
+      credential_id: v.credential_id ?? "",
+    },
+  };
+  const region = (v.region ?? "").trim().toLowerCase();
+  if (region) node.region = region;
+  else delete node.region;
+  return { ...t, nodes: existing ? t.nodes.map((n) => (n.id === existing.id ? node : n)) : [...t.nodes, node] };
+}
+
+interface ManagedValues {
+  endpoint_host?: string;
+  via_exit?: string;
+  add_link: boolean;
+}
+
+/** The topology with this managed exit's endpoint_host / via_exit (and optionally the relay link) written in. */
+export function withManagedExit(t: Topology, node: Node, v: ManagedValues): Topology {
+  const next: Node = { ...node };
+  const host = (v.endpoint_host ?? "").trim().toLowerCase();
+  if (host) next.endpoint_host = host;
+  else delete next.endpoint_host;
+  if (v.via_exit) next.via_exit = v.via_exit;
+  else delete next.via_exit;
+  let links = t.links;
+  if (v.via_exit && v.add_link && relayLinks(t, node.id, v.via_exit).length === 0) {
+    links = [
+      ...links,
+      { id: newLinkId(t, node.id, v.via_exit), from: node.id, to: v.via_exit, transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25 },
+    ];
+  }
+  return { ...t, nodes: t.nodes.map((n) => (n.id === node.id ? next : n)), links };
+}
+
+function ExitDrawer({
+  open,
+  mode,
+  topo,
+  socks,
+  socksError,
+  blocked,
+  onClose,
+  onSave,
+}: {
+  open: boolean;
+  /** external: create (node null) or edit an external SOCKS exit; managed: endpoint_host and via_exit of a managed exit. */
+  mode: { kind: "external"; node: Node | null } | { kind: "managed"; node: Node };
+  topo: Topology;
+  socks: SOCKSCredentialView[] | undefined;
+  socksError: ApiError | null;
+  /** Why saving is not possible now (unsaved topology edits elsewhere). */
+  blocked?: string;
+  onClose: () => void;
+  onSave: (next: Topology, what: string) => Promise<ApiError | null>;
+}) {
+  const [form] = Form.useForm();
+  const [error, setError] = useState<ApiError | null>(null);
+  const [saving, setSaving] = useState(false);
+  const node = mode.node;
+  const external = mode.kind === "external";
+  const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
+  const regions = useMemo(() => REGION_CODES.map((c) => ({ value: c, label: regionLabel(c) })), []);
+
+  const watchedCarrier = Form.useWatch("carrier", form) as string | undefined;
+  const [via, setVia] = useState<string | undefined>(mode.kind === "managed" ? mode.node.via_exit : undefined);
+
+  const carriers = plainManagedExits(topo);
+  const relayCandidates = mode.kind === "managed" ? plainManagedExits(topo).filter((n) => n.id !== mode.node.id) : [];
+  const nestedBehind = mode.kind === "managed" ? topo.nodes.filter((n) => n.via_exit === mode.node.id) : [];
+  const carriedBy = node ? topo.nodes.filter((n) => n.external?.carrier === node.id) : [];
+
+  const initial =
+    mode.kind === "external"
+      ? {
+          name: node?.name ?? "",
+          region: node?.region,
+          residential: !!node?.residential,
+          carrier: node?.external?.carrier,
+          socks_address: node?.external?.socks_address,
+          socks_port: node?.external?.socks_port || 1080,
+          interface: node?.external?.interface,
+          credential_id: node?.external?.credential_id || undefined,
+        }
+      : { endpoint_host: mode.node.endpoint_host ?? "", via_exit: mode.node.via_exit, add_link: true };
+
+  async function save() {
+    let v: Record<string, unknown>;
+    try {
+      v = await form.validateFields();
+    } catch {
+      return;
+    }
+    let next: Topology;
+    let what: string;
+    if (mode.kind === "external") {
+      const ev = v as unknown as ExternalValues;
+      next = withExternalExit(topo, ev, mode.node);
+      what = mode.node ? `外部 SOCKS 出口 ${ev.name} 已保存` : `外部 SOCKS 出口 ${ev.name} 已添加`;
+    } else {
+      next = withManagedExit(topo, mode.node, v as unknown as ManagedValues);
+      what = `出口 ${mode.node.name || mode.node.id} 已保存`;
+    }
+    setSaving(true);
+    const err = await onSave(next, what);
+    setSaving(false);
+    setError(err);
+    if (err?.field) {
+      const map: Record<string, string> = { endpoint_host: "endpoint_host", via_exit: "via_exit" };
+      if (map[err.field]) form.setFields([{ name: map[err.field], errors: [err.message] }]);
+    }
+  }
+
+  const relayLinkCount = mode.kind === "managed" && via ? relayLinks(topo, mode.node.id, via).length : 0;
+  const relay = via ? topo.nodes.find((n) => n.id === via) : undefined;
+
+  return (
+    <Drawer
+      title={external ? (node ? `外部 SOCKS 出口「${node.name || node.id}」` : "添加外部 SOCKS 出口") : `出口「${node?.name || node?.id}」的到达方式`}
+      open={open}
+      onClose={onClose}
+      width={600}
+      destroyOnHidden
+      footer={
+        <Space>
+          <Button onClick={onClose}>取消</Button>
+          <Button type="primary" loading={saving} disabled={!!blocked} onClick={() => void save()}>
+            保存到拓扑
+          </Button>
+        </Space>
+      }
+    >
+      {blocked ? <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={blocked} /> : null}
+      {error ? <ApiErrorAlert error={error} onClose={() => setError(null)} /> : null}
+      {error?.issues && error.issues.length > 0 ? <IssueList issues={error.issues} /> : null}
+      <SafetyNotice kind="unverified">动态域名端点、嵌套出口和外部 SOCKS 出口都还没有在真实设备上验证。</SafetyNotice>
+      {external ? (
+        <>
+          <Note>
+            外部 SOCKS 出口是一台已有的 SOCKS5 代理：承载出口（一台受管出口）经一条面板不管理的隧道到达它，把发往这个出口的流量转给代理。它没有服务器、没有链路，面板不为它装机。
+          </Note>
+          <ExternalLimits />
+        </>
+      ) : null}
+      <Form form={form} layout="vertical" initialValues={initial} requiredMark="optional" autoComplete="off">
+        {external ? (
+          <>
+            {!node ? (
+              <Form.Item
+                name="id"
+                label="ID"
+                extra={<Note>{"小写字母、数字和短横线；规则和地区组用它引用这个出口，创建后不能改。"}</Note>}
+                rules={[
+                  { required: true, message: "请填写 ID" },
+                  { pattern: NODE_ID_RE, message: "ID 只能是小写字母、数字和短横线" },
+                  { validator: (_, val: string) => (val && topo.nodes.some((n) => n.id === val.trim()) ? Promise.reject(new Error("已有这个 ID 的节点")) : Promise.resolve()) },
+                ]}
+              >
+                <Input className="mono" placeholder="例如 my-socks" aria-label="ID" />
+              </Form.Item>
+            ) : null}
+            <Form.Item name="name" label="显示名称" rules={[{ required: true, message: "请填写名称" }]}>
+              <Input placeholder="例如 马来西亚住宅" aria-label="显示名称" />
+            </Form.Item>
+            <Form.Item name="region" label="国家或地区" extra={<Note>{"出口页按它分区；解锁探测用它确认实际出口地区。"}</Note>}>
+              <AutoComplete options={regions} placeholder="例如 my" aria-label="国家或地区" filterOption={(i, o) => !!o && (o.value + o.label).toLowerCase().includes(i.toLowerCase())} />
+            </Form.Item>
+            <Form.Item name="residential" valuePropName="checked" extra={<Note>{"代理的出口是家宽时勾选；要求住宅的地区组和规则才能用它。"}</Note>}>
+              <Checkbox>住宅（家宽）</Checkbox>
+            </Form.Item>
+            <Form.Item
+              name="carrier"
+              label="承载出口"
+              rules={[{ required: true, message: "请选择承载出口" }]}
+              extra={<Note>{"一台受管出口（不能是嵌套出口或外部出口）。它经下面的接口到达代理，装机时写入转发配置。"}</Note>}
+            >
+              <Select
+                aria-label="承载出口"
+                placeholder={carriers.length ? "选择受管出口" : "还没有可用的受管出口"}
+                options={carriers.map((n) => ({ value: n.id, label: `${n.name || n.id}（${n.id}）${n.region ? ` · ${regionLabel(n.region)}` : ""}` }))}
+              />
+            </Form.Item>
+            <Space.Compact block>
+              <Form.Item
+                name="socks_address"
+                label="SOCKS 地址（IPv4）"
+                style={{ flex: 2 }}
+                rules={[
+                  { required: true, message: "请填写代理的 IPv4 地址" },
+                  { pattern: IPV4_RE, message: "必须是 IPv4 地址" },
+                ]}
+                extra={<Note>{"从承载出口看到的代理地址，通常是那条隧道上的地址。"}</Note>}
+              >
+                <Input className="mono" placeholder="例如 192.0.2.10" aria-label="SOCKS 地址" />
+              </Form.Item>
+              <Form.Item name="socks_port" label="端口" style={{ flex: 1 }} rules={[{ required: true, message: "请填写端口" }]}>
+                <InputNumber min={1} max={65535} style={{ width: "100%" }} aria-label="SOCKS 端口" />
+              </Form.Item>
+            </Space.Compact>
+            <Form.Item
+              name="interface"
+              label="承载出口上的接口"
+              rules={[
+                { required: true, message: "请填写接口名" },
+                { pattern: /^[A-Za-z0-9_.-]{1,15}$/, message: "接口名最多 15 个字符：字母、数字、_ . -" },
+              ]}
+              extra={`承载出口${watchedCarrier ? ` ${name(watchedCarrier)} ` : ""}上那条面板不管理的隧道接口（例如 wg9）。代理只经这个接口访问；接口不在时直接失败，不会改走默认路由。`}
+            >
+              <Input className="mono" placeholder="例如 wg9" aria-label="承载出口上的接口" />
+            </Form.Item>
+            <Form.Item
+              name="credential_id"
+              label="SOCKS 凭据"
+              rules={[{ required: true, message: "请选择 SOCKS 凭据" }]}
+              extra={
+                <span>
+                  代理的用户名和密码保存在 <Link to={href("keys") + "?section=socks&socks=new"}>密钥页的「SOCKS 凭据」</Link> 里（只写不读）；拓扑里只记它的 ID。还没有就先去新建一个。
+                </span>
+              }
+            >
+              <Select
+                aria-label="SOCKS 凭据"
+                loading={!socks && !socksError}
+                placeholder={socks && socks.length === 0 ? "还没有 SOCKS 凭据，先到密钥页新建" : "选择凭据"}
+                options={(socks ?? []).map((c) => ({ value: c.id, label: `${c.name}（${c.id}）${c.secret_set ? "" : " · 未设置"}` }))}
+              />
+            </Form.Item>
+            {socksError ? <ApiErrorAlert error={socksError} /> : null}
+            <DeployOrder node={{ external: { carrier: watchedCarrier ?? node?.external?.carrier ?? "", socks_address: "", socks_port: 0, interface: "", credential_id: "" } }} name={name} />
+            {node ? (
+              <Note>
+                要删除这个出口，在 <Link to={href("topology", node.id)}>拓扑</Link> 页删除节点。
+              </Note>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <Form.Item
+              name="endpoint_host"
+              label="动态域名端点"
+              rules={[{ validator: (_, val: string) => (!val || HOST_RE.test(val.trim().toLowerCase()) ? Promise.resolve() : Promise.reject(new Error("不是合法的域名（小写字母、数字、短横线，至少两段，不带结尾的点）"))) }]}
+              extra="公网地址会变的出口（例如家宽）填一个 DDNS 域名：拨它的枢纽和嵌套出口用这个域名代替公网 IPv4，并在 WireGuard 握手超过 150 秒没有更新时重新解析。网关和中继从不拨出口，用不到它。未在真实设备上验证。"
+            >
+              <Input className="mono" placeholder="例如 exit.example.net" aria-label="动态域名端点" />
+            </Form.Item>
+            <Form.Item
+              name="via_exit"
+              label="经中继出口到达"
+              extra={<Note>{"留空：这个出口照常直接连枢纽。选一个中继出口：这个出口不再直接连枢纽，而是拨到中继出口，由中继出口经枢纽到达它（只能嵌套一层）。"}</Note>}
+            >
+              <Select
+                allowClear
+                aria-label="经中继出口到达"
+                placeholder="不经中继（直接连枢纽）"
+                disabled={nestedBehind.length > 0 || carriedBy.length > 0}
+                onChange={(v?: string) => setVia(v || undefined)}
+                options={relayCandidates.map((n) => ({
+                  value: n.id,
+                  label: `${n.name || n.id}（${n.id}）${n.endpoint_v4 || n.endpoint_host ? "" : " · 缺少端点"}`,
+                }))}
+              />
+            </Form.Item>
+            {nestedBehind.length > 0 ? (
+              <Note>
+                {nestedBehind.map((n) => n.name || n.id).join("、")} 经这个出口中继，所以它自己不能再经别的出口到达（只能嵌套一层）。
+              </Note>
+            ) : null}
+            {carriedBy.length > 0 ? (
+              <Note>
+                它是外部 SOCKS 出口 {carriedBy.map((n) => n.name || n.id).join("、")} 的承载出口，承载出口不能是嵌套出口。
+              </Note>
+            ) : null}
+            {via ? (
+              <Alert
+                type={mode.node.nat_dial_out && mode.node.path_v4 && relayLinkCount === 1 && relay && (relay.endpoint_v4 || relay.endpoint_host) ? "info" : "warning"}
+                showIcon
+                style={{ marginBottom: 12 }}
+                data-testid="via-exit-requirements"
+                message="嵌套出口的条件（保存时由后端校验）"
+                description={
+                  <ul style={{ margin: 0, paddingInlineStart: 18 }}>
+                    <li>
+                      这个出口必须是 NAT 拨出：{mode.node.nat_dial_out ? "已满足" : "未满足，请在拓扑页打开「NAT 拨出」"}
+                    </li>
+                    <li>必须承载 IPv4 路径：{mode.node.path_v4 ? "已满足" : "未满足"}</li>
+                    <li>
+                      必须恰好有一条从这个出口到 {name(via)} 的直连 WG 链路（启用、非待命）：现在有 {relayLinkCount} 条
+                    </li>
+                    <li>
+                      中继出口 {name(via)} 需要公网 IPv4 或动态域名端点：{relay && (relay.endpoint_v4 || relay.endpoint_host) ? "已满足" : "未满足"}
+                    </li>
+                    <li>中继出口照常留在它的地区组里，承载它自己的流量。</li>
+                  </ul>
+                }
+              />
+            ) : null}
+            {via && relayLinkCount === 0 ? (
+              <Form.Item name="add_link" valuePropName="checked">
+                <Checkbox>
+                  保存时补上一条直连 WG 链路 {mode.node.id} → {via}
+                </Checkbox>
+              </Form.Item>
+            ) : null}
+            {via ? <DeployOrder node={{ via_exit: via }} name={name} /> : null}
+          </>
+        )}
+      </Form>
+    </Drawer>
+  );
+}
+
+/** Every exit with its kind, reachability and the drawer to change it. */
+function ExitNodes({
+  topo,
+  socks,
+  ungrouped,
+  joinMenu,
+  onEdit,
+  onAddExternal,
+}: {
+  topo: Topology;
+  socks: SOCKSCredentialView[] | undefined;
+  /** Exits in no region group: listed first, each with 「加入组…」. */
+  ungrouped: Set<string>;
+  joinMenu: (n: Node) => ReactNode;
+  onEdit: (n: Node) => void;
+  onAddExternal: () => void;
+}) {
+  const exits = topo.nodes.filter((n) => n.role === "exit");
+  const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
+  const hasExternal = exits.some(isExternalExit);
+  const row = (n: Node) => {
+    const cred = n.external ? socks?.find((c) => c.id === n.external!.credential_id) : undefined;
+    return (
+      <div key={n.id} className="ungrouped-item" data-testid={`exit-node-${n.id}`}>
+        <div>
+          <Space size={[4, 2]} wrap>
+            <Link to={href("topology", n.id)}>{n.name || n.id}</Link>
+            <Typography.Text type="secondary" className="mono-small">
+              {n.id} · {regionLabel(n.region)}
+            </Typography.Text>
+            <MemberAttrs m={n} />
+            <ExitKindTags node={n} name={name} />
+          </Space>
+          {n.external ? (
+            <div className="state-line">
+              承载 {name(n.external.carrier)} · 接口 <Mono>{n.external.interface}</Mono> · 代理 <Mono>{`${n.external.socks_address}:${n.external.socks_port}`}</Mono> · 凭据{" "}
+              {cred ? cred.name : n.external.credential_id || "—"}
+            </div>
+          ) : n.endpoint_host ? (
+            <div className="state-line">
+              动态域名端点 <Mono>{n.endpoint_host}</Mono>
+            </div>
+          ) : null}
+        </div>
+        <Space size={4}>
+          {ungrouped.has(n.id) ? joinMenu(n) : null}
+          {n.managed || n.external ? (
+            <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(n)} aria-label={`设置出口 ${n.name || n.id}`}>
+              设置
+            </Button>
+          ) : null}
+        </Space>
+      </div>
+    );
+  };
+  const loose = exits.filter((n) => ungrouped.has(n.id));
+  const rest = exits.filter((n) => !ungrouped.has(n.id));
+  return (
+    <Fold
+      title="出口节点"
+      id="exit-nodes"
+      testId="fold-exit-nodes"
+      summary={
+        <span data-testid="exit-nodes-summary">
+          {exits.length} 个出口
+          {loose.length > 0 ? <span> · {loose.length} 个不在任何组里</span> : null}
+        </span>
+      }
+      extra={
+        <Button size="small" icon={<PlusOutlined />} onClick={onAddExternal}>
+          添加外部 SOCKS 出口
+        </Button>
+      }
+    >
+      <Note mode="popover">
+        {"受管出口可以填动态域名端点，或者经另一台中继出口到达（嵌套出口）；外部 SOCKS 出口经一台受管的承载出口转给已有的 SOCKS5 代理。不在任何组里的出口规则不能经组用到，只能被规则直接固定。保存直接写入拓扑，安装后生效。"}
+      </Note>
+      {hasExternal ? <ExternalLimits /> : null}
+      {exits.length === 0 ? <Note>拓扑里还没有出口。</Note> : null}
+      {loose.length > 0 ? (
+        <div className="ungrouped" data-testid="ungrouped">
+          {loose.map(row)}
+        </div>
+      ) : null}
+      {rest.length > 0 ? (
+        <div className="ungrouped" data-testid="exit-nodes">
+          {rest.map(row)}
+        </div>
+      ) : null}
+    </Fold>
+  );
+}
+
+// ------------------------------------------------------------------ page ---
+
+/** The hub state the actual lines were judged from: the carrying hub (single: the hub). */
+/** "2 个组 · 5 个出口 · 1 个需要处理": the problem part coloured, the rest muted. */
+function RegionSummary({ list }: { list: RegionGroupView[] }) {
+  const members = new Set(list.flatMap((g) => g.members)).size;
+  const bad = list.filter((g) => PROBLEM.has(actualTag(g.actual).kind)).length;
+  return (
+    <span data-testid="region-summary">
+      {list.length} 个组 · {members} 个出口
+      {bad > 0 ? <span className="problem"> · {bad} 个需要处理</span> : null}
+    </span>
+  );
+}
+
+/** "3 台中继 · 2 台分担中 · 1 台已剔除". */
+function SharingSummary({ s }: { s: Sharing }) {
+  if (!s.known) return <span className="problem">状态未知</span>;
+  const active = s.relays.filter((r) => r.status === "active").length;
+  const bad = s.relays.filter((r) => PROBLEM.has((RELAY_STATUS[r.status] ?? RELAY_STATUS.unknown).kind)).length;
+  return (
+    <span data-testid="sharing-summary">
+      {s.path === "backup" ? <span className="problem">备用枢纽承载 · </span> : null}
+      {s.relays.length} 台中继 · {active} 台分担中
+      {bad > 0 ? <span className="problem"> · {bad} 台需要处理</span> : null}
+    </span>
+  );
+}
+
+function carrierState(d: RegionGroupsView): GroupHubState | undefined {
+  if (d.carrying?.mode !== "dual") return d.hub_state;
+  return d.hub_states?.find((h) => h.carrying);
+}
+
+export default function ExitsPage() {
+  const groups = useApi(() => api.listGroups(), []);
+  const doc = useTopologyDoc();
+  const { markApplyRequired } = useStatus();
+  const { route } = useRouter();
+  const { message } = AntApp.useApp();
+  const [editing, setEditing] = useState<RegionGroupView | null | "new">(null);
+  const [changed, setChanged] = useState(false);
+  const act = useAction();
+  const hubAct = useAction();
+  const focus = route.params[0];
+  const refreshing = hubAct.busy === "hub";
+  const refreshHub = () =>
+    void hubAct.run(
+      async () => {
+        const d: RegionGroupsView = await api.refreshGroupRuntime();
+        groups.setData(d);
+      },
+      "hub",
+      // The hub changed while the read ran: the result was discarded;
+      // show the current hub's state (unknown until read again).
+      (e) => {
+        if (e.code === "hub_identity_changed") void groups.reload();
+      },
+    );
+  // One automatic read per visit, bounded: only when the hub can be read
+  // and nothing recent is stored. No polling.
+  const autoRead = useRef(false);
+  useEffect(() => {
+    const d = groups.data;
+    const hubs = d?.carrying?.mode === "dual" && d.hub_states?.length ? d.hub_states : d?.hub_state ? [d.hub_state] : [];
+    if (hubs.length === 0 || autoRead.current) return;
+    autoRead.current = true;
+    if (hubs.some((h) => h.refreshing)) return;
+    // A read of another hub identity says nothing about this one.
+    const last = (h: GroupHubState) => (h.last_read && h.last_read.current_hub !== false ? Date.parse(h.last_read.read_at) : 0);
+    if (!hubs.some((h) => h.readable && Date.now() - last(h) >= AUTO_REFRESH_AFTER_MS)) return;
+    refreshHub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups.data]);
+
+  const dual = groups.data?.carrying?.mode === "dual" && (groups.data.hub_states?.length ?? 0) > 0;
+  // Hub reports unusable for the same reason in every group: said once in the hub bar.
+  const sharedReports = useMemo(() => sharedHubReports(groups.data?.groups ?? []), [groups.data]);
+  const sharedByHub = useMemo(() => {
+    const m = new Map<string, string[]>();
+    const first = (groups.data?.groups ?? []).find((g) => g.actual_by_hub?.length)?.actual_by_hub ?? [];
+    for (const r of first) {
+      if (!sharedReports.has(hubReportKey(r))) continue;
+      const t = actualTag({ ...r, alert: r.alert ?? false } as GroupActualView);
+      m.set(r.hub_node, [...(m.get(r.hub_node) ?? []), `${t.label}，${hubReportReason(r)}`]);
+    }
+    return m;
+  }, [groups.data, sharedReports]);
+  const exits = useMemo(() => (doc.topo?.nodes ?? []).filter((n) => n.role === "exit"), [doc.topo]);
+  const names = useMemo(() => new Map((doc.topo?.nodes ?? []).map((n) => [n.id, n.name || n.id])), [doc.topo]);
+  const nodeMap = useMemo(() => new Map((doc.topo?.nodes ?? []).map((n) => [n.id, n])), [doc.topo]);
+  const socks = useApi(() => api.listSocksCredentials(), []);
+  const [exitEdit, setExitEdit] = useState<{ kind: "external"; node: Node | null } | { kind: "managed"; node: Node } | null>(null);
+  const [savedIssues, setSavedIssues] = useState<Issue[]>([]);
+
+  /**
+   * Writes a node change into the stored topology with one PUT (the same
+   * request the topology editor's save sends). Refused while the shared
+   * working copy has other unsaved edits, so they are never saved by accident.
+   */
+  const saveExit = async (next: Topology, what: string, id: string): Promise<ApiError | null> => {
+    try {
+      const res = await api.putTopology(next, !!next.settings.draft);
+      doc.applyServerChange(() => res.topology);
+      markApplyRequired();
+      setChanged(true);
+      setSavedIssues((res.issues ?? []).filter((i) => i.node_id === id || i.exit_id === id));
+      setExitEdit(null);
+      message.success(`${what}；按部署顺序重新下发后生效`);
+      void groups.reload();
+      void socks.reload();
+      return null;
+    } catch (e) {
+      return e instanceof api.ApiError ? e : new api.ApiError(0, {});
+    }
+  };
+
+  const afterChange = (fn: (t: Topology) => Topology, what: string) => {
+    doc.applyServerChange(fn);
+    markApplyRequired();
+    setChanged(true);
+    message.success(`${what}；安装后在网关生效`);
+    void groups.reload();
+  };
+  const putGroup = (g: RegionGroupView) => (t: Topology): Topology => {
+    const list = t.region_groups ?? [];
+    const plain = stripView(g);
+    const has = list.some((x) => x.id === g.id);
+    return {
+      ...t,
+      region_groups: has ? list.map((x) => (x.id === g.id ? plain : x)) : [...list, plain],
+      settings: g.is_default ? { ...t.settings, default_group: g.id } : t.settings,
+    };
+  };
+
+  const byRegion = useMemo(() => {
+    const m = new Map<string, RegionGroupView[]>();
+    for (const g of groups.data?.groups ?? []) {
+      const k = (g.region ?? "").toLowerCase();
+      m.set(k, [...(m.get(k) ?? []), g]);
+    }
+    return [...m.entries()].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
+  }, [groups.data]);
+
+  const ungrouped = useMemo(() => {
+    const inGroup = new Set((groups.data?.groups ?? []).flatMap((g) => g.members));
+    return exits.filter((n) => !inGroup.has(n.id));
+  }, [groups.data, exits]);
+
+  return (
+    <Page
+      title="出口"
+
+      extra={
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing("new")}>
+          新建地区组
+        </Button>
+      }
+    >
+      <MeshLegQuality topo={doc.topo} />
+      {changed ? <ApplyRequiredNotice what="地区组已修改" /> : null}
+      <ApiErrorAlert error={act.error} onClose={act.clear} />
+      <ApiErrorAlert error={hubAct.error} onClose={hubAct.clear} />
+      {dual && groups.data?.carrying ? (
+        <DualHubStateBar hubs={groups.data.hub_states ?? []} carrying={groups.data.carrying} onRefresh={refreshHub} refreshing={refreshing} sharedReports={sharedByHub} />
+      ) : (
+        <HubStateBar hub={groups.data?.hub_state} onRefresh={refreshHub} refreshing={refreshing} />
+      )}
+      {groups.data?.carrying?.sharing ? (
+        <Fold title="国内中继分担" summary={<SharingSummary s={groups.data.carrying.sharing} />} testId="fold-sharing">
+          <RelaySharingView s={groups.data.carrying.sharing} />
+        </Fold>
+      ) : null}
+      <DataView
+        state={groups}
+        rows={8}
+        isEmpty={(d) => d.groups.length === 0}
+        empty={
+          <EmptyState
+            title="还没有地区组"
+            description="把出口按国家或地区分组（例如香港、美国），规则再指向组。"
+            action={
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing("new")}>
+                新建地区组
+              </Button>
+            }
+          />
+        }
+      >
+        {(d) => (
+          <>
+            <div className="page-notes" data-testid="group-modes-note">
+              <Note mode="popover" label="切换规则">{"自动模式按成员顺序用第一个可用成员，失败时自动切到下一个；手动模式固定使用指定的成员。"}{" "}
+                {d.thresholds
+                  ? `连续 ${d.thresholds.fails_need} 次检测失败判定不可用；恢复后连续 ${d.thresholds.recovers_need} 次成功、并且距上次切换满 ${Math.round(d.thresholds.cooldown_sec / 60)} 分钟才切回。`
+                  : null}
+                「实际使用」只来自枢纽的报告；「面板推算」是面板按健康样本自己算的，不代表枢纽上实际在用。读不到枢纽时，原因和处理方法见上方「枢纽运行状态」。
+              </Note>
+            </div>
+            {byRegion.map(([region, list]) => (
+              <Fold
+                key={region || "none"}
+                title={regionLabel(region)}
+                id={`region-${region || "none"}`}
+                testId={`fold-region-${region || "none"}`}
+                summary={<RegionSummary list={list} />}
+                defaultOpen={!!focus && list.some((g) => g.id === focus)}
+              >
+                <div className="group-grid">
+                  {list.map((g) => (
+                    <GroupCard
+                      key={g.id}
+                      g={g}
+                      allGroups={d.groups}
+                      names={names}
+                      nodes={nodeMap}
+                      thresholds={d.thresholds}
+                      hub={carrierState(d)}
+                      dual={dual}
+                      onRefresh={refreshHub}
+                      refreshing={refreshing}
+                      sharedReports={sharedReports}
+                      highlighted={focus === g.id}
+                      onEdit={() => setEditing(g)}
+                      onChanged={(ng, what) => afterChange(putGroup(ng), what)}
+                      onDeleted={(id) =>
+                        afterChange((t) => ({ ...t, region_groups: (t.region_groups ?? []).filter((x) => x.id !== id) }), "地区组已删除")
+                      }
+                    />
+                  ))}
+                </div>
+              </Fold>
+            ))}
+          </>
+        )}
+      </DataView>
+      {doc.topo ? (
+        <ExitNodes
+          topo={doc.topo}
+          socks={socks.data?.credentials}
+          ungrouped={new Set(groups.data ? ungrouped.map((n) => n.id) : [])}
+          joinMenu={(n) => (
+            <Dropdown
+              trigger={["click"]}
+              menu={{
+                items: (groups.data?.groups ?? []).map((g) => ({ key: g.id, label: groupLabel(g, groups.data?.groups) })),
+                onClick: ({ key }) => {
+                  const g = groups.data!.groups.find((x) => x.id === key)!;
+                  void act.run(async () => {
+                    const r = await api.updateGroup(g.id, { members: [...g.members, n.id] });
+                    afterChange(putGroup(r.group), `${n.name} 已加入 ${groupLabel(g, groups.data?.groups)}`);
+                  }, `join:${n.id}`);
+                },
+              }}
+            >
+              <Button size="small" loading={act.busy === `join:${n.id}`}>
+                加入组…
+              </Button>
+            </Dropdown>
+          )}
+          onEdit={(n) => setExitEdit(n.external ? { kind: "external", node: n } : { kind: "managed", node: n })}
+          onAddExternal={() => setExitEdit({ kind: "external", node: null })}
+        />
+      ) : null}
+      {savedIssues.length > 0 ? (
+        <div data-testid="exit-saved-issues">
+          <IssueList issues={savedIssues} />
+        </div>
+      ) : null}
+      {exitEdit && doc.topo ? (
+        <ExitDrawer
+          open
+          mode={exitEdit}
+          topo={doc.topo}
+          socks={socks.data?.credentials}
+          socksError={socks.error}
+          blocked={doc.dirty ? "拓扑有未保存的修改（拓扑、规则或泄漏页）：先在那里保存或放弃，再在这里保存，免得把它们一起写进去。" : undefined}
+          onClose={() => setExitEdit(null)}
+          onSave={(next, what) => saveExit(next, what, exitEdit.node?.id ?? next.nodes[next.nodes.length - 1]?.id ?? "")}
+        />
+      ) : null}
+      <GroupDrawer
+        open={editing !== null}
+        group={editing === "new" ? null : editing}
+        exits={exits}
+        others={groups.data?.groups}
+        onClose={() => setEditing(null)}
+        onSaved={(g, created) => {
+          setEditing(null);
+          afterChange(putGroup(g), created ? `地区组 ${g.name} 已创建` : `地区组 ${g.name} 已保存`);
+        }}
+      />
+    </Page>
+  );
+}

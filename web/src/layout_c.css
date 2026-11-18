@@ -1,0 +1,39 @@
+/* Page-scoped layout for group C pages (unlock, deploy, servers, credentials, cloudflare, remote). */
+.cat-mark { position: relative; display: inline-flex; align-items: baseline; gap: 3px; font-size: 12px; line-height: 16px; color: var(--m-text-2); white-space: nowrap; }
+.cat-mark[data-category="unlocked"] { color: inherit; }
+.cat-mark.is-bad { color: var(--m-bad); font-weight: 600; }
+.cat-mark-region { font-size: 11px; color: var(--m-text-2); font-weight: 400; }
+.matrix-btn:hover .cat-mark, .matrix-btn:focus-visible .cat-mark { text-decoration: underline; }
+.matrix-compact .matrix-cell { flex-direction: row; flex-wrap: wrap; gap: 2px 8px; }
+.lc-more { margin-top: 6px; }
+.lc-more > summary { cursor: pointer; color: var(--m-text-2); font-size: 13px; padding: 2px 0; }
+.lc-more[open] > summary { margin-bottom: 6px; }
+
+/* Unlock by region: service × exit tables. */
+.unlock-table th[scope="row"] { font-weight: 500; white-space: nowrap; }
+.ucell { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+.ucell-unlocked { color: var(--m-ok); font-weight: 500; }
+.ucell-blocked { color: var(--m-bad); }
+.ucell-local, .ucell-unverified { color: var(--m-warn); }
+.ucell-untested { color: var(--m-text-2); }
+.ucell[tabindex]:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px; border-radius: 2px; }
+.ucell-region { font-size: 11px; color: var(--m-text-2); font-family: var(--m-mono, ui-monospace, monospace); }
+.unlock-current { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.unlock-rec-inner { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.unlock-confirm { display: inline-flex; align-items: center; gap: 6px; }
+.unlock-pick { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.unlock-pick-select { min-width: 140px; }
+.unlock-impact { color: var(--m-warn); font-size: 12px; white-space: nowrap; }
+
+/* 使用说明: one guide panel over the page (HelpGuide.tsx). */
+.help-guide { position: fixed; top: var(--m-topbar-h, 56px); right: 0; bottom: 0; z-index: 900; width: min(440px, 100vw); display: flex; flex-direction: column; background: var(--m-surface); border-left: 1px solid var(--m-border); }
+.help-guide-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--m-border); }
+.help-guide-title { margin: 0; font-size: 15px; font-weight: 600; }
+.help-guide-body { overflow-y: auto; padding: 8px 16px 24px; overflow-wrap: anywhere; }
+.help-group-title { margin: 16px 0 4px; font-size: 12px; font-weight: 500; color: var(--m-text-2); }
+.help-section { padding: 8px 0; }
+.help-section-title { margin: 0 0 4px; font-size: 14px; font-weight: 600; outline: none; }
+.help-section[aria-current="true"] .help-section-title { color: var(--m-accent); }
+.help-section p { margin: 0; line-height: 1.6; }
+.help-page-details .page-help-item { margin-top: 10px; }
+.help-page-details .page-help-title { margin: 0 0 2px; font-size: 13px; font-weight: 600; }

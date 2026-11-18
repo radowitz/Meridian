@@ -1,0 +1,307 @@
+package hostexec
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/radowitz/meridian/internal/preflight"
+)
+
+// pfRunner answers the pre-check's fixed commands and records every call.
+type pfRunner struct {
+	mu    sync.Mutex
+	calls []string
+	out   map[string]string
+}
+
+func (p *pfRunner) Run(_ context.Context, prog string, args ...string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	line := prog + " " + strings.Join(args, " ")
+	p.calls = append(p.calls, line)
+	return p.out[line], nil
+}
+
+func pfRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	files := map[string]string{
+		"etc/os-release":                  "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nID=debian\nVERSION_ID=\"13\"\nVERSION_CODENAME=trixie\n",
+		"proc/meminfo":                    "MemTotal:        2015040 kB\nMemAvailable:    1650220 kB\n",
+		"proc/sys/kernel/osrelease":       "6.12.12-amd64\n",
+		"proc/sys/net/ipv4/ip_forward":    "1\n",
+		"etc/wireguard/m02.conf":          "# meridian link gw-hub\n[Interface]\nPrivateKey = SECRETSECRETSECRETSECRETSECRETSECRETSECRE=\n",
+		"etc/smartdns/smartdns.conf":      "bind :53\nserver 192.0.2.53\n",
+		"etc/iproute2/rt_tables.d/x.conf": "150 vpn\n",
+		"usr/sbin/nft":                    "#!/bin/sh\n",
+		"etc/ufw/ufw.conf":                "# /etc/ufw/ufw.conf\nENABLED=no\nLOGLEVEL=low\n",
+		"usr/bin/docker":                  "#!/bin/sh\n",
+	}
+	for p, body := range files {
+		full := filepath.Join(root, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "run/systemd/system"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestAgentPreflightReport(t *testing.T) {
+	run := &pfRunner{out: map[string]string{
+		"iptables -w 5 -S FORWARD": "-P FORWARD DROP\n-N DOCKER\n",
+		"ip -o link show":          "1: lo: <LOOPBACK,UP>\n2: eth0: <UP>\n3: veth1@if4: <UP>\n",
+		"ip -o addr show":          "2: eth0    inet 192.0.2.88/24 brd 192.0.2.255 scope global eth0\n",
+		"ss -Hlntup":               "tcp LISTEN 0 4096 192.0.2.88:8787 0.0.0.0:* users:((\"meridian\",pid=10,fd=3))\n",
+		"ss -Hlntu --cgroup":       "udp UNCONN 0 0 *:53 *:* cgroup:/system.slice/docker-" + strings.Repeat("ab", 32) + ".scope\n",
+		"docker inspect --format {{.Id}} {{.State.Running}} meridian-smartdns": strings.Repeat("ab", 32) + " true\n",
+		"nft list chains":                                     "table ip filter {\n\tchain FORWARD {\n\t\ttype filter hook forward priority filter; policy drop;\n\t}\n}\n",
+		"systemctl is-active docker.service":                  "active\n",
+		"systemctl show -p ExecStop --value nftables.service": "{ path=/usr/sbin/nft ; argv[]=/usr/sbin/nft flush ruleset ; ignore_errors=no }\n",
+	}}
+	a := &Agent{Token: func() (string, error) { return "tok", nil }, Runner: run, PreflightRoot: pfRoot(t)}
+	res := a.Preflight(context.Background(), PreflightRequest{Paths: []string{"/etc/wireguard/m02.conf", "/etc/smartdns/smartdns.conf", "/etc/meridian/forwarding.conf"}})
+	if res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	if strings.Contains(res.Report, "SECRETSECRET") || strings.Contains(res.Report, "server 192.0.2.53") {
+		t.Fatal("file content in the report")
+	}
+	r := preflight.Parse(res.Report)
+	if !r.Complete || r.OSID != "debian" || r.OSVersion != "13" || r.Systemd != "yes" || r.MemAvailKB != 1650220 || !r.Commands["nft"] || r.Commands["wg"] {
+		t.Fatalf("report %+v\n%s", r, res.Report)
+	}
+	if pi := r.Paths["/etc/wireguard/m02.conf"]; !pi.Exists || !pi.Marker || len(pi.SHA256) != 64 {
+		t.Fatalf("m02 %+v", pi)
+	}
+	if pi := r.Paths["/etc/smartdns/smartdns.conf"]; !pi.Exists || pi.Marker {
+		t.Fatalf("smartdns %+v", pi)
+	}
+	if pi := r.Paths["/etc/meridian/forwarding.conf"]; pi.Exists {
+		t.Fatalf("forwarding %+v", pi)
+	}
+	if r.UFWConf != "no" {
+		t.Fatalf("ufw.conf ENABLED= not reported: %q", r.UFWConf)
+	}
+	if r.NFTStop != "flush" {
+		t.Fatalf("nftables.service ExecStop flush not reported: %q", r.NFTStop)
+	}
+	if len(r.Policies) != 1 || r.Policies[0].Policy != "DROP" || len(r.Chains) != 1 || r.Chains[0].Policy != "drop" {
+		t.Fatalf("firewall %+v %+v", r.Policies, r.Chains)
+	}
+	if c := r.Containers["meridian-smartdns"]; c.ID != strings.Repeat("ab", 32) || !c.Running || preflight.GatewayDNSContainer != SmartDNSContainer {
+		t.Fatalf("container %+v", r.Containers)
+	}
+	var dns *preflight.Listener
+	for i := range r.Listeners {
+		if r.Listeners[i].Port == 53 {
+			dns = &r.Listeners[i]
+		}
+	}
+	if dns == nil || preflight.CgroupContainer(dns.Cgroup) != strings.Repeat("ab", 32) {
+		t.Fatalf("listeners %+v", r.Listeners)
+	}
+	if r.RTNames[150] != "vpn" || !containsStr(r.Links, "veth1") || r.Units["docker.service"].Active != "active" {
+		t.Fatalf("links %v rt %v units %v", r.Links, r.RTNames, r.Units)
+	}
+	// Only fixed, read-only invocations.
+	for _, c := range run.calls {
+		f := strings.Fields(c)
+		ok := false
+		switch f[0] {
+		case "ip":
+			ok = strings.Contains(c, " show")
+		case "nft":
+			ok = c == "nft list chains"
+		case "ss":
+			ok = c == "ss -Hlntup" || c == "ss -Hlntu --cgroup"
+		case "iptables", "ip6tables":
+			ok = c == f[0]+" -V" || strings.HasPrefix(c, f[0]+" -w 5 -S ")
+		case "systemctl":
+			ok = f[1] == "is-active" || f[1] == "is-enabled" || (f[1] == "show" && f[2] == "-p" && f[3] == "MainPID") ||
+				c == "systemctl show -p ExecStop --value nftables.service"
+		case "wg":
+			ok = c == "wg show all listen-port"
+		case "docker":
+			ok = c == "docker inspect --format {{.Id}} {{.State.Running}} "+SmartDNSContainer
+		}
+		if !ok {
+			t.Fatalf("unexpected command %q", c)
+		}
+	}
+}
+
+func containsStr(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAgentPreflightRefusesBadPaths(t *testing.T) {
+	run := &pfRunner{out: map[string]string{}}
+	a := &Agent{Token: func() (string, error) { return "tok", nil }, Runner: run}
+	for _, paths := range [][]string{{"/etc/shadow"}, {"/etc/wireguard/../shadow"}, {"/etc/wireguard/a;id"}, {"relative"}} {
+		if res := a.Preflight(context.Background(), PreflightRequest{Paths: paths}); res.Error == "" {
+			t.Fatalf("accepted %v", paths)
+		}
+	}
+	if len(run.calls) != 0 {
+		t.Fatalf("commands ran for a refused request: %v", run.calls)
+	}
+	// Over HTTP: unknown fields and bad paths are 400.
+	h := a.Handler()
+	for _, body := range []string{`{"paths":["/etc/shadow"]}`, `{"paths":[],"command":"id"}`, `not json`} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/preflight", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s: %d %s", body, rr.Code, rr.Body.String())
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/preflight", bytes.NewBufferString(`{"paths":[]}`))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", rr.Code)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/v1/preflight", bytes.NewBufferString(`{"paths":["/etc/meridian/forwarding.conf"]}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	var res PreflightResult
+	if rr.Code != 200 || json.Unmarshal(rr.Body.Bytes(), &res) != nil || !strings.HasPrefix(res.Report, preflight.Header) {
+		t.Fatalf("%d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// An answer at the runner's cap may be cut: the report is not complete.
+func TestAgentPreflightCappedOutputIsIncomplete(t *testing.T) {
+	run := &pfRunner{out: map[string]string{"ss -Hlntup": strings.Repeat("x", 16<<10)}}
+	a := &Agent{Token: func() (string, error) { return "tok", nil }, Runner: run, PreflightRoot: pfRoot(t)}
+	res := a.Preflight(context.Background(), PreflightRequest{})
+	if r := preflight.Parse(res.Report); r.Complete {
+		t.Fatal("capped output parsed as complete")
+	}
+}
+
+// The uplink check: every interface's MTU, and for each requested tunnel
+// peer one "ip -o -4|-6 route get <peer> mark 0x4d72" (the gateway's
+// WireGuard sockets carry that mark). Nothing else varies.
+func TestAgentPreflightRoutes(t *testing.T) {
+	run := &pfRunner{out: map[string]string{
+		"ip -o link show": "1: lo: <LOOPBACK,UP> mtu 65536 qdisc noqueue\n2: eth0: <UP> mtu 1472 qdisc fq\n3: veth1@if4: <UP> mtu 1500 qdisc noqueue\n",
+		"ip -o -4 route get 192.0.2.20 mark 0x4d72":   "192.0.2.20 via 192.0.2.1 dev eth0 src 192.0.2.88 mark 0x4d72 uid 0 \\    cache \n",
+		"ip -o -6 route get 2001:db8::20 mark 0x4d72": "2001:db8::20 from :: via fe80::1 dev eth0 proto ra src 2001:db8:1::88 mark 0x4d72 metric 1024 pref medium \\    cache expires 500sec mtu 1400\n",
+	}}
+	a := &Agent{Token: func() (string, error) { return "tok", nil }, Runner: run, PreflightRoot: pfRoot(t)}
+	res := a.Preflight(context.Background(), PreflightRequest{Routes: []string{"route4:192.0.2.20", "route6:2001:db8::20", "route4:192.0.2.30"}})
+	if res.Error != "" {
+		t.Fatal(res.Error)
+	}
+	r := preflight.Parse(res.Report)
+	if !r.Complete || r.LinkMTU["eth0"] != 1472 || r.LinkMTU["veth1"] != 1500 || r.LinkMTU["lo"] != 65536 {
+		t.Fatalf("link mtu %+v\n%s", r.LinkMTU, res.Report)
+	}
+	if u := r.UpRoutes["4 192.0.2.20"]; u.Dev != "eth0" || u.MTU != 0 {
+		t.Fatalf("v4 %+v", u)
+	}
+	if u := r.UpRoutes["6 2001:db8::20"]; u.Dev != "eth0" || u.MTU != 1400 {
+		t.Fatalf("v6 %+v", u)
+	}
+	if u, ok := r.UpRoutes["4 192.0.2.30"]; !ok || u.Dev != "" {
+		t.Fatalf("no route %+v %v", u, ok)
+	}
+	n := 0
+	for _, c := range run.calls {
+		if strings.Contains(c, "route get") {
+			n++
+			if !strings.HasPrefix(c, "ip -o -") || !strings.HasSuffix(c, " mark 0x4d72") {
+				t.Fatalf("route lookup %q", c)
+			}
+		}
+	}
+	if n != 3 {
+		t.Fatalf("%d route lookups: %v", n, run.calls)
+	}
+	// Invalid route arguments are refused before anything runs.
+	run.calls = nil
+	for _, routes := range [][]string{{"route4:192.0.2.1;id"}, {"route4:2001:db8::1"}, {"route4:192.0.2.1", "route4:192.0.2.1"}, {"tcp4:192.0.2.1:1"}} {
+		if res := a.Preflight(context.Background(), PreflightRequest{Routes: routes}); res.Error == "" {
+			t.Fatalf("accepted %v", routes)
+		}
+	}
+	if len(run.calls) != 0 {
+		t.Fatalf("commands ran for a refused request: %v", run.calls)
+	}
+}
+
+// An older agent refuses the unknown "routes" field (400): the client asks
+// again without it, so the gateway preflight still works (its legs then
+// stay unknown).
+func TestClientPreflightRoutesFallsBack(t *testing.T) {
+	sock := shortSocket(t)
+	l, err := ListenUnix(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := strings.Repeat("k", 64)
+	var bodies []string
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/preflight", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(b))
+		mu.Unlock()
+		// The old agent: unknown fields are refused.
+		var req struct {
+			Paths []string `json:"paths"`
+		}
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.DisallowUnknownFields()
+		if dec.Decode(&req) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(PreflightResult{Error: "请求格式不正确"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(PreflightResult{Report: preflight.Header + "\n" + preflight.EndMarker + "\n"})
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	tf := filepath.Join(t.TempDir(), "tok")
+	if err := os.WriteFile(tf, []byte(tok+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{Socket: sock, TokenFile: tf}
+	rep, err := c.PreflightRoutes(context.Background(), []string{"/etc/meridian/forwarding.conf"}, []string{"route4:192.0.2.20"})
+	if err != nil || !strings.HasPrefix(rep, preflight.Header) {
+		t.Fatalf("%v %q", err, rep)
+	}
+	if len(bodies) != 2 || !strings.Contains(bodies[0], `"routes"`) || strings.Contains(bodies[1], "routes") {
+		t.Fatalf("requests %v", bodies)
+	}
+	// Without routes the request is the old one.
+	bodies = nil
+	if _, err := c.Preflight(context.Background(), nil); err != nil || len(bodies) != 1 || strings.Contains(bodies[0], "routes") {
+		t.Fatalf("%v %v", err, bodies)
+	}
+}

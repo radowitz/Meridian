@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: gofmt
+        run: test -z "$(gofmt -l internal cmd)"
+      - name: go vet
+        run: go vet ./...
+      - name: Go tests
+        run: go test ./... -count=1
+      - name: Go build
+        run: go build -o /dev/null ./cmd/meridian
+      - name: Shell scripts (bash -n, shellcheck)
+        run: |
+          for f in deploy/*.sh deploy/debian/*.sh; do bash -n "$f"; done
+          shellcheck -x -S warning deploy/debian/*.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Panel tests and build
+        working-directory: web
+        run: npm ci && npx vitest run && npm run build

@@ -1,0 +1,43 @@
+=== RUN   TestNetnsMeshLeg
+    netns_mesh_leg_linux_test.go:116: exit us: direct leg m11, Mesh leg m24 (Mesh address 10.68.0.3 port 51844, MTU 1280, payload 1216), transit 10.66.200.18, table 209; group us table 219 resolver fd66::53:13
+    netns_mesh_leg_linux_test.go:333: EVIDENCE direct leg: the server sees the client from: 198.51.100.20
+    netns_mesh_leg_linux_test.go:448: EVIDENCE hk-hub meridian-mesh-up.sh []: err=<nil>
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; only the Mesh legs' WireGuard packets pass
+    netns_mesh_leg_linux_test.go:448: EVIDENCE us meridian-mesh-up.sh []: err=<nil>
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; only the Mesh legs' WireGuard packets pass
+    netns_mesh_leg_linux_test.go:474: EVIDENCE hub sidecar table 170: 10.68.0.1 dev, 10.68.0.2 dev, 10.68.0.3 dev, 10.68.0.4 dev, unreachable default
+    netns_mesh_leg_linux_test.go:475: EVIDENCE exit sidecar table 170: 100.96.0.0/12 dev, unreachable default
+    netns_mesh_leg_linux_test.go:543: EVIDENCE the exit sees the hub's Mesh leg from 169.254.66.2:58680 (its own sidecar)
+    netns_mesh_leg_linux_test.go:562: EVIDENCE Mesh leg: the server sees the client from: 198.51.100.20
+    netns_mesh_leg_linux_test.go:569: EVIDENCE Mesh leg, direct leg cut: the server sees the client from: 198.51.100.20
+    netns_mesh_leg_linux_test.go:572: EVIDENCE Mesh leg: group resolver query answered by: 198.18.1.1
+    netns_mesh_leg_linux_test.go:579: EVIDENCE hk-hub meridian-mesh-up.sh [--seal-only]: err=<nil>
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; only the Mesh legs' WireGuard packets pass
+    netns_mesh_leg_linux_test.go:579: EVIDENCE us meridian-mesh-up.sh [--seal-only]: err=<nil>
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; only the Mesh legs' WireGuard packets pass
+    netns_mesh_leg_linux_test.go:584: EVIDENCE Mesh leg after re-seal 1: the server sees the client from: 198.51.100.20
+    netns_mesh_leg_linux_test.go:579: EVIDENCE hk-hub meridian-mesh-up.sh [--seal-only]: err=<nil>
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; only the Mesh legs' WireGuard packets pass
+    netns_mesh_leg_linux_test.go:579: EVIDENCE us meridian-mesh-up.sh [--seal-only]: err=<nil>
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; only the Mesh legs' WireGuard packets pass
+    netns_mesh_leg_linux_test.go:584: EVIDENCE Mesh leg after re-seal 2: the server sees the client from: 198.51.100.20
+    netns_mesh_leg_linux_test.go:579: EVIDENCE hk-hub meridian-mesh-up.sh [--seal-only]: err=<nil>
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; only the Mesh legs' WireGuard packets pass
+    netns_mesh_leg_linux_test.go:579: EVIDENCE us meridian-mesh-up.sh [--seal-only]: err=<nil>
+        mesh sidecar sealed; next-hops 169.254.66.2 and fe80::66:2%mmesh answer; only the Mesh legs' WireGuard packets pass
+    netns_mesh_leg_linux_test.go:584: EVIDENCE Mesh leg after re-seal 3: the server sees the client from: 198.51.100.20
+    netns_mesh_leg_linux_test.go:589: EVIDENCE hub sidecar table 170 after re-seals: 10.68.0.1 dev, 10.68.0.2 dev, 10.68.0.3 dev, 10.68.0.4 dev, unreachable default
+    netns_mesh_leg_linux_test.go:603: EVIDENCE a 1216-byte inner packet crosses the 1280 Mesh without a fragment
+    netns_mesh_leg_linux_test.go:611: EVIDENCE a 1217-byte inner packet is carried by 4 fragments of the outer packet
+    netns_mesh_leg_linux_test.go:611: EVIDENCE a 1280-byte inner packet is carried by 4 fragments of the outer packet
+    netns_mesh_leg_linux_test.go:646: EVIDENCE seal: another port, ICMP and another destination did not cross the sidecar; nothing left its docker bridge; no Meridian source on the Internet
+    netns_mesh_leg_linux_test.go:658: EVIDENCE Mesh down: connection over the Mesh leg: TIMEOUT
+    netns_mesh_leg_linux_test.go:659: EVIDENCE Mesh down: group resolver query: TIMEOUT
+    netns_mesh_leg_linux_test.go:668: EVIDENCE hk-hub meridian-mesh-up.sh [--seal-only]: err=<nil>
+        mesh sidecar skipped: MESH_NODE_TOKEN is empty
+    netns_mesh_leg_linux_test.go:677: EVIDENCE unsealed: ip route get 10.68.0.3: RTNETLINK answers: Invalid argument
+    netns_mesh_leg_linux_test.go:679: EVIDENCE unsealed: connection over the Mesh leg: TIMEOUT
+meridian-netns-mesh-leg-test-ok
+    netns_mesh_leg_linux_test.go:694: EVIDENCE back on the direct leg: the server sees the client from: 198.51.100.20
+--- PASS: TestNetnsMeshLeg (30.87s)
+PASS

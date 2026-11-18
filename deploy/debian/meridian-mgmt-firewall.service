@@ -1,0 +1,18 @@
+[Unit]
+Description=Meridian management firewall (panel port only from the LAN interface)
+Documentation=file:///usr/share/doc/meridian/user/security.md
+# Its own table inet meridian_mgmt; loaded before Docker starts the panel.
+After=nftables.service
+Before=docker.service network-pre.target
+Wants=network-pre.target
+ConditionPathExists=/etc/meridian-host/mgmt-firewall.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/meridian-host/mgmt-firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/meridian-host/mgmt-firewall.nft
+ExecStop=-/usr/sbin/nft delete table inet meridian_mgmt
+
+[Install]
+WantedBy=multi-user.target

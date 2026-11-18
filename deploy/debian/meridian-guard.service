@@ -1,0 +1,26 @@
+[Unit]
+Description=Meridian LAN fail-closed guard (early boot, before forwarding)
+# Loads only table inet meridian_guard from the gateway bundle. It runs
+# before systemd-sysctl, Docker and meridian.service, so no forwarding
+# switched on by anything at boot can forward LAN traffic unguarded.
+# Forwarding itself is off at boot (99-meridian.conf) and is turned on by
+# meridian-up.sh only after the full ruleset and the guard are verified.
+DefaultDependencies=no
+# After nftables.service: if the host enables it, its boot-time load of
+# /etc/nftables.conf (a stock one starts by flushing the whole ruleset)
+# runs before the guard is loaded, never after it. The panel refuses to
+# install while nftables.service is enabled or running and would flush.
+After=systemd-modules-load.service nftables.service
+Before=systemd-sysctl.service network-pre.target docker.service meridian.service shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+RequiresMountsFor=/etc/nftables.d /usr/sbin
+ConditionPathExists=/etc/nftables.d/meridian-guard.nft
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/meridian-guard.nft
+
+[Install]
+WantedBy=sysinit.target

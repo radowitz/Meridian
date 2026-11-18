@@ -1,0 +1,9 @@
+=== RUN   TestNetnsReloadNoLeak
+    netns_reload_linux_test.go:196: EVIDENCE control(no tables): foreign4=0 foreign6=62 domestic6=62 tunnel_tx=0
+    netns_reload_linux_test.go:213: EVIDENCE first-install: foreign4=0 foreign6=0 domestic6=65 tunnel_tx=129
+    netns_reload_linux_test.go:232: EVIDENCE 200 reloads under traffic: foreign4=0 foreign6=0 tunnel_tx=1859
+    netns_reload_linux_test.go:277: EVIDENCE injected load failures: foreign4=0 foreign6=0 domestic6=72 (old ruleset kept)
+    netns_reload_linux_test.go:291: EVIDENCE guard only (inet meridian deleted): foreign4=0 foreign6=0 domestic6=0
+meridian-netns-reload-test-ok
+--- PASS: TestNetnsReloadNoLeak (19.51s)
+PASS

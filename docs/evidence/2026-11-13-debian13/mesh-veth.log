@@ -1,0 +1,10 @@
+PASS forward_v4: 10.66.200.2 -> 198.51.100.1 via 169.254.66.2 dev mmesh (evidence forward-v4.txt)
+PASS forward_v6: fd66:0:0:ff::2 -> 2001:db8:66::1 via fe80::66:2 dev mmesh (evidence forward-v6.txt)
+PASS tcp_v4: TCP connect to 198.51.100.1:8066
+PASS tcp_v6: TCP connect to [2001:db8:66::1]:8066
+PASS no_stray_neigh_v4: only 169.254.66.2 resolved on mmesh
+PASS no_stray_neigh_v6: only fe80::66:2 resolved on mmesh
+PASS control_dev_only_v4: default dev mmesh: host ARP-probed 198.51.100.1 on the veth and nothing answered
+PASS control_dev_only_v6: default dev mmesh (IPv6) did not forward (evidence neigh-v6-dev.txt)
+evidence: <证据目录>
+meridian-mesh-veth-verify-ok: the host <-> sidecar hop forwards IPv4 and IPv6 through explicit next-hops in namespaces. This does not test Cloudflare, the real sidecar image or a real exit.

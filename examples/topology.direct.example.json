@@ -1,0 +1,167 @@
+{
+  "settings": {
+    "draft": false,
+    "ix_replacement_mode": false,
+    "lan_interface": "eth0",
+    "gateway_lan_ipv4": "192.0.2.88/24",
+    "ros_ipv4": "192.0.2.1",
+    "ros_v6_lla": "fe80::1",
+    "lan_ipv6_prefix": "2001:db8:100::/64",
+    "ula_prefix": "fd66::/48",
+    "panel_bind": "192.0.2.88:8787",
+    "domestic_dot": [
+      "223.5.5.5",
+      "1.12.12.12"
+    ],
+    "transit_v4_prefix": "10.66.200.0/24",
+    "transit_v6_prefix": "fd66:0:0:ff::/64",
+    "nat64": {
+      "reserved": true,
+      "enabled": false
+    },
+    "default_group": "jp"
+  },
+  "nodes": [
+    {
+      "id": "gw",
+      "name": "网关",
+      "role": "gateway",
+      "region": "cn",
+      "managed": true,
+      "y": 200,
+      "lan_interface": "eth0",
+      "lan_ipv4": "192.0.2.88/24",
+      "lan_ipv6_prefix": "2001:db8:100::/64",
+      "underlay_nexthop": "192.0.2.1",
+      "path_v4": true,
+      "path_v6": false,
+      "egress_v4": false,
+      "egress_v6": false,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false
+    },
+    {
+      "id": "exit-a",
+      "name": "日本出口 A",
+      "role": "exit",
+      "region": "jp",
+      "managed": true,
+      "x": 300,
+      "y": 100,
+      "wan_interface": "eth0",
+      "path_v4": true,
+      "path_v6": true,
+      "egress_v4": true,
+      "egress_v6": true,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false,
+      "endpoint_v4": "203.0.113.41"
+    },
+    {
+      "id": "exit-b",
+      "name": "日本出口 B",
+      "role": "exit",
+      "region": "jp",
+      "managed": true,
+      "x": 300,
+      "y": 200,
+      "wan_interface": "eth0",
+      "path_v4": true,
+      "path_v6": false,
+      "egress_v4": true,
+      "egress_v6": false,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false,
+      "endpoint_v4": "203.0.113.42"
+    },
+    {
+      "id": "exit-c",
+      "name": "美国出口",
+      "role": "exit",
+      "region": "us",
+      "managed": true,
+      "x": 300,
+      "y": 300,
+      "wan_interface": "eth0",
+      "path_v4": true,
+      "path_v6": false,
+      "egress_v4": true,
+      "egress_v6": false,
+      "nat_dial_out": false,
+      "residential": false,
+      "ix_bound": false,
+      "endpoint_v4": "198.51.100.20"
+    }
+  ],
+  "links": [
+    {
+      "id": "gw-exit-a",
+      "name": "网关 → 日本出口 A",
+      "from": "gw",
+      "to": "exit-a",
+      "transport": "direct_wg",
+      "enabled": true,
+      "standby": false
+    },
+    {
+      "id": "gw-exit-b",
+      "name": "网关 → 日本出口 B",
+      "from": "gw",
+      "to": "exit-b",
+      "transport": "direct_wg",
+      "enabled": true,
+      "standby": false
+    },
+    {
+      "id": "gw-exit-c",
+      "name": "网关 → 美国出口",
+      "from": "gw",
+      "to": "exit-c",
+      "transport": "direct_wg",
+      "enabled": true,
+      "standby": false
+    }
+  ],
+  "rules": [
+    {
+      "id": "pin-us",
+      "name": "示例：api.example.com 走美国组",
+      "manual": true,
+      "priority": 10,
+      "enabled": true,
+      "overridden": false,
+      "match_type": "domain",
+      "match_value": "api.example.com",
+      "target_group": "us",
+      "require_residential": false,
+      "require_v6": false,
+      "domains": [
+        "api.example.com"
+      ]
+    }
+  ],
+  "region_groups": [
+    {
+      "id": "jp",
+      "name": "日本",
+      "region": "jp",
+      "members": [
+        "exit-a",
+        "exit-b"
+      ],
+      "mode": "auto"
+    },
+    {
+      "id": "us",
+      "name": "美国",
+      "region": "us",
+      "members": [
+        "exit-c"
+      ],
+      "mode": "auto"
+    }
+  ]
+}

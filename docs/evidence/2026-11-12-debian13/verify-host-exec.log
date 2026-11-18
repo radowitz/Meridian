@@ -1,0 +1,18 @@
+ok   meridian-host active
+ok   socket present
+ok   socket 0600 root
+ok   socket dir 0700 root
+ok   token 0600 root
+ok   systemd-analyze verify meridian-host.service
+ok   systemd-analyze verify meridian-guard.service
+ok   systemd-analyze verify meridian.service
+ok   meridian-guard enabled
+ok   meridian.service enabled
+ok   panel has no NET_ADMIN
+ok   panel has no systemctl
+ok   panel -> agent health probe
+ok   unknown action refused
+ok   extra field refused
+ok   request without token refused
+ok   no sysctl file enables forwarding
+ok   dockerd ip-forward false

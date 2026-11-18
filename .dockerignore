@@ -1,0 +1,8 @@
+.git
+web/node_modules
+web/dist
+data
+*.db
+*.pem
+*.key
+web/dist-demo

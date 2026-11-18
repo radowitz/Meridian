@@ -1,0 +1,17 @@
+{
+  "nodes/gw/usr/local/sbin/meridian-routes.sh": {
+    "from_sha256": "f6b2260fa85991c16636f0e69570b87e873a399e76b74e63ab92c2e9b969641a",
+    "to_sha256": "4a1b6173ade6493e58710fa129966bc14a8dc547b7fa9de7b2bc88a0036d64fd",
+    "reason": "T2 P1 route-failure masking and premature publication: route commands propagate failure; install takes the switch lock, fence and pending marker first, and applies the initial relay assignment as one protected transaction (share_apply SH_INSTALL=1) instead of share_tables/share_designate/share_record; QA follow-up (docs/review-391aa50.md, QA 修复): the shared switch shell records the pending target snapshot and finishes a commit killed after 'current' named it (snapshot version/args complete, kernel state verified by replaying it under the fence) instead of fencing until a full install; the fallback restores its eviction/recovery counters (fb_in/fb_goods/fb_fails) after a failed switch"
+  },
+  "nodes/gw/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "6e1167c03e29014bf6e326dd0efb86cfde1620b3318313375dea3b6e13cc7bea",
+    "to_sha256": "eab34b8a6e3821093a75ac7eb7f110ff5a54d2036651828e1bc97ee202bbc62c",
+    "reason": "T2: the install holds the switch lock and the independent fence (SSH management exceptions) from before the base nft load until routes are applied; a failure latches recovery_blocked (ERR trap); QA follow-up (docs/review-391aa50.md, QA 修复): the shared switch shell records the pending target snapshot and finishes a commit killed after 'current' named it (snapshot version/args complete, kernel state verified by replaying it under the fence) instead of fencing until a full install; the fallback restores its eviction/recovery counters (fb_in/fb_goods/fb_fails) after a failed switch"
+  },
+  "nodes/gw/usr/local/sbin/meridian-failover.sh": {
+    "from_sha256": "62c37dc09151e903eaca8872a2ea6cc2fe21ec1c5120fd9abc12affb0c5b31cb",
+    "to_sha256": "832f26b530e66ebc3f928f174a6185e0d45bba712b58e31e5f59f27babc36ef6",
+    "reason": "T2 P1 premature carrying-state publication: path-step stages candidates, the locked applier publishes status/state/switch time only after nft and every IPv4/IPv6 route succeeded; success snapshot, one compensation, bounded retry, persistent block, fallback state reloaded from the applied record; QA follow-up (docs/review-391aa50.md, QA 修复): the shared switch shell records the pending target snapshot and finishes a commit killed after 'current' named it (snapshot version/args complete, kernel state verified by replaying it under the fence) instead of fencing until a full install; the fallback restores its eviction/recovery counters (fb_in/fb_goods/fb_fails) after a failed switch"
+  }
+}

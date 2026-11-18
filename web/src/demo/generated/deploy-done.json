@@ -1,0 +1,5904 @@
+{
+ "anchor": "2026-01-01T00:00:00Z",
+ "base": "healthy",
+ "generator": "internal/api/demo_fixtures_test.go (MERIDIAN_DEMO_FIXTURES=write go test ./internal/api -run 'TestDemoFixtures$' -count=1)",
+ "responses": {
+  "GET /api/deploy": {
+   "body": {
+    "limits": {
+     "does_not_prove": [
+      "隧道真的握手、流量真的经出口出去（端到端连通）",
+      "分流结果、DNS / IPv6 / WebRTC 不泄漏（概览「防泄露」只核对生成的配置，要实际执行才算）",
+      "流媒体与 AI 服务的解锁（「解锁」页的探测）",
+      "远程接入的设备能从外网拨入"
+     ],
+     "independent": [
+      "远程接入（开关与设备）是独立资源：保存拓扑、本引导的任何一步都不会打开、关闭或修改它；它的改动随网关的安装生效",
+      "Cloudflare Mesh 备路的部署和撤回在 Cloudflare 页，不在本引导里"
+     ],
+     "proves": [
+      "在这次运行中实际安装的网关：meridian-host 的安装事务已提交——文件写入、接口与防火墙激活、服务启动，事务里的健康检查通过",
+      "在这次运行中实际下发的远端节点：装机脚本完成激活并写下清单，面板在同一登录里读回服务器上的记录，与装上去的内容一致（读回失败、不完整或不一致时这一步是「结果不明」，不算装好）",
+      "「已在服务器上（采纳）」：预检完整读到的服务器记录（网关是安装清单）已经是这份内容；没有重新执行，也没有重新检查健康——服务现在是否在运行没有核实"
+     ]
+    },
+    "plan": {
+     "skipped": [
+      {
+       "kind": "in_sync",
+       "node_id": "access",
+       "node_name": "国内中继 · 华东一区（共享带宽，示例里名字特意写得很长）",
+       "role": "relay",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "access2",
+       "node_name": "国内中继 2 · 华南",
+       "role": "relay",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "dc1",
+       "node_name": "香港机房 1（中继出口，带台湾 NAT）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "dc2",
+       "node_name": "香港机房 2（承载马来西亚 SOCKS）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "gb1",
+       "node_name": "英国伦敦",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "gw",
+       "node_name": "网关（客厅机柜）",
+       "role": "gateway",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "hkb",
+       "node_name": "备用枢纽 · 香港机房五号",
+       "role": "hub",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "ix",
+       "node_name": "IX 专线（主枢纽）",
+       "role": "hub",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "jp-a",
+       "node_name": "日本东京 · 一个很长很长的出口名字用来测试换行",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "external",
+       "node_id": "myext",
+       "node_name": "马来西亚路由器（外部 SOCKS）",
+       "role": "exit",
+       "why": "外部 SOCKS 出口：面板不登录、不装机；它的配置随承载节点 香港机房 2（承载马来西亚 SOCKS） 下发"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "sg1",
+       "node_name": "新加坡",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "twnat",
+       "node_name": "台湾 NAT（只能拨出）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "us1",
+       "node_name": "美国西岸（双栈）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "us2",
+       "node_name": "美国东岸（家宽）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      }
+     ],
+     "steps": [],
+     "topology_version": "0cacc2cc39fbab92"
+    },
+    "run": {
+     "created_at": "2026-01-01T00:00:00Z",
+     "dep_model": 1,
+     "events": [
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "text": "开始：5 个节点要装，9 个跳过"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "sg1",
+       "text": "预检完成，等待确认"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "sg1",
+       "text": "新加坡：结果不明，不当作完成"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "sg1",
+       "text": "服务器记录显示内容已装上：采纳"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "us2",
+       "text": "预检完成，等待确认"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "us2",
+       "text": "已下发"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "hkb",
+       "text": "预检完成，等待确认"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "hkb",
+       "text": "已下发"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "ix",
+       "text": "预检完成，等待确认"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "ix",
+       "text": "已下发"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "gw",
+       "text": "预检完成，等待确认"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "node": "gw",
+       "text": "已安装到网关"
+      },
+      {
+       "at": "2026-01-01T00:00:00Z",
+       "text": "全部步骤完成：4 个节点在这次运行中安装并通过健康检查：美国东岸（家宽）、备用枢纽 · 香港机房五号、IX 专线（主枢纽）、网关（客厅机柜）；1 个节点依据服务器上的安装记录采纳，没有重新执行、没有重新检查健康：新加坡。没有重新检查的节点，服务现在是否在运行没有核实（端到端验证另做）"
+      }
+     ],
+     "id": "run-demo-3",
+     "skipped": [
+      {
+       "kind": "in_sync",
+       "node_id": "access",
+       "node_name": "国内中继 · 华东一区（共享带宽，示例里名字特意写得很长）",
+       "role": "relay",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "access2",
+       "node_name": "国内中继 2 · 华南",
+       "role": "relay",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "dc1",
+       "node_name": "香港机房 1（中继出口，带台湾 NAT）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "dc2",
+       "node_name": "香港机房 2（承载马来西亚 SOCKS）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "gb1",
+       "node_name": "英国伦敦",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "jp-a",
+       "node_name": "日本东京 · 一个很长很长的出口名字用来测试换行",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "external",
+       "node_id": "myext",
+       "node_name": "马来西亚路由器（外部 SOCKS）",
+       "role": "exit",
+       "why": "外部 SOCKS 出口：面板不登录、不装机；它的配置随承载节点 香港机房 2（承载马来西亚 SOCKS） 下发"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "twnat",
+       "node_name": "台湾 NAT（只能拨出）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      },
+      {
+       "kind": "in_sync",
+       "node_id": "us1",
+       "node_name": "美国西岸（双栈）",
+       "role": "exit",
+       "why": "没有变化：与它上一次成功安装的内容一致"
+      }
+     ],
+     "stale": false,
+     "state": "done",
+     "steps": [
+      {
+       "attempts": 3,
+       "can_install": false,
+       "can_preflight": false,
+       "completion": "adopted",
+       "confirmation_valid": false,
+       "current": false,
+       "current_bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+       "current_target": {
+        "address": "203.0.113.52",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:5oxKt90NeewQQNG08d/AWCpycyelANGq10VnOEmkxlx",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-sg1",
+        "server_name": "机器 新加坡",
+        "user": "root"
+       },
+       "evidence": "host_record",
+       "finished_at": "2026-01-01T00:00:00Z",
+       "health": {
+        "committed": true,
+        "detail": "服务器上的安装记录（清单）已经是这份内容（运行 run-x 的 journal 为 done）：没有重新执行，也没有重新做健康检查",
+        "source": "host_record",
+        "verify": "verified"
+       },
+       "in_flight": false,
+       "kind": "remote",
+       "message": "服务器上已经装着这份内容：采纳，不重做",
+       "node_id": "sg1",
+       "node_name": "新加坡",
+       "outcome": "adopted",
+       "phase": "done",
+       "plan_bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+       "plan_state": "changed",
+       "plan_state_reason": "这个节点要下发的文件与它上一次成功安装的不同",
+       "plan_target": {
+        "address": "203.0.113.52",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:5oxKt90NeewQQNG08d/AWCpycyelANGq10VnOEmkxlx",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-sg1",
+        "server_name": "机器 新加坡",
+        "user": "root"
+       },
+       "position": 1,
+       "preflight_id": "pf-ad1b5ed429cf8ac7",
+       "reason": "出口：先于枢纽、中继和网关——网关的地区组解析经组的隧道地址到出口，只有已经装了新配置的出口才会应答",
+       "review_bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+       "review_target": {
+        "address": "203.0.113.52",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:5oxKt90NeewQQNG08d/AWCpycyelANGq10VnOEmkxlx",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-sg1",
+        "server_name": "机器 新加坡",
+        "user": "root"
+       },
+       "role": "exit",
+       "run": "run-6766133cb952",
+       "started_at": "2026-01-01T00:00:00Z",
+       "tier": 1
+      },
+      {
+       "attempts": 2,
+       "can_install": false,
+       "can_preflight": false,
+       "completion": "installed",
+       "confirmation_valid": false,
+       "current": false,
+       "current_bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+       "current_target": {
+        "address": "203.0.113.54",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:37JI05lCGRAH0DIi8NRhVWw/C5J1FMePVfPhyR4Qv1w",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-us2",
+        "server_name": "机器 美国东岸（家宽）",
+        "user": "root"
+       },
+       "finished_at": "2026-01-01T00:00:00Z",
+       "health": {
+        "committed": true,
+        "source": "remote_script",
+        "verify": "verified"
+       },
+       "in_flight": false,
+       "kind": "remote",
+       "message": "已下发：脚本完成激活，读回的服务器记录与装上去的内容一致",
+       "node_id": "us2",
+       "node_name": "美国东岸（家宽）",
+       "outcome": "installed",
+       "phase": "done",
+       "plan_bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+       "plan_state": "changed",
+       "plan_state_reason": "这个节点要下发的文件与它上一次成功安装的不同",
+       "plan_target": {
+        "address": "203.0.113.54",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:37JI05lCGRAH0DIi8NRhVWw/C5J1FMePVfPhyR4Qv1w",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-us2",
+        "server_name": "机器 美国东岸（家宽）",
+        "user": "root"
+       },
+       "position": 2,
+       "preflight_id": "pf-5ea215ded3c58a38",
+       "reason": "出口：先于枢纽、中继和网关——网关的地区组解析经组的隧道地址到出口，只有已经装了新配置的出口才会应答",
+       "review_bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+       "review_expires": "2026-01-01T00:10:00Z",
+       "review_target": {
+        "address": "203.0.113.54",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:37JI05lCGRAH0DIi8NRhVWw/C5J1FMePVfPhyR4Qv1w",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-us2",
+        "server_name": "机器 美国东岸（家宽）",
+        "user": "root"
+       },
+       "role": "exit",
+       "run": "run-998701f93e9c",
+       "started_at": "2026-01-01T00:00:00Z",
+       "tier": 1
+      },
+      {
+       "attempts": 2,
+       "can_install": false,
+       "can_preflight": false,
+       "completion": "installed",
+       "confirmation_valid": false,
+       "current": false,
+       "current_bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+       "current_target": {
+        "address": "203.0.113.30",
+        "auth_method": "password",
+        "credential_id": "cred-hub",
+        "credential_name": "备用枢纽专用",
+        "fingerprint": "SHA256:XG30njbtJsEG+NQUHmhOW0EjQ6mctcRL0E/JwFWmhUD",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-hkb",
+        "server_name": "机器 备用枢纽 · 香港机房五号",
+        "user": "root"
+       },
+       "finished_at": "2026-01-01T00:00:00Z",
+       "health": {
+        "committed": true,
+        "source": "remote_script",
+        "verify": "verified"
+       },
+       "in_flight": false,
+       "kind": "remote",
+       "message": "已下发：脚本完成激活，读回的服务器记录与装上去的内容一致",
+       "node_id": "hkb",
+       "node_name": "备用枢纽 · 香港机房五号",
+       "outcome": "installed",
+       "phase": "done",
+       "plan_bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+       "plan_state": "changed",
+       "plan_state_reason": "这个节点要下发的文件与它上一次成功安装的不同",
+       "plan_target": {
+        "address": "203.0.113.30",
+        "auth_method": "password",
+        "credential_id": "cred-hub",
+        "credential_name": "备用枢纽专用",
+        "fingerprint": "SHA256:XG30njbtJsEG+NQUHmhOW0EjQ6mctcRL0E/JwFWmhUD",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-hkb",
+        "server_name": "机器 备用枢纽 · 香港机房五号",
+        "user": "root"
+       },
+       "position": 3,
+       "preflight_id": "pf-96bc4359c87f6843",
+       "reason": "备用枢纽：在出口之后、主枢纽之前——主枢纽重装出问题、主链路整体失败时，接管的备用枢纽已经是新配置",
+       "review_bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+       "review_expires": "2026-01-01T00:10:00Z",
+       "review_target": {
+        "address": "203.0.113.30",
+        "auth_method": "password",
+        "credential_id": "cred-hub",
+        "credential_name": "备用枢纽专用",
+        "fingerprint": "SHA256:XG30njbtJsEG+NQUHmhOW0EjQ6mctcRL0E/JwFWmhUD",
+        "key_type": "ssh-ed25519",
+        "port": 22,
+        "server_id": "srv-hkb",
+        "server_name": "机器 备用枢纽 · 香港机房五号",
+        "user": "root"
+       },
+       "role": "hub",
+       "run": "run-c99c939a48ac",
+       "started_at": "2026-01-01T00:00:00Z",
+       "tier": 2
+      },
+      {
+       "attempts": 2,
+       "can_install": false,
+       "can_preflight": false,
+       "completion": "installed",
+       "confirmation_valid": false,
+       "current": false,
+       "current_bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+       "current_target": {
+        "address": "203.0.113.10",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:O0bjpNrElupCdRrSza1cRTgPOq7HPct9LlS1KBZ3GH7",
+        "key_type": "ssh-ed25519",
+        "port": 2222,
+        "server_id": "srv-ix",
+        "server_name": "机器 IX 专线（主枢纽）",
+        "user": "root"
+       },
+       "finished_at": "2026-01-01T00:00:00Z",
+       "health": {
+        "committed": true,
+        "source": "remote_script",
+        "verify": "verified"
+       },
+       "in_flight": false,
+       "kind": "remote",
+       "message": "已下发：脚本完成激活，读回的服务器记录与装上去的内容一致",
+       "node_id": "ix",
+       "node_name": "IX 专线（主枢纽）",
+       "outcome": "installed",
+       "phase": "done",
+       "plan_bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+       "plan_state": "changed",
+       "plan_state_reason": "这个节点要下发的文件与它上一次成功安装的不同",
+       "plan_target": {
+        "address": "203.0.113.10",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:O0bjpNrElupCdRrSza1cRTgPOq7HPct9LlS1KBZ3GH7",
+        "key_type": "ssh-ed25519",
+        "port": 2222,
+        "server_id": "srv-ix",
+        "server_name": "机器 IX 专线（主枢纽）",
+        "user": "root"
+       },
+       "position": 4,
+       "preflight_id": "pf-687724c18b9897c6",
+       "reason": "主枢纽（IX 线路上的受管服务器）：在出口和备用枢纽之后、中继之前",
+       "review_bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+       "review_expires": "2026-01-01T00:10:00Z",
+       "review_target": {
+        "address": "203.0.113.10",
+        "auth_method": "password",
+        "credential_id": "cred-ops",
+        "credential_name": "运维密码（所有机房）",
+        "fingerprint": "SHA256:O0bjpNrElupCdRrSza1cRTgPOq7HPct9LlS1KBZ3GH7",
+        "key_type": "ssh-ed25519",
+        "port": 2222,
+        "server_id": "srv-ix",
+        "server_name": "机器 IX 专线（主枢纽）",
+        "user": "root"
+       },
+       "role": "hub",
+       "run": "run-f4596ba96556",
+       "started_at": "2026-01-01T00:00:00Z",
+       "tier": 3
+      },
+      {
+       "attempts": 2,
+       "can_install": false,
+       "can_preflight": false,
+       "completion": "installed",
+       "confirmation_valid": false,
+       "current": false,
+       "current_bundle": "c3ab19e60ceb28b4ebe42d4210dbe1cb3b8f83f01c187a369a1ae2d745058093",
+       "finished_at": "2026-01-01T00:00:00Z",
+       "health": {
+        "committed": true,
+        "source": "gateway_transaction",
+        "steps": [
+         {
+          "detail": "默认目标 group:hk 的路径可用（第 42 代规则，10 个目标，412 毫秒）",
+          "name": "sniff self-check",
+          "ok": true
+         }
+        ]
+       },
+       "in_flight": false,
+       "kind": "gateway",
+       "message": "已安装到网关：事务已提交，服务已启动，健康检查通过",
+       "node_id": "gw",
+       "node_name": "网关（客厅机柜）",
+       "outcome": "installed",
+       "phase": "done",
+       "plan_bundle": "c3ab19e60ceb28b4ebe42d4210dbe1cb3b8f83f01c187a369a1ae2d745058093",
+       "plan_state": "changed",
+       "position": 5,
+       "preflight_id": "pf-1b2dce90a13e20ae",
+       "reason": "网关最后：它的配置要用到每个对端的公钥；路由到可切换地区组的名字经组的隧道地址解析，只有出口装好新配置后才会应答",
+       "review_bundle": "c3ab19e60ceb28b4ebe42d4210dbe1cb3b8f83f01c187a369a1ae2d745058093",
+       "review_expires": "2026-01-01T00:10:00Z",
+       "role": "gateway",
+       "started_at": "2026-01-01T00:00:00Z",
+       "tier": 6
+      }
+     ],
+     "summary": {
+      "adopted": [
+       "新加坡"
+      ],
+      "all_checked": false,
+      "in_sync": [],
+      "installed": [
+       "美国东岸（家宽）",
+       "备用枢纽 · 香港机房五号",
+       "IX 专线（主枢纽）",
+       "网关（客厅机柜）"
+      ],
+      "text": "4 个节点在这次运行中安装并通过健康检查：美国东岸（家宽）、备用枢纽 · 香港机房五号、IX 专线（主枢纽）、网关（客厅机柜）；1 个节点依据服务器上的安装记录采纳，没有重新执行、没有重新检查健康：新加坡。没有重新检查的节点，服务现在是否在运行没有核实（端到端验证另做）"
+     },
+     "topology_version": "0cacc2cc39fbab92",
+     "updated_at": "2026-01-01T00:00:00Z"
+    },
+    "topology_version": "0cacc2cc39fbab92"
+   },
+   "status": 200
+  },
+  "GET /api/deployments": {
+   "body": {
+    "gateway": {
+     "installed": true,
+     "kept": [
+      "局域网兜底表 inet meridian_guard、它的开机文件 /etc/nftables.d/meridian-guard.nft 和 meridian-guard.service：局域网转发保持兜底拒绝（单独确认后才移除）",
+      "转发保持关闭（撤回第一步就关掉，撤回不会打开它）",
+      "meridian.service、meridian-guard.service、meridian-host.service（deploy/debian/install.sh 安装的宿主部分；meridian-up.sh 删除后 meridian.service 开机会被跳过）",
+      "面板容器、数据目录和配置快照（之后可以重新安装）",
+      "Docker、SmartDNS 软件包或容器（其配置文件 /etc/smartdns/smartdns.conf 若在清单里会被删除，正在运行的解析器保持旧配置直到重启）、其他 nft 表、不属于 Meridian 的 WireGuard 接口和软件包"
+     ],
+     "last": null,
+     "pending": null,
+     "plan": {
+      "files": [
+       "/etc/iproute2/rt_tables.d/meridian.conf",
+       "/etc/meridian/forwarding.conf",
+       "/etc/meridian/link-journal.json",
+       "/etc/meridian/path-quality.json",
+       "/etc/meridian/rules/decide.json",
+       "/etc/meridian/rules/order.conf",
+       "/etc/meridian/sniff/targets.json",
+       "/etc/meridian/wss/client-gw-access.env",
+       "/etc/meridian/wss/client-gw-access.trust.pem",
+       "/etc/meridian/wss/client-gw-hkb.env",
+       "/etc/meridian/wss/client-gw-hkb.trust.pem",
+       "/etc/nftables.d/meridian.nft",
+       "/etc/smartdns/smartdns.conf",
+       "/etc/sysctl.d/99-meridian.conf",
+       "/etc/systemd/system/meridian-dns-journal.service",
+       "/etc/systemd/system/meridian-failover.service",
+       "/etc/systemd/system/meridian-link-journal.service",
+       "/etc/systemd/system/meridian-sniff-account.service",
+       "/etc/systemd/system/meridian-sniff.service",
+       "/etc/systemd/system/wstunnel-client-gw-access.service",
+       "/etc/systemd/system/wstunnel-client-gw-hkb.service",
+       "/etc/wireguard/m02.conf",
+       "/etc/wireguard/m02w.conf",
+       "/etc/wireguard/m03.conf",
+       "/etc/wireguard/m04.conf",
+       "/etc/wireguard/mra.conf",
+       "/usr/local/sbin/meridian-failover.sh",
+       "/usr/local/sbin/meridian-routes.sh",
+       "/usr/local/sbin/meridian-sniff-user.sh",
+       "/usr/local/sbin/meridian-up.sh",
+       "/usr/local/sbin/meridian-update-chnroute.sh",
+       "/usr/local/sbin/meridian-update-geosite.sh",
+       "/usr/local/sbin/meridian-verify.sh"
+      ],
+      "interfaces": [
+       "m02",
+       "m02w",
+       "m03",
+       "m04",
+       "mra"
+      ],
+      "nft_tables": [
+       "inet meridian"
+      ],
+      "route_tables": [
+       100,
+       102,
+       109,
+       111,
+       112,
+       150
+      ],
+      "units": [
+       "meridian-dns-journal.service",
+       "meridian-failover.service",
+       "meridian-link-journal.service",
+       "meridian-sniff.service",
+       "wstunnel-client-gw-access.service",
+       "wstunnel-client-gw-hkb.service"
+      ]
+     },
+     "version": 4,
+     "withdrawn": false
+    },
+    "nodes": [
+     {
+      "address": "203.0.113.10",
+      "at": "2025-12-30T22:00:00Z",
+      "bundle": "bf9ab3ad8b59164ff27eaae1e69a074c669015bbcecf6931bb3df83b0579b454",
+      "credential_id": "cred-deploy",
+      "current_server_id": "srv-access",
+      "fingerprint": "SHA256:jGBt2kN/QBSp4fTcvnFEigeQN3+cxR5aqtTk59FGNf4",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "bf9ab3ad8b59164ff27eaae1e69a074c669015bbcecf6931bb3df83b0579b454",
+      "installed_run": "run-seed",
+      "installed_target": {
+       "address": "203.0.113.10",
+       "credential_id": "cred-deploy",
+       "fingerprint": "SHA256:jGBt2kN/QBSp4fTcvnFEigeQN3+cxR5aqtTk59FGNf4",
+       "port": 22,
+       "server_id": "srv-access",
+       "server_name": "",
+       "user": "deploy"
+      },
+      "node_id": "access",
+      "node_name": "国内中继 · 华东一区（共享带宽，示例里名字特意写得很长）",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-seed",
+      "server_id": "srv-access",
+      "server_name": "机器 国内中继 · 华东一区（共享带宽，示例里名字特意写得很长）",
+      "status": "installed",
+      "user": "deploy",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "bf9ab3ad8b59164ff27eaae1e69a074c669015bbcecf6931bb3df83b0579b454",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.11",
+      "at": "2025-12-30T22:00:00Z",
+      "bundle": "dd44164258bd815bec4c427f824cc1d700abfe3a9e6e689bbb79c6e3b8eacc06",
+      "credential_id": "cred-deploy",
+      "current_server_id": "srv-access2",
+      "fingerprint": "SHA256:VVzavNcS7+Bxbs0DV3+fMnCtIuguU59CHcSeEnUKXzI",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "dd44164258bd815bec4c427f824cc1d700abfe3a9e6e689bbb79c6e3b8eacc06",
+      "installed_run": "run-seed",
+      "installed_target": {
+       "address": "203.0.113.11",
+       "credential_id": "cred-deploy",
+       "fingerprint": "SHA256:VVzavNcS7+Bxbs0DV3+fMnCtIuguU59CHcSeEnUKXzI",
+       "port": 22,
+       "server_id": "srv-access2",
+       "server_name": "",
+       "user": "deploy"
+      },
+      "node_id": "access2",
+      "node_name": "国内中继 2 · 华南",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-seed",
+      "server_id": "srv-access2",
+      "server_name": "机器 国内中继 2 · 华南",
+      "status": "installed",
+      "user": "deploy",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "dd44164258bd815bec4c427f824cc1d700abfe3a9e6e689bbb79c6e3b8eacc06",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.41",
+      "at": "2025-12-30T22:00:00Z",
+      "bundle": "c5b0975aafc57e5980a1cf5ce9f5b1c2e97b8d3378a2dc8e502d58a1c1912f60",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-dc1",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "fingerprint": "SHA256:GpV7u89gwj3Nw0J1xRkhAEhsxjGmNV5FLDaI8A55HXI",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "c5b0975aafc57e5980a1cf5ce9f5b1c2e97b8d3378a2dc8e502d58a1c1912f60",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_run": "run-seed",
+      "installed_target": {
+       "address": "203.0.113.41",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:GpV7u89gwj3Nw0J1xRkhAEhsxjGmNV5FLDaI8A55HXI",
+       "port": 22,
+       "server_id": "srv-dc1",
+       "server_name": "",
+       "user": "root"
+      },
+      "node_id": "dc1",
+      "node_name": "香港机房 1（中继出口，带台湾 NAT）",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-seed",
+      "server_id": "srv-dc1",
+      "server_name": "机器 香港机房 1（中继出口，带台湾 NAT）",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "c5b0975aafc57e5980a1cf5ce9f5b1c2e97b8d3378a2dc8e502d58a1c1912f60",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.42",
+      "at": "2025-12-30T22:00:00Z",
+      "bundle": "b294306a22a67564ca481b35e33d18b478cb2a0336a8a7f76dfb7591b9734728",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-dc2",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "fingerprint": "SHA256:P5aQ94rFOZTeUTsh8tMRAygoD2+mQDCAkispiImXbts",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "b294306a22a67564ca481b35e33d18b478cb2a0336a8a7f76dfb7591b9734728",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_run": "run-seed",
+      "installed_socks_versions": {
+       "socks-my": 1
+      },
+      "installed_target": {
+       "address": "203.0.113.42",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:P5aQ94rFOZTeUTsh8tMRAygoD2+mQDCAkispiImXbts",
+       "port": 22,
+       "server_id": "srv-dc2",
+       "server_name": "",
+       "user": "root"
+      },
+      "node_id": "dc2",
+      "node_name": "香港机房 2（承载马来西亚 SOCKS）",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-seed",
+      "server_id": "srv-dc2",
+      "server_name": "机器 香港机房 2（承载马来西亚 SOCKS）",
+      "socks_versions": {
+       "socks-my": 1
+      },
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "b294306a22a67564ca481b35e33d18b478cb2a0336a8a7f76dfb7591b9734728",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.55",
+      "at": "2026-01-01T00:00:00Z",
+      "bundle": "e12bddbc348b3e57713625882535baded3d17e144cfc1025831814d931b37952",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-gb1",
+      "deployment": "dep-8e9f28763c7b5e49",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "fingerprint": "SHA256:KqF8R3RzWGZOafHO/0kqV+FuggrmE/+HhOeiFj+WBr3",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "e12bddbc348b3e57713625882535baded3d17e144cfc1025831814d931b37952",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_run": "run-1a08f2f5d1f2",
+      "installed_target": {
+       "address": "203.0.113.55",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:KqF8R3RzWGZOafHO/0kqV+FuggrmE/+HhOeiFj+WBr3",
+       "port": 22,
+       "server_id": "srv-gb1",
+       "server_name": "",
+       "user": "root"
+      },
+      "node_id": "gb1",
+      "node_name": "英国伦敦",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-1a08f2f5d1f2",
+      "server_id": "srv-gb1",
+      "server_name": "机器 英国伦敦",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "e12bddbc348b3e57713625882535baded3d17e144cfc1025831814d931b37952",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.30",
+      "at": "2026-01-01T00:00:00Z",
+      "bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+      "credential_id": "cred-hub",
+      "current_server_id": "srv-hkb",
+      "deployment": "dep-8e9f28763c7b5e49",
+      "fingerprint": "SHA256:XG30njbtJsEG+NQUHmhOW0EjQ6mctcRL0E/JwFWmhUD",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+      "installed_run": "run-c99c939a48ac",
+      "installed_target": {
+       "address": "203.0.113.30",
+       "credential_id": "cred-hub",
+       "fingerprint": "SHA256:XG30njbtJsEG+NQUHmhOW0EjQ6mctcRL0E/JwFWmhUD",
+       "port": 22,
+       "server_id": "srv-hkb",
+       "server_name": "",
+       "user": "root"
+      },
+      "node_id": "hkb",
+      "node_name": "备用枢纽 · 香港机房五号",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-c99c939a48ac",
+      "server_id": "srv-hkb",
+      "server_name": "机器 备用枢纽 · 香港机房五号",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.10",
+      "at": "2026-01-01T00:00:00Z",
+      "bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-ix",
+      "deployment": "dep-8e9f28763c7b5e49",
+      "fingerprint": "SHA256:O0bjpNrElupCdRrSza1cRTgPOq7HPct9LlS1KBZ3GH7",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+      "installed_run": "run-f4596ba96556",
+      "installed_target": {
+       "address": "203.0.113.10",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:O0bjpNrElupCdRrSza1cRTgPOq7HPct9LlS1KBZ3GH7",
+       "port": 2222,
+       "server_id": "srv-ix",
+       "server_name": "",
+       "user": "root"
+      },
+      "mesh_bound": "Mesh 部署（ae94165865db250f，状态 published）还在这个节点的主机上：先在 Mesh 部署卡片里撤回 Mesh（按部署时绑定的主机和 Cloudflare 账户），成功后再撤回节点",
+      "node_id": "ix",
+      "node_name": "IX 专线（主枢纽）",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 2222,
+      "run": "run-f4596ba96556",
+      "server_id": "srv-ix",
+      "server_name": "机器 IX 专线（主枢纽）",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.51",
+      "at": "2026-01-01T00:00:00Z",
+      "bundle": "1f72b0e2cc0409d81ce011106537101457cace84f5105dace5f921cfde4cc99d",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-jp-a",
+      "deployment": "dep-8e9f28763c7b5e49",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "fingerprint": "SHA256:oWsdCNogwsWGFunDzxgYC33Hd7CBe4AXVzJE+5CMscs",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "1f72b0e2cc0409d81ce011106537101457cace84f5105dace5f921cfde4cc99d",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_run": "run-ec14d9bbe05c",
+      "installed_target": {
+       "address": "203.0.113.51",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:oWsdCNogwsWGFunDzxgYC33Hd7CBe4AXVzJE+5CMscs",
+       "port": 22,
+       "server_id": "srv-jp-a",
+       "server_name": "",
+       "user": "root"
+      },
+      "mesh_bound": "Mesh 部署（ae94165865db250f，状态 published）还在这个节点的主机上：先在 Mesh 部署卡片里撤回 Mesh（按部署时绑定的主机和 Cloudflare 账户），成功后再撤回节点",
+      "node_id": "jp-a",
+      "node_name": "日本东京 · 一个很长很长的出口名字用来测试换行",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-ec14d9bbe05c",
+      "server_id": "srv-jp-a",
+      "server_name": "机器 日本东京 · 一个很长很长的出口名字用来测试换行",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "1f72b0e2cc0409d81ce011106537101457cace84f5105dace5f921cfde4cc99d",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.52",
+      "at": "2026-01-01T00:00:00Z",
+      "bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-sg1",
+      "deployment": "dep-8e9f28763c7b5e49",
+      "evidence": "host_record",
+      "fingerprint": "SHA256:5oxKt90NeewQQNG08d/AWCpycyelANGq10VnOEmkxlx",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+      "installed_run": "run-x",
+      "installed_target": {
+       "address": "203.0.113.52",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:5oxKt90NeewQQNG08d/AWCpycyelANGq10VnOEmkxlx",
+       "port": 22,
+       "server_id": "srv-sg1",
+       "server_name": "",
+       "user": "root"
+      },
+      "node_id": "sg1",
+      "node_name": "新加坡",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-x",
+      "server_id": "srv-sg1",
+      "server_name": "机器 新加坡",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+       "source": "preflight",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "nat-exit-taiwan.home-broadband.subscriber-line.example.net",
+      "at": "2025-12-30T22:00:00Z",
+      "bundle": "a50872b784b9bcefb74faa20acf63a9b4378e8c955137abc91141d0032eeffce",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-twnat",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "fingerprint": "SHA256:2STIpn0A16mugJ/ShmpVf3Qco6/DTUllgawfeYeg4w8",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "a50872b784b9bcefb74faa20acf63a9b4378e8c955137abc91141d0032eeffce",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_run": "run-seed",
+      "installed_target": {
+       "address": "nat-exit-taiwan.home-broadband.subscriber-line.example.net",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:2STIpn0A16mugJ/ShmpVf3Qco6/DTUllgawfeYeg4w8",
+       "port": 22,
+       "server_id": "srv-twnat",
+       "server_name": "",
+       "user": "root"
+      },
+      "node_id": "twnat",
+      "node_name": "台湾 NAT（只能拨出）",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-seed",
+      "server_id": "srv-twnat",
+      "server_name": "机器 台湾 NAT（只能拨出）",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "a50872b784b9bcefb74faa20acf63a9b4378e8c955137abc91141d0032eeffce",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "2001:db8:4000:1234:5678:9abc:def0:51",
+      "at": "2025-12-30T22:00:00Z",
+      "bundle": "097af6b385f79a22f09fc70e3a7e7656730772454cab36c74ffdcbdc6e845abd",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-us1",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "fingerprint": "SHA256:bS1qK8HO4cLyhQAr/cJyAPXIYLMIDh7nKAD0vJGtTmw",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "097af6b385f79a22f09fc70e3a7e7656730772454cab36c74ffdcbdc6e845abd",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_run": "run-seed",
+      "installed_target": {
+       "address": "2001:db8:4000:1234:5678:9abc:def0:51",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:bS1qK8HO4cLyhQAr/cJyAPXIYLMIDh7nKAD0vJGtTmw",
+       "port": 22,
+       "server_id": "srv-us1",
+       "server_name": "",
+       "user": "root"
+      },
+      "node_id": "us1",
+      "node_name": "美国西岸（双栈）",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-seed",
+      "server_id": "srv-us1",
+      "server_name": "机器 美国西岸（双栈）",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "097af6b385f79a22f09fc70e3a7e7656730772454cab36c74ffdcbdc6e845abd",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "address": "203.0.113.54",
+      "at": "2026-01-01T00:00:00Z",
+      "bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+      "credential_id": "cred-ops",
+      "current_server_id": "srv-us2",
+      "deployment": "dep-8e9f28763c7b5e49",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "fingerprint": "SHA256:37JI05lCGRAH0DIi8NRhVWw/C5J1FMePVfPhyR4Qv1w",
+      "in_topology": true,
+      "installed": true,
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_run": "run-998701f93e9c",
+      "installed_target": {
+       "address": "203.0.113.54",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:37JI05lCGRAH0DIi8NRhVWw/C5J1FMePVfPhyR4Qv1w",
+       "port": 22,
+       "server_id": "srv-us2",
+       "server_name": "",
+       "user": "root"
+      },
+      "node_id": "us2",
+      "node_name": "美国东岸（家宽）",
+      "ok": true,
+      "on_host": true,
+      "outcome": "installed",
+      "port": 22,
+      "run": "run-998701f93e9c",
+      "server_id": "srv-us2",
+      "server_name": "机器 美国东岸（家宽）",
+      "status": "installed",
+      "user": "root",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+       "source": "post_install",
+       "state": "verified"
+      }
+     }
+    ]
+   },
+   "status": 200
+  },
+  "GET /api/host": {
+   "body": {
+    "agent": {
+     "ok": true
+    },
+    "installed": {
+     "created_at": "2026-01-01T00:00:00Z",
+     "dns": true,
+     "files": 34,
+     "interfaces": [
+      "m02",
+      "m02w",
+      "m03",
+      "m04",
+      "mra"
+     ],
+     "nft_tables": [
+      "inet meridian",
+      "inet meridian_guard"
+     ],
+     "origin": "",
+     "route_tables": [
+      100,
+      102,
+      109,
+      111,
+      112,
+      150
+     ],
+     "units": [
+      "meridian-dns-journal.service",
+      "meridian-failover.service",
+      "meridian-link-journal.service",
+      "meridian-sniff.service",
+      "wstunnel-client-gw-access.service",
+      "wstunnel-client-gw-hkb.service"
+     ],
+     "version": 4,
+     "withdrawn": false
+    },
+    "pending": null
+   },
+   "status": 200
+  },
+  "GET /api/status": {
+   "body": {
+    "agent": {
+     "configured": true,
+     "ok": true
+    },
+    "endpoint_access": {
+     "blocked": 1,
+     "direct": 3,
+     "items": [
+      {
+       "addr": "203.0.113.10",
+       "class": "direct",
+       "family": 4,
+       "node_id": "access",
+       "node_name": "国内中继 · 华东一区（共享带宽，示例里名字特意写得很长）",
+       "reason": "国内端点（中继或国内入口），按国内直连走家宽"
+      },
+      {
+       "addr": "203.0.113.20",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "ix",
+       "node_name": "IX 专线（主枢纽）",
+       "reason": "境外端点，按普通境外流量经默认组的隧道出口，不走家宽"
+      },
+      {
+       "addr": "198.51.100.10",
+       "class": "direct",
+       "family": 4,
+       "node_id": "ix",
+       "node_name": "IX 专线（主枢纽）",
+       "reason": "国内端点（中继或国内入口），按国内直连走家宽"
+      },
+      {
+       "addr": "203.0.113.11",
+       "class": "direct",
+       "family": 4,
+       "node_id": "access2",
+       "node_name": "国内中继 2 · 华南",
+       "reason": "国内端点（中继或国内入口），按国内直连走家宽"
+      },
+      {
+       "addr": "203.0.113.30",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "hkb",
+       "node_name": "备用枢纽 · 香港机房五号",
+       "reason": "境外端点（网关也直接连它承载隧道）：客户端流量带默认组标记进隧道，网关自己的外层包不受影响，不会递归"
+      },
+      {
+       "addr": "203.0.113.41",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "dc1",
+       "node_name": "香港机房 1（中继出口，带台湾 NAT）",
+       "reason": "境外端点，按普通境外流量经默认组的隧道出口，不走家宽"
+      },
+      {
+       "addr": "203.0.113.42",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "dc2",
+       "node_name": "香港机房 2（承载马来西亚 SOCKS）",
+       "reason": "境外端点，按普通境外流量经默认组的隧道出口，不走家宽"
+      },
+      {
+       "addr": "203.0.113.55",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "gb1",
+       "node_name": "英国伦敦",
+       "reason": "境外端点，按普通境外流量经默认组的隧道出口，不走家宽"
+      },
+      {
+       "addr": "203.0.113.51",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "jp-a",
+       "node_name": "日本东京 · 一个很长很长的出口名字用来测试换行",
+       "reason": "境外端点，按普通境外流量经默认组的隧道出口，不走家宽"
+      },
+      {
+       "addr": "203.0.113.52",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "sg1",
+       "node_name": "新加坡",
+       "reason": "境外端点，按普通境外流量经默认组的隧道出口，不走家宽"
+      },
+      {
+       "addr": "203.0.113.53",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "us1",
+       "node_name": "美国西岸（双栈）",
+       "reason": "境外端点，按普通境外流量经默认组的隧道出口，不走家宽"
+      },
+      {
+       "addr": "2001:db8:4000:1234:5678:9abc:def0:51",
+       "class": "blocked",
+       "family": 6,
+       "node_id": "us1",
+       "node_name": "美国西岸（双栈）",
+       "reason": "境外端点，默认组不能用这个地址族经隧道承载它，不允许走家宽，继续丢弃"
+      },
+      {
+       "addr": "203.0.113.54",
+       "class": "tunnel",
+       "family": 4,
+       "node_id": "us2",
+       "node_name": "美国东岸（家宽）",
+       "reason": "境外端点，按普通境外流量经默认组的隧道出口，不走家宽"
+      }
+     ],
+     "tunnel": 9
+    },
+    "install": {
+     "applied": true,
+     "applied_matches": true,
+     "installed_at": "2026-01-01T00:00:00Z",
+     "installed_version": 4,
+     "state": "in_sync"
+    },
+    "jobs": {
+     "lists": {
+      "finished_at": "2026-01-01T00:00:00Z",
+      "id": "lists-81dd97c0785fabe4",
+      "running": false,
+      "started_at": "2026-01-01T00:00:00Z",
+      "state": "done"
+     },
+     "mesh": {
+      "finished_at": "2026-01-01T00:00:00Z",
+      "id": "ae94165865db250f",
+      "running": false,
+      "started_at": "2026-01-01T00:00:00Z",
+      "state": "published"
+     },
+     "unlock": {
+      "finished_at": "2026-01-01T00:00:00Z",
+      "id": "job-demo-02",
+      "running": false,
+      "started_at": "2026-01-01T00:00:00Z",
+      "state": "done"
+     }
+    },
+    "lists_available": true,
+    "nodes": [
+     {
+      "installed_at": "2026-01-01T00:00:00Z",
+      "node_id": "gw",
+      "node_name": "网关（客厅机柜）",
+      "pending": false,
+      "role": "gateway",
+      "state": "in_sync"
+     },
+     {
+      "current_bundle": "bf9ab3ad8b59164ff27eaae1e69a074c669015bbcecf6931bb3df83b0579b454",
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "bf9ab3ad8b59164ff27eaae1e69a074c669015bbcecf6931bb3df83b0579b454",
+      "installed_target": {
+       "address": "203.0.113.10",
+       "credential_id": "cred-deploy",
+       "fingerprint": "SHA256:jGBt2kN/QBSp4fTcvnFEigeQN3+cxR5aqtTk59FGNf4",
+       "port": 22,
+       "server_id": "srv-access",
+       "server_name": "",
+       "user": "deploy"
+      },
+      "last_outcome": "installed",
+      "node_id": "access",
+      "node_name": "国内中继 · 华东一区（共享带宽，示例里名字特意写得很长）",
+      "pending": false,
+      "role": "relay",
+      "state": "in_sync",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "bf9ab3ad8b59164ff27eaae1e69a074c669015bbcecf6931bb3df83b0579b454",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "dd44164258bd815bec4c427f824cc1d700abfe3a9e6e689bbb79c6e3b8eacc06",
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "dd44164258bd815bec4c427f824cc1d700abfe3a9e6e689bbb79c6e3b8eacc06",
+      "installed_target": {
+       "address": "203.0.113.11",
+       "credential_id": "cred-deploy",
+       "fingerprint": "SHA256:VVzavNcS7+Bxbs0DV3+fMnCtIuguU59CHcSeEnUKXzI",
+       "port": 22,
+       "server_id": "srv-access2",
+       "server_name": "",
+       "user": "deploy"
+      },
+      "last_outcome": "installed",
+      "node_id": "access2",
+      "node_name": "国内中继 2 · 华南",
+      "pending": false,
+      "role": "relay",
+      "state": "in_sync",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "dd44164258bd815bec4c427f824cc1d700abfe3a9e6e689bbb79c6e3b8eacc06",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+      "installed_target": {
+       "address": "203.0.113.10",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:O0bjpNrElupCdRrSza1cRTgPOq7HPct9LlS1KBZ3GH7",
+       "port": 2222,
+       "server_id": "srv-ix",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "ix",
+      "node_name": "IX 专线（主枢纽）",
+      "pending": false,
+      "role": "hub",
+      "state": "in_sync",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "c2be62953c79ed82c268a11251e16eae74fceeb50cf2559eb2a92221c94eb1d1",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+      "installed_target": {
+       "address": "203.0.113.30",
+       "credential_id": "cred-hub",
+       "fingerprint": "SHA256:XG30njbtJsEG+NQUHmhOW0EjQ6mctcRL0E/JwFWmhUD",
+       "port": 22,
+       "server_id": "srv-hkb",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "hkb",
+      "node_name": "备用枢纽 · 香港机房五号",
+      "pending": false,
+      "role": "hub",
+      "state": "in_sync",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "adbc4b6d9f427eb5a7ca1c738a8a60d2c4ef9e7f0fde3527e4867e0209c5f3ec",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "c5b0975aafc57e5980a1cf5ce9f5b1c2e97b8d3378a2dc8e502d58a1c1912f60",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "c5b0975aafc57e5980a1cf5ce9f5b1c2e97b8d3378a2dc8e502d58a1c1912f60",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_target": {
+       "address": "203.0.113.41",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:GpV7u89gwj3Nw0J1xRkhAEhsxjGmNV5FLDaI8A55HXI",
+       "port": 22,
+       "server_id": "srv-dc1",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "dc1",
+      "node_name": "香港机房 1（中继出口，带台湾 NAT）",
+      "pending": false,
+      "role": "exit",
+      "state": "in_sync",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "c5b0975aafc57e5980a1cf5ce9f5b1c2e97b8d3378a2dc8e502d58a1c1912f60",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "b294306a22a67564ca481b35e33d18b478cb2a0336a8a7f76dfb7591b9734728",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "b294306a22a67564ca481b35e33d18b478cb2a0336a8a7f76dfb7591b9734728",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_socks_versions": {
+       "socks-my": 1
+      },
+      "installed_target": {
+       "address": "203.0.113.42",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:P5aQ94rFOZTeUTsh8tMRAygoD2+mQDCAkispiImXbts",
+       "port": 22,
+       "server_id": "srv-dc2",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "dc2",
+      "node_name": "香港机房 2（承载马来西亚 SOCKS）",
+      "pending": false,
+      "role": "exit",
+      "socks_versions": {
+       "socks-my": 1
+      },
+      "state": "in_sync",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "b294306a22a67564ca481b35e33d18b478cb2a0336a8a7f76dfb7591b9734728",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "1f72b0e2cc0409d81ce011106537101457cace84f5105dace5f921cfde4cc99d",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "1f72b0e2cc0409d81ce011106537101457cace84f5105dace5f921cfde4cc99d",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_target": {
+       "address": "203.0.113.51",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:oWsdCNogwsWGFunDzxgYC33Hd7CBe4AXVzJE+5CMscs",
+       "port": 22,
+       "server_id": "srv-jp-a",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "jp-a",
+      "node_name": "日本东京 · 一个很长很长的出口名字用来测试换行",
+      "pending": false,
+      "role": "exit",
+      "state": "in_sync",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "1f72b0e2cc0409d81ce011106537101457cace84f5105dace5f921cfde4cc99d",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+      "evidence": "host_record",
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+      "installed_target": {
+       "address": "203.0.113.52",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:5oxKt90NeewQQNG08d/AWCpycyelANGq10VnOEmkxlx",
+       "port": 22,
+       "server_id": "srv-sg1",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "sg1",
+      "node_name": "新加坡",
+      "pending": false,
+      "role": "exit",
+      "state": "in_sync",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "162089668beef8247efaf03f982f19825a1f8cdfdc54cdf473377969c499b66f",
+       "source": "preflight",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "097af6b385f79a22f09fc70e3a7e7656730772454cab36c74ffdcbdc6e845abd",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "097af6b385f79a22f09fc70e3a7e7656730772454cab36c74ffdcbdc6e845abd",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_target": {
+       "address": "2001:db8:4000:1234:5678:9abc:def0:51",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:bS1qK8HO4cLyhQAr/cJyAPXIYLMIDh7nKAD0vJGtTmw",
+       "port": 22,
+       "server_id": "srv-us1",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "us1",
+      "node_name": "美国西岸（双栈）",
+      "pending": false,
+      "role": "exit",
+      "state": "in_sync",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "097af6b385f79a22f09fc70e3a7e7656730772454cab36c74ffdcbdc6e845abd",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_target": {
+       "address": "203.0.113.54",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:37JI05lCGRAH0DIi8NRhVWw/C5J1FMePVfPhyR4Qv1w",
+       "port": 22,
+       "server_id": "srv-us2",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "us2",
+      "node_name": "美国东岸（家宽）",
+      "pending": false,
+      "role": "exit",
+      "state": "in_sync",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "286323c2ec2e691e103f659db17ddd521b426889665bbd28f6b48af2ad053953",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "e12bddbc348b3e57713625882535baded3d17e144cfc1025831814d931b37952",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_at": "2026-01-01T00:00:00Z",
+      "installed_bundle": "e12bddbc348b3e57713625882535baded3d17e144cfc1025831814d931b37952",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_target": {
+       "address": "203.0.113.55",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:KqF8R3RzWGZOafHO/0kqV+FuggrmE/+HhOeiFj+WBr3",
+       "port": 22,
+       "server_id": "srv-gb1",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "gb1",
+      "node_name": "英国伦敦",
+      "pending": false,
+      "role": "exit",
+      "state": "in_sync",
+      "verify": {
+       "at": "2026-01-01T00:00:00Z",
+       "host_bundle": "e12bddbc348b3e57713625882535baded3d17e144cfc1025831814d931b37952",
+       "source": "post_install",
+       "state": "verified"
+      }
+     },
+     {
+      "current_bundle": "a50872b784b9bcefb74faa20acf63a9b4378e8c955137abc91141d0032eeffce",
+      "dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_at": "2025-12-30T22:00:00Z",
+      "installed_bundle": "a50872b784b9bcefb74faa20acf63a9b4378e8c955137abc91141d0032eeffce",
+      "installed_dns_account_versions": {
+       "dnsacct-demo": 1
+      },
+      "installed_target": {
+       "address": "nat-exit-taiwan.home-broadband.subscriber-line.example.net",
+       "credential_id": "cred-ops",
+       "fingerprint": "SHA256:2STIpn0A16mugJ/ShmpVf3Qco6/DTUllgawfeYeg4w8",
+       "port": 22,
+       "server_id": "srv-twnat",
+       "server_name": "",
+       "user": "root"
+      },
+      "last_outcome": "installed",
+      "node_id": "twnat",
+      "node_name": "台湾 NAT（只能拨出）",
+      "pending": false,
+      "role": "exit",
+      "state": "in_sync",
+      "verify": {
+       "at": "2025-12-30T22:00:00Z",
+       "host_bundle": "a50872b784b9bcefb74faa20acf63a9b4378e8c955137abc91141d0032eeffce",
+       "source": "post_install",
+       "state": "verified"
+      }
+     }
+    ],
+    "pending": null,
+    "pending_nodes": 0,
+    "previous_available": true,
+    "probe_available": true
+   },
+   "status": 200
+  },
+  "GET /api/topology": {
+   "body": {
+    "allocations": {
+     "exits": {
+      "dc1": {
+       "slot": 0
+      },
+      "dc2": {
+       "slot": 1
+      },
+      "gb1": {
+       "slot": 2
+      },
+      "jp-a": {
+       "slot": 3
+      },
+      "myext": {
+       "slot": 4
+      },
+      "sg1": {
+       "slot": 5
+      },
+      "twnat": {
+       "slot": 6
+      },
+      "us1": {
+       "slot": 7
+      },
+      "us2": {
+       "slot": 8
+      }
+     },
+     "groups": {
+      "gb": {
+       "slot": 9
+      },
+      "hk": {
+       "slot": 10
+      },
+      "jp": {
+       "slot": 11
+      },
+      "my": {
+       "slot": 12
+      },
+      "sg": {
+       "slot": 13
+      },
+      "tw": {
+       "slot": 14
+      },
+      "us": {
+       "slot": 15
+      }
+     },
+     "links": {
+      "access-ix": {
+       "slot": 0
+      },
+      "access2-ix": {
+       "slot": 1
+      },
+      "gw-access": {
+       "slot": 2
+      },
+      "gw-access2": {
+       "slot": 3
+      },
+      "gw-hkb": {
+       "slot": 4
+      },
+      "hkb-dc1": {
+       "slot": 5
+      },
+      "hkb-dc2": {
+       "slot": 6
+      },
+      "hkb-gb1": {
+       "slot": 7
+      },
+      "hkb-jp-a": {
+       "slot": 8
+      },
+      "hkb-sg1": {
+       "slot": 9
+      },
+      "hkb-us1": {
+       "slot": 10
+      },
+      "hkb-us2": {
+       "slot": 11
+      },
+      "ix-dc1": {
+       "slot": 12
+      },
+      "ix-dc2": {
+       "slot": 13
+      },
+      "ix-gb1": {
+       "slot": 14
+      },
+      "ix-jp-a": {
+       "slot": 15
+      },
+      "ix-jp-a-mesh": {
+       "slot": 20
+      },
+      "ix-sg1": {
+       "slot": 16
+      },
+      "ix-us1": {
+       "slot": 17
+      },
+      "ix-us2": {
+       "slot": 18
+      },
+      "twnat-dc1": {
+       "slot": 19
+      }
+     },
+     "mesh": {
+      "jp-a": {
+       "slot": 0
+      }
+     }
+    },
+    "links": [
+     {
+      "enabled": true,
+      "from": "gw",
+      "id": "gw-access",
+      "name": "网关 → 国内中继（UDP，WSS 兜底）",
+      "standby": false,
+      "to": "access",
+      "transport": "udp_wss_failover"
+     },
+     {
+      "enabled": true,
+      "from": "gw",
+      "id": "gw-access2",
+      "name": "网关 → 国内中继 2",
+      "standby": false,
+      "to": "access2",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "access",
+      "id": "access-ix",
+      "name": "国内中继 → IX（专线）",
+      "standby": false,
+      "to": "ix",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "access2",
+      "id": "access2-ix",
+      "name": "国内中继 2 → IX（专线）",
+      "standby": false,
+      "to": "ix",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "twnat",
+      "id": "twnat-dc1",
+      "name": "台湾 NAT → 香港机房 1（中继出口）",
+      "standby": false,
+      "to": "dc1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "gw",
+      "id": "gw-hkb",
+      "name": "网关 → 备用枢纽（WSS）",
+      "standby": true,
+      "to": "hkb",
+      "transport": "ix_replacement_wss"
+     },
+     {
+      "enabled": true,
+      "from": "ix",
+      "id": "ix-dc1",
+      "standby": false,
+      "to": "dc1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "ix",
+      "id": "ix-dc2",
+      "standby": false,
+      "to": "dc2",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "ix",
+      "id": "ix-jp-a",
+      "mtu": 1380,
+      "standby": false,
+      "to": "jp-a",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "ix",
+      "id": "ix-sg1",
+      "mtu": 1380,
+      "standby": false,
+      "to": "sg1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "ix",
+      "id": "ix-us1",
+      "standby": false,
+      "to": "us1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "ix",
+      "id": "ix-us2",
+      "mtu": 1380,
+      "standby": false,
+      "to": "us2",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "ix",
+      "id": "ix-gb1",
+      "mtu": 1380,
+      "standby": false,
+      "to": "gb1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "hkb",
+      "id": "hkb-dc1",
+      "standby": false,
+      "to": "dc1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "hkb",
+      "id": "hkb-dc2",
+      "standby": false,
+      "to": "dc2",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "hkb",
+      "id": "hkb-jp-a",
+      "mtu": 1380,
+      "standby": false,
+      "to": "jp-a",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "hkb",
+      "id": "hkb-sg1",
+      "mtu": 1380,
+      "standby": false,
+      "to": "sg1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "hkb",
+      "id": "hkb-us1",
+      "standby": false,
+      "to": "us1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "hkb",
+      "id": "hkb-us2",
+      "mtu": 1380,
+      "standby": false,
+      "to": "us2",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "hkb",
+      "id": "hkb-gb1",
+      "mtu": 1380,
+      "standby": false,
+      "to": "gb1",
+      "transport": "direct_wg"
+     },
+     {
+      "enabled": true,
+      "from": "ix",
+      "id": "ix-jp-a-mesh",
+      "name": "IX → 日本东京 Mesh 备路",
+      "standby": true,
+      "to": "jp-a",
+      "transport": "cf_mesh"
+     }
+    ],
+    "nodes": [
+     {
+      "egress_v4": false,
+      "egress_v6": false,
+      "id": "gw",
+      "ix_bound": false,
+      "lan_interface": "eth0",
+      "lan_ipv4": "192.168.77.2/24",
+      "lan_ipv6_prefix": "2001:db8:77::/64",
+      "managed": true,
+      "name": "网关（客厅机柜）",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": true,
+      "private_key": "***",
+      "public_key": "vbHhnJJWD6yqeXI829IfJd8U7IJSTp7NNIH3Fhstn06=",
+      "region": "cn",
+      "residential": false,
+      "role": "gateway",
+      "underlay_nexthop": "192.168.77.1",
+      "y": 260
+     },
+     {
+      "egress_v4": false,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.10",
+      "id": "access",
+      "ix_bound": false,
+      "managed": true,
+      "name": "国内中继 · 华东一区（共享带宽，示例里名字特意写得很长）",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "z0jeBMpc8EkxZAg5557IVFXJKviQNUaHrZ/74EvACfY=",
+      "region": "cn",
+      "residential": false,
+      "role": "relay",
+      "server_id": "srv-access",
+      "wan_interface": "eth0",
+      "wss_listen_port": 8443,
+      "x": 220,
+      "y": 200
+     },
+     {
+      "egress_v4": false,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.11",
+      "id": "access2",
+      "ix_bound": false,
+      "managed": true,
+      "name": "国内中继 2 · 华南",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "GnA/gPORxqQ/X5T/Fr8pisjbj2+mFZPFTeB492A0/dM=",
+      "region": "cn",
+      "residential": false,
+      "role": "relay",
+      "server_id": "srv-access2",
+      "wan_interface": "eth0",
+      "x": 220,
+      "y": 340
+     },
+     {
+      "egress_v4": false,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.20",
+      "hub_tier": "primary",
+      "id": "ix",
+      "ingress_v4": "198.51.100.10",
+      "ix_bound": false,
+      "ix_line": true,
+      "managed": true,
+      "name": "IX 专线（主枢纽）",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "BvY/Ch+2ELXr4wMs4SELXSCkMo89OKf3+WOw/+H8DkS=",
+      "region": "hk",
+      "residential": false,
+      "role": "hub",
+      "server_id": "srv-ix",
+      "wan_interface": "eth0",
+      "x": 440,
+      "y": 200
+     },
+     {
+      "egress_v4": false,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.30",
+      "hub_tier": "backup",
+      "id": "hkb",
+      "ix_bound": false,
+      "managed": true,
+      "name": "备用枢纽 · 香港机房五号",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "v6o8W6A6rkKJ5xLP5fjV+1LirpuCIHljyiwakBuLkrl=",
+      "region": "hk",
+      "residential": false,
+      "role": "hub",
+      "server_id": "srv-hkb",
+      "wan_interface": "eth0",
+      "wss_listen_port": 8443,
+      "x": 440,
+      "y": 380
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.41",
+      "id": "dc1",
+      "ix_bound": true,
+      "managed": true,
+      "name": "香港机房 1（中继出口，带台湾 NAT）",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "Iwy3YdNR2iMwgoCoCztiEsIakithnrZmVmCTfILOrrv=",
+      "region": "hk",
+      "residential": false,
+      "role": "exit",
+      "server_id": "srv-dc1",
+      "wan_interface": "eth0",
+      "x": 680,
+      "y": 80
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.42",
+      "id": "dc2",
+      "ix_bound": false,
+      "managed": true,
+      "name": "香港机房 2（承载马来西亚 SOCKS）",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "i5IGtezNEeQHow0pxR0ag6XFZDbTX/xDq3hQmtH5xDi=",
+      "region": "hk",
+      "residential": false,
+      "role": "exit",
+      "server_id": "srv-dc2",
+      "wan_interface": "eth0",
+      "x": 680,
+      "y": 170
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.51",
+      "id": "jp-a",
+      "ix_bound": false,
+      "managed": true,
+      "name": "日本东京 · 一个很长很长的出口名字用来测试换行",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "DDoqcCpsiclJlTDlY7svTvQsCsQa7pxpznH4HmTRJyc=",
+      "region": "jp",
+      "residential": false,
+      "role": "exit",
+      "server_id": "srv-jp-a",
+      "wan_interface": "eth0",
+      "x": 680,
+      "y": 260
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.52",
+      "exit_dns": {
+       "addresses": [
+        "203.0.113.153",
+        "2001:db8:53::253"
+       ],
+       "path": "/dns-query",
+       "protocol": "doh",
+       "tls_host_name": "doh.example.org"
+      },
+      "id": "sg1",
+      "ix_bound": false,
+      "managed": true,
+      "name": "新加坡",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "/xYV9pITL8cm0UtpSpo8S+nfgIuY9NJdv/gUCqGHZ0I=",
+      "region": "sg",
+      "residential": false,
+      "role": "exit",
+      "server_id": "srv-sg1",
+      "wan_interface": "eth0",
+      "x": 680,
+      "y": 350
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": true,
+      "endpoint_v4": "203.0.113.53",
+      "endpoint_v6": "2001:db8:4000:1234:5678:9abc:def0:51",
+      "id": "us1",
+      "ix_bound": false,
+      "managed": true,
+      "name": "美国西岸（双栈）",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": true,
+      "private_key": "***",
+      "public_key": "RLzvujIo0a8q1t91jgPPPn7xllvqHfonSZuRvwUjmeQ=",
+      "region": "us",
+      "residential": false,
+      "role": "exit",
+      "server_id": "srv-us1",
+      "wan_interface": "eth0",
+      "x": 680,
+      "y": 440
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.54",
+      "id": "us2",
+      "ix_bound": false,
+      "managed": true,
+      "name": "美国东岸（家宽）",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "tC3fHx9mfHM4OCIIz0XGnNMRPwGlbejQONwIqoIIuMp=",
+      "region": "us",
+      "residential": true,
+      "role": "exit",
+      "server_id": "srv-us2",
+      "wan_interface": "eth0",
+      "x": 680,
+      "y": 530
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": false,
+      "endpoint_v4": "203.0.113.55",
+      "id": "gb1",
+      "ix_bound": false,
+      "managed": true,
+      "name": "英国伦敦",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "w4t1kn3y3O06UoJuP2tE1/5PdpshLnoLWfCRRSuzuDi=",
+      "region": "gb",
+      "residential": false,
+      "role": "exit",
+      "server_id": "srv-gb1",
+      "wan_interface": "eth0",
+      "x": 680,
+      "y": 620
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": false,
+      "id": "twnat",
+      "ix_bound": false,
+      "managed": true,
+      "name": "台湾 NAT（只能拨出）",
+      "nat_dial_out": true,
+      "path_v4": true,
+      "path_v6": false,
+      "private_key": "***",
+      "public_key": "n1ii42fR17rKAjlrIkPQXf9LUHXNL0ioaKONoqg5WBz=",
+      "region": "tw",
+      "residential": false,
+      "role": "exit",
+      "server_id": "srv-twnat",
+      "via_exit": "dc1",
+      "wan_interface": "eth0",
+      "x": 900,
+      "y": 80
+     },
+     {
+      "egress_v4": true,
+      "egress_v6": false,
+      "external": {
+       "carrier": "dc2",
+       "credential_id": "socks-my",
+       "interface": "wg9",
+       "socks_address": "198.51.100.66",
+       "socks_port": 1080
+      },
+      "id": "myext",
+      "ix_bound": false,
+      "managed": false,
+      "name": "马来西亚路由器（外部 SOCKS）",
+      "nat_dial_out": false,
+      "path_v4": true,
+      "path_v6": false,
+      "region": "my",
+      "residential": false,
+      "role": "exit",
+      "x": 900,
+      "y": 170
+     }
+    ],
+    "region_groups": [
+     {
+      "chosen": "dc2",
+      "exclude_residential": true,
+      "id": "hk",
+      "members": [
+       "dc2",
+       "dc1"
+      ],
+      "mode": "manual",
+      "name": "香港机房",
+      "on_failure": "fallback",
+      "region": "hk"
+     },
+     {
+      "id": "tw",
+      "members": [
+       "twnat"
+      ],
+      "mode": "auto",
+      "name": "台湾",
+      "region": "tw"
+     },
+     {
+      "id": "my",
+      "members": [
+       "myext"
+      ],
+      "mode": "auto",
+      "name": "马来西亚",
+      "region": "my"
+     },
+     {
+      "id": "jp",
+      "members": [
+       "jp-a"
+      ],
+      "mode": "auto",
+      "name": "日本",
+      "region": "jp"
+     },
+     {
+      "id": "sg",
+      "members": [
+       "sg1"
+      ],
+      "mode": "auto",
+      "name": "新加坡",
+      "region": "sg"
+     },
+     {
+      "chosen": "us1",
+      "id": "us",
+      "members": [
+       "us1",
+       "us2"
+      ],
+      "mode": "manual",
+      "name": "美国（手动指定西岸，失败时回落）",
+      "on_failure": "fallback",
+      "region": "us"
+     },
+     {
+      "id": "gb",
+      "members": [
+       "gb1"
+      ],
+      "mode": "auto",
+      "name": "英国",
+      "region": "gb"
+     }
+    ],
+    "remote_access": {
+     "devices": [
+      {
+       "config_fingerprint": "4c8aa41ef39fb870",
+       "created_at": "2026-01-01T00:00:00Z",
+       "enabled": true,
+       "id": "dev-1",
+       "ipv4": "10.67.0.2",
+       "ipv6": "fd67::2",
+       "key_created_at": "2026-01-01T00:00:00Z",
+       "mode": "home",
+       "name": "手机 · 日常",
+       "psk_id": "ra-psk-c3d6e1548a75",
+       "public_key": "uo0lXp7t8yVoaijmEDncvaAWly61m94kwta5k0W0cKj=",
+       "updated_at": "2026-01-01T00:00:00Z"
+      },
+      {
+       "config_fingerprint": "97995fa97c60347b",
+       "created_at": "2026-01-01T00:00:00Z",
+       "enabled": true,
+       "id": "dev-2",
+       "ipv4": "10.67.0.3",
+       "ipv6": "fd67::3",
+       "key_created_at": "2026-01-01T00:00:00Z",
+       "mode": "full",
+       "name": "笔记本（出差用，名字比较长的一台设备）",
+       "psk_id": "ra-psk-9d7f328bd363",
+       "public_key": "jsMLGL8YCgJXB0kW8Dyms8ijaW9ef6ZBOi/uYKkL7OJ=",
+       "updated_at": "2026-01-01T00:00:00Z"
+      },
+      {
+       "config_fingerprint": "54141e855b399994",
+       "created_at": "2026-01-01T00:00:00Z",
+       "enabled": true,
+       "id": "dev-3",
+       "ipv4": "10.67.0.4",
+       "ipv6": "fd67::4",
+       "key_created_at": "2026-01-01T00:00:00Z",
+       "mode": "home",
+       "name": "平板",
+       "psk_id": "ra-psk-32a4688455a2",
+       "public_key": "Ujh0wtFJnvedyfUePiirhwcXs0WFX8NmSA2wnJBCBdZ=",
+       "updated_at": "2026-01-01T00:00:00Z"
+      }
+     ],
+     "enabled": true,
+     "endpoint": "vpn.home-gateway.example.net",
+     "key_id": "ra-key-1110a0999abf",
+     "listen_port": 51820,
+     "public_key": "9fdGcTYujAmtEBwBXC7+9bw16IOVtqr1ISxI6c6jeP/="
+    },
+    "rule_sets": [
+     {
+      "id": "rs01",
+      "name": "Service01",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-01/a-rather-long-path/Service01.list"
+     },
+     {
+      "id": "rs02",
+      "name": "Service02",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-02/a-rather-long-path/Service02.list"
+     },
+     {
+      "exclude": [
+       "DOMAIN-SUFFIX,wide-cdn-03.example",
+       "DOMAIN-SUFFIX,removed-upstream.example"
+      ],
+      "id": "rs03",
+      "name": "StreamingWithExclusions",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-03/a-rather-long-path/Service03.list"
+     },
+     {
+      "id": "rs04",
+      "name": "Service04",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-04/a-rather-long-path/Service04.list"
+     },
+     {
+      "id": "rs05",
+      "name": "Service05",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-05/a-rather-long-path/Service05.list"
+     },
+     {
+      "id": "rs06",
+      "name": "Service06",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-06/a-rather-long-path/Service06.list"
+     },
+     {
+      "id": "rs07",
+      "name": "Service07",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-07/a-rather-long-path/Service07.list"
+     },
+     {
+      "id": "rs08",
+      "name": "Service08",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-08/a-rather-long-path/Service08.list"
+     },
+     {
+      "id": "rs09",
+      "name": "Service09",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-09/a-rather-long-path/Service09.list"
+     },
+     {
+      "behavior": "domain",
+      "id": "rs10",
+      "name": "Service10",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-10/Service10.yaml"
+     },
+     {
+      "id": "rs11",
+      "name": "Service11",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-11/a-rather-long-path/Service11.list"
+     },
+     {
+      "id": "rs12",
+      "name": "Service12",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-12/a-rather-long-path/Service12.list"
+     },
+     {
+      "id": "rs13",
+      "name": "Service13",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-13/a-rather-long-path/Service13.list"
+     },
+     {
+      "id": "rs14",
+      "name": "Service14",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-14/a-rather-long-path/Service14.list"
+     },
+     {
+      "id": "rs15",
+      "name": "Service15",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-15/a-rather-long-path/Service15.list"
+     },
+     {
+      "id": "rs16",
+      "name": "Service16",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-16/a-rather-long-path/Service16.list"
+     },
+     {
+      "id": "rs17",
+      "name": "Service17",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-17/a-rather-long-path/Service17.list"
+     },
+     {
+      "id": "rs18",
+      "name": "Service18",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-18/a-rather-long-path/Service18.list"
+     },
+     {
+      "id": "rs19",
+      "name": "Service19",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-19/a-rather-long-path/Service19.list"
+     },
+     {
+      "behavior": "domain",
+      "id": "rs20",
+      "name": "Service20",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-20/Service20.yaml"
+     },
+     {
+      "id": "rs21",
+      "name": "Service21",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-21/a-rather-long-path/Service21.list"
+     },
+     {
+      "id": "rs22",
+      "name": "Service22",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-22/a-rather-long-path/Service22.list"
+     },
+     {
+      "id": "rs23",
+      "name": "Service23",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-23/a-rather-long-path/Service23.list"
+     },
+     {
+      "id": "rs24",
+      "name": "Service24",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-24/a-rather-long-path/Service24.list"
+     },
+     {
+      "id": "rs25",
+      "name": "Service25",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-25/a-rather-long-path/Service25.list"
+     },
+     {
+      "id": "rs26",
+      "name": "Service26",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-26/a-rather-long-path/Service26.list"
+     },
+     {
+      "id": "rs27",
+      "name": "Service27",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-27/a-rather-long-path/Service27.list"
+     },
+     {
+      "id": "rs28",
+      "name": "Service28",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-28/a-rather-long-path/Service28.list"
+     },
+     {
+      "id": "rs29",
+      "name": "Service29",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-29/a-rather-long-path/Service29.list"
+     },
+     {
+      "behavior": "domain",
+      "id": "rs30",
+      "name": "Service30",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-30/Service30.yaml"
+     },
+     {
+      "id": "rs31",
+      "name": "Service31",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-31/a-rather-long-path/Service31.list"
+     },
+     {
+      "id": "rs32",
+      "name": "Service32",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-32/a-rather-long-path/Service32.list"
+     },
+     {
+      "id": "rs33",
+      "name": "Service33",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-33/a-rather-long-path/Service33.list"
+     },
+     {
+      "id": "rs34",
+      "name": "Service34",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-34/a-rather-long-path/Service34.list"
+     },
+     {
+      "id": "rs35",
+      "name": "Service35",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-35/a-rather-long-path/Service35.list"
+     },
+     {
+      "id": "rs36",
+      "name": "Service36",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-36/a-rather-long-path/Service36.list"
+     },
+     {
+      "id": "rs37",
+      "name": "Service37",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-37/a-rather-long-path/Service37.list"
+     },
+     {
+      "id": "rs38",
+      "name": "Service38",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-38/a-rather-long-path/Service38.list"
+     },
+     {
+      "id": "rs39",
+      "name": "Service39",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-39/a-rather-long-path/Service39.list"
+     },
+     {
+      "behavior": "domain",
+      "id": "rs40",
+      "name": "Service40",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-40/Service40.yaml"
+     },
+     {
+      "id": "rs41",
+      "name": "Service41",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-41/a-rather-long-path/Service41.list"
+     },
+     {
+      "id": "rs42",
+      "name": "Service42",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-42/a-rather-long-path/Service42.list"
+     },
+     {
+      "id": "rs43",
+      "name": "Service43",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-43/a-rather-long-path/Service43.list"
+     },
+     {
+      "id": "rs44",
+      "name": "Service44",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-44/a-rather-long-path/Service44.list"
+     },
+     {
+      "id": "rs45",
+      "name": "Service45",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-45/a-rather-long-path/Service45.list"
+     },
+     {
+      "id": "rs46",
+      "name": "Service46",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-46/a-rather-long-path/Service46.list"
+     },
+     {
+      "id": "rs47",
+      "name": "Service47",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-47/a-rather-long-path/Service47.list"
+     },
+     {
+      "id": "rs48",
+      "name": "Service48",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-48/a-rather-long-path/Service48.list"
+     },
+     {
+      "id": "rs49",
+      "name": "Service49",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-49/a-rather-long-path/Service49.list"
+     },
+     {
+      "behavior": "domain",
+      "id": "rs50",
+      "name": "Service50",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-50/Service50.yaml"
+     },
+     {
+      "id": "rs51",
+      "name": "Service51",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-51/a-rather-long-path/Service51.list"
+     },
+     {
+      "id": "rs52",
+      "name": "Service52",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-52/a-rather-long-path/Service52.list"
+     },
+     {
+      "id": "rs53",
+      "name": "Service53",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-53/a-rather-long-path/Service53.list"
+     },
+     {
+      "id": "rs54",
+      "name": "Service54",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-54/a-rather-long-path/Service54.list"
+     },
+     {
+      "id": "rs55",
+      "name": "Service55",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-55/a-rather-long-path/Service55.list"
+     },
+     {
+      "id": "rs56",
+      "name": "Service56",
+      "origin": "mihomo",
+      "url": "https://rules.example.org/subscriptions/provider-56/a-rather-long-path/Service56.list"
+     }
+    ],
+    "rules": [
+     {
+      "enabled": true,
+      "id": "m-quic",
+      "manual": true,
+      "match_type": "quic_reject",
+      "match_value": "",
+      "name": "拒绝走隧道的 QUIC（UDP 443）",
+      "overridden": false,
+      "priority": 10,
+      "require_residential": false,
+      "require_v6": false
+     },
+     {
+      "domains": [
+       "api-01-v1380.example.com"
+      ],
+      "enabled": true,
+      "id": "m01",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "api-01-v1380.example.com",
+      "name": "手动 01 · api-01.example.com",
+      "overridden": false,
+      "priority": 20,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "m02",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "pinned-02.example.net",
+      "name": "手动 02 · 钉死到美国西岸",
+      "overridden": false,
+      "priority": 30,
+      "require_residential": false,
+      "require_v6": false,
+      "target_exit": "us1"
+     },
+     {
+      "enabled": true,
+      "id": "m03",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "svc-03.a-very-long-subdomain-for-layout.example.org",
+      "mihomo_group": "日本流媒体",
+      "name": "手动 03 · 来自策略组",
+      "overridden": false,
+      "priority": 40,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "m04",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "direct-04.example.cn",
+      "name": "手动 04 · 直连",
+      "overridden": false,
+      "priority": 50,
+      "require_residential": false,
+      "require_v6": false,
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "m05",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "study-05.example.net",
+      "name": "手动 05 · 书房电脑",
+      "overridden": false,
+      "priority": 60,
+      "require_residential": false,
+      "require_v6": false,
+      "source_mac": "02:00:5e:00:53:05",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "m06",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "198.51.100.6/32",
+      "name": "手动 06 · 整段地址",
+      "overridden": false,
+      "priority": 70,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "gb"
+     },
+     {
+      "domains": [
+       "api-07.example.com"
+      ],
+      "enabled": true,
+      "id": "m07",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "api-07.example.com",
+      "name": "手动 07 · api-07.example.com",
+      "notes": "这条说明写得比较长：用于检查规则抽屉和表格里的长说明是否会把列撑开，或者被固定的操作列压住。",
+      "overridden": false,
+      "priority": 80,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "m08",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "pinned-08.example.net",
+      "name": "手动 08 · 钉死到美国西岸",
+      "overridden": false,
+      "priority": 90,
+      "require_residential": false,
+      "require_v6": false,
+      "target_exit": "us1"
+     },
+     {
+      "enabled": true,
+      "id": "m09",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "svc-09.a-very-long-subdomain-for-layout.example.org",
+      "mihomo_group": "社交网络",
+      "name": "手动 09 · 来自策略组",
+      "overridden": false,
+      "priority": 100,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "m10",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "direct-10.example.cn",
+      "name": "手动 10 · 直连",
+      "overridden": false,
+      "priority": 110,
+      "require_residential": false,
+      "require_v6": false,
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "m11",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "study-11.example.net",
+      "name": "手动 11 · 书房电脑",
+      "overridden": false,
+      "priority": 120,
+      "require_residential": false,
+      "require_v6": false,
+      "source_mac": "02:00:5e:00:53:0b",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "m12",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "198.51.100.12/32",
+      "name": "手动 12 · 整段地址",
+      "overridden": false,
+      "priority": 130,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "us"
+     },
+     {
+      "domains": [
+       "api-13.example.com"
+      ],
+      "enabled": true,
+      "id": "m13",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "api-13.example.com",
+      "name": "手动 13 · api-13.example.com",
+      "overridden": false,
+      "priority": 140,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "m14",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "pinned-14.example.net",
+      "name": "手动 14 · 钉死到美国西岸",
+      "overridden": false,
+      "priority": 150,
+      "require_residential": false,
+      "require_v6": false,
+      "target_exit": "us1"
+     },
+     {
+      "enabled": true,
+      "id": "m15",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "svc-15.a-very-long-subdomain-for-layout.example.org",
+      "mihomo_group": "游戏平台",
+      "name": "手动 15 · 来自策略组",
+      "overridden": false,
+      "priority": 160,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "m16",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "direct-16.example.cn",
+      "name": "手动 16 · 直连",
+      "overridden": false,
+      "priority": 170,
+      "require_residential": false,
+      "require_v6": false,
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "m17",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "study-17.example.net",
+      "name": "手动 17 · 书房电脑",
+      "overridden": false,
+      "priority": 180,
+      "require_residential": false,
+      "require_v6": false,
+      "source_mac": "02:00:5e:00:53:11",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "m18",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "198.51.100.18/32",
+      "name": "手动 18 · 整段地址",
+      "overridden": false,
+      "priority": 190,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "sg"
+     },
+     {
+      "domains": [
+       "api-19.example.com"
+      ],
+      "enabled": true,
+      "id": "m19",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "api-19.example.com",
+      "name": "手动 19 · api-19.example.com",
+      "overridden": false,
+      "priority": 200,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "m20",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "pinned-20.example.net",
+      "name": "手动 20 · 钉死到美国西岸",
+      "overridden": false,
+      "priority": 210,
+      "require_residential": false,
+      "require_v6": false,
+      "target_exit": "us1"
+     },
+     {
+      "enabled": true,
+      "id": "m21",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "svc-21.a-very-long-subdomain-for-layout.example.org",
+      "mihomo_group": "国际流媒体",
+      "name": "手动 21 · 来自策略组",
+      "overridden": false,
+      "priority": 220,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "m22",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "direct-22.example.cn",
+      "name": "手动 22 · 直连",
+      "overridden": false,
+      "priority": 230,
+      "require_residential": false,
+      "require_v6": false,
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "m23",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "study-23.example.net",
+      "name": "手动 23 · 书房电脑",
+      "overridden": false,
+      "priority": 240,
+      "require_residential": false,
+      "require_v6": false,
+      "source_mac": "02:00:5e:00:53:17",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "m24",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "198.51.100.24/32",
+      "name": "手动 24 · 整段地址",
+      "overridden": false,
+      "priority": 250,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "m-my",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "pinned-my.example.net",
+      "name": "手动 · 钉死到马来西亚出口（外部 SOCKS）",
+      "overridden": false,
+      "priority": 260,
+      "require_residential": false,
+      "require_v6": false,
+      "target_exit": "myext"
+     },
+     {
+      "enabled": true,
+      "id": "m-openai",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "openai.com",
+      "mihomo_group": "AI",
+      "name": "OpenAI",
+      "overridden": false,
+      "priority": 270,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "m-claude",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "claude.com",
+      "mihomo_group": "AI",
+      "name": "Claude",
+      "overridden": false,
+      "priority": 280,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "m-prime",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "primevideo.com",
+      "mihomo_group": "Streaming",
+      "name": "Prime Video",
+      "overridden": false,
+      "priority": 290,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "m-dazn",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "dazn.com",
+      "mihomo_group": "Streaming",
+      "name": "DAZN",
+      "overridden": false,
+      "priority": 300,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "m-viu",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "viu.com",
+      "name": "Viu",
+      "overridden": false,
+      "priority": 310,
+      "require_residential": false,
+      "require_v6": false,
+      "target_exit": "dc1"
+     },
+     {
+      "enabled": true,
+      "id": "m-youtube",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "youtube.com",
+      "name": "YouTube",
+      "overridden": false,
+      "priority": 320,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "m-kktv",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "kktv.me",
+      "name": "KKTV",
+      "overridden": false,
+      "priority": 330,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "m-abema",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "abema.io",
+      "name": "ABEMA",
+      "overridden": false,
+      "priority": 340,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-001",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "国际流媒体",
+      "name": "RULE-SET Service01",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 350,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs01",
+      "source_line": 201,
+      "source_text": "RULE-SET,Service01,国际流媒体",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-002",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "港澳台流媒体",
+      "name": "RULE-SET Service02",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 360,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs02",
+      "source_line": 202,
+      "source_text": "RULE-SET,Service02,港澳台流媒体",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-003",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "日本流媒体",
+      "name": "RULE-SET StreamingWithExclusions",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 370,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs03",
+      "source_line": 203,
+      "source_text": "RULE-SET,StreamingWithExclusions,日本流媒体",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-004",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "即时通讯",
+      "name": "RULE-SET Service04",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 380,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs04",
+      "source_line": 204,
+      "source_text": "RULE-SET,Service04,即时通讯",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-005",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "游戏平台",
+      "name": "RULE-SET Service05",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 390,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs05",
+      "source_line": 205,
+      "source_text": "RULE-SET,Service05,游戏平台",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-006",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "开发者工具",
+      "name": "RULE-SET Service06",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 400,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs06",
+      "source_line": 206,
+      "source_text": "RULE-SET,Service06,开发者工具",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-007",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "云存储与同步",
+      "name": "RULE-SET Service07",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 410,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs07",
+      "source_line": 207,
+      "source_text": "RULE-SET,Service07,云存储与同步",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-008",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "新闻与资讯",
+      "name": "RULE-SET Service08",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 420,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs08",
+      "source_line": 208,
+      "source_text": "RULE-SET,Service08,新闻与资讯",
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "imp-009",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "社交网络",
+      "name": "RULE-SET Service09",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 430,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs09",
+      "source_line": 209,
+      "source_text": "RULE-SET,Service09,社交网络",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-010",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "广告拦截",
+      "name": "RULE-SET Service10",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 440,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs10",
+      "source_line": 210,
+      "source_text": "RULE-SET,Service10,广告拦截",
+      "target_action": "reject"
+     },
+     {
+      "enabled": true,
+      "id": "imp-011",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "国内直连服务",
+      "name": "RULE-SET Service11",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 450,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs11",
+      "source_line": 211,
+      "source_text": "RULE-SET,Service11,国内直连服务",
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "imp-012",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "下载与更新",
+      "name": "RULE-SET Service12",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 460,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs12",
+      "source_line": 212,
+      "source_text": "RULE-SET,Service12,下载与更新",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-013",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "音乐平台",
+      "name": "RULE-SET Service13",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 470,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs13",
+      "source_line": 213,
+      "source_text": "RULE-SET,Service13,音乐平台",
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "imp-014",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "AI 服务",
+      "name": "RULE-SET Service14",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 480,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs14",
+      "source_line": 214,
+      "source_text": "RULE-SET,Service14,AI 服务",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-015",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "国际流媒体",
+      "name": "RULE-SET Service15",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 490,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs15",
+      "source_line": 215,
+      "source_text": "RULE-SET,Service15,国际流媒体",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-016",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "港澳台流媒体",
+      "name": "RULE-SET Service16",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 500,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs16",
+      "source_line": 216,
+      "source_text": "RULE-SET,Service16,港澳台流媒体",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-017",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "日本流媒体",
+      "name": "RULE-SET Service17",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 510,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs17",
+      "source_line": 217,
+      "source_text": "RULE-SET,Service17,日本流媒体",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-018",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "即时通讯",
+      "name": "RULE-SET Service18",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 520,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs18",
+      "source_line": 218,
+      "source_text": "RULE-SET,Service18,即时通讯",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-019",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "游戏平台",
+      "name": "RULE-SET Service19",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 530,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs19",
+      "source_line": 219,
+      "source_text": "RULE-SET,Service19,游戏平台",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-020",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "开发者工具",
+      "name": "RULE-SET Service20",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 540,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs20",
+      "source_line": 220,
+      "source_text": "RULE-SET,Service20,开发者工具",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-021",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "云存储与同步",
+      "name": "RULE-SET Service21",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 550,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs21",
+      "source_line": 221,
+      "source_text": "RULE-SET,Service21,云存储与同步",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-022",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "新闻与资讯",
+      "name": "RULE-SET Service22",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 560,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs22",
+      "source_line": 222,
+      "source_text": "RULE-SET,Service22,新闻与资讯",
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "imp-023",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "社交网络",
+      "name": "RULE-SET Service23",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 570,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs23",
+      "source_line": 223,
+      "source_text": "RULE-SET,Service23,社交网络",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-024",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "广告拦截",
+      "name": "RULE-SET Service24",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 580,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs24",
+      "source_line": 224,
+      "source_text": "RULE-SET,Service24,广告拦截",
+      "target_action": "reject"
+     },
+     {
+      "enabled": true,
+      "id": "imp-025",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "国内直连服务",
+      "name": "RULE-SET Service25",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 590,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs25",
+      "source_line": 225,
+      "source_text": "RULE-SET,Service25,国内直连服务",
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "imp-026",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "下载与更新",
+      "name": "RULE-SET Service26",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 600,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs26",
+      "source_line": 226,
+      "source_text": "RULE-SET,Service26,下载与更新",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-027",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "音乐平台",
+      "name": "RULE-SET Service27",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 610,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs27",
+      "source_line": 227,
+      "source_text": "RULE-SET,Service27,音乐平台",
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "imp-028",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "AI 服务",
+      "name": "RULE-SET Service28",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 620,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs28",
+      "source_line": 228,
+      "source_text": "RULE-SET,Service28,AI 服务",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-029",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "国际流媒体",
+      "name": "RULE-SET Service29",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 630,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs29",
+      "source_line": 229,
+      "source_text": "RULE-SET,Service29,国际流媒体",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-030",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "港澳台流媒体",
+      "name": "RULE-SET Service30",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 640,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs30",
+      "source_line": 230,
+      "source_text": "RULE-SET,Service30,港澳台流媒体",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-031",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "日本流媒体",
+      "name": "RULE-SET Service31",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 650,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs31",
+      "source_line": 231,
+      "source_text": "RULE-SET,Service31,日本流媒体",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-032",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "即时通讯",
+      "name": "RULE-SET Service32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 660,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs32",
+      "source_line": 232,
+      "source_text": "RULE-SET,Service32,即时通讯",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-033",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "游戏平台",
+      "name": "RULE-SET Service33",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 670,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs33",
+      "source_line": 233,
+      "source_text": "RULE-SET,Service33,游戏平台",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-034",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "开发者工具",
+      "name": "RULE-SET Service34",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 680,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs34",
+      "source_line": 234,
+      "source_text": "RULE-SET,Service34,开发者工具",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-035",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "云存储与同步",
+      "name": "RULE-SET Service35",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 690,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs35",
+      "source_line": 235,
+      "source_text": "RULE-SET,Service35,云存储与同步",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-036",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "新闻与资讯",
+      "name": "RULE-SET Service36",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 700,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs36",
+      "source_line": 236,
+      "source_text": "RULE-SET,Service36,新闻与资讯",
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "imp-037",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "社交网络",
+      "name": "RULE-SET Service37",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 710,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs37",
+      "source_line": 237,
+      "source_text": "RULE-SET,Service37,社交网络",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-038",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "广告拦截",
+      "name": "RULE-SET Service38",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 720,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs38",
+      "source_line": 238,
+      "source_text": "RULE-SET,Service38,广告拦截",
+      "target_action": "reject"
+     },
+     {
+      "enabled": true,
+      "id": "imp-039",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "国内直连服务",
+      "name": "RULE-SET Service39",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 730,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs39",
+      "source_line": 239,
+      "source_text": "RULE-SET,Service39,国内直连服务",
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "imp-040",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "下载与更新",
+      "name": "RULE-SET Service40",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 740,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs40",
+      "source_line": 240,
+      "source_text": "RULE-SET,Service40,下载与更新",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-041",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "音乐平台",
+      "name": "RULE-SET Service41",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 750,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs41",
+      "source_line": 241,
+      "source_text": "RULE-SET,Service41,音乐平台",
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "imp-042",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "AI 服务",
+      "name": "RULE-SET Service42",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 760,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs42",
+      "source_line": 242,
+      "source_text": "RULE-SET,Service42,AI 服务",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-043",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "国际流媒体",
+      "name": "RULE-SET Service43",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 770,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs43",
+      "source_line": 243,
+      "source_text": "RULE-SET,Service43,国际流媒体",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-044",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "港澳台流媒体",
+      "name": "RULE-SET Service44",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 780,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs44",
+      "source_line": 244,
+      "source_text": "RULE-SET,Service44,港澳台流媒体",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-045",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "日本流媒体",
+      "name": "RULE-SET Service45",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 790,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs45",
+      "source_line": 245,
+      "source_text": "RULE-SET,Service45,日本流媒体",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-046",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "即时通讯",
+      "name": "RULE-SET Service46",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 800,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs46",
+      "source_line": 246,
+      "source_text": "RULE-SET,Service46,即时通讯",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-047",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "游戏平台",
+      "name": "RULE-SET Service47",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 810,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs47",
+      "source_line": 247,
+      "source_text": "RULE-SET,Service47,游戏平台",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-048",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "开发者工具",
+      "name": "RULE-SET Service48",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 820,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs48",
+      "source_line": 248,
+      "source_text": "RULE-SET,Service48,开发者工具",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-049",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "云存储与同步",
+      "name": "RULE-SET Service49",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 830,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs49",
+      "source_line": 249,
+      "source_text": "RULE-SET,Service49,云存储与同步",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-050",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "新闻与资讯",
+      "name": "RULE-SET Service50",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 840,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs50",
+      "source_line": 250,
+      "source_text": "RULE-SET,Service50,新闻与资讯",
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "imp-051",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "社交网络",
+      "name": "RULE-SET Service51",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 850,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs51",
+      "source_line": 251,
+      "source_text": "RULE-SET,Service51,社交网络",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-052",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "广告拦截",
+      "name": "RULE-SET Service52",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 860,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs52",
+      "source_line": 252,
+      "source_text": "RULE-SET,Service52,广告拦截",
+      "target_action": "reject"
+     },
+     {
+      "enabled": true,
+      "id": "imp-053",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "国内直连服务",
+      "name": "RULE-SET Service53",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 870,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs53",
+      "source_line": 253,
+      "source_text": "RULE-SET,Service53,国内直连服务",
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "imp-054",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "下载与更新",
+      "name": "RULE-SET Service54",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 880,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs54",
+      "source_line": 254,
+      "source_text": "RULE-SET,Service54,下载与更新",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-055",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "音乐平台",
+      "name": "RULE-SET Service55",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 890,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs55",
+      "source_line": 255,
+      "source_text": "RULE-SET,Service55,音乐平台",
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "imp-056",
+      "manual": true,
+      "match_type": "ruleset",
+      "match_value": "",
+      "mihomo_group": "AI 服务",
+      "name": "RULE-SET Service56",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 900,
+      "require_residential": false,
+      "require_v6": false,
+      "rule_set": "rs56",
+      "source_line": 256,
+      "source_text": "RULE-SET,Service56,AI 服务",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-057",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-057.example.com",
+      "mihomo_group": "国际流媒体",
+      "name": "DOMAIN-SUFFIX imported-057.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 910,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 257,
+      "source_text": "DOMAIN-SUFFIX,imported-057.example.com,国际流媒体",
+      "target_group": "sg"
+     },
+     {
+      "domains": [
+       "www.imported-058.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-058",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-058.example.org",
+      "mihomo_group": "港澳台流媒体",
+      "name": "DOMAIN www.imported-058.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 920,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 258,
+      "source_text": "DOMAIN,www.imported-058.example.org,港澳台流媒体",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-059",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.59/32",
+      "mihomo_group": "日本流媒体",
+      "name": "IP-CIDR 203.0.113.59/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 930,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 259,
+      "source_text": "IP-CIDR,203.0.113.59/32,日本流媒体,no-resolve",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-060",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-060.example.com",
+      "mihomo_group": "即时通讯",
+      "name": "DOMAIN-SUFFIX imported-060.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 940,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 260,
+      "source_text": "DOMAIN-SUFFIX,imported-060.example.com,即时通讯",
+      "target_group": "hk"
+     },
+     {
+      "domains": [
+       "www.imported-061.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-061",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-061.example.org",
+      "mihomo_group": "游戏平台",
+      "name": "DOMAIN www.imported-061.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 950,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 261,
+      "source_text": "DOMAIN,www.imported-061.example.org,游戏平台",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-062",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.62/32",
+      "mihomo_group": "开发者工具",
+      "name": "IP-CIDR 203.0.113.62/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 960,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 262,
+      "source_text": "IP-CIDR,203.0.113.62/32,开发者工具,no-resolve",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-063",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-063.example.com",
+      "mihomo_group": "云存储与同步",
+      "name": "DOMAIN-SUFFIX imported-063.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 970,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 263,
+      "source_text": "DOMAIN-SUFFIX,imported-063.example.com,云存储与同步",
+      "target_group": "us"
+     },
+     {
+      "domains": [
+       "www.imported-064.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-064",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-064.example.org",
+      "mihomo_group": "新闻与资讯",
+      "name": "DOMAIN www.imported-064.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 980,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 264,
+      "source_text": "DOMAIN,www.imported-064.example.org,新闻与资讯",
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "imp-065",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.65/32",
+      "mihomo_group": "社交网络",
+      "name": "IP-CIDR 203.0.113.65/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 990,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 265,
+      "source_text": "IP-CIDR,203.0.113.65/32,社交网络,no-resolve",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-066",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-066.example.com",
+      "mihomo_group": "广告拦截",
+      "name": "DOMAIN-SUFFIX imported-066.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1000,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 266,
+      "source_text": "DOMAIN-SUFFIX,imported-066.example.com,广告拦截",
+      "target_action": "reject"
+     },
+     {
+      "domains": [
+       "www.imported-067.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-067",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-067.example.org",
+      "mihomo_group": "国内直连服务",
+      "name": "DOMAIN www.imported-067.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1010,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 267,
+      "source_text": "DOMAIN,www.imported-067.example.org,国内直连服务",
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "imp-068",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.68/32",
+      "mihomo_group": "下载与更新",
+      "name": "IP-CIDR 203.0.113.68/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1020,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 268,
+      "source_text": "IP-CIDR,203.0.113.68/32,下载与更新,no-resolve",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-069",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-069.example.com",
+      "mihomo_group": "音乐平台",
+      "name": "DOMAIN-SUFFIX imported-069.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1030,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 269,
+      "source_text": "DOMAIN-SUFFIX,imported-069.example.com,音乐平台",
+      "target_group": "tw"
+     },
+     {
+      "domains": [
+       "www.imported-070.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-070",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-070.example.org",
+      "mihomo_group": "AI 服务",
+      "name": "DOMAIN www.imported-070.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1040,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 270,
+      "source_text": "DOMAIN,www.imported-070.example.org,AI 服务",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-071",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.71/32",
+      "mihomo_group": "国际流媒体",
+      "name": "IP-CIDR 203.0.113.71/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1050,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 271,
+      "source_text": "IP-CIDR,203.0.113.71/32,国际流媒体,no-resolve",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-072",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-072.example.com",
+      "mihomo_group": "港澳台流媒体",
+      "name": "DOMAIN-SUFFIX imported-072.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1060,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 272,
+      "source_text": "DOMAIN-SUFFIX,imported-072.example.com,港澳台流媒体",
+      "target_group": "hk"
+     },
+     {
+      "domains": [
+       "www.imported-073.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-073",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-073.example.org",
+      "mihomo_group": "日本流媒体",
+      "name": "DOMAIN www.imported-073.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1070,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 273,
+      "source_text": "DOMAIN,www.imported-073.example.org,日本流媒体",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-074",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.74/32",
+      "mihomo_group": "即时通讯",
+      "name": "IP-CIDR 203.0.113.74/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1080,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 274,
+      "source_text": "IP-CIDR,203.0.113.74/32,即时通讯,no-resolve",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-075",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-075.example.com",
+      "mihomo_group": "游戏平台",
+      "name": "DOMAIN-SUFFIX imported-075.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1090,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 275,
+      "source_text": "DOMAIN-SUFFIX,imported-075.example.com,游戏平台",
+      "target_group": "jp"
+     },
+     {
+      "domains": [
+       "www.imported-076.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-076",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-076.example.org",
+      "mihomo_group": "开发者工具",
+      "name": "DOMAIN www.imported-076.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1100,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 276,
+      "source_text": "DOMAIN,www.imported-076.example.org,开发者工具",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-077",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.77/32",
+      "mihomo_group": "云存储与同步",
+      "name": "IP-CIDR 203.0.113.77/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1110,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 277,
+      "source_text": "IP-CIDR,203.0.113.77/32,云存储与同步,no-resolve",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-078",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-078.example.com",
+      "mihomo_group": "新闻与资讯",
+      "name": "DOMAIN-SUFFIX imported-078.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1120,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 278,
+      "source_text": "DOMAIN-SUFFIX,imported-078.example.com,新闻与资讯",
+      "target_group": "gb"
+     },
+     {
+      "domains": [
+       "www.imported-079.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-079",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-079.example.org",
+      "mihomo_group": "社交网络",
+      "name": "DOMAIN www.imported-079.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1130,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 279,
+      "source_text": "DOMAIN,www.imported-079.example.org,社交网络",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-080",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.80/32",
+      "mihomo_group": "广告拦截",
+      "name": "IP-CIDR 203.0.113.80/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1140,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 280,
+      "source_text": "IP-CIDR,203.0.113.80/32,广告拦截,no-resolve",
+      "target_action": "reject"
+     },
+     {
+      "enabled": true,
+      "id": "imp-081",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-081.example.com",
+      "mihomo_group": "国内直连服务",
+      "name": "DOMAIN-SUFFIX imported-081.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1150,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 281,
+      "source_text": "DOMAIN-SUFFIX,imported-081.example.com,国内直连服务",
+      "target_action": "direct"
+     },
+     {
+      "domains": [
+       "www.imported-082.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-082",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-082.example.org",
+      "mihomo_group": "下载与更新",
+      "name": "DOMAIN www.imported-082.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1160,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 282,
+      "source_text": "DOMAIN,www.imported-082.example.org,下载与更新",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-083",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.83/32",
+      "mihomo_group": "音乐平台",
+      "name": "IP-CIDR 203.0.113.83/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1170,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 283,
+      "source_text": "IP-CIDR,203.0.113.83/32,音乐平台,no-resolve",
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "imp-084",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-084.example.com",
+      "mihomo_group": "AI 服务",
+      "name": "DOMAIN-SUFFIX imported-084.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1180,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 284,
+      "source_text": "DOMAIN-SUFFIX,imported-084.example.com,AI 服务",
+      "target_group": "us"
+     },
+     {
+      "domains": [
+       "www.imported-085.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-085",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-085.example.org",
+      "mihomo_group": "国际流媒体",
+      "name": "DOMAIN www.imported-085.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1190,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 285,
+      "source_text": "DOMAIN,www.imported-085.example.org,国际流媒体",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-086",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.86/32",
+      "mihomo_group": "港澳台流媒体",
+      "name": "IP-CIDR 203.0.113.86/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1200,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 286,
+      "source_text": "IP-CIDR,203.0.113.86/32,港澳台流媒体,no-resolve",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-087",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-087.example.com",
+      "mihomo_group": "日本流媒体",
+      "name": "DOMAIN-SUFFIX imported-087.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1210,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 287,
+      "source_text": "DOMAIN-SUFFIX,imported-087.example.com,日本流媒体",
+      "target_group": "jp"
+     },
+     {
+      "domains": [
+       "www.imported-088.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-088",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-088.example.org",
+      "mihomo_group": "即时通讯",
+      "name": "DOMAIN www.imported-088.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1220,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 288,
+      "source_text": "DOMAIN,www.imported-088.example.org,即时通讯",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-089",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.89/32",
+      "mihomo_group": "游戏平台",
+      "name": "IP-CIDR 203.0.113.89/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1230,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 289,
+      "source_text": "IP-CIDR,203.0.113.89/32,游戏平台,no-resolve",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-090",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-090.example.com",
+      "mihomo_group": "开发者工具",
+      "name": "DOMAIN-SUFFIX imported-090.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1240,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 290,
+      "source_text": "DOMAIN-SUFFIX,imported-090.example.com,开发者工具",
+      "target_group": "us"
+     },
+     {
+      "domains": [
+       "www.imported-091.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-091",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-091.example.org",
+      "mihomo_group": "云存储与同步",
+      "name": "DOMAIN www.imported-091.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1250,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 291,
+      "source_text": "DOMAIN,www.imported-091.example.org,云存储与同步",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-092",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.92/32",
+      "mihomo_group": "新闻与资讯",
+      "name": "IP-CIDR 203.0.113.92/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1260,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 292,
+      "source_text": "IP-CIDR,203.0.113.92/32,新闻与资讯,no-resolve",
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "imp-093",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-093.example.com",
+      "mihomo_group": "社交网络",
+      "name": "DOMAIN-SUFFIX imported-093.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1270,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 293,
+      "source_text": "DOMAIN-SUFFIX,imported-093.example.com,社交网络",
+      "target_group": "sg"
+     },
+     {
+      "domains": [
+       "www.imported-094.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-094",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-094.example.org",
+      "mihomo_group": "广告拦截",
+      "name": "DOMAIN www.imported-094.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1280,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 294,
+      "source_text": "DOMAIN,www.imported-094.example.org,广告拦截",
+      "target_action": "reject"
+     },
+     {
+      "enabled": true,
+      "id": "imp-095",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.95/32",
+      "mihomo_group": "国内直连服务",
+      "name": "IP-CIDR 203.0.113.95/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1290,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 295,
+      "source_text": "IP-CIDR,203.0.113.95/32,国内直连服务,no-resolve",
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "imp-096",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-096.example.com",
+      "mihomo_group": "下载与更新",
+      "name": "DOMAIN-SUFFIX imported-096.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1300,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 296,
+      "source_text": "DOMAIN-SUFFIX,imported-096.example.com,下载与更新",
+      "target_group": "hk"
+     },
+     {
+      "domains": [
+       "www.imported-097.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-097",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-097.example.org",
+      "mihomo_group": "音乐平台",
+      "name": "DOMAIN www.imported-097.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1310,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 297,
+      "source_text": "DOMAIN,www.imported-097.example.org,音乐平台",
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "imp-098",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.98/32",
+      "mihomo_group": "AI 服务",
+      "name": "IP-CIDR 203.0.113.98/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1320,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 298,
+      "source_text": "IP-CIDR,203.0.113.98/32,AI 服务,no-resolve",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-099",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-099.example.com",
+      "mihomo_group": "国际流媒体",
+      "name": "DOMAIN-SUFFIX imported-099.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1330,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 299,
+      "source_text": "DOMAIN-SUFFIX,imported-099.example.com,国际流媒体",
+      "target_group": "sg"
+     },
+     {
+      "domains": [
+       "www.imported-100.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-100",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-100.example.org",
+      "mihomo_group": "港澳台流媒体",
+      "name": "DOMAIN www.imported-100.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1340,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 300,
+      "source_text": "DOMAIN,www.imported-100.example.org,港澳台流媒体",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-101",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.101/32",
+      "mihomo_group": "日本流媒体",
+      "name": "IP-CIDR 203.0.113.101/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1350,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 301,
+      "source_text": "IP-CIDR,203.0.113.101/32,日本流媒体,no-resolve",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-102",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-102.example.com",
+      "mihomo_group": "即时通讯",
+      "name": "DOMAIN-SUFFIX imported-102.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1360,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 302,
+      "source_text": "DOMAIN-SUFFIX,imported-102.example.com,即时通讯",
+      "target_group": "hk"
+     },
+     {
+      "domains": [
+       "www.imported-103.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-103",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-103.example.org",
+      "mihomo_group": "游戏平台",
+      "name": "DOMAIN www.imported-103.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1370,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 303,
+      "source_text": "DOMAIN,www.imported-103.example.org,游戏平台",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-104",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.104/32",
+      "mihomo_group": "开发者工具",
+      "name": "IP-CIDR 203.0.113.104/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1380,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 304,
+      "source_text": "IP-CIDR,203.0.113.104/32,开发者工具,no-resolve",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-105",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-105.example.com",
+      "mihomo_group": "云存储与同步",
+      "name": "DOMAIN-SUFFIX imported-105.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1390,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 305,
+      "source_text": "DOMAIN-SUFFIX,imported-105.example.com,云存储与同步",
+      "target_group": "us"
+     },
+     {
+      "domains": [
+       "www.imported-106.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-106",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-106.example.org",
+      "mihomo_group": "新闻与资讯",
+      "name": "DOMAIN www.imported-106.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1400,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 306,
+      "source_text": "DOMAIN,www.imported-106.example.org,新闻与资讯",
+      "target_group": "gb"
+     },
+     {
+      "enabled": true,
+      "id": "imp-107",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.107/32",
+      "mihomo_group": "社交网络",
+      "name": "IP-CIDR 203.0.113.107/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1410,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 307,
+      "source_text": "IP-CIDR,203.0.113.107/32,社交网络,no-resolve",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-108",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-108.example.com",
+      "mihomo_group": "广告拦截",
+      "name": "DOMAIN-SUFFIX imported-108.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1420,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 308,
+      "source_text": "DOMAIN-SUFFIX,imported-108.example.com,广告拦截",
+      "target_action": "reject"
+     },
+     {
+      "domains": [
+       "www.imported-109.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-109",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-109.example.org",
+      "mihomo_group": "国内直连服务",
+      "name": "DOMAIN www.imported-109.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1430,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 309,
+      "source_text": "DOMAIN,www.imported-109.example.org,国内直连服务",
+      "target_action": "direct"
+     },
+     {
+      "enabled": true,
+      "id": "imp-110",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.110/32",
+      "mihomo_group": "下载与更新",
+      "name": "IP-CIDR 203.0.113.110/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1440,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 310,
+      "source_text": "IP-CIDR,203.0.113.110/32,下载与更新,no-resolve",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-111",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-111.example.com",
+      "mihomo_group": "音乐平台",
+      "name": "DOMAIN-SUFFIX imported-111.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1450,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 311,
+      "source_text": "DOMAIN-SUFFIX,imported-111.example.com,音乐平台",
+      "target_group": "tw"
+     },
+     {
+      "domains": [
+       "www.imported-112.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-112",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-112.example.org",
+      "mihomo_group": "AI 服务",
+      "name": "DOMAIN www.imported-112.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1460,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 312,
+      "source_text": "DOMAIN,www.imported-112.example.org,AI 服务",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-113",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.113/32",
+      "mihomo_group": "国际流媒体",
+      "name": "IP-CIDR 203.0.113.113/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1470,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 313,
+      "source_text": "IP-CIDR,203.0.113.113/32,国际流媒体,no-resolve",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-114",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-114.example.com",
+      "mihomo_group": "港澳台流媒体",
+      "name": "DOMAIN-SUFFIX imported-114.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1480,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 314,
+      "source_text": "DOMAIN-SUFFIX,imported-114.example.com,港澳台流媒体",
+      "target_group": "hk"
+     },
+     {
+      "domains": [
+       "www.imported-115.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-115",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-115.example.org",
+      "mihomo_group": "日本流媒体",
+      "name": "DOMAIN www.imported-115.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1490,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 315,
+      "source_text": "DOMAIN,www.imported-115.example.org,日本流媒体",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-116",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.116/32",
+      "mihomo_group": "即时通讯",
+      "name": "IP-CIDR 203.0.113.116/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1500,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 316,
+      "source_text": "IP-CIDR,203.0.113.116/32,即时通讯,no-resolve",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-117",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-117.example.com",
+      "mihomo_group": "游戏平台",
+      "name": "DOMAIN-SUFFIX imported-117.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1510,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 317,
+      "source_text": "DOMAIN-SUFFIX,imported-117.example.com,游戏平台",
+      "target_group": "jp"
+     },
+     {
+      "domains": [
+       "www.imported-118.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-118",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-118.example.org",
+      "mihomo_group": "开发者工具",
+      "name": "DOMAIN www.imported-118.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1520,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 318,
+      "source_text": "DOMAIN,www.imported-118.example.org,开发者工具",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-119",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.119/32",
+      "mihomo_group": "云存储与同步",
+      "name": "IP-CIDR 203.0.113.119/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1530,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 319,
+      "source_text": "IP-CIDR,203.0.113.119/32,云存储与同步,no-resolve",
+      "target_group": "us"
+     },
+     {
+      "enabled": true,
+      "id": "imp-120",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-120.example.com",
+      "mihomo_group": "新闻与资讯",
+      "name": "DOMAIN-SUFFIX imported-120.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1540,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 320,
+      "source_text": "DOMAIN-SUFFIX,imported-120.example.com,新闻与资讯",
+      "target_group": "gb"
+     },
+     {
+      "domains": [
+       "www.imported-121.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-121",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-121.example.org",
+      "mihomo_group": "社交网络",
+      "name": "DOMAIN www.imported-121.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1550,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 321,
+      "source_text": "DOMAIN,www.imported-121.example.org,社交网络",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-122",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.122/32",
+      "mihomo_group": "广告拦截",
+      "name": "IP-CIDR 203.0.113.122/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1560,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 322,
+      "source_text": "IP-CIDR,203.0.113.122/32,广告拦截,no-resolve",
+      "target_action": "reject"
+     },
+     {
+      "enabled": true,
+      "id": "imp-123",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-123.example.com",
+      "mihomo_group": "国内直连服务",
+      "name": "DOMAIN-SUFFIX imported-123.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1570,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 323,
+      "source_text": "DOMAIN-SUFFIX,imported-123.example.com,国内直连服务",
+      "target_action": "direct"
+     },
+     {
+      "domains": [
+       "www.imported-124.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-124",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-124.example.org",
+      "mihomo_group": "下载与更新",
+      "name": "DOMAIN www.imported-124.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1580,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 324,
+      "source_text": "DOMAIN,www.imported-124.example.org,下载与更新",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-125",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.125/32",
+      "mihomo_group": "音乐平台",
+      "name": "IP-CIDR 203.0.113.125/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1590,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 325,
+      "source_text": "IP-CIDR,203.0.113.125/32,音乐平台,no-resolve",
+      "target_group": "tw"
+     },
+     {
+      "enabled": true,
+      "id": "imp-126",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-126.example.com",
+      "mihomo_group": "AI 服务",
+      "name": "DOMAIN-SUFFIX imported-126.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1600,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 326,
+      "source_text": "DOMAIN-SUFFIX,imported-126.example.com,AI 服务",
+      "target_group": "us"
+     },
+     {
+      "domains": [
+       "www.imported-127.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-127",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-127.example.org",
+      "mihomo_group": "国际流媒体",
+      "name": "DOMAIN www.imported-127.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1610,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 327,
+      "source_text": "DOMAIN,www.imported-127.example.org,国际流媒体",
+      "target_group": "sg"
+     },
+     {
+      "enabled": true,
+      "id": "imp-128",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.128/32",
+      "mihomo_group": "港澳台流媒体",
+      "name": "IP-CIDR 203.0.113.128/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1620,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 328,
+      "source_text": "IP-CIDR,203.0.113.128/32,港澳台流媒体,no-resolve",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-129",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-129.example.com",
+      "mihomo_group": "日本流媒体",
+      "name": "DOMAIN-SUFFIX imported-129.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1630,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 329,
+      "source_text": "DOMAIN-SUFFIX,imported-129.example.com,日本流媒体",
+      "target_group": "jp"
+     },
+     {
+      "domains": [
+       "www.imported-130.example.org"
+      ],
+      "enabled": true,
+      "id": "imp-130",
+      "manual": true,
+      "match_type": "domain",
+      "match_value": "www.imported-130.example.org",
+      "mihomo_group": "即时通讯",
+      "name": "DOMAIN www.imported-130.example.org",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1640,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 330,
+      "source_text": "DOMAIN,www.imported-130.example.org,即时通讯",
+      "target_group": "hk"
+     },
+     {
+      "enabled": true,
+      "id": "imp-131",
+      "manual": true,
+      "match_type": "cidr",
+      "match_value": "203.0.113.131/32",
+      "mihomo_group": "游戏平台",
+      "name": "IP-CIDR 203.0.113.131/32",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1650,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 331,
+      "source_text": "IP-CIDR,203.0.113.131/32,游戏平台,no-resolve",
+      "target_group": "jp"
+     },
+     {
+      "enabled": true,
+      "id": "imp-132",
+      "manual": true,
+      "match_type": "suffix",
+      "match_value": "imported-132.example.com",
+      "mihomo_group": "开发者工具",
+      "name": "DOMAIN-SUFFIX imported-132.example.com",
+      "origin": "mihomo",
+      "overridden": false,
+      "priority": 1660,
+      "require_residential": false,
+      "require_v6": false,
+      "source_line": 332,
+      "source_text": "DOMAIN-SUFFIX,imported-132.example.com,开发者工具",
+      "target_group": "us"
+     },
+     {
+      "domains": [
+       "streaming-1.example"
+      ],
+      "enabled": true,
+      "id": "auto-hk",
+      "manual": false,
+      "match_type": "suffix",
+      "match_value": "streaming-1.example",
+      "name": "自动：streaming-1.example 按解锁结果",
+      "overridden": false,
+      "priority": 1670,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "hk"
+     },
+     {
+      "domains": [
+       "streaming-2.example"
+      ],
+      "enabled": true,
+      "id": "auto-tw",
+      "manual": false,
+      "match_type": "suffix",
+      "match_value": "streaming-2.example",
+      "name": "自动：streaming-2.example 按解锁结果",
+      "overridden": false,
+      "priority": 1680,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "tw"
+     },
+     {
+      "domains": [
+       "streaming-3.example"
+      ],
+      "enabled": true,
+      "id": "auto-jp",
+      "manual": false,
+      "match_type": "suffix",
+      "match_value": "streaming-3.example",
+      "name": "自动：streaming-3.example 按解锁结果",
+      "overridden": false,
+      "priority": 1690,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "jp"
+     },
+     {
+      "domains": [
+       "streaming-4.example"
+      ],
+      "enabled": true,
+      "id": "auto-us",
+      "manual": false,
+      "match_type": "suffix",
+      "match_value": "streaming-4.example",
+      "name": "自动：streaming-4.example 按解锁结果",
+      "overridden": false,
+      "priority": 1700,
+      "require_residential": false,
+      "require_v6": false,
+      "target_group": "us"
+     }
+    ],
+    "rules_ordered": true,
+    "settings": {
+     "default_group": "hk",
+     "dns_log": {
+      "enabled": true
+     },
+     "domestic_dot": [
+      "192.0.2.53",
+      "198.51.100.53"
+     ],
+     "draft": false,
+     "exit_dns": {
+      "account_credential": "dnsacct-demo",
+      "addresses": [
+       "192.0.2.153",
+       "2001:db8:53::153"
+      ],
+      "protocol": "dot",
+      "tls_host_name": "{account}.dns.example.net"
+     },
+     "gateway_lan_ipv4": "192.168.77.2/24",
+     "ix_replacement_mode": false,
+     "lan_interface": "eth0",
+     "lan_ipv6_prefix": "2001:db8:77::/64",
+     "nat64": {
+      "enabled": false,
+      "reserved": true
+     },
+     "panel_bind": "192.168.77.2:8787",
+     "ros_ipv4": "192.168.77.1",
+     "ros_v6_lla": "fe80::5054:ff:fe12:3456",
+     "sniff": {
+      "enabled": true,
+      "record_names": true
+     },
+     "transit_v4_prefix": "10.77.200.0/24",
+     "transit_v6_prefix": "fd66:0:0:ff::/64",
+     "ula_prefix": "fd66::/48",
+     "unlock_probe": {
+      "exit_concurrency": 1
+     }
+    }
+   },
+   "status": 200
+  },
+  "POST /api/diff": {
+   "body": {
+    "diff": "（没有变化）\n",
+    "installed": {},
+    "issues": [
+     {
+      "code": "aaaa_filtered",
+      "field": "clients_ipv6_via_gateway",
+      "message": "网关设置「客户端 IPv6 经本网关」关闭（默认）：除国内域名外，所有域名——没有命中规则的、每条规则的、地区组和钉死出口的——都不返回 AAAA。客户端只拿到 IPv4 地址，经本网关进隧道，在同一出口回落 v4，不会改送到别的国家，也不会从家里路由器下发的 IPv6 绕过隧道。国内域名照常返回 AAAA，经家里路由器直连。只有客户端的 IPv6 默认路由确实指向本网关（docs/test-device.md）时才打开它。",
+      "severity": "warning"
+     },
+     {
+      "code": "device_scope_shared_ip",
+      "message": "按设备匹配会和目的 IP 同时生效。若其他设备访问同一个解析结果，不会套用这条设备规则，而是落到它们自己的策略。",
+      "rule_id": "m05",
+      "severity": "warning"
+     },
+     {
+      "code": "device_scope_shared_ip",
+      "message": "按设备匹配会和目的 IP 同时生效。若其他设备访问同一个解析结果，不会套用这条设备规则，而是落到它们自己的策略。",
+      "rule_id": "m11",
+      "severity": "warning"
+     },
+     {
+      "code": "device_scope_shared_ip",
+      "message": "按设备匹配会和目的 IP 同时生效。若其他设备访问同一个解析结果，不会套用这条设备规则，而是落到它们自己的策略。",
+      "rule_id": "m17",
+      "severity": "warning"
+     },
+     {
+      "code": "device_scope_shared_ip",
+      "message": "按设备匹配会和目的 IP 同时生效。若其他设备访问同一个解析结果，不会套用这条设备规则，而是落到它们自己的策略。",
+      "rule_id": "m23",
+      "severity": "warning"
+     },
+     {
+      "code": "mesh_leg_fragments",
+      "field": "mtu",
+      "link_id": "ix-jp-a-mesh",
+      "message": "Mesh 边 IX → 日本东京 Mesh 备路 按 Mesh 路径 MTU 1280 规划：扣掉 WireGuard 的 60 字节后只剩 1220，低于承载 IPv6 所需的 1280。接口保持 1280（出口解析地址是 IPv6），TCP 按 1216 钳制（MSS 1176 / 1156），不会分片；1217 到 1280 字节之间的非 TCP 包靠 WireGuard 外层包分片通过，这一点还没有在真实 Mesh 上验证。Mesh 路径实际能承载 1340 以上时，把这条链路的 MTU 改成实际值即可免去分片。",
+      "node_id": "jp-a",
+      "severity": "warning"
+     },
+     {
+      "code": "tcp_only_target",
+      "exit_id": "myext",
+      "message": "规则「手动 · 钉死到马来西亚出口（外部 SOCKS）」落到仅 TCP 的外部出口 马来西亚路由器（外部 SOCKS）：UDP（包括 QUIC）在那里被拒绝。",
+      "rule_id": "m-my",
+      "severity": "warning"
+     }
+    ],
+    "order": [
+     "twnat",
+     "dc1",
+     "dc2",
+     "gb1",
+     "jp-a",
+     "sg1",
+     "us1",
+     "us2",
+     "hkb",
+     "ix",
+     "access",
+     "access2",
+     "gw"
+    ]
+   },
+   "status": 200
+  }
+ },
+ "scenario": "deploy-done"
+}

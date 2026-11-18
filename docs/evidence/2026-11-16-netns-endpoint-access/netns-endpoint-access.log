@@ -1,0 +1,44 @@
+=== RUN   TestNetnsEndpointAccess
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.10 node access class direct: 国内端点（中继或国内入口），按国内直连走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 2001:db8:a1::10 node access class direct: 国内端点（中继或国内入口），按国内直连走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.20 node ix class tunnel: 境外端点，按普通境外流量经默认组的隧道出口，不走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 198.51.100.10 node ix class direct: 国内端点（中继或国内入口），按国内直连走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.30 node hkb class tunnel: 境外端点（网关也直接连它承载隧道）：客户端流量带默认组标记进隧道，网关自己的外层包不受影响，不会递归
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.41 node dc1 class tunnel: 境外端点，按普通境外流量经默认组的隧道出口，不走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.42 node dc2 class tunnel: 境外端点，按普通境外流量经默认组的隧道出口，不走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 2001:db8:42::42 node dc2 class blocked: 境外端点，默认组不能用这个地址族经隧道承载它，不允许走本地宽带，继续丢弃
+    netns_endpoint_access_linux_test.go:124: gw tunnels: main m01, backup m02; group hk mark 0x103 table 203
+    netns_endpoint_access_linux_test.go:279: EVIDENCE loaded set endpoint_direct4 holds 203.0.113.10, 198.51.100.10
+    netns_endpoint_access_linux_test.go:279: EVIDENCE loaded set endpoint_direct6 holds 2001:db8:a1::10
+    netns_endpoint_access_linux_test.go:279: EVIDENCE loaded set endpoint_tunnel4 holds 203.0.113.20, 203.0.113.30, 203.0.113.41, 203.0.113.42
+    netns_endpoint_access_linux_test.go:279: EVIDENCE loaded set endpoint_block6 holds 2001:db8:42::42
+    netns_endpoint_access_linux_test.go:471: EVIDENCE main: client → 203.0.113.10 (domestic endpoint): server saw 192.0.2.50; packets gw LAN port 4, at ROS 4, into tunnels 0
+    netns_endpoint_access_linux_test.go:472: EVIDENCE main: client → 198.51.100.10 (domestic endpoint): server saw 192.0.2.50; packets gw LAN port 4, at ROS 4, into tunnels 0
+    netns_endpoint_access_linux_test.go:473: EVIDENCE main: client → 2001:db8:a1::10 (domestic endpoint): server saw 2001:db8:100::50; packets gw LAN port 3, at ROS 4, into tunnels 0
+    netns_endpoint_access_linux_test.go:474: EVIDENCE main: client → 203.0.113.42 (foreign endpoint): server saw 100.64.1.2; packets into tunnel 4 (backup tunnel 0), gw LAN port 0, at ROS 0
+    netns_endpoint_access_linux_test.go:475: EVIDENCE main: client → 203.0.113.30 (foreign endpoint): server saw 100.64.1.2; packets into tunnel 4 (backup tunnel 0), gw LAN port 0, at ROS 0
+    netns_endpoint_access_linux_test.go:476: EVIDENCE main: client → 203.0.113.41 (foreign endpoint): server saw 10.66.200.12; packets into tunnel 4 (backup tunnel 0), gw LAN port 0, at ROS 0
+    netns_endpoint_access_linux_test.go:477: EVIDENCE main: client → 203.0.113.20 (foreign endpoint): server saw 10.66.200.12; packets into tunnel 4 (backup tunnel 0), gw LAN port 0, at ROS 0
+    netns_endpoint_access_linux_test.go:478: EVIDENCE main: client → 2001:db8:42::42 dropped (fail-closed): TIMEOUT; arrived at gw 7, gw LAN port 0, at ROS 0, into tunnels 0
+    netns_endpoint_access_linux_test.go:494: EVIDENCE backup: compiled failover moved table 102 to m02 (the backup hub hkb carries group hk)
+    netns_endpoint_access_linux_test.go:495: EVIDENCE backup: client → 203.0.113.30 (foreign endpoint): server saw 10.66.200.12; packets into tunnel 4 (backup tunnel 4), gw LAN port 0, at ROS 0
+    netns_endpoint_access_linux_test.go:496: EVIDENCE backup: client → 203.0.113.42 (foreign endpoint): server saw 100.64.1.2; packets into tunnel 4 (backup tunnel 4), gw LAN port 0, at ROS 0
+    netns_endpoint_access_linux_test.go:497: EVIDENCE backup: client → 203.0.113.10 (domestic endpoint): server saw 192.0.2.50; packets gw LAN port 4, at ROS 4, into tunnels 0
+    netns_endpoint_access_linux_test.go:503: EVIDENCE backup: route get 203.0.113.30 from client mark 0x103: 203.0.113.30 from 192.0.2.50 dev m02 table 102 mark 0x103 
+            cache iif eth0
+    netns_endpoint_access_linux_test.go:508: EVIDENCE backup: route get 203.0.113.30 mark 0x4d72 (gateway's WireGuard): 203.0.113.30 via 192.0.2.1 dev eth0 src 192.0.2.88 mark 0x4d72 uid 0 
+            cache
+    netns_endpoint_access_linux_test.go:513: EVIDENCE backup: route get 203.0.113.30 unmarked (gateway's wstunnel TCP): 203.0.113.30 via 192.0.2.1 dev eth0 src 192.0.2.88 uid 0 
+            cache
+    netns_endpoint_access_linux_test.go:524: EVIDENCE backup: gateway's own TCP to 203.0.113.30:8443 (wstunnel stand-in): server saw 192.0.2.88 (home uplink)
+    netns_endpoint_access_linux_test.go:531: EVIDENCE backup: 10 marked outer ICMP + 1 TCP connect from the gateway and 10 client ICMP to 203.0.113.30: outer on LAN port 10 (wg) + 4 (wss), outer into tunnels 0; client into backup tunnel 10, client on LAN port 0, at ROS 0
+    netns_endpoint_access_linux_test.go:561: EVIDENCE fail-closed: endpoint classes with no default exit target: 203.0.113.10=direct 2001:db8:a1::10=direct 203.0.113.20=blocked 198.51.100.10=direct 203.0.113.30=blocked 203.0.113.41=blocked 203.0.113.42=blocked 2001:db8:42::42=blocked
+    netns_endpoint_access_linux_test.go:572: EVIDENCE fail-closed: client → 203.0.113.42 dropped (fail-closed): TIMEOUT; arrived at gw 7, gw LAN port 0, at ROS 0, into tunnels 0
+    netns_endpoint_access_linux_test.go:572: EVIDENCE fail-closed: client → 203.0.113.41 dropped (fail-closed): TIMEOUT; arrived at gw 7, gw LAN port 0, at ROS 0, into tunnels 0
+    netns_endpoint_access_linux_test.go:572: EVIDENCE fail-closed: client → 203.0.113.30 dropped (fail-closed): TIMEOUT; arrived at gw 7, gw LAN port 0, at ROS 0, into tunnels 0
+    netns_endpoint_access_linux_test.go:572: EVIDENCE fail-closed: client → 203.0.113.20 dropped (fail-closed): TIMEOUT; arrived at gw 7, gw LAN port 0, at ROS 0, into tunnels 0
+    netns_endpoint_access_linux_test.go:572: EVIDENCE fail-closed: client → 2001:db8:42::42 dropped (fail-closed): TIMEOUT; arrived at gw 7, gw LAN port 0, at ROS 0, into tunnels 0
+    netns_endpoint_access_linux_test.go:574: EVIDENCE fail-closed: client → 203.0.113.10 (domestic endpoint): server saw 192.0.2.50; packets gw LAN port 4, at ROS 4, into tunnels 0
+meridian-netns-endpoint-access-test-ok
+--- PASS: TestNetnsEndpointAccess (58.86s)
+PASS

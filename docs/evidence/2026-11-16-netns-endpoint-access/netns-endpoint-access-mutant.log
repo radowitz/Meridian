@@ -1,0 +1,502 @@
+=== RUN   TestNetnsEndpointAccess
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.10 node access class direct: 国内端点（中继或国内入口），按国内直连走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 2001:db8:a1::10 node access class direct: 国内端点（中继或国内入口），按国内直连走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.20 node ix class tunnel: 境外端点，按普通境外流量经默认组的隧道出口，不走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 198.51.100.10 node ix class direct: 国内端点（中继或国内入口），按国内直连走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.30 node hkb class tunnel: 境外端点（网关也直接连它承载隧道）：客户端流量带默认组标记进隧道，网关自己的外层包不受影响，不会递归
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.41 node dc1 class tunnel: 境外端点，按普通境外流量经默认组的隧道出口，不走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 203.0.113.42 node dc2 class tunnel: 境外端点，按普通境外流量经默认组的隧道出口，不走本地宽带
+    netns_endpoint_access_linux_test.go:107: compiled endpoint 2001:db8:42::42 node dc2 class blocked: 境外端点，默认组不能用这个地址族经隧道承载它，不允许走本地宽带，继续丢弃
+    netns_endpoint_access_linux_test.go:124: gw tunnels: main m01, backup m02; group hk mark 0x103 table 203
+    netns_endpoint_access_linux_test.go:279: EVIDENCE loaded set endpoint_tunnel4 holds 203.0.113.20, 203.0.113.30, 203.0.113.41, 203.0.113.42
+    netns_endpoint_access_linux_test.go:279: EVIDENCE loaded set endpoint_block6 holds 2001:db8:42::42
+    netns_endpoint_access_linux_test.go:279: EVIDENCE loaded set endpoint_direct4 holds 203.0.113.10, 198.51.100.10
+    netns_endpoint_access_linux_test.go:279: EVIDENCE loaded set endpoint_direct6 holds 2001:db8:a1::10
+    netns_endpoint_access_linux_test.go:471: EVIDENCE main: client → 203.0.113.10 (domestic endpoint): server saw 192.0.2.50; packets gw LAN port 4, at ROS 4, into tunnels 0
+    netns_endpoint_access_linux_test.go:472: EVIDENCE main: client → 198.51.100.10 (domestic endpoint): server saw 192.0.2.50; packets gw LAN port 4, at ROS 4, into tunnels 0
+    netns_endpoint_access_linux_test.go:473: EVIDENCE main: client → 2001:db8:a1::10 (domestic endpoint): server saw 2001:db8:100::50; packets gw LAN port 3, at ROS 4, into tunnels 0
+    netns_endpoint_access_linux_test.go:474: main: client → 203.0.113.42 (foreign): server saw "192.0.2.50" (want "100.64.1.2"), counters {pre:4 lan:4 tun:0 bak:0 ros:4} (want tun>0, lan=0, ros=0, backup=false)
+    netns_endpoint_access_linux_test.go:475: main: client → 203.0.113.30 (foreign): server saw "192.0.2.50" (want "100.64.1.2"), counters {pre:4 lan:4 tun:0 bak:0 ros:4} (want tun>0, lan=0, ros=0, backup=false)
+    netns_endpoint_access_linux_test.go:476: main: client → 203.0.113.41 (foreign): server saw "192.0.2.50" (want ""), counters {pre:4 lan:4 tun:0 bak:0 ros:4} (want tun>0, lan=0, ros=0, backup=false)
+    netns_endpoint_access_linux_test.go:477: main: client → 203.0.113.20 (foreign): server saw "192.0.2.50" (want ""), counters {pre:4 lan:4 tun:0 bak:0 ros:4} (want tun>0, lan=0, ros=0, backup=false)
+    netns_endpoint_access_linux_test.go:478: EVIDENCE main: client → 2001:db8:42::42 dropped (fail-closed): TIMEOUT; arrived at gw 7, gw LAN port 0, at ROS 0, into tunnels 0
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ ip rule (err=<nil>)
+        0:	from all lookup local
+        17000:	from all fwmark 0x4d72 lookup main
+        17100:	from all fwmark 0x64 lookup 100
+        17200:	from all fwmark 0x101 lookup 102
+        17201:	from all fwmark 0x102 lookup 102
+        17202:	from all fwmark 0x103 lookup 102
+        17600:	from all fwmark 0x101 unreachable
+        17601:	from all fwmark 0x102 unreachable
+        17602:	from all fwmark 0x103 unreachable
+        32766:	from all lookup main
+        32767:	from all lookup default
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ ip -6 rule (err=<nil>)
+        0:	from all lookup local
+        17000:	from all fwmark 0x4d72 lookup main
+        17100:	from all fwmark 0x64 lookup 100
+        17200:	from all fwmark 0x101 lookup 102
+        17201:	from all fwmark 0x102 lookup 102
+        17202:	from all fwmark 0x103 lookup 102
+        17600:	from all fwmark 0x101 unreachable
+        17601:	from all fwmark 0x102 unreachable
+        17602:	from all fwmark 0x103 unreachable
+        32766:	from all lookup main
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ ip route show table 100 (err=<nil>)
+        default via 192.0.2.1 dev eth0 
+        blackhole default metric 32767 
+        10.67.0.0/24 dev mra scope link 
+        blackhole 10.67.0.0/24 metric 32767 
+        192.0.2.0/24 dev eth0 scope link 
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ ip route show table 102 (err=<nil>)
+        default dev m01 scope link 
+        blackhole default metric 32767 
+        192.0.2.0/24 dev eth0 scope link 
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ ip route (err=<nil>)
+        default via 192.0.2.1 dev eth0 
+        10.66.0.0/16 dev m01 scope link 
+        blackhole 10.66.0.0/16 metric 32767 
+        10.66.1.2 dev m01 scope link src 10.66.200.2 metric 10 
+        10.66.1.2 dev m01w scope link src 10.66.200.2 metric 11 
+        10.66.2.0/30 dev m01 proto kernel scope link src 10.66.2.1 
+        10.66.3.0/30 dev m02 proto kernel scope link src 10.66.3.1 
+        10.66.101.0/30 dev m01w proto kernel scope link src 10.66.101.1 
+        10.67.0.0/24 dev mra scope link 
+        blackhole 10.67.0.0/24 metric 32767 
+        192.0.2.0/24 dev eth0 proto kernel scope link src 192.0.2.88 
+        203.0.113.10 via 192.0.2.1 dev eth0 
+        203.0.113.30 via 192.0.2.1 dev eth0 
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ ip -6 route show table 100 (err=<nil>)
+        2001:db8:100::/64 dev eth0 metric 1024 pref medium
+        fd67::/64 dev mra metric 1024 pref medium
+        blackhole fd67::/64 dev lo metric 32767 pref medium
+        default via fe80::1 dev eth0 metric 1024 pref medium
+        blackhole default dev lo metric 32767 pref medium
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ nft list chain inet meridian classify (err=<nil>)
+        table inet meridian {
+        	chain classify {
+        		ip daddr 10.67.0.0/24 meta mark set 0x00000064 return comment "remote-access devices, delivered on mra"
+        		ip6 daddr fd67::/64 meta mark set 0x00000064 return
+        		ip daddr 10.66.0.0/16 drop comment "tunnel v4 is not a LAN destination"
+        		ip6 daddr fc00::/7 drop comment "ULA, including fd66, never goes to ROS"
+        		ip daddr @endpoint_block4 drop comment "foreign tunnel endpoint the default group cannot carry: never the home uplink"
+        		ip6 daddr @endpoint_block6 drop
+        		ip daddr @endpoint_direct4 meta mark set 0x00000064 return comment "domestic tunnel endpoint (relay, IX ingress): home uplink"
+        		ip6 daddr @endpoint_direct6 meta mark set 0x00000064 return
+        		ip daddr @endpoint_tunnel4 meta mark set 0x00000064 return comment "foreign tunnel endpoint: default group, never the home uplink"
+        		ip6 daddr @endpoint_tunnel6 meta mark set 0x00000103 return
+        		ip6 daddr { ::1, fe80::/10, ff00::/8 } return
+        		ip daddr { 224.0.0.0/4, 255.255.255.255 } return
+        		ip daddr @r0 meta mark set 0x00000102 return
+        		ip daddr @direct4 meta mark set 0x00000064 return
+        		ip6 daddr @direct6 meta mark set 0x00000064 return
+        		ip daddr @chnroute meta mark set 0x00000064 return
+        		ip6 daddr @chnroute6 meta mark set 0x00000064 return
+        		ip daddr { 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } meta mark set 0x00000064 return
+        		ip6 daddr 2001:db8:100::/64 meta mark set 0x00000064 return
+        		ip daddr @default4 meta mark set 0x00000103 return
+        		ip6 daddr @default6 meta mark set 0x00000103 return
+        		meta nfproto ipv4 meta mark set 0x00000103 return
+        		meta nfproto ipv6 meta mark set 0x00000103 return
+        	}
+        }
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ nft list table inet epobs (err=<nil>)
+        table inet epobs {
+        	counter pre_relay4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter lan_relay4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter tun_relay4 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter bak_relay4 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter pre_ixin4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter lan_ixin4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter tun_ixin4 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter bak_ixin4 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter pre_ixout4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter lan_ixout4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter tun_ixout4 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter bak_ixout4 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter pre_hk54 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter lan_hk54 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter tun_hk54 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter bak_hk54 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter pre_dc14 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter lan_dc14 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter tun_dc14 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter bak_dc14 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter pre_dc24 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter lan_dc24 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter tun_dc24 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter bak_dc24 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter pre_relay6 {
+        		packets 3 bytes 224
+        	}
+        
+        	counter lan_relay6 {
+        		packets 3 bytes 224
+        	}
+        
+        	counter tun_relay6 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter bak_relay6 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter pre_dc26 {
+        		packets 7 bytes 608
+        	}
+        
+        	counter lan_dc26 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter tun_dc26 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter bak_dc26 {
+        		packets 0 bytes 0
+        	}
+        
+        	counter outer_wg {
+        		packets 0 bytes 0
+        	}
+        
+        	counter outer_wss {
+        		packets 0 bytes 0
+        	}
+        
+        	counter outer_tun {
+        		packets 0 bytes 0
+        	}
+        
+        	chain pre {
+        		type filter hook prerouting priority -400; policy accept;
+        		iifname "eth0" ip saddr 192.0.2.50 ip daddr 203.0.113.10 counter name "pre_relay4"
+        		iifname "eth0" ip saddr 192.0.2.50 ip daddr 198.51.100.10 counter name "pre_ixin4"
+        		iifname "eth0" ip saddr 192.0.2.50 ip daddr 203.0.113.20 counter name "pre_ixout4"
+        		iifname "eth0" ip saddr 192.0.2.50 ip daddr 203.0.113.30 counter name "pre_hk54"
+        		iifname "eth0" ip saddr 192.0.2.50 ip daddr 203.0.113.41 counter name "pre_dc14"
+        		iifname "eth0" ip saddr 192.0.2.50 ip daddr 203.0.113.42 counter name "pre_dc24"
+        		iifname "eth0" ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:a1::10 counter name "pre_relay6"
+        		iifname "eth0" ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:42::42 counter name "pre_dc26"
+        	}
+        
+        	chain post {
+        		type filter hook postrouting priority 400; policy accept;
+        		oifname "eth0" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.10 counter name "lan_relay4"
+        		oifname { "m01", "m02" } ct original ip saddr 192.0.2.50 ip daddr 203.0.113.10 counter name "tun_relay4"
+        		oifname "m02" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.10 counter name "bak_relay4"
+        		oifname "eth0" ct original ip saddr 192.0.2.50 ip daddr 198.51.100.10 counter name "lan_ixin4"
+        		oifname { "m01", "m02" } ct original ip saddr 192.0.2.50 ip daddr 198.51.100.10 counter name "tun_ixin4"
+        		oifname "m02" ct original ip saddr 192.0.2.50 ip daddr 198.51.100.10 counter name "bak_ixin4"
+        		oifname "eth0" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.20 counter name "lan_ixout4"
+        		oifname { "m01", "m02" } ct original ip saddr 192.0.2.50 ip daddr 203.0.113.20 counter name "tun_ixout4"
+        		oifname "m02" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.20 counter name "bak_ixout4"
+        		oifname "eth0" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.30 counter name "lan_hk54"
+        		oifname { "m01", "m02" } ct original ip saddr 192.0.2.50 ip daddr 203.0.113.30 counter name "tun_hk54"
+        		oifname "m02" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.30 counter name "bak_hk54"
+        		oifname "eth0" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.41 counter name "lan_dc14"
+        		oifname { "m01", "m02" } ct original ip saddr 192.0.2.50 ip daddr 203.0.113.41 counter name "tun_dc14"
+        		oifname "m02" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.41 counter name "bak_dc14"
+        		oifname "eth0" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.42 counter name "lan_dc24"
+        		oifname { "m01", "m02" } ct original ip saddr 192.0.2.50 ip daddr 203.0.113.42 counter name "tun_dc24"
+        		oifname "m02" ct original ip saddr 192.0.2.50 ip daddr 203.0.113.42 counter name "bak_dc24"
+        		oifname "eth0" ct original ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:a1::10 counter name "lan_relay6"
+        		oifname { "m01", "m02" } ct original ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:a1::10 counter name "tun_relay6"
+        		oifname "m02" ct original ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:a1::10 counter name "bak_relay6"
+        		oifname "eth0" ct original ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:42::42 counter name "lan_dc26"
+        		oifname { "m01", "m02" } ct original ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:42::42 counter name "tun_dc26"
+        		oifname "m02" ct original ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:42::42 counter name "bak_dc26"
+        		oifname "eth0" ip saddr 192.0.2.88 ip daddr 203.0.113.30 meta mark 0x00004d72 counter name "outer_wg"
+        		oifname "eth0" ip saddr 192.0.2.88 ip daddr 203.0.113.30 tcp dport 8443 counter name "outer_wss"
+        		oifname { "m01", "m02" } ct original ip saddr != 192.0.2.50 ip daddr 203.0.113.30 counter name "outer_tun"
+        	}
+        }
+    netns_endpoint_access_linux_test.go:388: DIAG gw$ nft list table inet meridian_guard (err=<nil>)
+        table inet meridian_guard {
+        	chain forward {
+        		type filter hook forward priority -200; policy accept;
+        		iifname { "mra", "eth0" } meta l4proto { tcp, udp } th dport { 53, 853 } drop comment "DNS is answered locally, never forwarded"
+        		iifname "eth0" oifname "mra" ip daddr 10.67.0.0/24 return comment "LAN and direct replies to remote-access devices"
+        		iifname "eth0" oifname "mra" ip6 daddr fd67::/64 return
+        		iifname { "mra", "eth0" } meta mark 0x00000064 oifname "eth0" return comment "domestic: direct via ROS or LAN only"
+        		iifname { "mra", "eth0" } meta mark 0x00000101-0x00000140 oifname { "m01", "m02", "m01w" } return comment "exit marks: WireGuard only"
+        		iifname { "mra", "eth0" } counter packets 0 bytes 0 drop comment "fail closed: unclassified or misrouted LAN traffic, v4 and v6"
+        	}
+        }
+    netns_endpoint_access_linux_test.go:388: DIAG ros$ nft list table inet epobs (err=<nil>)
+        table inet epobs {
+        	counter ros_relay4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter ros_ixin4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter ros_ixout4 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter ros_hk54 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter ros_dc14 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter ros_dc24 {
+        		packets 4 bytes 216
+        	}
+        
+        	counter ros_relay6 {
+        		packets 4 bytes 296
+        	}
+        
+        	counter ros_dc26 {
+        		packets 0 bytes 0
+        	}
+        
+        	chain pre {
+        		type filter hook prerouting priority -400; policy accept;
+        		ip saddr 192.0.2.50 ip daddr 203.0.113.10 counter name "ros_relay4"
+        		ip saddr 192.0.2.50 ip daddr 198.51.100.10 counter name "ros_ixin4"
+        		ip saddr 192.0.2.50 ip daddr 203.0.113.20 counter name "ros_ixout4"
+        		ip saddr 192.0.2.50 ip daddr 203.0.113.30 counter name "ros_hk54"
+        		ip saddr 192.0.2.50 ip daddr 203.0.113.41 counter name "ros_dc14"
+        		ip saddr 192.0.2.50 ip daddr 203.0.113.42 counter name "ros_dc24"
+        		ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:a1::10 counter name "ros_relay6"
+        		ip6 saddr 2001:db8:100::50 ip6 daddr 2001:db8:42::42 counter name "ros_dc26"
+        	}
+        }
+    netns_endpoint_access_linux_test.go:388: DIAG ros$ ip route (err=<nil>)
+        default via 100.64.9.1 dev wan0 
+        100.64.9.0/30 dev wan0 proto kernel scope link src 100.64.9.2 
+        192.0.2.0/24 dev eth0 proto kernel scope link src 192.0.2.1 
+    netns_endpoint_access_linux_test.go:388: DIAG ros$ ip -6 route (err=<nil>)
+        2001:db8:64:9::/64 dev wan0 proto kernel metric 256 pref medium
+        2001:db8:100::/64 dev eth0 metric 1024 pref medium
+        2001:db8:cccc::1 dev inet0 proto kernel metric 256 pref medium
+        2001:db8:ffff::1 dev inet0 proto kernel metric 256 pref medium
+        fe80::/64 dev eth0 proto kernel metric 256 pref medium
+        fe80::/64 dev inet0 proto kernel metric 256 pref medium
+        fe80::/64 dev wan0 proto kernel metric 256 pref medium
+        default via 2001:db8:64:9::1 dev wan0 metric 1024 pref medium
+    netns_endpoint_access_linux_test.go:388: DIAG access$ ip rule (err=<nil>)
+        0:	from all lookup local
+        18100:	from 192.0.2.0/24 lookup 150
+        18101:	from 10.66.200.0/24 lookup 150
+        32766:	from all lookup main
+        32767:	from all lookup default
+    netns_endpoint_access_linux_test.go:388: DIAG access$ ip route (err=<nil>)
+        default via 100.64.3.1 dev eth0 
+        blackhole 10.66.0.0/16 metric 32767 
+        10.66.1.0/30 dev m00 proto kernel scope link src 10.66.1.1 
+        10.66.2.0/30 dev m01 proto kernel scope link src 10.66.2.2 
+        10.66.101.0/30 dev m01w proto kernel scope link src 10.66.101.2 
+        10.66.200.0/24 dev m01 scope link 
+        blackhole 10.66.200.0/24 metric 32767 
+        100.64.3.0/30 dev eth0 proto kernel scope link src 100.64.3.2 
+        192.0.2.0/24 dev m01 scope link 
+        blackhole 192.0.2.0/24 metric 32767 
+    netns_endpoint_access_linux_test.go:388: DIAG ix$ ip rule (err=<nil>)
+        0:	from all lookup local
+        18200:	from 10.66.200.10 lookup 201
+        18201:	from 10.66.200.11 lookup 202
+        18202:	from 10.66.200.12 lookup 203
+        32766:	from all lookup main
+        32767:	from all lookup default
+    netns_endpoint_access_linux_test.go:388: DIAG ix$ ip route show table 203 (err=<nil>)
+        default dev m05 scope link 
+        blackhole default metric 32767 
+        10.66.200.0/24 dev m00 scope link 
+        192.0.2.0/24 dev m00 scope link 
+    netns_endpoint_access_linux_test.go:388: DIAG hkb$ ip rule (err=<nil>)
+        0:	from all lookup local
+        18200:	from 10.66.200.10 lookup 201
+        18201:	from 10.66.200.11 lookup 202
+        18202:	from 10.66.200.12 lookup 203
+        32766:	from all lookup main
+        32767:	from all lookup default
+    netns_endpoint_access_linux_test.go:388: DIAG hkb$ ip route (err=<nil>)
+        default via 100.64.5.1 dev eth0 
+        10.66.0.0/16 dev m02 scope link 
+        blackhole 10.66.0.0/16 metric 32767 
+        10.66.3.0/30 dev m02 proto kernel scope link src 10.66.3.2 
+        10.66.4.0/30 dev m03 proto kernel scope link src 10.66.4.1 
+        10.66.5.0/30 dev m04 proto kernel scope link src 10.66.5.1 
+        10.66.200.0/24 dev m02 scope link 
+        blackhole 10.66.200.0/24 metric 32767 
+        100.64.5.0/30 dev eth0 proto kernel scope link src 100.64.5.2 
+        192.0.2.0/24 dev m02 scope link 
+        blackhole 192.0.2.0/24 metric 32767 
+    netns_endpoint_access_linux_test.go:388: DIAG hkb$ ip route show table 203 (err=<nil>)
+        default dev m03 scope link 
+        blackhole default metric 32767 
+        10.66.200.0/24 dev m02 scope link 
+        192.0.2.0/24 dev m02 scope link 
+    netns_endpoint_access_linux_test.go:388: DIAG dc1$ ip rule (err=<nil>)
+        0:	from all lookup local
+        17060:	from all fwmark 0x4d50 lookup 172
+        17061:	from all fwmark 0x4d51 lookup 173
+        32766:	from all lookup main
+        32767:	from all lookup default
+    netns_endpoint_access_linux_test.go:388: DIAG dc1$ ip route (err=<nil>)
+        default via 100.64.1.1 dev eth0 
+        blackhole 10.66.0.0/16 metric 32767 
+        10.66.4.0/30 dev m03 proto kernel scope link src 10.66.4.2 
+        10.66.6.0/30 dev m05 proto kernel scope link src 10.66.6.2 
+        10.66.200.0/24 dev m05 scope link 
+        blackhole 10.66.200.0/24 metric 32767 
+        100.64.1.0/30 dev eth0 proto kernel scope link src 100.64.1.2 
+        192.0.2.0/24 dev m05 scope link 
+        blackhole 192.0.2.0/24 metric 32767 
+    netns_endpoint_access_linux_test.go:388: DIAG dc1$ nft list ruleset (err=<nil>)
+        table inet meridian {
+        	chain group_dns {
+        		type nat hook prerouting priority dstnat; policy accept;
+        		iifname { "m03", "m05" } ip6 daddr fd66::53:0/112 udp dport 53 dnat ip6 to fd66:0:0:6::2 comment "region-group resolver addresses: this exit's tunnel resolver"
+        		iifname { "m03", "m05" } ip6 daddr fd66::53:0/112 tcp dport 53 dnat ip6 to fd66:0:0:6::2 comment "region-group resolver addresses: this exit's tunnel resolver"
+        	}
+        
+        	chain hub_return_in {
+        		type filter hook prerouting priority mangle; policy accept;
+        		iifname "m05" ct direction original ct mark set 0x00004d50 comment "arrived from the primary hub ix"
+        		iifname "m03" ct direction original ct mark set 0x00004d51 comment "arrived from the backup hub hkb"
+        		ct direction reply ct mark 0x00004d50 meta mark set 0x00004d50 comment "reply: back through the primary hub"
+        		ct direction reply ct mark 0x00004d51 meta mark set 0x00004d51 comment "reply: back through the backup hub"
+        	}
+        
+        	chain hub_return_out {
+        		type route hook output priority mangle; policy accept;
+        		ct direction reply ct mark 0x00004d50 meta mark set 0x00004d50 comment "local reply (resolver, ping): back through the primary hub"
+        		ct direction reply ct mark 0x00004d51 meta mark set 0x00004d51 comment "local reply (resolver, ping): back through the backup hub"
+        	}
+        
+        	chain exit_dns {
+        		type nat hook prerouting priority dstnat; policy accept;
+        		iifname { "m03", "m05" } ip6 daddr fd66::54:1 udp dport 53 dnat ip6 to fd66:0:0:6::2 comment "this exit's resolver address, from either hub"
+        		iifname { "m03", "m05" } ip6 daddr fd66::54:1 tcp dport 53 dnat ip6 to fd66:0:0:6::2 comment "this exit's resolver address, from either hub"
+        	}
+        
+        	chain srcnat {
+        		type nat hook postrouting priority srcnat; policy accept;
+        		oifname "eth0" ip saddr { 10.66.200.0/24, 192.0.2.0/24 } masquerade
+        	}
+        
+        	chain drop_v6 {
+        		type filter hook forward priority filter; policy accept;
+        		oifname "eth0" meta nfproto ipv6 drop comment "no egress_v6; AAAA is filtered at DNS"
+        	}
+        
+        	chain tunnel_mss_out {
+        		type filter hook output priority mangle + 10; policy accept;
+        		oifname { "m03", "m05" } tcp flags syn meta nfproto ipv4 tcp option maxseg size > 1320 tcp option maxseg size set 1320 comment "this host's own TCP into a tunnel: the gateway's forward clamp"
+        		oifname { "m03", "m05" } tcp flags syn meta nfproto ipv6 tcp option maxseg size > 1300 tcp option maxseg size set 1300
+        	}
+        
+        	chain tunnel_mss_in {
+        		type filter hook input priority mangle; policy accept;
+        		iifname { "m03", "m05" } tcp flags syn meta nfproto ipv4 tcp option maxseg size > 1320 tcp option maxseg size set 1320 comment "this host's own TCP from a tunnel: the gateway's forward clamp"
+        		iifname { "m03", "m05" } tcp flags syn meta nfproto ipv6 tcp option maxseg size > 1300 tcp option maxseg size set 1300
+        	}
+        }
+    netns_endpoint_access_linux_test.go:393: DIAG access-server-2001:db8:a1::10-8080.log:
+        connection from 2001:db8:64:9::2
+        connection from 2001:db8:100::50
+    netns_endpoint_access_linux_test.go:393: DIAG access-server-203.0.113.10-8080.log:
+        connection from 100.64.9.2
+        connection from 192.0.2.50
+    netns_endpoint_access_linux_test.go:393: DIAG dc1-server-203.0.113.41-8080.log:
+        connection from 192.0.2.50
+    netns_endpoint_access_linux_test.go:393: DIAG dc2-server-2001:db8:42::42-8080.log:
+        connection from 2001:db8:64:9::2
+    netns_endpoint_access_linux_test.go:393: DIAG dc2-server-203.0.113.42-8080.log:
+        connection from 100.64.9.2
+        connection from 192.0.2.50
+    netns_endpoint_access_linux_test.go:393: DIAG hkb-server-203.0.113.30-8080.log:
+        connection from 100.64.9.2
+        connection from 192.0.2.50
+    netns_endpoint_access_linux_test.go:393: DIAG hkb-server-203.0.113.30-8443.log:
+    netns_endpoint_access_linux_test.go:393: DIAG ix-server-198.51.100.10-8080.log:
+        connection from 192.0.2.50
+    netns_endpoint_access_linux_test.go:393: DIAG ix-server-203.0.113.20-8080.log:
+        connection from 192.0.2.50
+    netns_endpoint_access_linux_test.go:479: main: 4 checks failed
+--- FAIL: TestNetnsEndpointAccess (12.67s)
+FAIL

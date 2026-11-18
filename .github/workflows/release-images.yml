@@ -1,0 +1,158 @@
+# Multi-arch panel image (linux/amd64, linux/arm64).
+#
+# Manual only (Actions -> "Release images" -> Run workflow). By default it
+# only BUILDS both architectures (tests first) and pushes nothing. With
+# "publish" ticked it pushes ghcr.io/<owner>/meridian:<version> (plus
+# :latest unless the version is a pre-release) and creates a DRAFT GitHub
+# release whose notes are the "## <version>" section of CHANGELOG.md.
+# Defining this file publishes nothing; whether an image exists for a
+# version is only what the registry shows.
+#
+# SmartDNS is not rebuilt: deploy/docker-compose.yml runs the upstream image
+# (MERIDIAN_SMARTDNS_IMAGE, default pymumu/smartdns:latest). The job
+# records the upstream multi-arch digest in smartdns-image.txt (an artifact,
+# and in the release notes) so operators can pin
+#   MERIDIAN_SMARTDNS_IMAGE=pymumu/smartdns@sha256:<digest>
+# in deploy/.env.
+name: Release images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag, e.g. v1.4.0 (must have a CHANGELOG.md section)"
+        required: true
+        type: string
+      publish:
+        description: "Push the images to GHCR and draft a release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-images-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go vet ./... && go test ./... -count=1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - working-directory: web
+        run: npm ci && npx vitest run && npm run build
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # draft release (publish only)
+      packages: write   # GHCR push (publish only)
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version and changelog
+        run: |
+          echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
+            || { echo "version must look like v1.2.3"; exit 1; }
+          awk -v v="$VERSION" '
+            /^## / { on = ($2 == v || $2 == "[" v "]") ; next }
+            on { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || { echo "CHANGELOG.md has no '## $VERSION' section"; exit 1; }
+
+      - name: Image name
+        id: name
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${owner}/meridian" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: ${{ inputs.publish }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: tags
+        run: |
+          tags="${{ steps.name.outputs.image }}:${VERSION}"
+          case "$VERSION" in *-*) ;; *) tags="${tags},${{ steps.name.outputs.image }}:latest" ;; esac
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      # The artifacts stage downloads the pinned wstunnel/SmartDNS/gost
+      # binaries and fails on any digest or size mismatch with
+      # internal/artifacts/artifacts.lock, for both architectures.
+      - name: Build (and push when publishing)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ inputs.publish }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          provenance: true
+          sbom: true
+
+      - name: SmartDNS upstream digest
+        run: |
+          {
+            echo "image=pymumu/smartdns:latest"
+            docker buildx imagetools inspect pymumu/smartdns:latest --format '{{json .Manifest.Digest}}' | tr -d '"' | sed 's/^/digest=/'
+            date -u +checked=%Y-%m-%dT%H:%M:%SZ
+          } > smartdns-image.txt
+          cat smartdns-image.txt
+
+      - name: Release notes
+        run: |
+          {
+            cat release-notes.md
+            echo
+            echo "### Images"
+            if [ "${{ inputs.publish }}" = "true" ]; then
+              echo "- \`${{ steps.name.outputs.image }}:${VERSION}\` (linux/amd64, linux/arm64), digest \`${{ steps.build.outputs.digest }}\`"
+            else
+              echo "- build only, nothing published"
+            fi
+            echo "- SmartDNS (upstream, not rebuilt): \`pymumu/smartdns@$(sed -n 's/^digest=//p' smartdns-image.txt)\`"
+            echo
+            echo "Upgrade: \`sudo bash deploy/debian/upgrade.sh ${VERSION}\` (docs/user/upgrade-rollback.md)."
+          } > release-body.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ inputs.version }}
+          path: |
+            release-body.md
+            smartdns-image.txt
+
+      - name: Draft GitHub release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$VERSION" --draft --title "Meridian $VERSION" \
+            --notes-file release-body.md --target "${{ github.sha }}"
