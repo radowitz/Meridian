@@ -224,7 +224,8 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 		add(prefix+"etc/sysctl.d/99-meridian.conf", renderSysctl(t, n))
 		add(prefix+"etc/meridian/forwarding.conf", renderForwarding(t, n))
 		add(prefix+"etc/iproute2/rt_tables.d/meridian.conf", renderRTTables(t, n, hubExits, hubGroups))
-		add(prefix+"usr/local/sbin/meridian-routes.sh", renderRoutes(t, n, tunnels, hubExits, hubGroups))
+		routes := renderRoutes(t, n, tunnels, hubExits, hubGroups)
+		add(prefix+"usr/local/sbin/meridian-routes.sh", routes)
 		meshSeal := meshSealTimer(t, n)
 		add(prefix+"usr/local/sbin/meridian-up.sh", renderUp(t, n, nodeTunnels, meshSeal, exits))
 		nftExits, nftGroups := exits, groups
@@ -244,7 +245,7 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			}
 		}
 		if n.Role == model.RoleGateway || n.Role == model.RoleRelay || n.Role == model.RoleHub {
-			add(prefix+"usr/local/sbin/meridian-failover.sh", renderFailover(t, n, tunnels, hubExits, hubGroups))
+			add(prefix+"usr/local/sbin/meridian-failover.sh", withRuleHeal(renderFailover(t, n, tunnels, hubExits, hubGroups), routes))
 			add(prefix+"etc/systemd/system/meridian-failover.service", renderFailoverUnit())
 		}
 		if n.Role == model.RoleGateway {

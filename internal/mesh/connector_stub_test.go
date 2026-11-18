@@ -17,6 +17,47 @@ import (
 type connHost struct {
 	t                      *testing.T
 	dir, bin, st, bk, root string
+	// sys mirrors /usr/bin and /bin without the tools the stubs stand in
+	// for, so a host that "lacks" one (gpg) really lacks it even where the
+	// test machine has it (Debian CI images ship gpg/gpgv).
+	sys string
+}
+
+// hostOnly are commands the stubbed host provides (or deliberately lacks);
+// the real ones never leak in through PATH.
+func hostOnly(name string) bool {
+	switch {
+	case strings.HasPrefix(name, "gpg"), strings.HasPrefix(name, "apt"), strings.HasPrefix(name, "dpkg"):
+		return true
+	}
+	switch name {
+	case "curl", "wget", "systemctl", "warp-cli", "warp-svc", "ip", "sudo", "dirmngr":
+		return true
+	}
+	return false
+}
+
+func mirrorSystemBin(t *testing.T, dst string) {
+	t.Helper()
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []string{"/usr/bin", "/bin"} {
+		ents, err := os.ReadDir(src)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if hostOnly(e.Name()) {
+				continue
+			}
+			l := filepath.Join(dst, e.Name())
+			if _, err := os.Lstat(l); err == nil {
+				continue
+			}
+			_ = os.Symlink(filepath.Join(src, e.Name()), l)
+		}
+	}
 }
 
 const stubFpr = "0123456789ABCDEF0123456789ABCDEF01234567"
@@ -29,6 +70,8 @@ func newConnHost(t *testing.T) *connHost {
 	d := t.TempDir()
 	h := &connHost{t: t, dir: d, bin: filepath.Join(d, "bin"), st: filepath.Join(d, "state"), root: filepath.Join(d, "root")}
 	h.bk = filepath.Join(h.root, "mesh-deploy", run)
+	h.sys = filepath.Join(d, "sys")
+	mirrorSystemBin(t, h.sys)
 	for _, p := range []string{h.bin, h.st, filepath.Join(h.root, "keyrings"), filepath.Join(h.root, "sources")} {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			t.Fatal(err)
@@ -159,7 +202,7 @@ func (h *connHost) exec(script string) string {
 		mesh.RepoList, filepath.Join(h.root, "sources", "l.list"),
 	)
 	cmd := exec.Command("bash", "-c", r.Replace(script))
-	cmd.Env = []string{"PATH=" + h.bin + ":/usr/bin:/bin", "HOME=" + h.dir}
+	cmd.Env = []string{"PATH=" + h.bin + ":" + h.sys, "HOME=" + h.dir}
 	out, _ := cmd.CombinedOutput()
 	return string(out)
 }

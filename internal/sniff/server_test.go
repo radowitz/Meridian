@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -605,12 +606,18 @@ func TestLimitsAndLoop(t *testing.T) {
 	h := defaultHarness(t, Config{MaxPerSource: 1, SniffTimeout: 3 * time.Second})
 	first := h.connect("203.0.113.14:443") // holds the slot while sniffing
 	time.Sleep(50 * time.Millisecond)
+	// The refusal is a reset right after accept. Under load (the whole
+	// suite on a Linux runner) it can reach the client before Dial returns,
+	// so a reset from Dial itself is the same outcome.
 	second, err := net.Dial("tcp", h.s.Addr().String())
-	if err != nil {
+	switch {
+	case errors.Is(err, syscall.ECONNRESET):
+	case err != nil:
 		t.Fatal(err)
+	default:
+		defer second.Close()
+		expectReset(t, second)
 	}
-	defer second.Close()
-	expectReset(t, second)
 	if n := h.s.Health().Counters["refused_per_source"]; n != 1 {
 		t.Fatalf("refused_per_source %d", n)
 	}

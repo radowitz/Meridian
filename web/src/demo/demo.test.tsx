@@ -442,7 +442,10 @@ describe("demo isolation", () => {
     expect(WEB_FILES["../../demo.html"]).toContain("/src/demo/main.tsx");
   });
 
-  it("the Docker image copies only web/dist and the Go server serves only its web dir", () => {
+  // Needs the repository around web/ (deploy/, .dockerignore, the Go tree):
+  // a checkout of web/ alone (e.g. a container that mounts only web/) has
+  // none of them and skips this check instead of failing on undefined.
+  it.skipIf(REPO_FILES["../../../deploy/Dockerfile"] === undefined)("the Docker image copies only web/dist and the Go server serves only its web dir", () => {
     const docker = REPO_FILES["../../../deploy/Dockerfile"];
     const copies = docker.split("\n").filter((l: string) => /COPY --from=web/.test(l));
     expect(copies).toEqual(["COPY --from=web /src/web/dist /usr/share/meridian/web"]);

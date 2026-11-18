@@ -1,4 +1,74 @@
 {
+  "nodes/access/usr/local/sbin/meridian-failover.sh": {
+    "from_sha256": "00476af1d0961ce9b06e7ba1c6fc7b0e09165bb1e6d58ca6a72956b2f48e4f8d",
+    "to_sha256": "09aad8c5c08b0d710972ffb27d1346a29425bc9c3d9468e1b8c85f9b64663b76",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/access/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "f9281d7307eb194e8a27881fecf5bf158c19a81494741b02fe8747e0edfce33e",
+    "to_sha256": "606d871e9934a09a77350c15b85dabe56672bd7381ef34738f9b4c4a831883fa",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/bk1/usr/local/sbin/meridian-failover.sh": {
+    "from_sha256": "0478d6a48b0079d6b9a7d505ba011aee0a368724fac0b1c1442e3bc0c3f26e94",
+    "to_sha256": "f9e751d28519c5861a1a20efab124dec83560fd6b332201758c278bd145769ee",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/bk1/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "1608fbb7ae1327c9d63dc4d75567f6169590a8cf85185c309e832ba845c3fdf6",
+    "to_sha256": "46711e1f7355b1cfafc67aea7f9f26bb5185b6b7e168685008e90c07ebcfae47",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/bk2/usr/local/sbin/meridian-failover.sh": {
+    "from_sha256": "78157e4654a3424225b4ea4474ff6fc2cb0f98de5113d0935f49c10526d0e1b2",
+    "to_sha256": "17b69726851b74248ebab1c01de347d17f154f124908c722b9e1f2d9b489afdf",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/bk2/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "ae0a9784d54bcd2a28815c4e0171c1428e85b902a823ddc0bf0b48c0280e39ad",
+    "to_sha256": "386abe7cf1c168f8a74b829ea28b29c8d725cc23f444634915f5869573a402e6",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/dc1/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "241e0d16f8e4f45fd1f6642b1a59e1e281c1cf90955075e6350ac41cc3210c78",
+    "to_sha256": "3d57ca04d42cd622e68130597f58c0e38631823c299a00e0c39cff727180fcd3",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/dc2/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "b88170c4943fc2802e0ea8520ffdd03a55bf32ba579be645a780b85889d74da5",
+    "to_sha256": "fa5a7df98725e81a7aaf905921d4559eec5608fe90ed40000df275de3261eae7",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/dc3/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "1e9f74d548f42d9aef3ac90174bf2fb2a23fa8cc7298368c3baa7acedf5d6023",
+    "to_sha256": "eb0e8930ecf6bd1b36ab6506efddd79c506a5e3a8b441e8e3f900367a3923d0a",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/dc4/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "ff1654e99ab7a779cf44bf0af8aae9292ef26adf2b5f08c49e488f0312a437d2",
+    "to_sha256": "98faebea6ebc966d2d7402137eab392a06e89f26895c37e57f94263e3a337d23",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/dc5/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "563ecd42825c46739dd9adf72bb59ab376404883814942888ea2369c5d45d40e",
+    "to_sha256": "7b81d95295ce28c2679345650094b3334d0efb61996451cf6e8ed6b489d9adcd",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/dc6/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "8683a843d26fb98d806b1b0b54293f711c33e274a253d48fa8d4efb695d66b77",
+    "to_sha256": "bd19c46b9be5b8af23e81e2e7f9fa6f37d5408968b9954fe4f94f316f8f572e6",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/dc7/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "aec520297b86d88d08d328e140a0abd9e724a81de5ecc465e2ab8a6f607aec9b",
+    "to_sha256": "1b5c9f08c5c0d9016fa37cd40aaa1544116c2568ce0e74a572300ab82eca37c9",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/gw/usr/local/sbin/meridian-failover.sh": {
+    "from_sha256": "62c37dc09151e903eaca8872a2ea6cc2fe21ec1c5120fd9abc12affb0c5b31cb",
+    "to_sha256": "ed7fdadd9079404ba7564e809e0a18833414d891a8c8cdf558bd874bb6bc79e8",
+    "reason": "T2 P1 premature carrying-state publication: path-step stages candidates, the locked applier publishes status/state/switch time only after nft and every IPv4/IPv6 route succeeded; success snapshot, one compensation, bounded retry, persistent block, fallback state reloaded from the applied record; QA follow-up (docs/review-391aa50.md, QA 修复): the shared switch shell records the pending target snapshot and finishes a commit killed after 'current' named it (snapshot version/args complete, kernel state verified by replaying it under the fence) instead of fencing until a full install; the fallback restores its eviction/recovery counters (fb_in/fb_goods/fb_fails) after a failed switch; networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
   "nodes/gw/usr/local/sbin/meridian-routes.sh": {
     "from_sha256": "f6b2260fa85991c16636f0e69570b87e873a399e76b74e63ab92c2e9b969641a",
     "to_sha256": "4a1b6173ade6493e58710fa129966bc14a8dc547b7fa9de7b2bc88a0036d64fd",
@@ -6,12 +76,27 @@
   },
   "nodes/gw/usr/local/sbin/meridian-up.sh": {
     "from_sha256": "6e1167c03e29014bf6e326dd0efb86cfde1620b3318313375dea3b6e13cc7bea",
-    "to_sha256": "eab34b8a6e3821093a75ac7eb7f110ff5a54d2036651828e1bc97ee202bbc62c",
-    "reason": "T2: the install holds the switch lock and the independent fence (SSH management exceptions) from before the base nft load until routes are applied; a failure latches recovery_blocked (ERR trap); QA follow-up (docs/review-391aa50.md, QA 修复): the shared switch shell records the pending target snapshot and finishes a commit killed after 'current' named it (snapshot version/args complete, kernel state verified by replaying it under the fence) instead of fencing until a full install; the fallback restores its eviction/recovery counters (fb_in/fb_goods/fb_fails) after a failed switch"
+    "to_sha256": "cf9641e56faa53af6a41d7fe8bb0e6fcb53bf3fcf5ad53b574b6833abf6510d1",
+    "reason": "T2: the install holds the switch lock and the independent fence (SSH management exceptions) from before the base nft load until routes are applied; a failure latches recovery_blocked (ERR trap); QA follow-up (docs/review-391aa50.md, QA 修复): the shared switch shell records the pending target snapshot and finishes a commit killed after 'current' named it (snapshot version/args complete, kernel state verified by replaying it under the fence) instead of fencing until a full install; the fallback restores its eviction/recovery counters (fb_in/fb_goods/fb_fails) after a failed switch; networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
   },
-  "nodes/gw/usr/local/sbin/meridian-failover.sh": {
-    "from_sha256": "62c37dc09151e903eaca8872a2ea6cc2fe21ec1c5120fd9abc12affb0c5b31cb",
-    "to_sha256": "832f26b530e66ebc3f928f174a6185e0d45bba712b58e31e5f59f27babc36ef6",
-    "reason": "T2 P1 premature carrying-state publication: path-step stages candidates, the locked applier publishes status/state/switch time only after nft and every IPv4/IPv6 route succeeded; success snapshot, one compensation, bounded retry, persistent block, fallback state reloaded from the applied record; QA follow-up (docs/review-391aa50.md, QA 修复): the shared switch shell records the pending target snapshot and finishes a commit killed after 'current' named it (snapshot version/args complete, kernel state verified by replaying it under the fence) instead of fencing until a full install; the fallback restores its eviction/recovery counters (fb_in/fb_goods/fb_fails) after a failed switch"
+  "nodes/hka/usr/local/sbin/meridian-failover.sh": {
+    "from_sha256": "5cb1ec1516a4fe221c27193e92d121ba4dfcf74ca7bf858ae218f54429b51fef",
+    "to_sha256": "486786adf38336eadeeb7d1ed4e33a59dd805ac36896d37c5fe8ac7b392d6535",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/hka/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "f1523ebfb58e2090b410f06e99a9f690cad55dcda65a1cf03a4b82140766b45d",
+    "to_sha256": "b89190827fc8331fb38bc7f412375135456ca481fbce9478865e543022b942bb",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/hkb/usr/local/sbin/meridian-failover.sh": {
+    "from_sha256": "8dc1b157ca0d95c54dc33026e77a8b80eb5ae69a4a201eafdd0a847d48ea9ac4",
+    "to_sha256": "3ea620fb04ae5e0b12b59b5b6ae631bd0aaa1e3ad45bb5f0bdbf18f088ebfc6f",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+  },
+  "nodes/hkb/usr/local/sbin/meridian-up.sh": {
+    "from_sha256": "fcb95c2cb0585a88c65aec2fb957940aa572e4d59138e56f65a5bfe7dd8358b3",
+    "to_sha256": "d6ffccb04598769d18ad3b86e76591b86009842a3f8e2f39038144f5202f5de6",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
   }
 }

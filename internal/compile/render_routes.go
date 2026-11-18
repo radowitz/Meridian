@@ -2,6 +2,7 @@ package compile
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -451,6 +452,47 @@ func renderDirectGatewayRoutes(sb *strings.Builder, t model.Topology, lan string
 	}
 	renderHubGroupRoutes(sb, t, lan, groups, false)
 }
+
+// ruleSentinel finds the first IPv4 policy rule a routes script installs
+// unconditionally (column 0, so never inside a block).
+var ruleSentinel = regexp.MustCompile(`(?m)^ip rule add .* priority ([0-9]+)$`)
+
+const failoverLoopStart = "\nwhile true; do\n"
+
+// withRuleHeal adds a self-heal to a failover loop: when the first policy
+// rule of the node's routes script is gone on two checks in a row (10 s,
+// so a reinstall re-adding rules is not mistaken for a loss), something
+// deleted Meridian's rules while the data plane is up (systemd-networkd
+// restarting without NetworkdDropIn). The routes script runs again and the
+// loop starts over from the compiled state, as after meridian-up.sh. A
+// routes script without such a rule, or a failover script that is not one
+// main loop, is returned unchanged.
+func withRuleHeal(failover, routes string) string {
+	m := ruleSentinel.FindStringSubmatch(routes)
+	if m == nil || strings.Count(failover, failoverLoopStart) != 1 {
+		return failover
+	}
+	i := strings.Index(failover, failoverLoopStart)
+	return failover[:i] + "\n" + fmt.Sprintf(ruleHealFmt, m[1]) + "while true; do\n  rule_heal\n" + failover[i+len(failoverLoopStart):]
+}
+
+const ruleHealFmt = `# Self-heal: rule priority %[1]s is the first one meridian-routes.sh adds.
+RULE_SENTINEL=%[1]s
+rule_missing=0
+rule_heal() {
+  local rules
+  rules=$(ip rule show 2>/dev/null) || return 0
+  if printf '%%s\n' "$rules" | grep -q "^$RULE_SENTINEL:"; then rule_missing=0; return 0; fi
+  rule_missing=$((rule_missing + 1))
+  [ "$rule_missing" -ge 2 ] || return 0
+  if /usr/local/sbin/meridian-routes.sh >/dev/null 2>&1; then
+    echo "meridian-rule-heal: policy rule $RULE_SENTINEL was missing; re-ran meridian-routes.sh, restarting the failover loop" >&2
+    exec "$0"
+  fi
+  if [ "$rule_missing" -eq 2 ]; then echo "meridian-rule-heal: policy rule $RULE_SENTINEL is missing and meridian-routes.sh failed; retrying every 5 s" >&2; fi
+  return 0
+}
+`
 
 func renderFailover(t model.Topology, n model.Node, tunnels []Tunnel, exits []ExitPlan, groups []GroupPlan) string {
 	switch n.Role {

@@ -532,3 +532,30 @@ func TestTemplateWANInterfacePassesPreflight(t *testing.T) {
 		t.Fatalf("unset: %v", codes(ev, ""))
 	}
 }
+
+// systemd-networkd running without Meridian's drop-in on an installed host:
+// a warning (its next restart deletes the ip rules). Not on a fresh host
+// (the install writes the drop-in), not with the drop-in, not without
+// networkd running.
+func TestNetworkdDropInMissing(t *testing.T) {
+	gfp := FootprintOf(nodeFiles(t, "gw"))
+	installed := Context{Artifacts: testArts, NodeID: "gw", Gateway: true, Owned: &Owned{Files: map[string]string{"/usr/local/sbin/meridian-up.sh": "x"}}}
+	fresh := Context{Artifacts: testArts, NodeID: "gw", Gateway: true}
+	for name, c := range map[string]struct {
+		extra string
+		ctx   Context
+		want  bool
+	}{
+		"installed, active, missing": {"unit systemd-networkd.service active enabled 1\nnetworkd-dropin no\n", installed, true},
+		"installed, active, present": {"unit systemd-networkd.service active enabled 1\nnetworkd-dropin yes\n", installed, false},
+		"installed, inactive":        {"unit systemd-networkd.service inactive disabled 0\nnetworkd-dropin no\n", installed, false},
+		"fresh, active, missing":     {"unit systemd-networkd.service active enabled 1\nnetworkd-dropin no\n", fresh, false},
+		"not reported":               {"", installed, false},
+	} {
+		ev := Evaluate(fixture(t, "clean-debian13.txt", gfp, nil, c.extra), gfp, c.ctx)
+		f := find(ev, CodeNetworkdRules)
+		if got := len(f) == 1 && f[0].Severity == Warning && strings.Contains(f[0].Action, "ManageForeignRoutingPolicyRules=no"); got != c.want || (!c.want && len(f) != 0) {
+			t.Errorf("%s: %+v", name, f)
+		}
+	}
+}

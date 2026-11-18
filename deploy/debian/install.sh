@@ -233,6 +233,25 @@ fi
 
 install -d /etc/sysctl.d /etc/nftables.d /etc/smartdns /etc/meridian/tls /etc/meridian/dns \
   /etc/iproute2/rt_tables.d /var/lib/meridian /usr/local/sbin
+# systemd-networkd deletes routing policy rules and routes it did not create
+# whenever it restarts (an unattended systemd upgrade does that), which takes
+# Meridian's ip rules with it. Same drop-in as meridian-up.sh writes
+# (compile.NetworkdDropIn), byte for byte; only written, networkd is not
+# restarted. The directory also exists before meridian-host starts, so its
+# ReadWritePaths entry lets a withdraw remove the file.
+if [[ -e /lib/systemd/system/systemd-networkd.service || -e /usr/lib/systemd/system/systemd-networkd.service ]]; then
+  install -d /etc/systemd/networkd.conf.d
+  nd_want="# meridian: keep Meridian ip rules and routes when systemd-networkd restarts
+[Network]
+ManageForeignRoutingPolicyRules=no
+ManageForeignRoutes=no"
+  if [[ "$(cat /etc/systemd/networkd.conf.d/90-meridian.conf 2>/dev/null)" != "$nd_want" ]]; then
+    printf '%s\n' "$nd_want" > /etc/systemd/networkd.conf.d/90-meridian.conf.tmp
+    chmod 0644 /etc/systemd/networkd.conf.d/90-meridian.conf.tmp
+    mv -f /etc/systemd/networkd.conf.d/90-meridian.conf.tmp /etc/systemd/networkd.conf.d/90-meridian.conf
+    echo "已写入 /etc/systemd/networkd.conf.d/90-meridian.conf：systemd-networkd 重启时不再清掉 Meridian 的路由规则（没有重启 networkd）。"
+  fi
+fi
 # WireGuard configs hold private keys: the directory is root-only, also when
 # it already existed with the distribution's default mode.
 install -d -m 0700 /etc/wireguard

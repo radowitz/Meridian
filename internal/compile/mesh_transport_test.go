@@ -83,16 +83,16 @@ func withoutMeshEdges(t model.Topology) model.Topology {
 // without Mesh edges installs. If such a change is intended, it is a change
 // of its own and this table is updated by hand, entry by entry.
 var noMeshCompile = map[string]string{
-	"example":                    "2babf3fb96313dd12df752a41f89437ff8b7441505ae12d568ed911a0b1de3af",
-	"example_sniff":              "53c0e6ae8bea688e6f43d0de11b9c4498d353c0132999bdc5481916457f34abb",
-	"example_groupdns":           "4c593c42d5ec5ae3050569b7e6935bec58fc3f70dd2c988362ed84f2410bb4e2",
-	"example_remote_access":      "6262c310d5d4ad690e25459cf211df8f2c7287ebb1ff381e8ae9cc373438b364",
-	"example_stored_allocations": "2babf3fb96313dd12df752a41f89437ff8b7441505ae12d568ed911a0b1de3af",
-	"dual_hub":                   "5995f0e66a33fb3d7bd3ae6d07bb126a9ffa641baaf690e7c1cdc7faabb74f2f",
-	"dual_hub_sniff":             "46cf94420944461bee7fc5bd3d05b751c56da9654fa5177e88fed55fa28d9dcc",
-	"shared_relays":              "27749606040e7984cc7eebb5ec9a75f4c546d545dbabbe1b36432a9ae960166c", // R2: relay speed-test endpoint, QoS shell, config fields; T2 review-391aa50: protected switch transaction; QA: fallback counters, pending commit finish
-	"nested":                     "a3be855ca66cc28e3cd2ead4a04eeea57d90a5786087380b17b2d930aa0f0092",
-	"external":                   "27dd97695507aee0fc31ab94c3d20361f5bee424c707270f2ee161576ee37f1e",
+	"example":                    "8b663a95b7b02c474cfb92000134aea48bdec0a24cc9420d581f55d44f470618",
+	"example_sniff":              "8f59f43702e506de4330696bc056f66778af0a4ce94740e2e706cde8e190bbdd",
+	"example_groupdns":           "0e80476bd002211317cabd97d099a9c06d604224ac8726dc10aff0f3b9708a79",
+	"example_remote_access":      "560a9807baec33f4ee53c4a8414dd0b360e20d00a771b334677712fa9a1fe45c",
+	"example_stored_allocations": "8b663a95b7b02c474cfb92000134aea48bdec0a24cc9420d581f55d44f470618",
+	"dual_hub":                   "e3017a4ca0ee1747475cbd9d93e7a581f1718ecdf7b71be11af5a39e415a0b5f",
+	"dual_hub_sniff":             "372b3c3c7b768aa5db391cdc9934567ae898d20bcb31b0d2be1d59c40171d051",
+	"shared_relays":              "1a70c63b78c88a75b018ce0dd284891e78983d7cfea70974824f027b4e9781c0", // R2: relay speed-test endpoint, QoS shell, config fields; T2 review-391aa50: protected switch transaction; QA: fallback counters, pending commit finish
+	"nested":                     "7d0a6740d5365f888b9725bd20ac2963e5e7cfcbac4a40e0d3b816090eabac1b",
+	"external":                   "86d27393e3f64c6d473e543f4a8babe2761a4aa2ca96dc24daeeb4f2c4d5e189",
 }
 
 func noMeshCases(t *testing.T) map[string]func() (model.Topology, map[string]string) {

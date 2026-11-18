@@ -53,6 +53,41 @@ func (c *bannerConn) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// collect reads, for at most d, what the server sent but the handshake
+// never read. A failed handshake can stop before reading: through a jump
+// the forwarded channel may already be closed when the client writes its
+// own version line, so the write fails while the server's refusal line
+// still sits unread in the channel buffer (seen on Linux, where loopback
+// delivers the relay's data and close before the client writes). Called
+// only after a failed handshake, before the connection is closed; closing
+// it ends a read still in progress.
+func (c *bannerConn) collect(d time.Duration) {
+	if _, sawSSH := c.preBanner(); sawSSH {
+		return
+	}
+	_ = c.Conn.SetReadDeadline(time.Now().Add(d))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b := make([]byte, 128)
+		for {
+			c.mu.Lock()
+			full := c.done
+			c.mu.Unlock()
+			if full {
+				return
+			}
+			if _, err := c.Read(b); err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
+}
+
 // stop ends the capture and drops what was kept.
 func (c *bannerConn) stop() {
 	c.mu.Lock()
@@ -110,3 +145,7 @@ func rateLimitedErr(name, addr string, retry time.Duration) *Error {
 			"这不是密码、密钥或主机指纹的问题，面板没有尝试登录。等一会儿再试：面板在 %d 秒内不会再连接这台服务器，之后仍被拒绝时再多等几分钟（限速时间会累积，最长约 10 分钟）。",
 		name, addr, secs)}
 }
+
+// collectWait bounds how long a failed handshake waits for unread
+// pre-banner bytes.
+const collectWait = 250 * time.Millisecond

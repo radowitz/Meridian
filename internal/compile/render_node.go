@@ -426,6 +426,7 @@ fi
 		sb.WriteString("  /usr/local/sbin/meridian-mesh-up.sh || echo \"mesh sidecar skipped\" >&2\n")
 		sb.WriteString("fi\n")
 	}
+	sb.WriteString(networkdKeepCommands)
 	sb.WriteString("/usr/local/sbin/meridian-routes.sh\n")
 	if n.Role == model.RoleGateway && planShare(t, tunnels) != nil {
 		sb.WriteString("trap - ERR\nunset MERIDIAN_SHARE_PARENT\nflock -u 8\nexec 8>&-\n")
@@ -513,6 +514,36 @@ fi
 	sb.WriteString("echo meridian-up-complete\n")
 	return sb.String()
 }
+
+// NetworkdDropIn is the systemd-networkd drop-in meridian-up.sh writes on
+// hosts that have networkd. It is not a bundle file: the gateway panel's
+// container has no mount for /etc/systemd/networkd.conf.d, and the file
+// only makes sense where networkd exists. Withdraw removes it.
+const NetworkdDropIn = "/etc/systemd/networkd.conf.d/90-meridian.conf"
+
+// networkdKeepCommands: systemd-networkd deletes every routing policy rule
+// and route it did not create whenever it (re)starts, by default
+// (ManageForeignRoutingPolicyRules=yes, ManageForeignRoutes=yes). An
+// unattended systemd upgrade restarts it and Meridian's ip rules are gone.
+// The drop-in turns both off. It is only written (when different), never
+// followed by a networkd restart: networkd reads it at its next start, the
+// very event it protects against. A write failure is reported, not fatal.
+const networkdKeepCommands = `if [ -e /lib/systemd/system/systemd-networkd.service ] || [ -e /usr/lib/systemd/system/systemd-networkd.service ]; then
+  nd=` + NetworkdDropIn + `
+  nd_want='# meridian: keep Meridian ip rules and routes when systemd-networkd restarts
+[Network]
+ManageForeignRoutingPolicyRules=no
+ManageForeignRoutes=no'
+  if [ "$(cat "$nd" 2>/dev/null)" != "$nd_want" ]; then
+    if mkdir -p "${nd%/*}" && printf '%s\n' "$nd_want" > "$nd.tmp" && chmod 0644 "$nd.tmp" && mv -f "$nd.tmp" "$nd"; then
+      echo "meridian-networkd: wrote $nd (networkd not restarted; it applies at its next start)"
+    else
+      rm -f "$nd.tmp"
+      echo "meridian-networkd: could not write $nd; a networkd restart would delete the Meridian ip rules" >&2
+    fi
+  fi
+fi
+`
 
 // tunnelIfaces lists a node's WireGuard interfaces, sorted and unique.
 // tunnelMTUs maps each WireGuard interface of tunnels to its tunnel MTU

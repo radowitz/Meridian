@@ -123,11 +123,11 @@ var preLogCompile = map[string][2]string{
 	// its gateway scripts carry the protected switch transaction (T2; QA:
 	// failed-fallback counters restored, a killed pass past its commit point finishes;
 	// docs/review-391aa50.md).
-	"example":       {"ef8393edf6f3439b6e6d79a97a8b5bfa7fc72ca967b6d065ab3342413409a495", "5794daa2fbe9198d792f3ddfc1dd115ed6eaed45c2f2c3433d45316a7223cc4a"},
-	"dual_hub":      {"d5e979cb59d92032fbb3e3b027362cc656454a6add1c75df9968b42ef6f20814", "37483a5e0b5c22cf751c90f3191837b7c6de1418e902304ae145ee74d5e59a18"},
-	"shared_relays": {"5cffa269f2f16a797b9e0559b7149a90941bcdfa6b5f91e1c6b77c344e383522", "d09c976a35b849b327e3805f873c6b950fbe7a1b7ab90c81df4b420db6a88258"},
-	"nested":        {"7961814763c704c95d7ac32a93247db69ca8e6eb14537d20adca297235477f5f", "43553cc7e51aa44545750f9026e8605542ff0dce1b80bbb0c30b15a7447f6559"},
-	"external":      {"77d036e0748478b4aeee61a211a7db1f54c5ddb3d530d7fe4770fd4ab34e0a5f", "5129eea53d70c8b7cbcb479a0d33b4c2532d9e373b78cc6732e9e8f89a9dbe84"},
+	"example":       {"76dc1d4fcf87d11294041d8910e337892802302211b349fffb11f8235e9c5f19", "01245a5aae06e61fe9098ab3108327b62516e9336fcf412d172a17a2278da08e"},
+	"dual_hub":      {"9c77a6cb7140c28ebd71c9bf2c22a23a701be5f4aa4117b0a14bc51779d20a3a", "446dc28f0a6826bc4f24d759e9dc24a2ab2f3144a92a9e872186fa48c2c9be32"},
+	"shared_relays": {"a074fb85055c0b1a12a35a40f9194a9c7d66f776e2857bea2fd79733d27fabc4", "04ef8a7cb655ed12542e122f2db0247049d93c4d7688f4215a2f8a04be5d0af9"},
+	"nested":        {"d8e97ec433e32d27091c72ceaf062ab57e5b78cee682ebd906157ed21b914bb1", "f6cf850a3f0b198a3441b9b4f23ad733ac864f51b66d30d2c24cb8b681a77e2b"},
+	"external":      {"d9cd9652ed88152a8a3f87bc13d5a72cfca56026cac35d7e4a7c2ebf30ae8306", "8718e00e4429683ebdf3cab26a3dfe983f60a90ceb79048ee03ef5c65896e3ee"},
 }
 
 // withoutLinkJournal is b as the pre-log compiler would have produced it:

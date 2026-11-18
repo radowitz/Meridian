@@ -506,7 +506,7 @@ make_backup() {
     echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "${dir}/meta.env"
   (
-    cd "${dir}"
+    cd "${dir}" || exit 1
     for f in data.tar.gz secrets.tar.gz meta.env meridian.host deploy.env; do
       [[ -f "${f}" ]] && echo "$(sha_file "${f}")  ${f}"
     done

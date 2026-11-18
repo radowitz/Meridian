@@ -64,6 +64,9 @@ ProtectSystem=strict
 # (after the install that turned the journal off). It never reads their
 # content and never writes anything there.
 ReadWritePaths=-/var/lib/meridian/geosite -/var/lib/meridian/keywords -/var/lib/meridian/lists -/var/lib/meridian-dnslog
+# A gateway withdraw removes the networkd drop-in meridian-up.sh writes
+# (hostexec.NetworkdDropIn); install.sh creates the directory beforehand.
+ReadWritePaths=-/etc/systemd/networkd.conf.d
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

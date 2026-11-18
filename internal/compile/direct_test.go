@@ -142,7 +142,7 @@ func TestDirectGroupFailover(t *testing.T) {
 			t.Errorf("direct failover carries west-path logic %q", bad)
 		}
 	}
-	if !strings.Contains(fo, "reset_groups\nwhile true; do\n  check_groups || true") {
+	if !strings.Contains(fo, "while true; do\n  rule_heal\n  check_groups || true") || !strings.Contains(fo, "reset_groups\n") {
 		t.Error("the loop does not run the group checks")
 	}
 	if !strings.Contains(b.Files["nodes/gw/usr/local/sbin/meridian-routes.sh"], "group_hop "+itoa(groupTable(t, b, topo, "jp"))+" '"+a.HubIface+"'") {

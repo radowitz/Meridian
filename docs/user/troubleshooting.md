@@ -50,6 +50,27 @@
 3. 「出口与地区组」看默认地区组的实际状态和成员健康。
 4. 在网关上 `sudo /usr/local/sbin/meridian-verify.sh`，它核对内核里实际加载的表、规则、标记和兜底表。
 
+## 系统自动更新后不通了
+
+现象：Debian 节点夜里自动更新（unattended-upgrades）后，中继或枢纽不再转发；`ip route show table all` 里 Meridian 的路由表还在，`ip rule` 里 17000–18300 段的规则却没了。
+
+原因：自动更新升级 systemd 时会重启 systemd-networkd。networkd 默认 `ManageForeignRoutingPolicyRules=yes`、`ManageForeignRoutes=yes`，重启时删掉不是它自己建的路由规则和路由，Meridian 的 `ip rule` 就被清掉了。
+
+现在的处理：
+
+- 有 systemd-networkd 的主机上，`meridian-up.sh`（每次安装和开机）和网关的 `install.sh` 写入 `/etc/systemd/networkd.conf.d/90-meridian.conf`（关掉上面两项）。只写文件，**不重启** networkd，它下次启动时生效。撤回时删掉这个文件。
+- 网关、中继、枢纽的切换循环每 5 秒检查一次本节点第一条策略规则；连续两次不见就重跑 `meridian-routes.sh` 并重启循环，日志里有一行 `meridian-rule-heal`（`journalctl -u meridian-failover`）。出口节点没有切换循环，只靠上面那个文件。
+- 用旧版本装的节点还没有这个文件：预检会报「systemd-networkd 在运行……没有 90-meridian.conf」，重新安装一次即可。
+
+当场恢复：远端节点上 `sudo systemctl restart meridian-node.service`，网关上 `sudo systemctl restart meridian.service`（都是重新执行 `meridian-up.sh`，规则和上面的文件都会补上）。手工补文件也行：
+
+```ini
+# /etc/systemd/networkd.conf.d/90-meridian.conf
+[Network]
+ManageForeignRoutingPolicyRules=no
+ManageForeignRoutes=no
+```
+
 ## 境外网站很慢或卡在一半
 
 多为 MTU：见 [FAQ](faq.md#mtu-怎么定)。另看「出口与地区组」的路径质量，以及是否在 UDP 与 WSS 之间频繁切换（链路日志里的抖动记录）。

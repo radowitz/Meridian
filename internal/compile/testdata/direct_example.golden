@@ -1,5 +1,4 @@
 # apply-order: exit-a exit-b exit-c gw
-04cceb69f05e1a8056195dce242e1597b86bdd2377863f8eeabbdff2b6d6c99e nodes/exit-b/usr/local/sbin/meridian-up.sh
 08e60928e73f1a2f85e4eca9c1ae2b804f515ba8d11fe9f98670c553beec9060 nodes/gw/etc/meridian/rules/order.conf
 116feef6142e7228f30372613bf7c10b02024f823d3309613a88266646e3b017 nodes/exit-a/etc/systemd/system/meridian-smartdns.service
 116feef6142e7228f30372613bf7c10b02024f823d3309613a88266646e3b017 nodes/exit-b/etc/systemd/system/meridian-smartdns.service
@@ -7,7 +6,6 @@
 14344e4e293996e0da853af18dd8e47eb77e85a6750b49df280d745768eb99d9 nodes/gw/usr/local/sbin/meridian-routes.sh
 1a027c422350d9363368dc312545289bd9ea46e0d5ef30770b95a6909f1a93a4 nodes/gw/etc/meridian/forwarding.conf
 1e4fa65d9aecf98f902b33eeb5945b116e731904b640f80fc3aa190a667ea73d nodes/exit-c/etc/wireguard/m02.conf
-22015addacac8133ebb85593f1312e6711b4415cc183d1cddc2d665e9aadc726 nodes/exit-c/usr/local/sbin/meridian-up.sh
 232c3d298d13918c1cae932bfaff7b921fa7d1eec20e0206de40a359fed5c7c0 README.txt
 286d9af20aef923b49315e2a1ee35723000df481f615ecc58fcf43af94d1d7c8 nodes/gw/etc/nftables.d/meridian-guard.nft
 29c326de409a2e9c3fbfef80798fc0219d91b41a1ee4fe85bcdb983cfb4e1cf0 nodes/gw/etc/nftables.d/meridian.nft
@@ -15,12 +13,12 @@
 3c4f8569f980717c7b10b80d906c37d9ac7d9e37e590ad79532cb45d66ae2bdb nodes/exit-a/etc/systemd/system/meridian-fwcompat.service
 3c4f8569f980717c7b10b80d906c37d9ac7d9e37e590ad79532cb45d66ae2bdb nodes/exit-b/etc/systemd/system/meridian-fwcompat.service
 3c4f8569f980717c7b10b80d906c37d9ac7d9e37e590ad79532cb45d66ae2bdb nodes/exit-c/etc/systemd/system/meridian-fwcompat.service
+3e15ab7bdbb97d28c27a32873b18f282971aa6be8ecc6aaaa2bbc2b0e149b801 nodes/gw/usr/local/sbin/meridian-failover.sh
 409e42fd16a2af38ba8cd4f2231d23b234091041981913ba2591535dd3a423a6 nodes/exit-b/usr/local/sbin/meridian-unlock-probe.sh
 41b96f09a605797f00ebd54894154dfd2b938c434ec857ddf5ef4504ab51ebe6 nodes/exit-b/usr/local/sbin/meridian-routes.sh
 48094d8ac9bccdc30067921d9103397ed9c737a0593c1694664fc803286ca1a3 nodes/exit-a/etc/systemd/system/meridian-node.service
 48094d8ac9bccdc30067921d9103397ed9c737a0593c1694664fc803286ca1a3 nodes/exit-b/etc/systemd/system/meridian-node.service
 48094d8ac9bccdc30067921d9103397ed9c737a0593c1694664fc803286ca1a3 nodes/exit-c/etc/systemd/system/meridian-node.service
-4ba0119b250a68d760bde7695f7faa9ee700dca465050bdceab48dcc73cb6eb3 nodes/exit-a/usr/local/sbin/meridian-up.sh
 5ff30927cea911df5c0e36733ba1473e43d192791962a68ea0c1f45079bde3e3 nodes/gw/etc/sysctl.d/99-meridian.conf
 61895480849512a1c8bb40e34aa30218bf6f1305165cf4d44f613b40bf74ca8e nodes/gw/etc/wireguard/m01.conf
 62b82f75519763b9e4a27b6dcbba435a4a89221aff2ad0dfd0f47d84d3d76a83 nodes/exit-c/usr/local/sbin/meridian-routes.sh
@@ -34,12 +32,14 @@
 71d6a9a7706209d25786c24c82c2a39f0659368709f20a2d319a6d831bb728f8 nodes/exit-c/etc/systemd/system/meridian-unlock.service
 746436d4bded531bae1c9ac6690716deb8d557e2dc91ade2a44ea99e0b2d7f97 nodes/gw/etc/meridian/rules/decide.json
 77e88eb4967c40ca87b8482892091fcb310820b555e4dc92ac8e7ce6d68ca230 nodes/exit-c/usr/local/sbin/meridian-fwcompat.sh
-7beb662eef11d3fa2eca146f10bd5c9005df70e7c38680091f7f104722de62a4 nodes/gw/usr/local/sbin/meridian-up.sh
+78ecb709edaaa85f6a13d03f3abe92235aaa4bcb81b0ec786fde1a2fa8e2f608 nodes/gw/usr/local/sbin/meridian-up.sh
 7d7e11af3a6d2160e707bf198ab46d0956c781d42c8ff4d2f161e48e99908c1f nodes/exit-a/usr/local/sbin/meridian-fwcompat.sh
 96c0f0eb0f5555f54c139604796e23f48e74e8759eeecd33b8fa0d24e13000a4 nodes/exit-a/usr/local/sbin/meridian-routes.sh
 96df68283c66adfd9333b641005aef12bd0611dab3e051f06a55c8224779c98f nodes/exit-a/etc/meridian/forwarding.conf
 a3096e0ed5c73c87e7423f08ceca4dfef2af622d9e922a37251657fb8a826026 nodes/exit-c/etc/smartdns/smartdns.conf
 a7eb88c6a57b6806d1594e8c857768caf6981e4362dea0fbe7fb2a4660a07246 nodes/exit-b/etc/wireguard/m01.conf
+a89117bff68f2945b37c7552fd849ca420960fb2fda0ba2fa9a00a22fccc405f nodes/exit-c/usr/local/sbin/meridian-up.sh
+a9ff1dd2937d3e8aa19e1cd71a83d66926b3479b155e7bcacf500efbc4462e1b nodes/exit-a/usr/local/sbin/meridian-up.sh
 b0c8e0a65dcf9afe0f38ef7d2170dc8fde4d2e1b1a5ea2de7902912d40f24659 nodes/exit-a/etc/sysctl.d/99-meridian.conf
 b0c8e0a65dcf9afe0f38ef7d2170dc8fde4d2e1b1a5ea2de7902912d40f24659 nodes/exit-b/etc/sysctl.d/99-meridian.conf
 b0c8e0a65dcf9afe0f38ef7d2170dc8fde4d2e1b1a5ea2de7902912d40f24659 nodes/exit-c/etc/sysctl.d/99-meridian.conf
@@ -49,7 +49,6 @@ b1980ed2ab3ce20d2be835569522c967834ca52921002cb4cdad5e940a02ceae nodes/exit-c/et
 b1980ed2ab3ce20d2be835569522c967834ca52921002cb4cdad5e940a02ceae nodes/gw/etc/iproute2/rt_tables.d/meridian.conf
 b1a397882d860fa9cde693b8643aaccef3e802f293c10c8b77920ec861feb8b1 nodes/exit-a/usr/local/sbin/meridian-unlock-probe.sh
 b24b31dcc6c0311e7281f6bb4d2afac7c5b477c7230750fc6288a3194ccfa3ee nodes/gw/etc/wireguard/m00.conf
-b370d13b11430ea121e2ea67730aba0ed2afb05882f3b11c22e16746c065809d nodes/gw/usr/local/sbin/meridian-failover.sh
 b39434e7e2bb177840d7f9c8a7fda7bf6104b0f76acba4dce8e2a8e69a3806fc nodes/gw/usr/local/sbin/meridian-update-chnroute.sh
 b4352d262de7f9d96b65063fdc4c0aa83064e0212a164ff689836adcb8e997ca nodes/exit-c/etc/nftables.d/meridian.nft
 b601f19bee288e598bab5956988b024a799f50e74920894765678bcc5e5ce381 nodes/exit-b/etc/meridian/forwarding.conf
@@ -68,4 +67,5 @@ dee05e5bf83ca52c8d152c614e3f1791cd6ad31610649f124ca141c30ff8c6f0 nodes/exit-a/et
 e12a8e106c2f553507e76a66be6d8fe2faf161039e3aab34ad0488144bd1643d nodes/exit-b/etc/nftables.d/meridian.nft
 e7647537417e2886e42d8ddcc1614862e92a47083f7932d990bcccef1c07637b nodes/gw/etc/wireguard/m02.conf
 ec93ad9fb9953b4ee6c381a16baeddbfb1eb08eebce86f501eb7dc9a52aab7dc nodes/gw/etc/systemd/system/meridian-failover.service
+fa1e465efce6fdafcfec59c7c2a6ed0a106af911a37041ef8af79a10f0134a8e nodes/exit-b/usr/local/sbin/meridian-up.sh
 fe759754a1c1a7fac5cfa2fb9754d5ea97e06dfeb558f50f5f798ba4d54050ff nodes/gw/etc/meridian/link-journal.json

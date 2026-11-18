@@ -419,6 +419,13 @@ w_remove_all() {
     w_kept sysctl "accept_ra=2 stays on $(tr '\n' ' ' < "$M_STATE/ra-accept" | tr -cd 'A-Za-z0-9_.@ -')(IPv6 forwarding is still on; 1 would let their router-advertised IPv6 route expire) until reboot"
     if rm -f -- "$M_STATE/ra-accept"; then w_removed state "$M_STATE/ra-accept"; else w_left state "$M_STATE/ra-accept"; fi
   fi
+  # The systemd-networkd drop-in meridian-up.sh writes on hosts with
+  # networkd (not a manifest file). Only Meridian's own (its marker line);
+  # networkd is not restarted, it reads the change at its next start.
+  f=$M_ROOT/etc/systemd/networkd.conf.d/90-meridian.conf
+  if [ -f "$f" ] && [ ! -L "$f" ] && grep -q '^# meridian:' "$f" 2>/dev/null; then
+    if rm -f -- "$f"; then w_removed file /etc/systemd/networkd.conf.d/90-meridian.conf; else w_left file /etc/systemd/networkd.conf.d/90-meridian.conf; fi
+  fi
   rmdir -- "$M_ROOT/etc/meridian" 2>/dev/null || true
   # Verify: nothing named above may still be there.
   for u in "${W_UNITS[@]}"; do

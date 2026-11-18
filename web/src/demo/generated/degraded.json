@@ -4408,8 +4408,8 @@
        "max_age_s": 86400,
        "max_bytes": 23068672,
        "max_records": 50000,
-       "newest": "2025-12-31T23:58:00Z",
-       "oldest": "2025-12-31T23:19:00Z",
+       "newest": "2025-12-31T23:59:00Z",
+       "oldest": "2025-12-31T23:20:00Z",
        "oversized": 0,
        "records": 79,
        "segments": 2,
@@ -4421,7 +4421,7 @@
        "catch_up_skipped": 0,
        "caught_up": 0,
        "following": true,
-       "last_read_at": "2025-12-31T23:58:00Z",
+       "last_read_at": "2025-12-31T23:59:00Z",
        "lines": 58,
        "no_mac": 27,
        "parsed": 58,
@@ -4440,7 +4440,7 @@
        "zone_offset_s": 28800
       },
       "ready": true,
-      "started_at": "2025-12-31T23:38:00Z"
+      "started_at": "2025-12-31T23:39:00Z"
      },
      "message": "解析日志仍在记录，但网关解析器现在的版本没有核对过（meridian-smartdns 容器里的 SmartDNS 是 1.2026.12.20-0815：这个版本的审计日志在写失败、磁盘写满和写入卡住时会不会拖住解析，没有核对过（镜像标签是 latest，各网关的版本可能不同），解析日志保持不可用）：关闭解析日志并安装，或按提示核对这个版本",
      "present": true,
@@ -4637,8 +4637,8 @@
        },
        "device": "2001:db8:77::50",
        "distinct_names": 3,
-       "first_seen": "2025-12-31T23:19:00Z",
-       "last_seen": "2025-12-31T23:58:00Z",
+       "first_seen": "2025-12-31T23:20:00Z",
+       "last_seen": "2025-12-31T23:59:00Z",
        "no_mac": 20,
        "top_names": [
         {
@@ -4669,8 +4669,8 @@
        },
        "device": "192.168.77.35",
        "distinct_names": 3,
-       "first_seen": "2025-12-31T23:19:00Z",
-       "last_seen": "2025-12-31T23:58:00Z",
+       "first_seen": "2025-12-31T23:20:00Z",
+       "last_seen": "2025-12-31T23:59:00Z",
        "mac": "00:00:5e:00:53:36",
        "macs": [
         "00:00:5e:00:53:36",
@@ -4704,8 +4704,8 @@
        },
        "device": "192.168.77.21",
        "distinct_names": 3,
-       "first_seen": "2025-12-31T23:19:00Z",
-       "last_seen": "2025-12-31T23:57:00Z",
+       "first_seen": "2025-12-31T23:20:00Z",
+       "last_seen": "2025-12-31T23:58:00Z",
        "mac": "00:00:5e:00:53:21",
        "macs": [
         "00:00:5e:00:53:21"
@@ -4740,8 +4740,8 @@
        },
        "device": "192.168.77.20",
        "distinct_names": 3,
-       "first_seen": "2025-12-31T23:20:00Z",
-       "last_seen": "2025-12-31T23:57:00Z",
+       "first_seen": "2025-12-31T23:21:00Z",
+       "last_seen": "2025-12-31T23:58:00Z",
        "mac": "00:00:5e:00:53:20",
        "macs": [
         "00:00:5e:00:53:20"
@@ -4776,8 +4776,8 @@
       "max_age_s": 86400,
       "max_bytes": 23068672,
       "max_records": 50000,
-      "newest": "2025-12-31T23:58:00Z",
-      "oldest": "2025-12-31T23:19:00Z",
+      "newest": "2025-12-31T23:59:00Z",
+      "oldest": "2025-12-31T23:20:00Z",
       "oversized": 0,
       "records": 79,
       "segments": 2,
@@ -4929,7 +4929,7 @@
        "name": "api.example.net",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:58:00Z"
+       "time": "2025-12-31T23:59:00Z"
       },
       {
        "answers": 1,
@@ -4941,7 +4941,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:58:00Z"
+       "time": "2025-12-31T23:59:00Z"
       },
       {
        "answers": 1,
@@ -4953,7 +4953,7 @@
        "name": "chat.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:57:00Z"
+       "time": "2025-12-31T23:58:00Z"
       },
       {
        "answers": 1,
@@ -4965,7 +4965,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:57:00Z"
+       "time": "2025-12-31T23:58:00Z"
       },
       {
        "answers": 1,
@@ -4976,7 +4976,7 @@
        "name": "cdn-07.example.com",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:56:00Z"
+       "time": "2025-12-31T23:57:00Z"
       },
       {
        "answers": 1,
@@ -4988,7 +4988,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:56:00Z"
+       "time": "2025-12-31T23:57:00Z"
       },
       {
        "answers": 1,
@@ -5000,7 +5000,7 @@
        "name": "api.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:55:00Z"
+       "time": "2025-12-31T23:56:00Z"
       },
       {
        "answers": 1,
@@ -5012,7 +5012,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:55:00Z"
+       "time": "2025-12-31T23:56:00Z"
       },
       {
        "answers": 1,
@@ -5023,7 +5023,7 @@
        "name": "chat.example.org",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:54:00Z"
+       "time": "2025-12-31T23:55:00Z"
       },
       {
        "answers": 1,
@@ -5035,7 +5035,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:54:00Z"
+       "time": "2025-12-31T23:55:00Z"
       },
       {
        "answers": 1,
@@ -5047,7 +5047,7 @@
        "name": "cdn-07.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:53:00Z"
+       "time": "2025-12-31T23:54:00Z"
       },
       {
        "answers": 1,
@@ -5059,7 +5059,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:53:00Z"
+       "time": "2025-12-31T23:54:00Z"
       },
       {
        "answers": 1,
@@ -5070,7 +5070,7 @@
        "name": "api.example.net",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:52:00Z"
+       "time": "2025-12-31T23:53:00Z"
       },
       {
        "answers": 1,
@@ -5082,7 +5082,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:52:00Z"
+       "time": "2025-12-31T23:53:00Z"
       },
       {
        "answers": 1,
@@ -5094,7 +5094,7 @@
        "name": "chat.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:51:00Z"
+       "time": "2025-12-31T23:52:00Z"
       },
       {
        "answers": 1,
@@ -5106,7 +5106,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:51:00Z"
+       "time": "2025-12-31T23:52:00Z"
       },
       {
        "answers": 1,
@@ -5117,7 +5117,7 @@
        "name": "cdn-07.example.com",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:50:00Z"
+       "time": "2025-12-31T23:51:00Z"
       },
       {
        "answers": 1,
@@ -5129,7 +5129,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:50:00Z"
+       "time": "2025-12-31T23:51:00Z"
       },
       {
        "answers": 1,
@@ -5141,7 +5141,7 @@
        "name": "api.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:49:00Z"
+       "time": "2025-12-31T23:50:00Z"
       },
       {
        "answers": 1,
@@ -5153,7 +5153,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:49:00Z"
+       "time": "2025-12-31T23:50:00Z"
       },
       {
        "answers": 1,
@@ -5164,7 +5164,7 @@
        "name": "chat.example.org",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:48:00Z"
+       "time": "2025-12-31T23:49:00Z"
       },
       {
        "answers": 1,
@@ -5176,7 +5176,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:48:00Z"
+       "time": "2025-12-31T23:49:00Z"
       },
       {
        "answers": 1,
@@ -5188,7 +5188,7 @@
        "name": "cdn-07.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:47:00Z"
+       "time": "2025-12-31T23:48:00Z"
       },
       {
        "answers": 1,
@@ -5200,7 +5200,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:47:00Z"
+       "time": "2025-12-31T23:48:00Z"
       },
       {
        "answers": 1,
@@ -5211,7 +5211,7 @@
        "name": "api.example.net",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:46:00Z"
+       "time": "2025-12-31T23:47:00Z"
       },
       {
        "answers": 1,
@@ -5223,7 +5223,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:46:00Z"
+       "time": "2025-12-31T23:47:00Z"
       },
       {
        "answers": 1,
@@ -5235,7 +5235,7 @@
        "name": "chat.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:45:00Z"
+       "time": "2025-12-31T23:46:00Z"
       },
       {
        "answers": 1,
@@ -5247,7 +5247,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:45:00Z"
+       "time": "2025-12-31T23:46:00Z"
       },
       {
        "answers": 1,
@@ -5258,7 +5258,7 @@
        "name": "cdn-07.example.com",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:44:00Z"
+       "time": "2025-12-31T23:45:00Z"
       },
       {
        "answers": 1,
@@ -5270,7 +5270,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:44:00Z"
+       "time": "2025-12-31T23:45:00Z"
       },
       {
        "answers": 1,
@@ -5282,7 +5282,7 @@
        "name": "api.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:43:00Z"
+       "time": "2025-12-31T23:44:00Z"
       },
       {
        "answers": 1,
@@ -5294,7 +5294,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:43:00Z"
+       "time": "2025-12-31T23:44:00Z"
       },
       {
        "answers": 1,
@@ -5305,7 +5305,7 @@
        "name": "chat.example.org",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:42:00Z"
+       "time": "2025-12-31T23:43:00Z"
       },
       {
        "answers": 1,
@@ -5317,7 +5317,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:42:00Z"
+       "time": "2025-12-31T23:43:00Z"
       },
       {
        "answers": 1,
@@ -5329,7 +5329,7 @@
        "name": "cdn-07.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:41:00Z"
+       "time": "2025-12-31T23:42:00Z"
       },
       {
        "answers": 0,
@@ -5341,7 +5341,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "no_answer_slow",
-       "time": "2025-12-31T23:41:00Z"
+       "time": "2025-12-31T23:42:00Z"
       },
       {
        "answers": 1,
@@ -5352,7 +5352,7 @@
        "name": "api.example.net",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:40:00Z"
+       "time": "2025-12-31T23:41:00Z"
       },
       {
        "answers": 0,
@@ -5364,7 +5364,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "no_answer_slow",
-       "time": "2025-12-31T23:40:00Z"
+       "time": "2025-12-31T23:41:00Z"
       },
       {
        "answers": 1,
@@ -5376,7 +5376,7 @@
        "name": "chat.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:39:00Z"
+       "time": "2025-12-31T23:40:00Z"
       },
       {
        "answers": 0,
@@ -5388,7 +5388,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "no_answer_slow",
-       "time": "2025-12-31T23:39:00Z"
+       "time": "2025-12-31T23:40:00Z"
       },
       {
        "answers": 1,
@@ -5399,7 +5399,7 @@
        "name": "cdn-07.example.com",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:38:00Z"
+       "time": "2025-12-31T23:39:00Z"
       },
       {
        "answers": 0,
@@ -5411,7 +5411,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "no_answer_slow",
-       "time": "2025-12-31T23:38:00Z"
+       "time": "2025-12-31T23:39:00Z"
       },
       {
        "answers": 1,
@@ -5422,7 +5422,7 @@
        "name": "api.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:37:00Z"
+       "time": "2025-12-31T23:38:00Z"
       },
       {
        "answers": 0,
@@ -5433,7 +5433,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "no_answer_slow",
-       "time": "2025-12-31T23:37:00Z"
+       "time": "2025-12-31T23:38:00Z"
       },
       {
        "answers": 1,
@@ -5444,7 +5444,7 @@
        "name": "chat.example.org",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:36:00Z"
+       "time": "2025-12-31T23:37:00Z"
       },
       {
        "answers": 0,
@@ -5455,7 +5455,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "no_answer_slow",
-       "time": "2025-12-31T23:36:00Z"
+       "time": "2025-12-31T23:37:00Z"
       },
       {
        "answers": 1,
@@ -5466,7 +5466,7 @@
        "name": "cdn-07.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:35:00Z"
+       "time": "2025-12-31T23:36:00Z"
       },
       {
        "answers": 1,
@@ -5477,7 +5477,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:35:00Z"
+       "time": "2025-12-31T23:36:00Z"
       },
       {
        "answers": 1,
@@ -5488,7 +5488,7 @@
        "name": "api.example.net",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:34:00Z"
+       "time": "2025-12-31T23:35:00Z"
       },
       {
        "answers": 1,
@@ -5499,7 +5499,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:34:00Z"
+       "time": "2025-12-31T23:35:00Z"
       },
       {
        "answers": 1,
@@ -5510,7 +5510,7 @@
        "name": "chat.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:33:00Z"
+       "time": "2025-12-31T23:34:00Z"
       },
       {
        "answers": 1,
@@ -5521,7 +5521,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:33:00Z"
+       "time": "2025-12-31T23:34:00Z"
       },
       {
        "answers": 1,
@@ -5532,7 +5532,7 @@
        "name": "cdn-07.example.com",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:32:00Z"
+       "time": "2025-12-31T23:33:00Z"
       },
       {
        "answers": 1,
@@ -5543,7 +5543,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:32:00Z"
+       "time": "2025-12-31T23:33:00Z"
       },
       {
        "answers": 1,
@@ -5554,7 +5554,7 @@
        "name": "api.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:31:00Z"
+       "time": "2025-12-31T23:32:00Z"
       },
       {
        "answers": 1,
@@ -5565,7 +5565,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:31:00Z"
+       "time": "2025-12-31T23:32:00Z"
       },
       {
        "answers": 1,
@@ -5576,7 +5576,7 @@
        "name": "chat.example.org",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:30:00Z"
+       "time": "2025-12-31T23:31:00Z"
       },
       {
        "answers": 1,
@@ -5587,7 +5587,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:30:00Z"
+       "time": "2025-12-31T23:31:00Z"
       },
       {
        "answers": 1,
@@ -5599,7 +5599,7 @@
        "name": "cdn-07.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:28:00Z"
+       "time": "2025-12-31T23:29:00Z"
       },
       {
        "answers": 1,
@@ -5611,7 +5611,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:28:00Z"
+       "time": "2025-12-31T23:29:00Z"
       },
       {
        "answers": 1,
@@ -5622,7 +5622,7 @@
        "name": "api.example.net",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:27:00Z"
+       "time": "2025-12-31T23:28:00Z"
       },
       {
        "answers": 1,
@@ -5634,7 +5634,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:27:00Z"
+       "time": "2025-12-31T23:28:00Z"
       },
       {
        "answers": 1,
@@ -5646,7 +5646,7 @@
        "name": "chat.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:26:00Z"
+       "time": "2025-12-31T23:27:00Z"
       },
       {
        "answers": 1,
@@ -5658,7 +5658,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:26:00Z"
+       "time": "2025-12-31T23:27:00Z"
       },
       {
        "answers": 1,
@@ -5669,7 +5669,7 @@
        "name": "cdn-07.example.com",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:25:00Z"
+       "time": "2025-12-31T23:26:00Z"
       },
       {
        "answers": 1,
@@ -5681,7 +5681,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:25:00Z"
+       "time": "2025-12-31T23:26:00Z"
       },
       {
        "answers": 1,
@@ -5693,7 +5693,7 @@
        "name": "api.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:24:00Z"
+       "time": "2025-12-31T23:25:00Z"
       },
       {
        "answers": 1,
@@ -5705,7 +5705,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:24:00Z"
+       "time": "2025-12-31T23:25:00Z"
       },
       {
        "answers": 1,
@@ -5716,7 +5716,7 @@
        "name": "chat.example.org",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:23:00Z"
+       "time": "2025-12-31T23:24:00Z"
       },
       {
        "answers": 1,
@@ -5728,7 +5728,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:23:00Z"
+       "time": "2025-12-31T23:24:00Z"
       },
       {
        "answers": 1,
@@ -5740,7 +5740,7 @@
        "name": "cdn-07.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:22:00Z"
+       "time": "2025-12-31T23:23:00Z"
       },
       {
        "answers": 1,
@@ -5752,7 +5752,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:22:00Z"
+       "time": "2025-12-31T23:23:00Z"
       },
       {
        "answers": 1,
@@ -5763,7 +5763,7 @@
        "name": "api.example.net",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:21:00Z"
+       "time": "2025-12-31T23:22:00Z"
       },
       {
        "answers": 1,
@@ -5775,7 +5775,7 @@
        "name": "www.example.com",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:21:00Z"
+       "time": "2025-12-31T23:22:00Z"
       },
       {
        "answers": 1,
@@ -5787,7 +5787,7 @@
        "name": "chat.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:20:00Z"
+       "time": "2025-12-31T23:21:00Z"
       },
       {
        "answers": 1,
@@ -5799,7 +5799,7 @@
        "name": "updates.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:20:00Z"
+       "time": "2025-12-31T23:21:00Z"
       },
       {
        "answers": 1,
@@ -5810,7 +5810,7 @@
        "name": "cdn-07.example.com",
        "qtype": 28,
        "result": "answered",
-       "time": "2025-12-31T23:19:00Z",
+       "time": "2025-12-31T23:20:00Z",
        "time_approx": true
       },
       {
@@ -5823,7 +5823,7 @@
        "name": "media.example.org",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:19:00Z",
+       "time": "2025-12-31T23:20:00Z",
        "time_approx": true
       },
       {
@@ -5836,7 +5836,7 @@
        "name": "api.example.net",
        "qtype": 1,
        "result": "answered",
-       "time": "2025-12-31T23:19:00Z",
+       "time": "2025-12-31T23:20:00Z",
        "time_approx": true
       }
      ],
@@ -5852,8 +5852,8 @@
       "max_age_s": 86400,
       "max_bytes": 23068672,
       "max_records": 50000,
-      "newest": "2025-12-31T23:58:00Z",
-      "oldest": "2025-12-31T23:19:00Z",
+      "newest": "2025-12-31T23:59:00Z",
+      "oldest": "2025-12-31T23:20:00Z",
       "oversized": 0,
       "records": 79,
       "segments": 2,
@@ -5867,7 +5867,7 @@
    "body": {
     "available": true,
     "device": "192.168.77.35",
-    "from": "2025-12-31T23:56:00Z",
+    "from": "2025-12-31T23:57:00Z",
     "identity": "address",
     "listed": 0,
     "mac": "00:00:5e:00:53:36",
@@ -5876,7 +5876,7 @@
     "other_mac": 0,
     "record_names": true,
     "records": [],
-    "to": "2026-01-01T00:00:00Z",
+    "to": "2026-01-01T00:01:00Z",
     "window_s": 120
    },
    "status": 200
@@ -6595,7 +6595,7 @@
         "total": 16777216
        },
        "bytes": 8978,
-       "checkpoint_at": "2025-12-31T23:59:00Z",
+       "checkpoint_at": "2026-01-01T00:00:00Z",
        "disk_bytes": 20319,
        "dropped_budget": 0,
        "events": 22,
@@ -6603,13 +6603,13 @@
        "flap_quiet_s": 600,
        "flap_window_s": 600,
        "gap_after_s": 120,
-       "last_pass": "2025-12-31T23:59:00Z",
+       "last_pass": "2026-01-01T00:00:00Z",
        "max_age_s": 2592000,
        "max_events": 20000,
        "merged": 34,
-       "newest": "2025-12-31T23:57:00Z",
+       "newest": "2025-12-31T23:58:00Z",
        "objects": 28,
-       "oldest": "2025-12-31T22:07:00Z",
+       "oldest": "2025-12-31T22:08:00Z",
        "open_flaps": 1,
        "restored": true,
        "segments": 1,
@@ -6625,29 +6625,29 @@
       "slow_interval_s": 30,
       "sources": [
        {
-        "last_ok": "2025-12-31T23:59:00Z",
+        "last_ok": "2026-01-01T00:00:00Z",
         "ok": true,
-        "read_at": "2025-12-31T23:59:00Z",
+        "read_at": "2026-01-01T00:00:00Z",
         "source": "sniff_selfcheck"
        },
        {
-        "last_ok": "2025-12-31T23:59:00Z",
+        "last_ok": "2026-01-01T00:00:00Z",
         "ok": true,
-        "read_at": "2025-12-31T23:59:00Z",
+        "read_at": "2026-01-01T00:00:00Z",
         "source": "upstream_record"
        },
        {
-        "last_ok": "2025-12-31T23:59:00Z",
+        "last_ok": "2026-01-01T00:00:00Z",
         "ok": true,
-        "read_at": "2025-12-31T23:59:00Z",
+        "read_at": "2026-01-01T00:00:00Z",
         "source": "wg_handshake"
        },
        {
         "error": "systemctl is-active 没有给出单元状态",
         "fails": 7,
-        "last_ok": "2025-12-31T23:52:00Z",
+        "last_ok": "2025-12-31T23:53:00Z",
         "ok": false,
-        "read_at": "2025-12-31T23:59:00Z",
+        "read_at": "2026-01-01T00:00:00Z",
         "source": "wss_unit"
        }
       ],
@@ -7187,8 +7187,8 @@
    "body": {
     "available": true,
     "current": {
-     "at": "2025-12-31T23:59:00Z",
-     "last_pass": "2025-12-31T23:59:00Z",
+     "at": "2026-01-01T00:00:00Z",
+     "last_pass": "2026-01-01T00:00:00Z",
      "objects": [
       {
        "class": "path",
@@ -7197,9 +7197,9 @@
        "id": "gateway",
        "kind": "designated",
        "label": "路由表 102 跟随的中继",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
-       "since": "2025-12-31T23:38:00Z",
+       "since": "2025-12-31T23:39:00Z",
        "source": "upstream_record",
        "state": "backup"
       },
@@ -7210,9 +7210,9 @@
        "id": "access",
        "kind": "relay_leg",
        "label": "到中继 access 使用的腿",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "info",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "upstream_record",
        "state": "wss"
@@ -7224,26 +7224,26 @@
        "id": "access2",
        "kind": "relay_leg",
        "label": "到中继 access2 使用的腿",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "upstream_record",
        "state": "udp"
       },
       {
        "class": "path",
-       "evidence": "网关故障切换服务的记录：路径 backup，接口 m04，枢纽 hkb（备用枢纽），自 2025-12-31 23:38:00Z；路由表 102 跟随 backup",
+       "evidence": "网关故障切换服务的记录：路径 backup，接口 m04，枢纽 hkb（备用枢纽），自 2025-12-31 23:39:00Z；路由表 102 跟随 backup",
        "for_s": 1260,
        "id": "gateway",
        "kind": "upstream",
        "label": "承载路径",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "on_backup",
-       "since": "2025-12-31T23:38:00Z",
+       "since": "2025-12-31T23:39:00Z",
        "source": "upstream_record",
-       "source_at": "2025-12-31T23:38:00Z",
+       "source_at": "2025-12-31T23:39:00Z",
        "state": "backup"
       },
       {
@@ -7253,10 +7253,10 @@
        "id": "gateway",
        "kind": "upstream_health",
        "label": "承载路径的探测结果",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
        "reason": "on_backup",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "upstream_record",
        "state": "ok"
@@ -7268,7 +7268,7 @@
        "id": "access",
        "kind": "relay",
        "label": "中继 access（分担）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "down",
        "since": "2025-12-31T23:38:00Z",
@@ -7283,107 +7283,107 @@
        "id": "access2",
        "kind": "relay",
        "label": "中继 access2（分担）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "poor_loss",
-       "since": "2025-12-31T23:38:00Z",
+       "since": "2025-12-31T23:39:00Z",
        "source": "upstream_record",
-       "source_at": "2025-12-31T23:38:00Z",
+       "source_at": "2025-12-31T23:39:00Z",
        "state": "evicted"
       },
       {
        "class": "relay",
-       "evidence": "最近一次有效测速 168.4 Mbit/s（2025-12-31 23:44:00Z，15 分钟前），基准 182.0 Mbit/s",
+       "evidence": "最近一次有效测速 168.4 Mbit/s（2025-12-31 23:45:00Z，15 分钟前），基准 182.0 Mbit/s",
        "for_s": 2940,
        "id": "access",
        "kind": "relay_qos",
        "label": "中继 access 的测速结论",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "upstream_record",
-       "source_at": "2025-12-31T23:44:00Z",
+       "source_at": "2025-12-31T23:45:00Z",
        "state": "ok"
       },
       {
        "class": "relay",
-       "evidence": "最近一次有效测速 168.4 Mbit/s（2025-12-31 23:44:00Z，15 分钟前），基准 182.0 Mbit/s",
+       "evidence": "最近一次有效测速 168.4 Mbit/s（2025-12-31 23:45:00Z，15 分钟前），基准 182.0 Mbit/s",
        "for_s": 2940,
        "id": "access2",
        "kind": "relay_qos",
        "label": "中继 access2 的测速结论",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "upstream_record",
-       "source_at": "2025-12-31T23:44:00Z",
+       "source_at": "2025-12-31T23:45:00Z",
        "state": "ok"
       },
       {
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:04:00Z（3300 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:05:00Z（3300 秒前；超过 180 秒没有新的握手算超时）",
        "for_s": 2940,
        "id": "m02",
        "kind": "tunnel",
        "label": "隧道 m02：链路 gw-access，到 access（UDP 腿）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "handshake_timeout",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:04:00Z",
+       "source_at": "2025-12-31T23:05:00Z",
        "state": "stale"
       },
       {
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:37:00Z（1320 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:38:00Z（1320 秒前；超过 180 秒没有新的握手算超时）",
        "for_s": 1080,
        "id": "m02w",
        "kind": "tunnel",
        "label": "隧道 m02w：链路 gw-access，到 access（WSS 腿）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "handshake_timeout",
-       "since": "2025-12-31T23:41:00Z",
+       "since": "2025-12-31T23:42:00Z",
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:37:00Z",
+       "source_at": "2025-12-31T23:38:00Z",
        "state": "stale"
       },
       {
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:58:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:59:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
        "flapping": {
         "changes": 34,
-        "first_at": "2025-12-31T23:23:00Z",
-        "last_at": "2025-12-31T23:56:00Z"
+        "first_at": "2025-12-31T23:24:00Z",
+        "last_at": "2025-12-31T23:57:00Z"
        },
        "for_s": 180,
        "id": "m03",
        "kind": "tunnel",
        "label": "隧道 m03：链路 gw-access2，到 access2（UDP 腿）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:56:00Z",
+       "since": "2025-12-31T23:57:00Z",
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:58:00Z",
+       "source_at": "2025-12-31T23:59:00Z",
        "state": "ok"
       },
       {
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:58:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:59:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
        "for_s": 2940,
        "id": "m04",
        "kind": "tunnel",
        "label": "隧道 m04：链路 gw-hkb，到 hkb（WSS 腿），备用",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:58:00Z",
+       "source_at": "2025-12-31T23:59:00Z",
        "state": "ok"
       },
       {
@@ -7393,10 +7393,10 @@
        "id": "gw-access",
        "kind": "wss",
        "label": "WSS 承载 gw-access：wstunnel-client-gw-access.service，承载隧道 m02w",
-       "last_seen": "2025-12-31T23:52:00Z",
+       "last_seen": "2025-12-31T23:53:00Z",
        "level": "abnormal",
        "reason": "tunnel_stale",
-       "since": "2025-12-31T23:41:00Z",
+       "since": "2025-12-31T23:42:00Z",
        "source": "wss_unit",
        "stale": true,
        "state": "disconnected"
@@ -7408,9 +7408,9 @@
        "id": "gw-hkb",
        "kind": "wss",
        "label": "WSS 承载 gw-hkb：wstunnel-client-gw-hkb.service，承载隧道 m04",
-       "last_seen": "2025-12-31T23:52:00Z",
+       "last_seen": "2025-12-31T23:53:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "wss_unit",
        "stale": true,
@@ -7418,137 +7418,137 @@
       },
       {
        "class": "external_exit",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）失败：解析器 [fd66::54:5]:53 超时，没有任何回应；转发服务这次运行以来这个目标的解析器从未有过回答。这是网关自己的检查，不是承载节点上的健康检查：代理是否不通没有被证实",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）失败：解析器 [fd66::54:5]:53 超时，没有任何回应；转发服务这次运行以来这个目标的解析器从未有过回答。这是网关自己的检查，不是承载节点上的健康检查：代理是否不通没有被证实",
        "for_s": 120,
        "id": "myext",
        "kind": "external_exit",
        "label": "外部出口 myext（由 dc2 承载）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "timeout",
-       "since": "2025-12-31T23:57:00Z",
+       "since": "2025-12-31T23:58:00Z",
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_failed"
       },
       {
        "class": "sniff_target",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）：这个目标的解析器经隧道有回答",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）：这个目标的解析器经隧道有回答",
        "for_s": 2940,
        "id": "direct",
        "kind": "sniff_target",
        "label": "自检目标：直连（国内解析器）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_ok"
       },
       {
        "class": "sniff_target",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）：这个目标的解析器经隧道有回答",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）：这个目标的解析器经隧道有回答",
        "for_s": 2940,
        "id": "exit:us1",
        "kind": "sniff_target",
        "label": "自检目标：出口 us1",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_ok"
       },
       {
        "class": "sniff_target",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）：这个目标的解析器经隧道有回答",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）：这个目标的解析器经隧道有回答",
        "for_s": 2940,
        "id": "group:gb",
        "kind": "sniff_target",
        "label": "自检目标：地区组 gb",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_ok"
       },
       {
        "class": "sniff_target",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）：这个目标的解析器经隧道有回答，到解析器的 TCP 连接也能建立",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）：这个目标的解析器经隧道有回答，到解析器的 TCP 连接也能建立",
        "for_s": 2940,
        "id": "group:hk",
        "kind": "sniff_target",
        "label": "自检目标：地区组 hk",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_ok"
       },
       {
        "class": "sniff_target",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）：这个目标的解析器经隧道有回答",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）：这个目标的解析器经隧道有回答",
        "for_s": 2940,
        "id": "group:jp",
        "kind": "sniff_target",
        "label": "自检目标：地区组 jp",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_ok"
       },
       {
        "class": "sniff_target",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）：这个目标的解析器经隧道有回答",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）：这个目标的解析器经隧道有回答",
        "for_s": 2940,
        "id": "group:sg",
        "kind": "sniff_target",
        "label": "自检目标：地区组 sg",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_ok"
       },
       {
        "class": "sniff_target",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）：这个目标的解析器经隧道有回答",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）：这个目标的解析器经隧道有回答",
        "for_s": 2940,
        "id": "group:tw",
        "kind": "sniff_target",
        "label": "自检目标：地区组 tw",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_ok"
       },
       {
        "class": "sniff_target",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）：这个目标的解析器经隧道有回答",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）：这个目标的解析器经隧道有回答",
        "for_s": 2940,
        "id": "group:us",
        "kind": "sniff_target",
        "label": "自检目标：地区组 us",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_ok"
       },
       {
@@ -7558,9 +7558,9 @@
        "id": "sniff_selfcheck",
        "kind": "source",
        "label": "来源：嗅探转发服务的自检",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "collector",
        "state": "ok"
@@ -7572,9 +7572,9 @@
        "id": "upstream_record",
        "kind": "source",
        "label": "来源：故障切换服务的记录",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "collector",
        "state": "ok"
@@ -7586,9 +7586,9 @@
        "id": "wg_handshake",
        "kind": "source",
        "label": "来源：隧道握手（wg）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "collector",
        "state": "ok"
@@ -7600,10 +7600,10 @@
        "id": "wss_unit",
        "kind": "source",
        "label": "来源：wstunnel 客户端单元",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "read_failed",
-       "since": "2025-12-31T23:55:00Z",
+       "since": "2025-12-31T23:56:00Z",
        "since_open": true,
        "source": "collector",
        "state": "unavailable"
@@ -7619,25 +7619,25 @@
        "id": "gateway",
        "kind": "designated",
        "label": "路由表 102 跟随的中继",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
-       "since": "2025-12-31T23:38:00Z",
+       "since": "2025-12-31T23:39:00Z",
        "source": "upstream_record",
        "state": "backup"
       },
       {
        "class": "path",
-       "evidence": "网关故障切换服务的记录：路径 backup，接口 m04，枢纽 hkb（备用枢纽），自 2025-12-31 23:38:00Z；路由表 102 跟随 backup",
+       "evidence": "网关故障切换服务的记录：路径 backup，接口 m04，枢纽 hkb（备用枢纽），自 2025-12-31 23:39:00Z；路由表 102 跟随 backup",
        "for_s": 1260,
        "id": "gateway",
        "kind": "upstream",
        "label": "承载路径",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "on_backup",
-       "since": "2025-12-31T23:38:00Z",
+       "since": "2025-12-31T23:39:00Z",
        "source": "upstream_record",
-       "source_at": "2025-12-31T23:38:00Z",
+       "source_at": "2025-12-31T23:39:00Z",
        "state": "backup"
       },
       {
@@ -7647,7 +7647,7 @@
        "id": "access",
        "kind": "relay",
        "label": "中继 access（分担）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "down",
        "since": "2025-12-31T23:38:00Z",
@@ -7662,58 +7662,58 @@
        "id": "access2",
        "kind": "relay",
        "label": "中继 access2（分担）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "poor_loss",
-       "since": "2025-12-31T23:38:00Z",
+       "since": "2025-12-31T23:39:00Z",
        "source": "upstream_record",
-       "source_at": "2025-12-31T23:38:00Z",
+       "source_at": "2025-12-31T23:39:00Z",
        "state": "evicted"
       },
       {
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:04:00Z（3300 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:05:00Z（3300 秒前；超过 180 秒没有新的握手算超时）",
        "for_s": 2940,
        "id": "m02",
        "kind": "tunnel",
        "label": "隧道 m02：链路 gw-access，到 access（UDP 腿）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "handshake_timeout",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:04:00Z",
+       "source_at": "2025-12-31T23:05:00Z",
        "state": "stale"
       },
       {
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:37:00Z（1320 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:38:00Z（1320 秒前；超过 180 秒没有新的握手算超时）",
        "for_s": 1080,
        "id": "m02w",
        "kind": "tunnel",
        "label": "隧道 m02w：链路 gw-access，到 access（WSS 腿）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "handshake_timeout",
-       "since": "2025-12-31T23:41:00Z",
+       "since": "2025-12-31T23:42:00Z",
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:37:00Z",
+       "source_at": "2025-12-31T23:38:00Z",
        "state": "stale"
       },
       {
        "class": "external_exit",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:59:00Z）失败：解析器 [fd66::54:5]:53 超时，没有任何回应；转发服务这次运行以来这个目标的解析器从未有过回答。这是网关自己的检查，不是承载节点上的健康检查：代理是否不通没有被证实",
+       "evidence": "网关嗅探转发服务的自检（2026-01-01 00:00:00Z）失败：解析器 [fd66::54:5]:53 超时，没有任何回应；转发服务这次运行以来这个目标的解析器从未有过回答。这是网关自己的检查，不是承载节点上的健康检查：代理是否不通没有被证实",
        "for_s": 120,
        "id": "myext",
        "kind": "external_exit",
        "label": "外部出口 myext（由 dc2 承载）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "timeout",
-       "since": "2025-12-31T23:57:00Z",
+       "since": "2025-12-31T23:58:00Z",
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:59:00Z",
+       "source_at": "2026-01-01T00:00:00Z",
        "state": "check_failed"
       },
       {
@@ -7723,49 +7723,49 @@
        "id": "wss_unit",
        "kind": "source",
        "label": "来源：wstunnel 客户端单元",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "abnormal",
        "reason": "read_failed",
-       "since": "2025-12-31T23:55:00Z",
+       "since": "2025-12-31T23:56:00Z",
        "since_open": true,
        "source": "collector",
        "state": "unavailable"
       }
      ],
-     "at": "2025-12-31T23:59:00Z",
+     "at": "2026-01-01T00:00:00Z",
      "carrying": {
       "class": "path",
-      "evidence": "网关故障切换服务的记录：路径 backup，接口 m04，枢纽 hkb（备用枢纽），自 2025-12-31 23:38:00Z；路由表 102 跟随 backup",
+      "evidence": "网关故障切换服务的记录：路径 backup，接口 m04，枢纽 hkb（备用枢纽），自 2025-12-31 23:39:00Z；路由表 102 跟随 backup",
       "for_s": 1260,
       "id": "gateway",
       "kind": "upstream",
       "label": "承载路径",
-      "last_seen": "2025-12-31T23:59:00Z",
+      "last_seen": "2026-01-01T00:00:00Z",
       "level": "abnormal",
       "reason": "on_backup",
-      "since": "2025-12-31T23:38:00Z",
+      "since": "2025-12-31T23:39:00Z",
       "source": "upstream_record",
-      "source_at": "2025-12-31T23:38:00Z",
+      "source_at": "2025-12-31T23:39:00Z",
       "state": "backup"
      },
      "flapping": [
       {
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:58:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:59:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
        "flapping": {
         "changes": 34,
-        "first_at": "2025-12-31T23:23:00Z",
-        "last_at": "2025-12-31T23:56:00Z"
+        "first_at": "2025-12-31T23:24:00Z",
+        "last_at": "2025-12-31T23:57:00Z"
        },
        "for_s": 180,
        "id": "m03",
        "kind": "tunnel",
        "label": "隧道 m03：链路 gw-access2，到 access2（UDP 腿）",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:56:00Z",
+       "since": "2025-12-31T23:57:00Z",
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:58:00Z",
+       "source_at": "2025-12-31T23:59:00Z",
        "state": "ok"
       }
      ],
@@ -7776,15 +7776,15 @@
       "id": "gateway",
       "kind": "upstream_health",
       "label": "承载路径的探测结果",
-      "last_seen": "2025-12-31T23:59:00Z",
+      "last_seen": "2026-01-01T00:00:00Z",
       "level": "ok",
       "reason": "on_backup",
-      "since": "2025-12-31T23:10:00Z",
+      "since": "2025-12-31T23:11:00Z",
       "since_open": true,
       "source": "upstream_record",
       "state": "ok"
      },
-     "last_pass": "2025-12-31T23:59:00Z",
+     "last_pass": "2026-01-01T00:00:00Z",
      "objects": 28,
      "unknown": [
       {
@@ -7794,10 +7794,10 @@
        "id": "gw-access",
        "kind": "wss",
        "label": "WSS 承载 gw-access：wstunnel-client-gw-access.service，承载隧道 m02w",
-       "last_seen": "2025-12-31T23:52:00Z",
+       "last_seen": "2025-12-31T23:53:00Z",
        "level": "abnormal",
        "reason": "tunnel_stale",
-       "since": "2025-12-31T23:41:00Z",
+       "since": "2025-12-31T23:42:00Z",
        "source": "wss_unit",
        "stale": true,
        "state": "disconnected"
@@ -7809,9 +7809,9 @@
        "id": "gw-hkb",
        "kind": "wss",
        "label": "WSS 承载 gw-hkb：wstunnel-client-gw-hkb.service，承载隧道 m04",
-       "last_seen": "2025-12-31T23:52:00Z",
+       "last_seen": "2025-12-31T23:53:00Z",
        "level": "ok",
-       "since": "2025-12-31T23:10:00Z",
+       "since": "2025-12-31T23:11:00Z",
        "since_open": true,
        "source": "wss_unit",
        "stale": true,
@@ -7828,24 +7828,24 @@
     "page": {
      "events": [
       {
-       "at": "2025-12-31T23:23:00Z",
+       "at": "2025-12-31T23:24:00Z",
        "changes": 34,
        "class": "tunnel",
-       "evidence": "抖动合并：2025-12-31 23:23:00Z 到 2025-12-31 23:56:00Z 之间变化了 34 次（是多次变化，不是一次连续的中断）；合并前是 ok，最后一次变化之后是 ok。最后一次的依据：最近一次握手在 2025-12-31 23:55:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "抖动合并：2025-12-31 23:24:00Z 到 2025-12-31 23:57:00Z 之间变化了 34 次（是多次变化，不是一次连续的中断）；合并前是 ok，最后一次变化之后是 ok。最后一次的依据：最近一次握手在 2025-12-31 23:56:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
        "from": "ok",
        "id": "m03",
        "kind": "tunnel",
        "label": "隧道 m03：链路 gw-access2，到 access2（UDP 腿）",
-       "last_at": "2025-12-31T23:56:00Z",
+       "last_at": "2025-12-31T23:57:00Z",
        "open": true,
        "seq": 0,
        "source": "wg_handshake",
        "to": "ok"
       },
       {
-       "at": "2025-12-31T23:57:00Z",
+       "at": "2025-12-31T23:58:00Z",
        "class": "external_exit",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:57:00Z）失败：解析器 [fd66::54:5]:53 超时，没有任何回应；转发服务这次运行以来这个目标的解析器从未有过回答。这是网关自己的检查，不是承载节点上的健康检查：代理是否不通没有被证实",
+       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:58:00Z）失败：解析器 [fd66::54:5]:53 超时，没有任何回应；转发服务这次运行以来这个目标的解析器从未有过回答。这是网关自己的检查，不是承载节点上的健康检查：代理是否不通没有被证实",
        "from": "check_ok",
        "id": "myext",
        "kind": "external_exit",
@@ -7854,15 +7854,15 @@
        "reason": "timeout",
        "seq": 22,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:57:00Z",
+       "source_at": "2025-12-31T23:58:00Z",
        "to": "check_failed"
       },
       {
        "after_gap": {
-        "from": "2025-12-31T23:52:00Z",
-        "to": "2025-12-31T23:55:00Z"
+        "from": "2025-12-31T23:53:00Z",
+        "to": "2025-12-31T23:56:00Z"
        },
-       "at": "2025-12-31T23:55:00Z",
+       "at": "2025-12-31T23:56:00Z",
        "class": "collector",
        "evidence": "连续 3 次读不到（systemctl is-active 没有给出单元状态）：依赖它的对象没有新的读数，超过空窗阈值后状态记为未知",
        "from": "ok",
@@ -7877,7 +7877,7 @@
        "to": "unavailable"
       },
       {
-       "at": "2025-12-31T23:41:00Z",
+       "at": "2025-12-31T23:42:00Z",
        "class": "wss",
        "evidence": "wstunnel-client-gw-access.service 在运行，但它承载的隧道 m02w 握手状态是 stale（间接依据：没有读取 WebSocket 会话本身）",
        "from": "connected",
@@ -7892,9 +7892,9 @@
        "to": "disconnected"
       },
       {
-       "at": "2025-12-31T23:41:00Z",
+       "at": "2025-12-31T23:42:00Z",
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:37:00Z（240 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:38:00Z（240 秒前；超过 180 秒没有新的握手算超时）",
        "from": "ok",
        "id": "m02w",
        "kind": "tunnel",
@@ -7904,11 +7904,11 @@
        "reason": "handshake_timeout",
        "seq": 19,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:37:00Z",
+       "source_at": "2025-12-31T23:38:00Z",
        "to": "stale"
       },
       {
-       "at": "2025-12-31T23:38:00Z",
+       "at": "2025-12-31T23:39:00Z",
        "class": "relay",
        "evidence": "分担控制器：状态 evicted，质量 poor，权重 0/1000，使用接口 m03，原因 poor_loss",
        "from": "active",
@@ -7920,11 +7920,11 @@
        "reason": "poor_loss",
        "seq": 18,
        "source": "upstream_record",
-       "source_at": "2025-12-31T23:38:00Z",
+       "source_at": "2025-12-31T23:39:00Z",
        "to": "evicted"
       },
       {
-       "at": "2025-12-31T23:38:00Z",
+       "at": "2025-12-31T23:39:00Z",
        "class": "path",
        "evidence": "分担控制器把路由表 102（本机发起的连接和安装前已有的连接）指向 backup",
        "from": "access2",
@@ -7937,9 +7937,9 @@
        "to": "backup"
       },
       {
-       "at": "2025-12-31T23:38:00Z",
+       "at": "2025-12-31T23:39:00Z",
        "class": "path",
-       "evidence": "网关故障切换服务的记录：路径 backup，接口 m04，枢纽 hkb（备用枢纽），自 2025-12-31 23:38:00Z；路由表 102 跟随 backup",
+       "evidence": "网关故障切换服务的记录：路径 backup，接口 m04，枢纽 hkb（备用枢纽），自 2025-12-31 23:39:00Z；路由表 102 跟随 backup",
        "from": "main",
        "id": "gateway",
        "kind": "upstream",
@@ -7949,7 +7949,7 @@
        "reason": "on_backup",
        "seq": 16,
        "source": "upstream_record",
-       "source_at": "2025-12-31T23:38:00Z",
+       "source_at": "2025-12-31T23:39:00Z",
        "to": "backup"
       },
       {
@@ -7983,9 +7983,9 @@
        "to": "access2"
       },
       {
-       "at": "2025-12-31T23:22:00Z",
+       "at": "2025-12-31T23:23:00Z",
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:21:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:22:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
        "from": "stale",
        "id": "m03",
        "kind": "tunnel",
@@ -7993,13 +7993,13 @@
        "prev_for_s": 60,
        "seq": 13,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:21:00Z",
+       "source_at": "2025-12-31T23:22:00Z",
        "to": "ok"
       },
       {
-       "at": "2025-12-31T23:21:00Z",
+       "at": "2025-12-31T23:22:00Z",
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:17:00Z（240 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:18:00Z（240 秒前；超过 180 秒没有新的握手算超时）",
        "from": "ok",
        "id": "m03",
        "kind": "tunnel",
@@ -8008,13 +8008,13 @@
        "reason": "handshake_timeout",
        "seq": 12,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:17:00Z",
+       "source_at": "2025-12-31T23:18:00Z",
        "to": "stale"
       },
       {
-       "at": "2025-12-31T23:20:00Z",
+       "at": "2025-12-31T23:21:00Z",
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:19:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:20:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
        "from": "stale",
        "id": "m03",
        "kind": "tunnel",
@@ -8022,13 +8022,13 @@
        "prev_for_s": 60,
        "seq": 11,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:19:00Z",
+       "source_at": "2025-12-31T23:20:00Z",
        "to": "ok"
       },
       {
-       "at": "2025-12-31T23:19:00Z",
+       "at": "2025-12-31T23:20:00Z",
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:15:00Z（240 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:16:00Z（240 秒前；超过 180 秒没有新的握手算超时）",
        "from": "ok",
        "id": "m03",
        "kind": "tunnel",
@@ -8038,13 +8038,13 @@
        "reason": "handshake_timeout",
        "seq": 10,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:15:00Z",
+       "source_at": "2025-12-31T23:16:00Z",
        "to": "stale"
       },
       {
-       "at": "2025-12-31T23:14:00Z",
+       "at": "2025-12-31T23:15:00Z",
        "class": "external_exit",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:14:00Z）：这个目标的解析器经隧道有回答",
+       "evidence": "网关嗅探转发服务的自检（2025-12-31 23:15:00Z）：这个目标的解析器经隧道有回答",
        "from": "check_failed",
        "id": "myext",
        "kind": "external_exit",
@@ -8053,17 +8053,17 @@
        "prev_open": true,
        "seq": 9,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T23:14:00Z",
+       "source_at": "2025-12-31T23:15:00Z",
        "to": "check_ok"
       },
       {
        "after_gap": {
-        "from": "2025-12-31T23:01:00Z",
-        "to": "2025-12-31T23:10:00Z"
+        "from": "2025-12-31T23:02:00Z",
+        "to": "2025-12-31T23:11:00Z"
        },
-       "at": "2025-12-31T23:10:00Z",
+       "at": "2025-12-31T23:11:00Z",
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 23:04:00Z（360 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 23:05:00Z（360 秒前；超过 180 秒没有新的握手算超时）",
        "from": "ok",
        "id": "m02",
        "kind": "tunnel",
@@ -8073,15 +8073,15 @@
        "reason": "handshake_timeout",
        "seq": 8,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T23:04:00Z",
+       "source_at": "2025-12-31T23:05:00Z",
        "to": "stale"
       },
       {
        "after_gap": {
-        "from": "2025-12-31T23:01:00Z",
-        "to": "2025-12-31T23:10:00Z"
+        "from": "2025-12-31T23:02:00Z",
+        "to": "2025-12-31T23:11:00Z"
        },
-       "at": "2025-12-31T23:10:00Z",
+       "at": "2025-12-31T23:11:00Z",
        "class": "path",
        "evidence": "分担控制器记录到中继 access 的流量走接口 m02w",
        "from": "udp",
@@ -8096,12 +8096,12 @@
       },
       {
        "after_gap": {
-        "from": "2025-12-31T23:01:00Z",
-        "to": "2025-12-31T23:10:00Z"
+        "from": "2025-12-31T23:02:00Z",
+        "to": "2025-12-31T23:11:00Z"
        },
-       "at": "2025-12-31T23:10:00Z",
+       "at": "2025-12-31T23:11:00Z",
        "class": "collector",
-       "evidence": "采集服务没有运行：2025-12-31 23:01:00Z 到 2025-12-31 23:10:00Z 之间（540 秒）没有采集，这段时间里的状态未知、发生过的变化没有记录",
+       "evidence": "采集服务没有运行：2025-12-31 23:02:00Z 到 2025-12-31 23:11:00Z 之间（540 秒）没有采集，这段时间里的状态未知、发生过的变化没有记录",
        "from": "unknown",
        "id": "gateway",
        "kind": "collector",
@@ -8113,9 +8113,9 @@
        "to": "collecting"
       },
       {
-       "at": "2025-12-31T22:29:00Z",
+       "at": "2025-12-31T22:30:00Z",
        "class": "external_exit",
-       "evidence": "网关嗅探转发服务的自检（2025-12-31 22:29:00Z）失败：解析器 [fd66::54:5]:53 超时，没有任何回应；转发服务这次运行以来这个目标的解析器从未有过回答。这是网关自己的检查，不是承载节点上的健康检查：代理是否不通没有被证实",
+       "evidence": "网关嗅探转发服务的自检（2025-12-31 22:30:00Z）失败：解析器 [fd66::54:5]:53 超时，没有任何回应；转发服务这次运行以来这个目标的解析器从未有过回答。这是网关自己的检查，不是承载节点上的健康检查：代理是否不通没有被证实",
        "from": "check_ok",
        "id": "myext",
        "kind": "external_exit",
@@ -8125,11 +8125,11 @@
        "reason": "timeout",
        "seq": 5,
        "source": "sniff_selfcheck",
-       "source_at": "2025-12-31T22:29:00Z",
+       "source_at": "2025-12-31T22:30:00Z",
        "to": "check_failed"
       },
       {
-       "at": "2025-12-31T22:27:00Z",
+       "at": "2025-12-31T22:28:00Z",
        "class": "path",
        "evidence": "分担控制器记录到中继 access 的流量走接口 m02",
        "from": "wss",
@@ -8142,9 +8142,9 @@
        "to": "udp"
       },
       {
-       "at": "2025-12-31T22:25:00Z",
+       "at": "2025-12-31T22:26:00Z",
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 22:24:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 22:25:00Z（60 秒前；超过 180 秒没有新的握手算超时）",
        "from": "stale",
        "id": "m02",
        "kind": "tunnel",
@@ -8152,13 +8152,13 @@
        "prev_for_s": 840,
        "seq": 3,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T22:24:00Z",
+       "source_at": "2025-12-31T22:25:00Z",
        "to": "ok"
       },
       {
-       "at": "2025-12-31T22:11:00Z",
+       "at": "2025-12-31T22:12:00Z",
        "class": "tunnel",
-       "evidence": "最近一次握手在 2025-12-31 22:07:00Z（240 秒前；超过 180 秒没有新的握手算超时）",
+       "evidence": "最近一次握手在 2025-12-31 22:08:00Z（240 秒前；超过 180 秒没有新的握手算超时）",
        "from": "ok",
        "id": "m02",
        "kind": "tunnel",
@@ -8168,11 +8168,11 @@
        "reason": "handshake_timeout",
        "seq": 2,
        "source": "wg_handshake",
-       "source_at": "2025-12-31T22:07:00Z",
+       "source_at": "2025-12-31T22:08:00Z",
        "to": "stale"
       },
       {
-       "at": "2025-12-31T22:07:00Z",
+       "at": "2025-12-31T22:08:00Z",
        "class": "path",
        "evidence": "分担控制器记录到中继 access 的流量走接口 m02w",
        "from": "udp",
@@ -8195,7 +8195,7 @@
        "total": 16777216
       },
       "bytes": 8978,
-      "checkpoint_at": "2025-12-31T23:59:00Z",
+      "checkpoint_at": "2026-01-01T00:00:00Z",
       "disk_bytes": 20319,
       "dropped_budget": 0,
       "events": 22,
@@ -8203,13 +8203,13 @@
       "flap_quiet_s": 600,
       "flap_window_s": 600,
       "gap_after_s": 120,
-      "last_pass": "2025-12-31T23:59:00Z",
+      "last_pass": "2026-01-01T00:00:00Z",
       "max_age_s": 2592000,
       "max_events": 20000,
       "merged": 34,
-      "newest": "2025-12-31T23:57:00Z",
+      "newest": "2025-12-31T23:58:00Z",
       "objects": 28,
-      "oldest": "2025-12-31T22:07:00Z",
+      "oldest": "2025-12-31T22:08:00Z",
       "open_flaps": 1,
       "restored": true,
       "segments": 1,
@@ -23157,8 +23157,8 @@
        "bytes_up": 88567,
        "device": "192.168.77.20",
        "failed": 14,
-       "first_seen": "2025-12-31T00:35:00Z",
-       "last_seen": "2025-12-31T23:59:00Z",
+       "first_seen": "2025-12-31T00:36:00Z",
+       "last_seen": "2026-01-01T00:00:00Z",
        "mac": "00:00:5e:00:53:20",
        "name_unresolved": 2,
        "total": 40
@@ -23199,7 +23199,7 @@
        "device": "192.168.77.21",
        "failed": 12,
        "first_seen": "2025-12-31T00:26:00Z",
-       "last_seen": "2025-12-31T23:50:00Z",
+       "last_seen": "2025-12-31T23:51:00Z",
        "mac": "00:00:5e:00:53:21",
        "name_unresolved": 3,
        "total": 40
@@ -23240,7 +23240,7 @@
        "device": "192.168.77.35",
        "failed": 13,
        "first_seen": "2025-12-31T00:17:00Z",
-       "last_seen": "2025-12-31T23:41:00Z",
+       "last_seen": "2025-12-31T23:42:00Z",
        "mac": "00:00:5e:00:53:35",
        "name_unresolved": 3,
        "total": 40
@@ -23281,7 +23281,7 @@
        "device": "2001:db8:77::50",
        "failed": 11,
        "first_seen": "2025-12-31T00:08:00Z",
-       "last_seen": "2025-12-31T23:32:00Z",
+       "last_seen": "2025-12-31T23:33:00Z",
        "name_unresolved": 3,
        "total": 40
       }
@@ -23293,16 +23293,16 @@
       "max_age_s": 86400,
       "max_bytes": 33554432,
       "max_records": 50000,
-      "newest": "2025-12-31T23:59:00Z",
-      "oldest": "2025-12-31T00:08:00Z",
+      "newest": "2026-01-01T00:00:00Z",
+      "oldest": "2025-12-31T00:09:00Z",
       "oversized": 0,
       "record_names": true,
       "records": 160,
       "segments": 24,
       "unclean_stop": {
        "active": 3,
-       "detected_at": "2025-12-31T23:59:00Z",
-       "last_alive": "2025-12-31T23:25:00Z"
+       "detected_at": "2026-01-01T00:00:00Z",
+       "last_alive": "2025-12-31T23:26:00Z"
       },
       "write_errors": 0
      }
@@ -23399,7 +23399,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T23:59:00Z",
+       "start": "2026-01-01T00:00:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.10:443"
       },
@@ -23421,7 +23421,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T23:50:00Z",
+       "start": "2025-12-31T23:51:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.11:443",
        "why": "ech"
@@ -23445,7 +23445,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T23:41:00Z",
+       "start": "2025-12-31T23:42:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.12:443"
       },
@@ -23566,7 +23566,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T22:56:00Z",
+       "start": "2025-12-31T22:57:00Z",
        "target": "group:us",
        "upstream": "[2001:db8:5::17]:443"
       },
@@ -23588,7 +23588,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T22:47:00Z",
+       "start": "2025-12-31T22:48:00Z",
        "target": "exit:myext",
        "upstream": "198.51.100.18:443"
       },
@@ -23608,7 +23608,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T22:38:00Z",
+       "start": "2025-12-31T22:39:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.19:443",
        "why": "no_data"
@@ -23732,7 +23732,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T21:53:00Z",
+       "start": "2025-12-31T21:54:00Z",
        "target": "group:hk",
        "upstream": "198.51.100.24:443",
        "why": "name_unresolved"
@@ -23755,7 +23755,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T21:44:00Z",
+       "start": "2025-12-31T21:45:00Z",
        "target": "group:sg",
        "upstream": "[2001:db8:5::1f]:443"
       },
@@ -23778,7 +23778,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T21:35:00Z",
+       "start": "2025-12-31T21:36:00Z",
        "target": "group:us",
        "upstream": "198.51.100.26:443"
       },
@@ -23885,7 +23885,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T20:50:00Z",
+       "start": "2025-12-31T20:51:00Z",
        "target": "direct",
        "upstream": "198.51.100.31:443"
       },
@@ -23905,7 +23905,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T20:41:00Z",
+       "start": "2025-12-31T20:42:00Z",
        "target": "direct",
        "view": "own_address_view",
        "why": "other"
@@ -23928,7 +23928,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T20:32:00Z",
+       "start": "2025-12-31T20:33:00Z",
        "target": "group:hk",
        "upstream": "[2001:db8:5::27]:443"
       },
@@ -24044,7 +24044,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T19:47:00Z",
+       "start": "2025-12-31T19:48:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.38:443"
       },
@@ -24067,7 +24067,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T19:38:00Z",
+       "start": "2025-12-31T19:39:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.39:443"
       },
@@ -24087,7 +24087,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T19:29:00Z",
+       "start": "2025-12-31T19:30:00Z",
        "target": "reject"
       },
       {
@@ -24198,7 +24198,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T18:44:00Z",
+       "start": "2025-12-31T18:45:00Z",
        "target": "exit:myext",
        "upstream": "[2001:db8:5::33]:443"
       },
@@ -24230,7 +24230,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T18:35:00Z",
+       "start": "2025-12-31T18:36:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.46:443",
        "why": "name_unresolved"
@@ -24254,7 +24254,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T18:26:00Z",
+       "start": "2025-12-31T18:27:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.47:443"
       },
@@ -24357,7 +24357,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T17:41:00Z",
+       "start": "2025-12-31T17:42:00Z",
        "target": "group:sg",
        "upstream": "198.51.100.12:443"
       },
@@ -24378,7 +24378,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T17:32:00Z",
+       "start": "2025-12-31T17:33:00Z",
        "target": "group:us",
        "upstream": "[2001:db8:5::13]:443",
        "why": "ech"
@@ -24399,7 +24399,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T17:23:00Z",
+       "start": "2025-12-31T17:24:00Z",
        "target": "direct",
        "view": "own_address_view",
        "why": "other"
@@ -24508,7 +24508,7 @@
        "rule_index": 7,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T16:38:00Z",
+       "start": "2025-12-31T16:39:00Z",
        "why": "eof"
       }
      ],
@@ -24518,16 +24518,16 @@
       "max_age_s": 86400,
       "max_bytes": 33554432,
       "max_records": 50000,
-      "newest": "2025-12-31T23:59:00Z",
-      "oldest": "2025-12-31T00:08:00Z",
+      "newest": "2026-01-01T00:00:00Z",
+      "oldest": "2025-12-31T00:09:00Z",
       "oversized": 0,
       "record_names": true,
       "records": 160,
       "segments": 24,
       "unclean_stop": {
        "active": 3,
-       "detected_at": "2025-12-31T23:59:00Z",
-       "last_alive": "2025-12-31T23:25:00Z"
+       "detected_at": "2026-01-01T00:00:00Z",
+       "last_alive": "2025-12-31T23:26:00Z"
       },
       "write_errors": 0
      }
@@ -24576,7 +24576,7 @@
    "body": {
     "available": true,
     "device": "192.168.77.20",
-    "from": "2025-12-31T23:57:00Z",
+    "from": "2025-12-31T23:58:00Z",
     "identity": "address",
     "listed": 0,
     "mac": "00:00:5e:00:53:20",
@@ -24584,7 +24584,7 @@
     "no_mac": 0,
     "other_mac": 0,
     "records": [],
-    "to": "2026-01-01T00:01:00Z",
+    "to": "2026-01-01T00:02:00Z",
     "window_s": 120
    },
    "status": 200
@@ -24677,7 +24677,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T23:59:00Z",
+       "start": "2026-01-01T00:00:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.10:443"
       },
@@ -24722,7 +24722,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T22:47:00Z",
+       "start": "2025-12-31T22:48:00Z",
        "target": "exit:myext",
        "upstream": "198.51.100.18:443"
       },
@@ -24768,7 +24768,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T21:35:00Z",
+       "start": "2025-12-31T21:36:00Z",
        "target": "group:us",
        "upstream": "198.51.100.26:443"
       },
@@ -24833,7 +24833,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T19:47:00Z",
+       "start": "2025-12-31T19:48:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.38:443"
       },
@@ -24888,7 +24888,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T18:35:00Z",
+       "start": "2025-12-31T18:36:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.46:443",
        "why": "name_unresolved"
@@ -24932,7 +24932,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T17:23:00Z",
+       "start": "2025-12-31T17:24:00Z",
        "target": "direct",
        "view": "own_address_view",
        "why": "other"
@@ -24998,7 +24998,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T15:35:00Z",
+       "start": "2025-12-31T15:36:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.26:443"
       },
@@ -25037,7 +25037,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T14:23:00Z",
+       "start": "2025-12-31T14:24:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.34:443"
       },
@@ -25082,7 +25082,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T13:11:00Z",
+       "start": "2025-12-31T13:12:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.42:443"
       },
@@ -25148,7 +25148,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T11:23:00Z",
+       "start": "2025-12-31T11:24:00Z",
        "target": "direct",
        "upstream": "198.51.100.14:443",
        "why": "no_data"
@@ -25193,7 +25193,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T10:11:00Z",
+       "start": "2025-12-31T10:12:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.22:443"
       },
@@ -25248,7 +25248,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T08:59:00Z",
+       "start": "2025-12-31T09:00:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.30:443",
        "why": "name_unresolved"
@@ -25316,7 +25316,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T07:11:00Z",
+       "start": "2025-12-31T07:12:00Z",
        "target": "group:gb",
        "upstream": "198.51.100.42:443"
       },
@@ -25358,7 +25358,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T05:59:00Z",
+       "start": "2025-12-31T06:00:00Z",
        "target": "direct",
        "upstream": "198.51.100.10:443"
       },
@@ -25397,7 +25397,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T04:47:00Z",
+       "start": "2025-12-31T04:48:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.18:443"
       },
@@ -25464,7 +25464,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T02:59:00Z",
+       "start": "2025-12-31T03:00:00Z",
        "target": "group:hk",
        "upstream": "198.51.100.30:443",
        "why": "ech"
@@ -25508,7 +25508,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.20",
-       "start": "2025-12-31T01:47:00Z",
+       "start": "2025-12-31T01:48:00Z",
        "target": "group:gb",
        "upstream": "198.51.100.38:443",
        "why": "no_data"
@@ -25553,7 +25553,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.20",
-       "start": "2025-12-31T00:35:00Z",
+       "start": "2025-12-31T00:36:00Z",
        "target": "direct",
        "upstream": "198.51.100.46:443"
       }
@@ -25564,16 +25564,16 @@
       "max_age_s": 86400,
       "max_bytes": 33554432,
       "max_records": 50000,
-      "newest": "2025-12-31T23:59:00Z",
-      "oldest": "2025-12-31T00:08:00Z",
+      "newest": "2026-01-01T00:00:00Z",
+      "oldest": "2025-12-31T00:09:00Z",
       "oversized": 0,
       "record_names": true,
       "records": 160,
       "segments": 24,
       "unclean_stop": {
        "active": 3,
-       "detected_at": "2025-12-31T23:59:00Z",
-       "last_alive": "2025-12-31T23:25:00Z"
+       "detected_at": "2026-01-01T00:00:00Z",
+       "last_alive": "2025-12-31T23:26:00Z"
       },
       "write_errors": 0
      }
@@ -25660,7 +25660,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T23:50:00Z",
+       "start": "2025-12-31T23:51:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.11:443",
        "why": "ech"
@@ -25704,7 +25704,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T22:38:00Z",
+       "start": "2025-12-31T22:39:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.19:443",
        "why": "no_data"
@@ -25772,7 +25772,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T20:50:00Z",
+       "start": "2025-12-31T20:51:00Z",
        "target": "direct",
        "upstream": "198.51.100.31:443"
       },
@@ -25828,7 +25828,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T19:38:00Z",
+       "start": "2025-12-31T19:39:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.39:443"
       },
@@ -25872,7 +25872,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T18:26:00Z",
+       "start": "2025-12-31T18:27:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.47:443"
       },
@@ -25931,7 +25931,7 @@
        "rule_index": 7,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T16:38:00Z",
+       "start": "2025-12-31T16:39:00Z",
        "why": "eof"
       },
       {
@@ -25976,7 +25976,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T15:26:00Z",
+       "start": "2025-12-31T15:27:00Z",
        "target": "direct",
        "upstream": "198.51.100.27:443"
       },
@@ -26020,7 +26020,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T14:14:00Z",
+       "start": "2025-12-31T14:15:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.35:443",
        "why": "ech"
@@ -26088,7 +26088,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T12:26:00Z",
+       "start": "2025-12-31T12:27:00Z",
        "target": "group:hk",
        "upstream": "198.51.100.47:443"
       },
@@ -26132,7 +26132,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T11:14:00Z",
+       "start": "2025-12-31T11:15:00Z",
        "target": "group:gb",
        "upstream": "198.51.100.15:443"
       },
@@ -26188,7 +26188,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T10:02:00Z",
+       "start": "2025-12-31T10:03:00Z",
        "target": "direct",
        "upstream": "198.51.100.23:443"
       },
@@ -26252,7 +26252,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T08:14:00Z",
+       "start": "2025-12-31T08:15:00Z",
        "target": "reject"
       },
       {
@@ -26291,7 +26291,7 @@
        "rule_index": 6,
        "sniffed": false,
        "source": "192.168.77.21",
-       "start": "2025-12-31T07:02:00Z",
+       "start": "2025-12-31T07:03:00Z",
        "why": "eof"
       },
       {
@@ -26336,7 +26336,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T05:50:00Z",
+       "start": "2025-12-31T05:51:00Z",
        "target": "group:gb",
        "upstream": "198.51.100.11:443"
       },
@@ -26404,7 +26404,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T04:02:00Z",
+       "start": "2025-12-31T04:03:00Z",
        "target": "group:us",
        "upstream": "198.51.100.23:443"
       },
@@ -26448,7 +26448,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T02:50:00Z",
+       "start": "2025-12-31T02:51:00Z",
        "target": "group:sg",
        "upstream": "198.51.100.31:443"
       },
@@ -26492,7 +26492,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.21",
-       "start": "2025-12-31T01:38:00Z",
+       "start": "2025-12-31T01:39:00Z",
        "target": "group:hk",
        "upstream": "198.51.100.39:443"
       },
@@ -26559,16 +26559,16 @@
       "max_age_s": 86400,
       "max_bytes": 33554432,
       "max_records": 50000,
-      "newest": "2025-12-31T23:59:00Z",
-      "oldest": "2025-12-31T00:08:00Z",
+      "newest": "2026-01-01T00:00:00Z",
+      "oldest": "2025-12-31T00:09:00Z",
       "oversized": 0,
       "record_names": true,
       "records": 160,
       "segments": 24,
       "unclean_stop": {
        "active": 3,
-       "detected_at": "2025-12-31T23:59:00Z",
-       "last_alive": "2025-12-31T23:25:00Z"
+       "detected_at": "2026-01-01T00:00:00Z",
+       "last_alive": "2025-12-31T23:26:00Z"
       },
       "write_errors": 0
      }
@@ -26656,7 +26656,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T23:41:00Z",
+       "start": "2025-12-31T23:42:00Z",
        "target": "group:jp",
        "upstream": "198.51.100.12:443"
       },
@@ -26734,7 +26734,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T21:53:00Z",
+       "start": "2025-12-31T21:54:00Z",
        "target": "group:hk",
        "upstream": "198.51.100.24:443",
        "why": "name_unresolved"
@@ -26779,7 +26779,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T20:41:00Z",
+       "start": "2025-12-31T20:42:00Z",
        "target": "direct",
        "view": "own_address_view",
        "why": "other"
@@ -26824,7 +26824,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T19:29:00Z",
+       "start": "2025-12-31T19:30:00Z",
        "target": "reject"
       },
       {
@@ -26887,7 +26887,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T17:41:00Z",
+       "start": "2025-12-31T17:42:00Z",
        "target": "group:sg",
        "upstream": "198.51.100.12:443"
       },
@@ -26932,7 +26932,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T16:29:00Z",
+       "start": "2025-12-31T16:30:00Z",
        "target": "group:hk",
        "upstream": "198.51.100.20:443"
       },
@@ -26980,7 +26980,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T15:17:00Z",
+       "start": "2025-12-31T15:18:00Z",
        "target": "group:gb",
        "upstream": "198.51.100.28:443"
       },
@@ -27046,7 +27046,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T13:29:00Z",
+       "start": "2025-12-31T13:30:00Z",
        "target": "group:us",
        "upstream": "198.51.100.40:443"
       },
@@ -27103,7 +27103,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T12:17:00Z",
+       "start": "2025-12-31T12:18:00Z",
        "target": "group:sg",
        "upstream": "198.51.100.48:443",
        "why": "name_unresolved"
@@ -27148,7 +27148,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T11:05:00Z",
+       "start": "2025-12-31T11:06:00Z",
        "target": "direct",
        "view": "own_address_view",
        "why": "other"
@@ -27216,7 +27216,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T09:17:00Z",
+       "start": "2025-12-31T09:18:00Z",
        "target": "exit:myext",
        "upstream": "198.51.100.28:443"
       },
@@ -27256,7 +27256,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T08:05:00Z",
+       "start": "2025-12-31T08:06:00Z",
        "target": "group:us",
        "upstream": "198.51.100.36:443"
       },
@@ -27301,7 +27301,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T06:53:00Z",
+       "start": "2025-12-31T06:54:00Z",
        "target": "group:sg",
        "upstream": "198.51.100.44:443"
       },
@@ -27370,7 +27370,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T05:05:00Z",
+       "start": "2025-12-31T05:06:00Z",
        "target": "group:tw",
        "upstream": "198.51.100.16:443",
        "why": "no_data"
@@ -27415,7 +27415,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T03:53:00Z",
+       "start": "2025-12-31T03:54:00Z",
        "target": "exit:myext",
        "upstream": "198.51.100.24:443"
       },
@@ -27472,7 +27472,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "192.168.77.35",
-       "start": "2025-12-31T02:41:00Z",
+       "start": "2025-12-31T02:42:00Z",
        "target": "group:us",
        "upstream": "198.51.100.32:443",
        "why": "name_unresolved"
@@ -27542,7 +27542,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "192.168.77.35",
-       "start": "2025-12-31T00:53:00Z",
+       "start": "2025-12-31T00:54:00Z",
        "target": "exit:us1",
        "upstream": "198.51.100.44:443"
       },
@@ -27572,16 +27572,16 @@
       "max_age_s": 86400,
       "max_bytes": 33554432,
       "max_records": 50000,
-      "newest": "2025-12-31T23:59:00Z",
-      "oldest": "2025-12-31T00:08:00Z",
+      "newest": "2026-01-01T00:00:00Z",
+      "oldest": "2025-12-31T00:09:00Z",
       "oversized": 0,
       "record_names": true,
       "records": 160,
       "segments": 24,
       "unclean_stop": {
        "active": 3,
-       "detected_at": "2025-12-31T23:59:00Z",
-       "last_alive": "2025-12-31T23:25:00Z"
+       "detected_at": "2026-01-01T00:00:00Z",
+       "last_alive": "2025-12-31T23:26:00Z"
       },
       "write_errors": 0
      }
@@ -27700,7 +27700,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T22:56:00Z",
+       "start": "2025-12-31T22:57:00Z",
        "target": "group:us",
        "upstream": "[2001:db8:5::17]:443"
       },
@@ -27742,7 +27742,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T21:44:00Z",
+       "start": "2025-12-31T21:45:00Z",
        "target": "group:sg",
        "upstream": "[2001:db8:5::1f]:443"
       },
@@ -27782,7 +27782,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T20:32:00Z",
+       "start": "2025-12-31T20:33:00Z",
        "target": "group:hk",
        "upstream": "[2001:db8:5::27]:443"
       },
@@ -27841,7 +27841,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T18:44:00Z",
+       "start": "2025-12-31T18:45:00Z",
        "target": "exit:myext",
        "upstream": "[2001:db8:5::33]:443"
       },
@@ -27883,7 +27883,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T17:32:00Z",
+       "start": "2025-12-31T17:33:00Z",
        "target": "group:us",
        "upstream": "[2001:db8:5::13]:443",
        "why": "ech"
@@ -27925,7 +27925,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T16:20:00Z",
+       "start": "2025-12-31T16:21:00Z",
        "target": "group:sg",
        "upstream": "[2001:db8:5::1b]:443",
        "why": "no_data"
@@ -27990,7 +27990,7 @@
        "rule_index": 6,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T14:32:00Z",
+       "start": "2025-12-31T14:33:00Z",
        "target": "group:tw",
        "upstream": "[2001:db8:5::27]:443"
       },
@@ -28044,7 +28044,7 @@
        "rule_index": 4,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T13:20:00Z",
+       "start": "2025-12-31T13:21:00Z",
        "target": "exit:myext",
        "upstream": "[2001:db8:5::2f]:443"
       },
@@ -28086,7 +28086,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T12:08:00Z",
+       "start": "2025-12-31T12:09:00Z",
        "target": "group:us",
        "upstream": "[2001:db8:5::37]:443"
       },
@@ -28142,7 +28142,7 @@
        "rule_index": 4,
        "sniffed": false,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T10:20:00Z",
+       "start": "2025-12-31T10:21:00Z",
        "why": "eof"
       },
       {
@@ -28185,7 +28185,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T09:08:00Z",
+       "start": "2025-12-31T09:09:00Z",
        "target": "group:tw",
        "upstream": "[2001:db8:5::23]:443"
       },
@@ -28227,7 +28227,7 @@
        "rule_index": -1,
        "sniffed": false,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T07:56:00Z",
+       "start": "2025-12-31T07:57:00Z",
        "target": "exit:myext",
        "upstream": "[2001:db8:5::2b]:443",
        "why": "ech"
@@ -28292,7 +28292,7 @@
        "rule_index": 7,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T06:08:00Z",
+       "start": "2025-12-31T06:09:00Z",
        "target": "group:jp",
        "upstream": "[2001:db8:5::37]:443"
       },
@@ -28334,7 +28334,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T04:56:00Z",
+       "start": "2025-12-31T04:57:00Z",
        "target": "exit:us1",
        "upstream": "[2001:db8:5::17]:443"
       },
@@ -28388,7 +28388,7 @@
        "rule_index": 3,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T03:44:00Z",
+       "start": "2025-12-31T03:45:00Z",
        "target": "group:tw",
        "upstream": "[2001:db8:5::1f]:443"
       },
@@ -28449,7 +28449,7 @@
        "rule_index": 5,
        "sniffed": true,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T01:56:00Z",
+       "start": "2025-12-31T01:57:00Z",
        "target": "reject"
       },
       {
@@ -28486,7 +28486,7 @@
        "rule_index": 3,
        "sniffed": false,
        "source": "2001:db8:77::50",
-       "start": "2025-12-31T00:44:00Z",
+       "start": "2025-12-31T00:45:00Z",
        "why": "eof"
       },
       {
@@ -28518,16 +28518,16 @@
       "max_age_s": 86400,
       "max_bytes": 33554432,
       "max_records": 50000,
-      "newest": "2025-12-31T23:59:00Z",
-      "oldest": "2025-12-31T00:08:00Z",
+      "newest": "2026-01-01T00:00:00Z",
+      "oldest": "2025-12-31T00:09:00Z",
       "oversized": 0,
       "record_names": true,
       "records": 160,
       "segments": 24,
       "unclean_stop": {
        "active": 3,
-       "detected_at": "2025-12-31T23:59:00Z",
-       "last_alive": "2025-12-31T23:25:00Z"
+       "detected_at": "2026-01-01T00:00:00Z",
+       "last_alive": "2025-12-31T23:26:00Z"
       },
       "write_errors": 0
      }
@@ -48629,7 +48629,7 @@
   },
   "POST /api/diff": {
    "body": {
-    "diff": "===== nodes/dc2/etc/meridian/ext/gost.yaml (changed) =====\n # Meridian external SOCKS exits: transparent TCP redirector (gost 3.2.6).\n # Secret-bearing (0600): the proxy credentials are injected at install.\n # meridian-socks-version: socks-my=1 (version of the SOCKS credential: +1 per rotation; not the username or password)\n services:\n - name: ext-myext-redir\n   addr: \"10.66.201.14:12301\"\n   handler:\n     type: red\n     chain: ext-myext\n     metadata:\n       sniffing: false\n   listener:\n     type: red\n     metadata:\n       tproxy: false\n - name: ext-myext-dns1\n   addr: \"10.66.201.14:5301\"\n   handler:\n     type: tcp\n     chain: ext-myext\n   listener:\n     type: tcp\n   forwarder:\n     nodes:\n     - name: ext-myext-dns1-target\n       addr: \"1.1.1.1:53\"\n - name: ext-myext-dns2\n   addr: \"10.66.201.14:5302\"\n   handler:\n     type: tcp\n     chain: ext-myext\n   listener:\n     type: tcp\n   forwarder:\n     nodes:\n     - name: ext-myext-dns2-target\n       addr: \"8.8.8.8:53\"\n chains:\n - name: ext-myext\n   hops:\n   - name: ext-myext-hop\n     nodes:\n     - name: ext-myext-socks\n-      addr: \"198.51.100.66:1080\"\n+      addr: \"198.51.100.66:1081\"\n       connector:\n         type: socks5\n         auth:\n           username: \"__MERIDIAN_SECRET_socks-my-user__\"\n           password: \"__MERIDIAN_SECRET_socks-my-pass__\"\n       dialer:\n         type: tcp\n log:\n   level: warn\n   format: text\n   output: stderr\n \n===== nodes/dc2/etc/nftables.d/meridian.nft (changed) =====\n #!/usr/sbin/nft -f\n # exit dc2 public NAT. Tunnel ULA and the LAN prefix are translated here, not on the home gateway.\n table inet meridian\n delete table inet meridian\n table inet meridian {\n   chain group_dns {\n     type nat hook prerouting priority dstnat; policy accept;\n     iifname { \"m06\", \"m13\" } ip6 saddr { fd66:0:0:ff::e } accept comment \"region-group queries of the exits behind this node: not answered here\"\n     iifname { \"m06\", \"m13\" } ip6 daddr fd66::53:0/112 udp dport 53 dnat ip6 to fd66:0:0:e::2 comment \"region-group resolver addresses: this exit's tunnel resolver\"\n     iifname { \"m06\", \"m13\" } ip6 daddr fd66::53:0/112 tcp dport 53 dnat ip6 to fd66:0:0:e::2 comment \"region-group resolver addresses: this exit's tunnel resolver\"\n   }\n   chain hub_return_in {\n     type filter hook prerouting priority mangle; policy accept;\n     iifname \"m13\" ct direction original ct mark set 0x4d50 comment \"arrived from the primary hub ix\"\n     iifname \"m06\" ct direction original ct mark set 0x4d51 comment \"arrived from the backup hub hkb\"\n     ct direction reply ct mark 0x4d50 meta mark set 0x4d50 comment \"reply: back through the primary hub\"\n     ct direction reply ct mark 0x4d51 meta mark set 0x4d51 comment \"reply: back through the backup hub\"\n   }\n   chain hub_return_out {\n     type route hook output priority mangle; policy accept;\n     ct direction reply ct mark 0x4d50 meta mark set 0x4d50 comment \"local reply (resolver, ping): back through the primary hub\"\n     ct direction reply ct mark 0x4d51 meta mark set 0x4d51 comment \"local reply (resolver, ping): back through the backup hub\"\n   }\n   chain exit_dns {\n     type nat hook prerouting priority dstnat; policy accept;\n     iifname { \"m13\", \"m06\" } ip6 daddr fd66::54:2 udp dport 53 dnat ip6 to fd66:0:0:e::2 comment \"this exit's resolver address, from either hub\"\n     iifname { \"m13\", \"m06\" } ip6 daddr fd66::54:2 tcp dport 53 dnat ip6 to fd66:0:0:e::2 comment \"this exit's resolver address, from either hub\"\n   }\n   chain ext_dnat {\n     type nat hook prerouting priority -101; policy accept;\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e ip6 daddr fd66::55:5 udp dport 53 accept comment \"external exit myext: pinned probe DNS only\"\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e ip6 daddr fd66::55:5 tcp dport 53 accept comment \"external exit myext: pinned probe DNS only\"\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e ip6 daddr fd66::53:0/112 udp dport 53 dnat ip6 to [fd66::55:5]:53 comment \"external exit myext: region-group queries, answered by its resolver group here\"\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e ip6 daddr fd66::53:0/112 tcp dport 53 dnat ip6 to [fd66::55:5]:53 comment \"external exit myext: region-group queries, answered by its resolver group here\"\n     iifname { \"m06\", \"m13\" } ip6 daddr fd66::54:5 udp dport 53 dnat ip6 to [fd66::55:5]:53 comment \"external exit myext: its resolver address, from either hub\"\n     iifname { \"m06\", \"m13\" } ip6 daddr fd66::54:5 tcp dport 53 dnat ip6 to [fd66::55:5]:53 comment \"external exit myext: its resolver address, from either hub\"\n-    iifname { \"m06\", \"m13\" } ip saddr 10.66.200.14 meta l4proto tcp dnat ip to 10.66.201.14:12301 comment \"external exit myext: TCP to the redirector (SOCKS5 198.51.100.66:1080)\"\n+    iifname { \"m06\", \"m13\" } ip saddr 10.66.200.14 meta l4proto tcp dnat ip to 10.66.201.14:12301 comment \"external exit myext: TCP to the redirector (SOCKS5 198.51.100.66:1081)\"\n     iifname { \"m06\", \"m13\" } ip saddr 10.66.200.14 meta l4proto udp dnat ip to 10.66.201.14:9 comment \"external exit myext is TCP only: UDP (QUIC included) refused here (port unreachable)\"\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e meta l4proto { tcp, udp } dnat ip6 to [fd66::55:5]:9 comment \"external exit myext carries no IPv6: refused here (reset / port unreachable)\"\n   }\n   chain ext_reject {\n     type filter hook forward priority filter; policy accept;\n     ip saddr 10.66.200.14 meta l4proto udp counter reject with icmp type port-unreachable comment \"external exit myext is TCP only: nothing of it is forwarded\"\n     ip saddr 10.66.200.14 counter reject with icmp type admin-prohibited\n     ip6 saddr fd66:0:0:ff::e meta l4proto tcp counter reject with tcp reset\n     ip6 saddr fd66:0:0:ff::e counter reject with icmpv6 type admin-prohibited\n   }\n   chain ext_local {\n     type filter hook input priority filter; policy accept;\n     iifname != \"lo\" ip daddr 10.66.201.14 ct status dnat accept comment \"external exit myext: its own DNAT\"\n     iifname != \"lo\" ip daddr 10.66.201.14 counter drop comment \"external exit myext: service address only through its DNAT\"\n     iifname != { \"lo\", \"m06\", \"m13\" } ip6 daddr fd66::55:5 counter drop comment \"external exit myext: resolver address only from the hubs\"\n   }\n   chain ext_proxy_out {\n     type filter hook output priority filter; policy accept;\n-    ip daddr 198.51.100.66 tcp dport 1080 oifname != \"wg9\" counter reject with tcp reset comment \"external exit myext: the proxy only through wg9, never the default route\"\n+    ip daddr 198.51.100.66 tcp dport 1081 oifname != \"wg9\" counter reject with tcp reset comment \"external exit myext: the proxy only through wg9, never the default route\"\n   }\n   chain srcnat {\n     type nat hook postrouting priority srcnat; policy accept;\n     oifname \"eth0\" ip saddr { 192.168.77.0/24, 10.66.200.0/24 } masquerade\n   }\n   chain drop_v6 {\n     type filter hook forward priority filter; policy accept;\n     oifname \"eth0\" meta nfproto ipv6 drop comment \"no egress_v6; AAAA is filtered at DNS\"\n   }\n   chain tunnel_mss_out {\n     type filter hook output priority -140; policy accept;\n     oifname { \"m06\", \"m13\" } tcp flags syn meta nfproto ipv4 tcp option maxseg size > 1320 tcp option maxseg size set 1320 comment \"this host's own TCP into a tunnel: the gateway's forward clamp\"\n     oifname { \"m06\", \"m13\" } tcp flags syn meta nfproto ipv6 tcp option maxseg size > 1300 tcp option maxseg size set 1300\n   }\n   chain tunnel_mss_in {\n     type filter hook input priority mangle; policy accept;\n     iifname { \"m06\", \"m13\" } tcp flags syn meta nfproto ipv4 tcp option maxseg size > 1320 tcp option maxseg size set 1320 comment \"this host's own TCP from a tunnel: the gateway's forward clamp\"\n     iifname { \"m06\", \"m13\" } tcp flags syn meta nfproto ipv6 tcp option maxseg size > 1300 tcp option maxseg size set 1300\n   }\n }\n \n===== nodes/dc2/etc/wireguard/m06.conf (changed) =====\n # meridian link hkb-dc2 mode udp iface m06\n # peer hkb (备用枢纽 · 香港机房五号). Table=off so this never replaces the host default route.\n [Interface]\n PrivateKey = __MERIDIAN_PRIVATE_KEY__\n Address = 10.66.7.2/30, fd66:0:0:7::2/64\n-MTU = 1420\n+MTU = 1360\n Table = off\n ListenPort = 51826\n \n [Peer]\n # peer-node hkb\n PublicKey = v6o8W6A6rkKJ5xLP5fjV+1LirpuCIHljyiwakBuLkrl=\n # Endpoint omitted: the peer dials us (NAT dial-out or we are the listener).\n AllowedIPs = 192.168.77.0/24, 10.66.200.0/24, 10.66.7.1/32, fd66::/48, 2001:db8:77::/64\n \n===== nodes/dc2/usr/local/sbin/meridian-routes.sh (changed) =====\n #!/bin/bash\n # Policy routes for one Meridian node. Safe to re-run.\n # fd66::/48 is never given a next hop of the ROS gateway.\n set -euo pipefail\n del_rule() {\n   while \"$@\" >/dev/null 2>&1; do :; done || true\n }\n # rp_filter=2 and no ICMP redirects on Meridian's interfaces only (the\n # managed tunnels, the interface the topology names, mra/mmesh). The kernel\n # uses max(all, iface) for rp_filter and ORs send_redirects, so the\n # interface value is what matters here. Other interfaces are not touched.\n harden_sysctl() {\n   local i\n   for i in \"$@\"; do\n     sysctl -w \"net.ipv4.conf.${i}.rp_filter=2\" >/dev/null 2>&1 || true\n     sysctl -w \"net.ipv4.conf.${i}.send_redirects=0\" >/dev/null 2>&1 || true\n     sysctl -w \"net.ipv4.conf.${i}.accept_redirects=0\" >/dev/null 2>&1 || true\n     sysctl -w \"net.ipv6.conf.${i}.accept_redirects=0\" >/dev/null 2>&1 || true\n   done\n }\n harden_sysctl eth0 m06 m13\n ip route replace 192.168.77.0/24 dev m13\n ip route replace 10.66.200.0/24 dev m13\n ip -6 route replace 2001:db8:77::/64 dev m13\n ip -6 route replace fd66:0:0:ff::/64 dev m13\n ip -6 route replace fd66::/48 dev m13\n ip route replace blackhole 192.168.77.0/24 metric 32767\n ip route replace blackhole 10.66.200.0/24 metric 32767\n ip route replace blackhole 10.66.0.0/16 metric 32767\n ip -6 route replace blackhole fd66::/48 metric 32767\n ip -6 route replace blackhole fd66:0:0:ff::/64 metric 32767\n ip -6 route replace blackhole 2001:db8:77::/64 metric 32767\n # hub return paths: a reply leaves through the hub tunnel its connection arrived on\n # primary hub ix: mark 0x4d50 table 172 dev m13\n ip route replace 192.168.77.0/24 dev m13 table 172\n ip route replace 10.66.0.0/16 dev m13 table 172\n ip -6 route replace fd66::/48 dev m13 table 172\n ip -6 route replace 2001:db8:77::/64 dev m13 table 172\n ip route replace blackhole default metric 32767 table 172\n ip -6 route replace blackhole default metric 32767 table 172\n del_rule ip rule del fwmark 0x4d50 lookup 172\n ip rule add fwmark 0x4d50 lookup 172 priority 17060\n del_rule ip -6 rule del fwmark 0x4d50 lookup 172\n ip -6 rule add fwmark 0x4d50 lookup 172 priority 17060\n # backup hub hkb: mark 0x4d51 table 173 dev m06\n ip route replace 192.168.77.0/24 dev m06 table 173\n ip route replace 10.66.0.0/16 dev m06 table 173\n ip -6 route replace fd66::/48 dev m06 table 173\n ip -6 route replace 2001:db8:77::/64 dev m06 table 173\n ip route replace blackhole default metric 32767 table 173\n ip -6 route replace blackhole default metric 32767 table 173\n del_rule ip rule del fwmark 0x4d51 lookup 173\n ip rule add fwmark 0x4d51 lookup 173 priority 17061\n del_rule ip -6 rule del fwmark 0x4d51 lookup 173\n ip -6 rule add fwmark 0x4d51 lookup 173 priority 17061\n # carrier of external SOCKS exits: TCP to the local redirector, DNS to the local resolver group, everything else blackholed\n # meridian-transit: 10.66.201.0/24 10.66.202.0/24 fd66::55:0/112\n keep_ext=' 10.66.201.14 fd66::55:5 '\n for a in $(ip -o -4 addr show dev lo to 10.66.201.0/24 2>/dev/null | awk '{print $4}'); do case \"$keep_ext\" in *\" ${a%%/*} \"*) ;; *) ip addr del \"$a\" dev lo 2>/dev/null || true ;; esac; done\n for a in $(ip -o -6 addr show dev lo to fd66::55:0/112 2>/dev/null | awk '{print $4}'); do case \"$keep_ext\" in *\" ${a%%/*} \"*) ;; *) ip -6 addr del \"$a\" dev lo 2>/dev/null || true ;; esac; done\n-# external exit myext mark 0x105 transit 10.66.200.14: proxy 198.51.100.66:1080 via wg9\n+# external exit myext mark 0x105 transit 10.66.200.14: proxy 198.51.100.66:1081 via wg9\n ip addr replace 10.66.201.14/32 dev lo\n ip -6 addr replace fd66::55:5/128 dev lo\n ip route replace blackhole default table 205\n ip -6 route replace blackhole default table 205\n del_rule ip rule del from 10.66.200.14/32 lookup 205\n ip rule add from 10.66.200.14/32 lookup 205 priority 18204\n del_rule ip -6 rule del from fd66:0:0:ff::e/128 lookup 205\n ip -6 rule add from fd66:0:0:ff::e/128 lookup 205 priority 18204\n \n===== nodes/dc2/usr/local/sbin/meridian-up.sh (changed) =====\n #!/bin/bash\n # Bring up Meridian on this host without flushing the rest of nftables.\n # A bad line in sysctl is skipped so a wrong interface name cannot abort SSH.\n # Normally run by meridian.service (boot, and activation via meridian-host).\n set -euo pipefail\n # meridian-wan: eth0 set need=4\n-# meridian-ext: myext socks=198.51.100.66:1080 iface=wg9\n+# meridian-ext: myext socks=198.51.100.66:1081 iface=wg9\n MERIDIAN_NFT=/etc/nftables.d/meridian.nft\n if [ -f \"$MERIDIAN_NFT\" ]; then\n   if ! nft -c -f \"$MERIDIAN_NFT\"; then\n     echo \"meridian-nft-check-failed: running ruleset left unchanged; routes and forwarding not touched\" >&2\n     exit 1\n   fi\n   if ! nft -f \"$MERIDIAN_NFT\"; then\n     echo \"meridian-nft-load-failed: the batch was aborted as a whole; previous Meridian tables kept; routes and forwarding not touched\" >&2\n     exit 1\n   fi\n fi\n if [ -f /etc/sysctl.d/99-meridian.conf ]; then\n   sysctl_ok=0; sysctl_skip=0\n   while IFS= read -r line; do\n     case \"$line\" in ''|'#'*|*ip_forward=*|*.forwarding=*) continue ;; esac\n     if sysctl -w \"$line\" >/dev/null 2>&1; then sysctl_ok=$((sysctl_ok + 1)); else sysctl_skip=$((sysctl_skip + 1)); echo \"skip sysctl: $line\" >&2; fi\n   done < /etc/sysctl.d/99-meridian.conf\n   echo \"meridian-sysctl: applied $sysctl_ok, skipped $sysctl_skip from /etc/sysctl.d/99-meridian.conf\"\n else\n   echo \"meridian-sysctl: /etc/sysctl.d/99-meridian.conf missing; host sysctls not applied\" >&2\n fi\n if [ -x /usr/local/sbin/meridian-fwcompat.sh ]; then\n   if ! /usr/local/sbin/meridian-fwcompat.sh apply; then\n     echo \"meridian-fwcompat-failed: the host's FORWARD policy drops tunnel traffic and Meridian's DOCKER-USER rules could not be ensured; forwarding not enabled, tunnels not brought up\" >&2\n     exit 1\n   fi\n fi\n MERIDIAN_FWD=/etc/meridian/forwarding.conf\n if [ ! -f \"$MERIDIAN_FWD\" ]; then\n   echo \"meridian-forwarding-missing: $MERIDIAN_FWD not found; forwarding left as is\" >&2\n   exit 1\n fi\n while IFS= read -r line; do\n   case \"$line\" in ''|'#'*) continue ;; esac\n   case \"$line\" in\n     net.ipv4.ip_forward=*|net.ipv6.conf.all.forwarding=*)\n       if ! sysctl -w \"$line\" >/dev/null; then\n         echo \"meridian-forwarding-failed: $line\" >&2\n         exit 1\n       fi ;;\n     *) sysctl -w \"$line\" >/dev/null 2>&1 || echo \"skip sysctl: $line\" >&2 ;;\n   esac\n done < \"$MERIDIAN_FWD\"\n # The MTU each tunnel interface's config sets (\"MTU =\"): wg syncconf keeps the\n # running interface MTU, so an existing interface is aligned in place below.\n wg_conf_mtu() {\n   case \"$1\" in\n-    m06) echo 1420 ;;\n+    m06) echo 1360 ;;\n     m13) echo 1420 ;;\n     *) echo \"\" ;;\n   esac\n }\n for iface in m06 m13; do\n   conf=\"/etc/wireguard/$iface.conf\"\n   if [ ! -f \"$conf\" ]; then\n     echo \"meridian-wg-missing: $conf is listed in this manifest but not installed\" >&2\n     exit 1\n   fi\n   if ip link show \"$iface\" >/dev/null 2>&1; then\n     wg syncconf \"$iface\" <(wg-quick strip \"$conf\")\n     want_mtu=$(wg_conf_mtu \"$iface\")\n     have_mtu=$(cat \"/sys/class/net/$iface/mtu\" 2>/dev/null || true)\n     if [ -n \"$want_mtu\" ] && [ \"$have_mtu\" != \"$want_mtu\" ]; then\n       ip link set dev \"$iface\" mtu \"$want_mtu\"\n       echo \"meridian-wg-mtu: $iface ${have_mtu:-?} -> $want_mtu (set in place; the tunnel stays up)\"\n     fi\n   else\n     wg-quick up \"$conf\"\n   fi\n done\n if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then\n   /usr/local/sbin/meridian-mesh-up.sh || echo \"mesh sidecar skipped\" >&2\n fi\n /usr/local/sbin/meridian-routes.sh\n enable_unit() {\n   if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then\n     echo \"meridian-systemd-missing: cannot start $1 here; activate through meridian-host on the host\" >&2\n     exit 1\n   fi\n   systemctl enable --now \"$1\"\n }\n enable_unit meridian-unlock.timer\n if [ -f /etc/smartdns/smartdns.conf ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then\n   if systemctl cat meridian-smartdns.service >/dev/null 2>&1; then\n     systemctl enable meridian-smartdns.service >/dev/null 2>&1 || true\n     systemctl restart meridian-smartdns.service || echo \"meridian-smartdns.service restart failed; exit resolver is down\" >&2\n   else\n     echo \"meridian-smartdns.service is not installed; exit resolver is down\" >&2\n   fi\n fi\n enable_unit meridian-ext-proxy.service\n systemctl restart meridian-ext-proxy.service\n enable_unit meridian-ext-health.service\n systemctl restart meridian-ext-health.service\n echo meridian-up-complete\n \n===== nodes/hkb/etc/wireguard/m06.conf (changed) =====\n # meridian link hkb-dc2 mode udp iface m06\n # peer dc2 (香港机房 2（承载马来西亚 SOCKS）). Table=off so this never replaces the host default route.\n [Interface]\n PrivateKey = __MERIDIAN_PRIVATE_KEY__\n Address = 10.66.7.1/30, fd66:0:0:7::1/64\n-MTU = 1420\n+MTU = 1360\n Table = off\n \n [Peer]\n # peer-node dc2\n PublicKey = i5IGtezNEeQHow0pxR0ag6XFZDbTX/xDq3hQmtH5xDi=\n Endpoint = 203.0.113.42:51826\n AllowedIPs = 0.0.0.0/0, ::/0\n PersistentKeepalive = 25\n \n===== nodes/hkb/usr/local/sbin/meridian-up.sh (changed) =====\n #!/bin/bash\n # Bring up Meridian on this host without flushing the rest of nftables.\n # A bad line in sysctl is skipped so a wrong interface name cannot abort SSH.\n # Normally run by meridian.service (boot, and activation via meridian-host).\n set -euo pipefail\n # meridian-wan: eth0 set need=any\n MERIDIAN_NFT=/etc/nftables.d/meridian.nft\n if [ -f \"$MERIDIAN_NFT\" ]; then\n   if ! nft -c -f \"$MERIDIAN_NFT\"; then\n     echo \"meridian-nft-check-failed: running ruleset left unchanged; routes and forwarding not touched\" >&2\n     exit 1\n   fi\n   if ! nft -f \"$MERIDIAN_NFT\"; then\n     echo \"meridian-nft-load-failed: the batch was aborted as a whole; previous Meridian tables kept; routes and forwarding not touched\" >&2\n     exit 1\n   fi\n fi\n if [ -f /etc/sysctl.d/99-meridian.conf ]; then\n   sysctl_ok=0; sysctl_skip=0\n   while IFS= read -r line; do\n     case \"$line\" in ''|'#'*|*ip_forward=*|*.forwarding=*) continue ;; esac\n     if sysctl -w \"$line\" >/dev/null 2>&1; then sysctl_ok=$((sysctl_ok + 1)); else sysctl_skip=$((sysctl_skip + 1)); echo \"skip sysctl: $line\" >&2; fi\n   done < /etc/sysctl.d/99-meridian.conf\n   echo \"meridian-sysctl: applied $sysctl_ok, skipped $sysctl_skip from /etc/sysctl.d/99-meridian.conf\"\n else\n   echo \"meridian-sysctl: /etc/sysctl.d/99-meridian.conf missing; host sysctls not applied\" >&2\n fi\n if [ -x /usr/local/sbin/meridian-fwcompat.sh ]; then\n   if ! /usr/local/sbin/meridian-fwcompat.sh apply; then\n     echo \"meridian-fwcompat-failed: the host's FORWARD policy drops tunnel traffic and Meridian's DOCKER-USER rules could not be ensured; forwarding not enabled, tunnels not brought up\" >&2\n     exit 1\n   fi\n fi\n MERIDIAN_RA_STATE=/var/lib/meridian/node/ra-accept\n ra_now=$(ip -6 route show table main proto ra 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i==\"dev\") print $(i+1)}' | sort -u) || ra_now=\"\"\n ra_old=\"\"\n if [ -f \"$MERIDIAN_RA_STATE\" ]; then ra_old=$(cat \"$MERIDIAN_RA_STATE\"); fi\n for ra_if in $(printf '%s\\n%s\\n' \"$ra_now\" \"$ra_old\" | sort -u); do\n   case \"$ra_if\" in ''|*[!A-Za-z0-9_.@-]*) continue ;; esac\n   ra_f=/proc/sys/net/ipv6/conf/$ra_if/accept_ra\n   [ -r \"$ra_f\" ] || continue\n   ra_cur=$(head -c 8 \"$ra_f\")\n   case \"$ra_cur\" in\n     2) ;;\n     1)\n       if ! sysctl -w \"net/ipv6/conf/$ra_if/accept_ra=2\" >/dev/null; then\n         echo \"meridian-ra-failed: could not set accept_ra=2 on $ra_if; IPv6 forwarding not enabled\" >&2\n         exit 1\n       fi\n       echo \"meridian-ra: $ra_if accept_ra 1 -> 2 (keeps its router advertisements with IPv6 forwarding on)\" ;;\n     *)\n       case \" $(printf '%s ' $ra_now) \" in\n         *\" $ra_if \"*)\n           echo \"meridian-ra-unmanaged: $ra_if has RA-learned IPv6 routes but accept_ra=$ra_cur (a userspace RA client); IPv6 forwarding could break it, so forwarding is not enabled\" >&2\n           exit 1 ;;\n       esac\n       continue ;;\n   esac\n   install -d -m 700 \"${MERIDIAN_RA_STATE%/*}\"\n   grep -qx -- \"$ra_if\" \"$MERIDIAN_RA_STATE\" 2>/dev/null || printf '%s\\n' \"$ra_if\" >> \"$MERIDIAN_RA_STATE\"\n done\n MERIDIAN_FWD=/etc/meridian/forwarding.conf\n if [ ! -f \"$MERIDIAN_FWD\" ]; then\n   echo \"meridian-forwarding-missing: $MERIDIAN_FWD not found; forwarding left as is\" >&2\n   exit 1\n fi\n while IFS= read -r line; do\n   case \"$line\" in ''|'#'*) continue ;; esac\n   case \"$line\" in\n     net.ipv4.ip_forward=*|net.ipv6.conf.all.forwarding=*)\n       if ! sysctl -w \"$line\" >/dev/null; then\n         echo \"meridian-forwarding-failed: $line\" >&2\n         exit 1\n       fi ;;\n     *) sysctl -w \"$line\" >/dev/null 2>&1 || echo \"skip sysctl: $line\" >&2 ;;\n   esac\n done < \"$MERIDIAN_FWD\"\n # The MTU each tunnel interface's config sets (\"MTU =\"): wg syncconf keeps the\n # running interface MTU, so an existing interface is aligned in place below.\n wg_conf_mtu() {\n   case \"$1\" in\n     m04) echo 1360 ;;\n     m05) echo 1420 ;;\n-    m06) echo 1420 ;;\n+    m06) echo 1360 ;;\n     m07) echo 1380 ;;\n     m08) echo 1380 ;;\n     m09) echo 1380 ;;\n     m10) echo 1420 ;;\n     m11) echo 1380 ;;\n     *) echo \"\" ;;\n   esac\n }\n for iface in m04 m05 m06 m07 m08 m09 m10 m11; do\n   conf=\"/etc/wireguard/$iface.conf\"\n   if [ ! -f \"$conf\" ]; then\n     echo \"meridian-wg-missing: $conf is listed in this manifest but not installed\" >&2\n     exit 1\n   fi\n   if ip link show \"$iface\" >/dev/null 2>&1; then\n     wg syncconf \"$iface\" <(wg-quick strip \"$conf\")\n     want_mtu=$(wg_conf_mtu \"$iface\")\n     have_mtu=$(cat \"/sys/class/net/$iface/mtu\" 2>/dev/null || true)\n     if [ -n \"$want_mtu\" ] && [ \"$have_mtu\" != \"$want_mtu\" ]; then\n       ip link set dev \"$iface\" mtu \"$want_mtu\"\n       echo \"meridian-wg-mtu: $iface ${have_mtu:-?} -> $want_mtu (set in place; the tunnel stays up)\"\n     fi\n   else\n     wg-quick up \"$conf\"\n   fi\n done\n if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then\n   /usr/local/sbin/meridian-mesh-up.sh || echo \"mesh sidecar skipped\" >&2\n fi\n /usr/local/sbin/meridian-routes.sh\n enable_unit() {\n   if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then\n     echo \"meridian-systemd-missing: cannot start $1 here; activate through meridian-host on the host\" >&2\n     exit 1\n   fi\n   systemctl enable --now \"$1\"\n }\n enable_unit 'wstunnel-meridian.service'\n enable_unit meridian-failover.service\n systemctl restart meridian-failover.service\n echo meridian-up-complete\n \n",
+    "diff": "===== nodes/dc2/etc/meridian/ext/gost.yaml (changed) =====\n # Meridian external SOCKS exits: transparent TCP redirector (gost 3.2.6).\n # Secret-bearing (0600): the proxy credentials are injected at install.\n # meridian-socks-version: socks-my=1 (version of the SOCKS credential: +1 per rotation; not the username or password)\n services:\n - name: ext-myext-redir\n   addr: \"10.66.201.14:12301\"\n   handler:\n     type: red\n     chain: ext-myext\n     metadata:\n       sniffing: false\n   listener:\n     type: red\n     metadata:\n       tproxy: false\n - name: ext-myext-dns1\n   addr: \"10.66.201.14:5301\"\n   handler:\n     type: tcp\n     chain: ext-myext\n   listener:\n     type: tcp\n   forwarder:\n     nodes:\n     - name: ext-myext-dns1-target\n       addr: \"1.1.1.1:53\"\n - name: ext-myext-dns2\n   addr: \"10.66.201.14:5302\"\n   handler:\n     type: tcp\n     chain: ext-myext\n   listener:\n     type: tcp\n   forwarder:\n     nodes:\n     - name: ext-myext-dns2-target\n       addr: \"8.8.8.8:53\"\n chains:\n - name: ext-myext\n   hops:\n   - name: ext-myext-hop\n     nodes:\n     - name: ext-myext-socks\n-      addr: \"198.51.100.66:1080\"\n+      addr: \"198.51.100.66:1081\"\n       connector:\n         type: socks5\n         auth:\n           username: \"__MERIDIAN_SECRET_socks-my-user__\"\n           password: \"__MERIDIAN_SECRET_socks-my-pass__\"\n       dialer:\n         type: tcp\n log:\n   level: warn\n   format: text\n   output: stderr\n \n===== nodes/dc2/etc/nftables.d/meridian.nft (changed) =====\n #!/usr/sbin/nft -f\n # exit dc2 public NAT. Tunnel ULA and the LAN prefix are translated here, not on the home gateway.\n table inet meridian\n delete table inet meridian\n table inet meridian {\n   chain group_dns {\n     type nat hook prerouting priority dstnat; policy accept;\n     iifname { \"m06\", \"m13\" } ip6 saddr { fd66:0:0:ff::e } accept comment \"region-group queries of the exits behind this node: not answered here\"\n     iifname { \"m06\", \"m13\" } ip6 daddr fd66::53:0/112 udp dport 53 dnat ip6 to fd66:0:0:e::2 comment \"region-group resolver addresses: this exit's tunnel resolver\"\n     iifname { \"m06\", \"m13\" } ip6 daddr fd66::53:0/112 tcp dport 53 dnat ip6 to fd66:0:0:e::2 comment \"region-group resolver addresses: this exit's tunnel resolver\"\n   }\n   chain hub_return_in {\n     type filter hook prerouting priority mangle; policy accept;\n     iifname \"m13\" ct direction original ct mark set 0x4d50 comment \"arrived from the primary hub ix\"\n     iifname \"m06\" ct direction original ct mark set 0x4d51 comment \"arrived from the backup hub hkb\"\n     ct direction reply ct mark 0x4d50 meta mark set 0x4d50 comment \"reply: back through the primary hub\"\n     ct direction reply ct mark 0x4d51 meta mark set 0x4d51 comment \"reply: back through the backup hub\"\n   }\n   chain hub_return_out {\n     type route hook output priority mangle; policy accept;\n     ct direction reply ct mark 0x4d50 meta mark set 0x4d50 comment \"local reply (resolver, ping): back through the primary hub\"\n     ct direction reply ct mark 0x4d51 meta mark set 0x4d51 comment \"local reply (resolver, ping): back through the backup hub\"\n   }\n   chain exit_dns {\n     type nat hook prerouting priority dstnat; policy accept;\n     iifname { \"m13\", \"m06\" } ip6 daddr fd66::54:2 udp dport 53 dnat ip6 to fd66:0:0:e::2 comment \"this exit's resolver address, from either hub\"\n     iifname { \"m13\", \"m06\" } ip6 daddr fd66::54:2 tcp dport 53 dnat ip6 to fd66:0:0:e::2 comment \"this exit's resolver address, from either hub\"\n   }\n   chain ext_dnat {\n     type nat hook prerouting priority -101; policy accept;\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e ip6 daddr fd66::55:5 udp dport 53 accept comment \"external exit myext: pinned probe DNS only\"\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e ip6 daddr fd66::55:5 tcp dport 53 accept comment \"external exit myext: pinned probe DNS only\"\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e ip6 daddr fd66::53:0/112 udp dport 53 dnat ip6 to [fd66::55:5]:53 comment \"external exit myext: region-group queries, answered by its resolver group here\"\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e ip6 daddr fd66::53:0/112 tcp dport 53 dnat ip6 to [fd66::55:5]:53 comment \"external exit myext: region-group queries, answered by its resolver group here\"\n     iifname { \"m06\", \"m13\" } ip6 daddr fd66::54:5 udp dport 53 dnat ip6 to [fd66::55:5]:53 comment \"external exit myext: its resolver address, from either hub\"\n     iifname { \"m06\", \"m13\" } ip6 daddr fd66::54:5 tcp dport 53 dnat ip6 to [fd66::55:5]:53 comment \"external exit myext: its resolver address, from either hub\"\n-    iifname { \"m06\", \"m13\" } ip saddr 10.66.200.14 meta l4proto tcp dnat ip to 10.66.201.14:12301 comment \"external exit myext: TCP to the redirector (SOCKS5 198.51.100.66:1080)\"\n+    iifname { \"m06\", \"m13\" } ip saddr 10.66.200.14 meta l4proto tcp dnat ip to 10.66.201.14:12301 comment \"external exit myext: TCP to the redirector (SOCKS5 198.51.100.66:1081)\"\n     iifname { \"m06\", \"m13\" } ip saddr 10.66.200.14 meta l4proto udp dnat ip to 10.66.201.14:9 comment \"external exit myext is TCP only: UDP (QUIC included) refused here (port unreachable)\"\n     iifname { \"m06\", \"m13\" } ip6 saddr fd66:0:0:ff::e meta l4proto { tcp, udp } dnat ip6 to [fd66::55:5]:9 comment \"external exit myext carries no IPv6: refused here (reset / port unreachable)\"\n   }\n   chain ext_reject {\n     type filter hook forward priority filter; policy accept;\n     ip saddr 10.66.200.14 meta l4proto udp counter reject with icmp type port-unreachable comment \"external exit myext is TCP only: nothing of it is forwarded\"\n     ip saddr 10.66.200.14 counter reject with icmp type admin-prohibited\n     ip6 saddr fd66:0:0:ff::e meta l4proto tcp counter reject with tcp reset\n     ip6 saddr fd66:0:0:ff::e counter reject with icmpv6 type admin-prohibited\n   }\n   chain ext_local {\n     type filter hook input priority filter; policy accept;\n     iifname != \"lo\" ip daddr 10.66.201.14 ct status dnat accept comment \"external exit myext: its own DNAT\"\n     iifname != \"lo\" ip daddr 10.66.201.14 counter drop comment \"external exit myext: service address only through its DNAT\"\n     iifname != { \"lo\", \"m06\", \"m13\" } ip6 daddr fd66::55:5 counter drop comment \"external exit myext: resolver address only from the hubs\"\n   }\n   chain ext_proxy_out {\n     type filter hook output priority filter; policy accept;\n-    ip daddr 198.51.100.66 tcp dport 1080 oifname != \"wg9\" counter reject with tcp reset comment \"external exit myext: the proxy only through wg9, never the default route\"\n+    ip daddr 198.51.100.66 tcp dport 1081 oifname != \"wg9\" counter reject with tcp reset comment \"external exit myext: the proxy only through wg9, never the default route\"\n   }\n   chain srcnat {\n     type nat hook postrouting priority srcnat; policy accept;\n     oifname \"eth0\" ip saddr { 192.168.77.0/24, 10.66.200.0/24 } masquerade\n   }\n   chain drop_v6 {\n     type filter hook forward priority filter; policy accept;\n     oifname \"eth0\" meta nfproto ipv6 drop comment \"no egress_v6; AAAA is filtered at DNS\"\n   }\n   chain tunnel_mss_out {\n     type filter hook output priority -140; policy accept;\n     oifname { \"m06\", \"m13\" } tcp flags syn meta nfproto ipv4 tcp option maxseg size > 1320 tcp option maxseg size set 1320 comment \"this host's own TCP into a tunnel: the gateway's forward clamp\"\n     oifname { \"m06\", \"m13\" } tcp flags syn meta nfproto ipv6 tcp option maxseg size > 1300 tcp option maxseg size set 1300\n   }\n   chain tunnel_mss_in {\n     type filter hook input priority mangle; policy accept;\n     iifname { \"m06\", \"m13\" } tcp flags syn meta nfproto ipv4 tcp option maxseg size > 1320 tcp option maxseg size set 1320 comment \"this host's own TCP from a tunnel: the gateway's forward clamp\"\n     iifname { \"m06\", \"m13\" } tcp flags syn meta nfproto ipv6 tcp option maxseg size > 1300 tcp option maxseg size set 1300\n   }\n }\n \n===== nodes/dc2/etc/wireguard/m06.conf (changed) =====\n # meridian link hkb-dc2 mode udp iface m06\n # peer hkb (备用枢纽 · 香港机房五号). Table=off so this never replaces the host default route.\n [Interface]\n PrivateKey = __MERIDIAN_PRIVATE_KEY__\n Address = 10.66.7.2/30, fd66:0:0:7::2/64\n-MTU = 1420\n+MTU = 1360\n Table = off\n ListenPort = 51826\n \n [Peer]\n # peer-node hkb\n PublicKey = v6o8W6A6rkKJ5xLP5fjV+1LirpuCIHljyiwakBuLkrl=\n # Endpoint omitted: the peer dials us (NAT dial-out or we are the listener).\n AllowedIPs = 192.168.77.0/24, 10.66.200.0/24, 10.66.7.1/32, fd66::/48, 2001:db8:77::/64\n \n===== nodes/dc2/usr/local/sbin/meridian-routes.sh (changed) =====\n #!/bin/bash\n # Policy routes for one Meridian node. Safe to re-run.\n # fd66::/48 is never given a next hop of the ROS gateway.\n set -euo pipefail\n del_rule() {\n   while \"$@\" >/dev/null 2>&1; do :; done || true\n }\n # rp_filter=2 and no ICMP redirects on Meridian's interfaces only (the\n # managed tunnels, the interface the topology names, mra/mmesh). The kernel\n # uses max(all, iface) for rp_filter and ORs send_redirects, so the\n # interface value is what matters here. Other interfaces are not touched.\n harden_sysctl() {\n   local i\n   for i in \"$@\"; do\n     sysctl -w \"net.ipv4.conf.${i}.rp_filter=2\" >/dev/null 2>&1 || true\n     sysctl -w \"net.ipv4.conf.${i}.send_redirects=0\" >/dev/null 2>&1 || true\n     sysctl -w \"net.ipv4.conf.${i}.accept_redirects=0\" >/dev/null 2>&1 || true\n     sysctl -w \"net.ipv6.conf.${i}.accept_redirects=0\" >/dev/null 2>&1 || true\n   done\n }\n harden_sysctl eth0 m06 m13\n ip route replace 192.168.77.0/24 dev m13\n ip route replace 10.66.200.0/24 dev m13\n ip -6 route replace 2001:db8:77::/64 dev m13\n ip -6 route replace fd66:0:0:ff::/64 dev m13\n ip -6 route replace fd66::/48 dev m13\n ip route replace blackhole 192.168.77.0/24 metric 32767\n ip route replace blackhole 10.66.200.0/24 metric 32767\n ip route replace blackhole 10.66.0.0/16 metric 32767\n ip -6 route replace blackhole fd66::/48 metric 32767\n ip -6 route replace blackhole fd66:0:0:ff::/64 metric 32767\n ip -6 route replace blackhole 2001:db8:77::/64 metric 32767\n # hub return paths: a reply leaves through the hub tunnel its connection arrived on\n # primary hub ix: mark 0x4d50 table 172 dev m13\n ip route replace 192.168.77.0/24 dev m13 table 172\n ip route replace 10.66.0.0/16 dev m13 table 172\n ip -6 route replace fd66::/48 dev m13 table 172\n ip -6 route replace 2001:db8:77::/64 dev m13 table 172\n ip route replace blackhole default metric 32767 table 172\n ip -6 route replace blackhole default metric 32767 table 172\n del_rule ip rule del fwmark 0x4d50 lookup 172\n ip rule add fwmark 0x4d50 lookup 172 priority 17060\n del_rule ip -6 rule del fwmark 0x4d50 lookup 172\n ip -6 rule add fwmark 0x4d50 lookup 172 priority 17060\n # backup hub hkb: mark 0x4d51 table 173 dev m06\n ip route replace 192.168.77.0/24 dev m06 table 173\n ip route replace 10.66.0.0/16 dev m06 table 173\n ip -6 route replace fd66::/48 dev m06 table 173\n ip -6 route replace 2001:db8:77::/64 dev m06 table 173\n ip route replace blackhole default metric 32767 table 173\n ip -6 route replace blackhole default metric 32767 table 173\n del_rule ip rule del fwmark 0x4d51 lookup 173\n ip rule add fwmark 0x4d51 lookup 173 priority 17061\n del_rule ip -6 rule del fwmark 0x4d51 lookup 173\n ip -6 rule add fwmark 0x4d51 lookup 173 priority 17061\n # carrier of external SOCKS exits: TCP to the local redirector, DNS to the local resolver group, everything else blackholed\n # meridian-transit: 10.66.201.0/24 10.66.202.0/24 fd66::55:0/112\n keep_ext=' 10.66.201.14 fd66::55:5 '\n for a in $(ip -o -4 addr show dev lo to 10.66.201.0/24 2>/dev/null | awk '{print $4}'); do case \"$keep_ext\" in *\" ${a%%/*} \"*) ;; *) ip addr del \"$a\" dev lo 2>/dev/null || true ;; esac; done\n for a in $(ip -o -6 addr show dev lo to fd66::55:0/112 2>/dev/null | awk '{print $4}'); do case \"$keep_ext\" in *\" ${a%%/*} \"*) ;; *) ip -6 addr del \"$a\" dev lo 2>/dev/null || true ;; esac; done\n-# external exit myext mark 0x105 transit 10.66.200.14: proxy 198.51.100.66:1080 via wg9\n+# external exit myext mark 0x105 transit 10.66.200.14: proxy 198.51.100.66:1081 via wg9\n ip addr replace 10.66.201.14/32 dev lo\n ip -6 addr replace fd66::55:5/128 dev lo\n ip route replace blackhole default table 205\n ip -6 route replace blackhole default table 205\n del_rule ip rule del from 10.66.200.14/32 lookup 205\n ip rule add from 10.66.200.14/32 lookup 205 priority 18204\n del_rule ip -6 rule del from fd66:0:0:ff::e/128 lookup 205\n ip -6 rule add from fd66:0:0:ff::e/128 lookup 205 priority 18204\n \n===== nodes/dc2/usr/local/sbin/meridian-up.sh (changed) =====\n #!/bin/bash\n # Bring up Meridian on this host without flushing the rest of nftables.\n # A bad line in sysctl is skipped so a wrong interface name cannot abort SSH.\n # Normally run by meridian.service (boot, and activation via meridian-host).\n set -euo pipefail\n # meridian-wan: eth0 set need=4\n-# meridian-ext: myext socks=198.51.100.66:1080 iface=wg9\n+# meridian-ext: myext socks=198.51.100.66:1081 iface=wg9\n MERIDIAN_NFT=/etc/nftables.d/meridian.nft\n if [ -f \"$MERIDIAN_NFT\" ]; then\n   if ! nft -c -f \"$MERIDIAN_NFT\"; then\n     echo \"meridian-nft-check-failed: running ruleset left unchanged; routes and forwarding not touched\" >&2\n     exit 1\n   fi\n   if ! nft -f \"$MERIDIAN_NFT\"; then\n     echo \"meridian-nft-load-failed: the batch was aborted as a whole; previous Meridian tables kept; routes and forwarding not touched\" >&2\n     exit 1\n   fi\n fi\n if [ -f /etc/sysctl.d/99-meridian.conf ]; then\n   sysctl_ok=0; sysctl_skip=0\n   while IFS= read -r line; do\n     case \"$line\" in ''|'#'*|*ip_forward=*|*.forwarding=*) continue ;; esac\n     if sysctl -w \"$line\" >/dev/null 2>&1; then sysctl_ok=$((sysctl_ok + 1)); else sysctl_skip=$((sysctl_skip + 1)); echo \"skip sysctl: $line\" >&2; fi\n   done < /etc/sysctl.d/99-meridian.conf\n   echo \"meridian-sysctl: applied $sysctl_ok, skipped $sysctl_skip from /etc/sysctl.d/99-meridian.conf\"\n else\n   echo \"meridian-sysctl: /etc/sysctl.d/99-meridian.conf missing; host sysctls not applied\" >&2\n fi\n if [ -x /usr/local/sbin/meridian-fwcompat.sh ]; then\n   if ! /usr/local/sbin/meridian-fwcompat.sh apply; then\n     echo \"meridian-fwcompat-failed: the host's FORWARD policy drops tunnel traffic and Meridian's DOCKER-USER rules could not be ensured; forwarding not enabled, tunnels not brought up\" >&2\n     exit 1\n   fi\n fi\n MERIDIAN_FWD=/etc/meridian/forwarding.conf\n if [ ! -f \"$MERIDIAN_FWD\" ]; then\n   echo \"meridian-forwarding-missing: $MERIDIAN_FWD not found; forwarding left as is\" >&2\n   exit 1\n fi\n while IFS= read -r line; do\n   case \"$line\" in ''|'#'*) continue ;; esac\n   case \"$line\" in\n     net.ipv4.ip_forward=*|net.ipv6.conf.all.forwarding=*)\n       if ! sysctl -w \"$line\" >/dev/null; then\n         echo \"meridian-forwarding-failed: $line\" >&2\n         exit 1\n       fi ;;\n     *) sysctl -w \"$line\" >/dev/null 2>&1 || echo \"skip sysctl: $line\" >&2 ;;\n   esac\n done < \"$MERIDIAN_FWD\"\n # The MTU each tunnel interface's config sets (\"MTU =\"): wg syncconf keeps the\n # running interface MTU, so an existing interface is aligned in place below.\n wg_conf_mtu() {\n   case \"$1\" in\n-    m06) echo 1420 ;;\n+    m06) echo 1360 ;;\n     m13) echo 1420 ;;\n     *) echo \"\" ;;\n   esac\n }\n for iface in m06 m13; do\n   conf=\"/etc/wireguard/$iface.conf\"\n   if [ ! -f \"$conf\" ]; then\n     echo \"meridian-wg-missing: $conf is listed in this manifest but not installed\" >&2\n     exit 1\n   fi\n   if ip link show \"$iface\" >/dev/null 2>&1; then\n     wg syncconf \"$iface\" <(wg-quick strip \"$conf\")\n     want_mtu=$(wg_conf_mtu \"$iface\")\n     have_mtu=$(cat \"/sys/class/net/$iface/mtu\" 2>/dev/null || true)\n     if [ -n \"$want_mtu\" ] && [ \"$have_mtu\" != \"$want_mtu\" ]; then\n       ip link set dev \"$iface\" mtu \"$want_mtu\"\n       echo \"meridian-wg-mtu: $iface ${have_mtu:-?} -> $want_mtu (set in place; the tunnel stays up)\"\n     fi\n   else\n     wg-quick up \"$conf\"\n   fi\n done\n if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then\n   /usr/local/sbin/meridian-mesh-up.sh || echo \"mesh sidecar skipped\" >&2\n fi\n if [ -e /lib/systemd/system/systemd-networkd.service ] || [ -e /usr/lib/systemd/system/systemd-networkd.service ]; then\n   nd=/etc/systemd/networkd.conf.d/90-meridian.conf\n   nd_want='# meridian: keep Meridian ip rules and routes when systemd-networkd restarts\n [Network]\n ManageForeignRoutingPolicyRules=no\n ManageForeignRoutes=no'\n   if [ \"$(cat \"$nd\" 2>/dev/null)\" != \"$nd_want\" ]; then\n     if mkdir -p \"${nd%/*}\" && printf '%s\\n' \"$nd_want\" > \"$nd.tmp\" && chmod 0644 \"$nd.tmp\" && mv -f \"$nd.tmp\" \"$nd\"; then\n       echo \"meridian-networkd: wrote $nd (networkd not restarted; it applies at its next start)\"\n     else\n       rm -f \"$nd.tmp\"\n       echo \"meridian-networkd: could not write $nd; a networkd restart would delete the Meridian ip rules\" >&2\n     fi\n   fi\n fi\n /usr/local/sbin/meridian-routes.sh\n enable_unit() {\n   if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then\n     echo \"meridian-systemd-missing: cannot start $1 here; activate through meridian-host on the host\" >&2\n     exit 1\n   fi\n   systemctl enable --now \"$1\"\n }\n enable_unit meridian-unlock.timer\n if [ -f /etc/smartdns/smartdns.conf ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then\n   if systemctl cat meridian-smartdns.service >/dev/null 2>&1; then\n     systemctl enable meridian-smartdns.service >/dev/null 2>&1 || true\n     systemctl restart meridian-smartdns.service || echo \"meridian-smartdns.service restart failed; exit resolver is down\" >&2\n   else\n     echo \"meridian-smartdns.service is not installed; exit resolver is down\" >&2\n   fi\n fi\n enable_unit meridian-ext-proxy.service\n systemctl restart meridian-ext-proxy.service\n enable_unit meridian-ext-health.service\n systemctl restart meridian-ext-health.service\n echo meridian-up-complete\n \n===== nodes/hkb/etc/wireguard/m06.conf (changed) =====\n # meridian link hkb-dc2 mode udp iface m06\n # peer dc2 (香港机房 2（承载马来西亚 SOCKS）). Table=off so this never replaces the host default route.\n [Interface]\n PrivateKey = __MERIDIAN_PRIVATE_KEY__\n Address = 10.66.7.1/30, fd66:0:0:7::1/64\n-MTU = 1420\n+MTU = 1360\n Table = off\n \n [Peer]\n # peer-node dc2\n PublicKey = i5IGtezNEeQHow0pxR0ag6XFZDbTX/xDq3hQmtH5xDi=\n Endpoint = 203.0.113.42:51826\n AllowedIPs = 0.0.0.0/0, ::/0\n PersistentKeepalive = 25\n \n===== nodes/hkb/usr/local/sbin/meridian-up.sh (changed) =====\n #!/bin/bash\n # Bring up Meridian on this host without flushing the rest of nftables.\n # A bad line in sysctl is skipped so a wrong interface name cannot abort SSH.\n # Normally run by meridian.service (boot, and activation via meridian-host).\n set -euo pipefail\n # meridian-wan: eth0 set need=any\n MERIDIAN_NFT=/etc/nftables.d/meridian.nft\n if [ -f \"$MERIDIAN_NFT\" ]; then\n   if ! nft -c -f \"$MERIDIAN_NFT\"; then\n     echo \"meridian-nft-check-failed: running ruleset left unchanged; routes and forwarding not touched\" >&2\n     exit 1\n   fi\n   if ! nft -f \"$MERIDIAN_NFT\"; then\n     echo \"meridian-nft-load-failed: the batch was aborted as a whole; previous Meridian tables kept; routes and forwarding not touched\" >&2\n     exit 1\n   fi\n fi\n if [ -f /etc/sysctl.d/99-meridian.conf ]; then\n   sysctl_ok=0; sysctl_skip=0\n   while IFS= read -r line; do\n     case \"$line\" in ''|'#'*|*ip_forward=*|*.forwarding=*) continue ;; esac\n     if sysctl -w \"$line\" >/dev/null 2>&1; then sysctl_ok=$((sysctl_ok + 1)); else sysctl_skip=$((sysctl_skip + 1)); echo \"skip sysctl: $line\" >&2; fi\n   done < /etc/sysctl.d/99-meridian.conf\n   echo \"meridian-sysctl: applied $sysctl_ok, skipped $sysctl_skip from /etc/sysctl.d/99-meridian.conf\"\n else\n   echo \"meridian-sysctl: /etc/sysctl.d/99-meridian.conf missing; host sysctls not applied\" >&2\n fi\n if [ -x /usr/local/sbin/meridian-fwcompat.sh ]; then\n   if ! /usr/local/sbin/meridian-fwcompat.sh apply; then\n     echo \"meridian-fwcompat-failed: the host's FORWARD policy drops tunnel traffic and Meridian's DOCKER-USER rules could not be ensured; forwarding not enabled, tunnels not brought up\" >&2\n     exit 1\n   fi\n fi\n MERIDIAN_RA_STATE=/var/lib/meridian/node/ra-accept\n ra_now=$(ip -6 route show table main proto ra 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i==\"dev\") print $(i+1)}' | sort -u) || ra_now=\"\"\n ra_old=\"\"\n if [ -f \"$MERIDIAN_RA_STATE\" ]; then ra_old=$(cat \"$MERIDIAN_RA_STATE\"); fi\n for ra_if in $(printf '%s\\n%s\\n' \"$ra_now\" \"$ra_old\" | sort -u); do\n   case \"$ra_if\" in ''|*[!A-Za-z0-9_.@-]*) continue ;; esac\n   ra_f=/proc/sys/net/ipv6/conf/$ra_if/accept_ra\n   [ -r \"$ra_f\" ] || continue\n   ra_cur=$(head -c 8 \"$ra_f\")\n   case \"$ra_cur\" in\n     2) ;;\n     1)\n       if ! sysctl -w \"net/ipv6/conf/$ra_if/accept_ra=2\" >/dev/null; then\n         echo \"meridian-ra-failed: could not set accept_ra=2 on $ra_if; IPv6 forwarding not enabled\" >&2\n         exit 1\n       fi\n       echo \"meridian-ra: $ra_if accept_ra 1 -> 2 (keeps its router advertisements with IPv6 forwarding on)\" ;;\n     *)\n       case \" $(printf '%s ' $ra_now) \" in\n         *\" $ra_if \"*)\n           echo \"meridian-ra-unmanaged: $ra_if has RA-learned IPv6 routes but accept_ra=$ra_cur (a userspace RA client); IPv6 forwarding could break it, so forwarding is not enabled\" >&2\n           exit 1 ;;\n       esac\n       continue ;;\n   esac\n   install -d -m 700 \"${MERIDIAN_RA_STATE%/*}\"\n   grep -qx -- \"$ra_if\" \"$MERIDIAN_RA_STATE\" 2>/dev/null || printf '%s\\n' \"$ra_if\" >> \"$MERIDIAN_RA_STATE\"\n done\n MERIDIAN_FWD=/etc/meridian/forwarding.conf\n if [ ! -f \"$MERIDIAN_FWD\" ]; then\n   echo \"meridian-forwarding-missing: $MERIDIAN_FWD not found; forwarding left as is\" >&2\n   exit 1\n fi\n while IFS= read -r line; do\n   case \"$line\" in ''|'#'*) continue ;; esac\n   case \"$line\" in\n     net.ipv4.ip_forward=*|net.ipv6.conf.all.forwarding=*)\n       if ! sysctl -w \"$line\" >/dev/null; then\n         echo \"meridian-forwarding-failed: $line\" >&2\n         exit 1\n       fi ;;\n     *) sysctl -w \"$line\" >/dev/null 2>&1 || echo \"skip sysctl: $line\" >&2 ;;\n   esac\n done < \"$MERIDIAN_FWD\"\n # The MTU each tunnel interface's config sets (\"MTU =\"): wg syncconf keeps the\n # running interface MTU, so an existing interface is aligned in place below.\n wg_conf_mtu() {\n   case \"$1\" in\n     m04) echo 1360 ;;\n     m05) echo 1420 ;;\n-    m06) echo 1420 ;;\n+    m06) echo 1360 ;;\n     m07) echo 1380 ;;\n     m08) echo 1380 ;;\n     m09) echo 1380 ;;\n     m10) echo 1420 ;;\n     m11) echo 1380 ;;\n     *) echo \"\" ;;\n   esac\n }\n for iface in m04 m05 m06 m07 m08 m09 m10 m11; do\n   conf=\"/etc/wireguard/$iface.conf\"\n   if [ ! -f \"$conf\" ]; then\n     echo \"meridian-wg-missing: $conf is listed in this manifest but not installed\" >&2\n     exit 1\n   fi\n   if ip link show \"$iface\" >/dev/null 2>&1; then\n     wg syncconf \"$iface\" <(wg-quick strip \"$conf\")\n     want_mtu=$(wg_conf_mtu \"$iface\")\n     have_mtu=$(cat \"/sys/class/net/$iface/mtu\" 2>/dev/null || true)\n     if [ -n \"$want_mtu\" ] && [ \"$have_mtu\" != \"$want_mtu\" ]; then\n       ip link set dev \"$iface\" mtu \"$want_mtu\"\n       echo \"meridian-wg-mtu: $iface ${have_mtu:-?} -> $want_mtu (set in place; the tunnel stays up)\"\n     fi\n   else\n     wg-quick up \"$conf\"\n   fi\n done\n if [ -x /usr/local/sbin/meridian-mesh-up.sh ]; then\n   /usr/local/sbin/meridian-mesh-up.sh || echo \"mesh sidecar skipped\" >&2\n fi\n if [ -e /lib/systemd/system/systemd-networkd.service ] || [ -e /usr/lib/systemd/system/systemd-networkd.service ]; then\n   nd=/etc/systemd/networkd.conf.d/90-meridian.conf\n   nd_want='# meridian: keep Meridian ip rules and routes when systemd-networkd restarts\n [Network]\n ManageForeignRoutingPolicyRules=no\n ManageForeignRoutes=no'\n   if [ \"$(cat \"$nd\" 2>/dev/null)\" != \"$nd_want\" ]; then\n     if mkdir -p \"${nd%/*}\" && printf '%s\\n' \"$nd_want\" > \"$nd.tmp\" && chmod 0644 \"$nd.tmp\" && mv -f \"$nd.tmp\" \"$nd\"; then\n       echo \"meridian-networkd: wrote $nd (networkd not restarted; it applies at its next start)\"\n     else\n       rm -f \"$nd.tmp\"\n       echo \"meridian-networkd: could not write $nd; a networkd restart would delete the Meridian ip rules\" >&2\n     fi\n   fi\n fi\n /usr/local/sbin/meridian-routes.sh\n enable_unit() {\n   if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then\n     echo \"meridian-systemd-missing: cannot start $1 here; activate through meridian-host on the host\" >&2\n     exit 1\n   fi\n   systemctl enable --now \"$1\"\n }\n enable_unit 'wstunnel-meridian.service'\n enable_unit meridian-failover.service\n systemctl restart meridian-failover.service\n echo meridian-up-complete\n \n",
     "installed": {},
     "issues": [
      {

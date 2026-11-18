@@ -1046,6 +1046,10 @@ func (a *Agent) rollback(ctx context.Context, r Resources) Result {
 //
 // It never names the guard for removal (Validate refuses that) and never
 // turns forwarding on.
+// NetworkdDropIn is compile.NetworkdDropIn (this package does not import
+// compile).
+const NetworkdDropIn = "/etc/systemd/networkd.conf.d/90-meridian.conf"
+
 func (a *Agent) withdraw(ctx context.Context, r Resources) Result {
 	x := &run{a: a, ctx: ctx}
 	x.do("forwarding off (ipv4)", a.StepTimeout, "sysctl", "-w", "net.ipv4.ip_forward=0")
@@ -1068,6 +1072,15 @@ func (a *Agent) withdraw(ctx context.Context, r Resources) Result {
 	}
 	if x.fails {
 		return x.finish()
+	}
+	// meridian-up.sh writes this drop-in on hosts with systemd-networkd (it
+	// is not a manifest file). Removed with the data plane; networkd is not
+	// restarted, it reads the change at its next start. A reinstall or the
+	// compensation of a failed withdraw writes it again.
+	if err := os.Remove(NetworkdDropIn); err == nil {
+		x.step("remove "+NetworkdDropIn, true, "")
+	} else if !os.IsNotExist(err) {
+		x.res.Warnings = append(x.res.Warnings, "remove "+NetworkdDropIn+": "+err.Error())
 	}
 	fam, name, _ := strings.Cut(GuardTable, " ")
 	if _, err := x.cmd(a.StepTimeout, "nft", "list", "table", fam, name); err == nil {

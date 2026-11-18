@@ -314,6 +314,10 @@ meridian_preflight() {
     s=$(q systemctl show -p ExecStop --value nftables.service | tr -d '\n')
     case "$s" in *flush*ruleset*) echo 'nftables-stop flush' ;; '') ;; *) echo 'nftables-stop noflush' ;; esac
   fi
+  # systemd-networkd deletes foreign ip rules when it restarts unless
+  # Meridian's drop-in (compile.NetworkdDropIn) is there.
+  if have systemctl; then ustate systemd-networkd.service; fi
+  if [ -f /etc/systemd/networkd.conf.d/90-meridian.conf ]; then echo 'networkd-dropin yes'; else echo 'networkd-dropin no'; fi
   # Host WARP dependency clues (names and addresses only): processes with
   # connections to its local listeners, a resolv.conf pointing at it.
   if have ss; then

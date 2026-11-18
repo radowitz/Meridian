@@ -361,6 +361,9 @@ func (c *Connector) DiscoverVia(ctx context.Context, serverID string, ch *model.
 		ssh.NewClient(sc, chans, reqs).Close()
 	}
 	if seen == nil {
+		if herr != nil {
+			conn.collect(collectWait)
+		}
 		pre, sawSSH := conn.preBanner()
 		if !sawSSH && rateLimitLine(pre) {
 			c.Pool.rateLimited(ep)
@@ -677,6 +680,7 @@ func (c *Connector) handshake(ctx context.Context, r resolved) (*session, error)
 	sc, chans, reqs, err := ssh.NewClientConn(conn, r.path.dial, cfg)
 	wd.stop()
 	if err != nil {
+		conn.collect(collectWait)
 		conn.Close()
 		relay.close()
 		pre, sawSSH := conn.preBanner()

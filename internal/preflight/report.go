@@ -220,6 +220,9 @@ type Report struct {
 	// NFTStop: whether nftables.service flushes the whole ruleset when it
 	// stops ("flush" | "noflush"; "" when not reported).
 	NFTStop string `json:"nftables_stop,omitempty"`
+	// NetworkdDropIn: whether /etc/systemd/networkd.conf.d/90-meridian.conf
+	// exists ("yes" | "no"; "" when not reported).
+	NetworkdDropIn string `json:"networkd_dropin,omitempty"`
 	// UFWConf: ENABLED= of /etc/ufw/ufw.conf ("yes" | "no" | "absent";
 	// "" when not reported). Ubuntu keeps ufw.service active (exited) even
 	// when the firewall is disabled, so the unit state alone says nothing.
@@ -431,6 +434,10 @@ func Parse(text string) Report {
 			// "ufw-conf yes|no|absent": ENABLED= in /etc/ufw/ufw.conf.
 			if w := word(rest); w == "yes" || w == "no" || w == "absent" {
 				r.UFWConf = w
+			}
+		case "networkd-dropin":
+			if w := word(rest); w == "yes" || w == "no" {
+				r.NetworkdDropIn = w
 			}
 		case "nftables-stop":
 			if w := word(rest); w == "flush" || w == "noflush" {

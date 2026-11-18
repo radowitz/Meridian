@@ -67,6 +67,7 @@ const (
 	CodeLowMemory         = "low_memory"
 	CodeLowDisk           = "low_disk"
 	CodeNFTFlush          = "nftables_flush_on_reload"
+	CodeNetworkdRules     = "networkd_flushes_rules"
 	CodeFirewallManager   = "firewall_manager"
 	CodeModifiedSince     = "modified_since_install"
 	CodePreviousLeftovers = "previous_run_leftovers"
@@ -1933,6 +1934,7 @@ func (e *eval) environment() {
 			"注意：有人执行 netfilter-persistent save 时，Meridian 在 DOCKER-USER 里带注释的放行规则也会被存下来；撤回只删运行中的规则，撤回后请再保存一次。", "")
 	}
 	e.nftFlush()
+	e.networkd()
 	if on, how := e.ufwEnforcing(); on {
 		e.add(Warning, CodeFirewallManager, "ufw.service", "ufw 已启用（"+how+"）：它管理主机防火墙，可能拦截隧道端口或转发，也可能在重载时改动规则。",
 			"确认它放行了 Meridian 要监听的端口和隧道接口的转发。")
@@ -2019,6 +2021,22 @@ func (e *eval) nftFlush() {
 	// Disabled and not running is the distribution default (Debian ships
 	// nftables.service disabled with a flushing /etc/nftables.conf): not
 	// reported, docs/architecture.md names the manual start as a limit.
+}
+
+// networkd: systemd-networkd runs with its default
+// ManageForeignRoutingPolicyRules=yes / ManageForeignRoutes=yes and
+// Meridian's drop-in is missing on an installed node (installed by a
+// version that did not write it). Its next restart (an unattended systemd
+// upgrade does that) deletes every Meridian ip rule. A fresh install writes
+// the drop-in itself, so only an installed node is reported.
+func (e *eval) networkd() {
+	r := e.r
+	if r.NetworkdDropIn != "no" || e.out.Ownership != OwnSame || r.Units["systemd-networkd.service"].Active != "active" {
+		return
+	}
+	e.add(Warning, CodeNetworkdRules, "systemd-networkd.service",
+		"systemd-networkd 在运行，而这台已安装的主机上没有 /etc/systemd/networkd.conf.d/90-meridian.conf：networkd 下次重启（例如自动更新升级 systemd）时会删掉 Meridian 的全部 ip rule，转发随之中断。",
+		"重新安装一次即可（meridian-up.sh 会写入这个文件，不重启 networkd）；或手工写入 [Network] 下 ManageForeignRoutingPolicyRules=no 和 ManageForeignRoutes=no 两行。")
 }
 
 // warp recognises a host-level Cloudflare WARP client, shows what it is
