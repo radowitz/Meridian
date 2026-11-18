@@ -396,7 +396,7 @@ func TestJournalNeverBlocks(t *testing.T) {
 	for i := 1; i <= 1000; i++ {
 		j.Add(jrec(clk, i))
 	}
-	if d := time.Since(start); d > 500*time.Millisecond {
+	if d := time.Since(start); d > 2*time.Second { // the writer is stuck forever: any bound shows Add never waits on it
 		t.Fatalf("1000 Adds took %v", d)
 	}
 	if got := j.Stats().Dropped; got < 1000-4 {

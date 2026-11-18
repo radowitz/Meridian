@@ -194,6 +194,16 @@ func (h *drillHost) ran(prefix string) int {
 	return n
 }
 
+// awaitSamples waits (bounded) until the drill has read the nft tables n
+// more times: a reload's window is then seen by the sampler on any machine
+// instead of lasting a fixed time a loaded scheduler may skip over.
+func (h *drillHost) awaitSamples(n int) {
+	want := h.ran("nft list tables") + n
+	for deadline := time.Now().Add(10 * time.Second); h.ran("nft list tables") < want && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (h *drillHost) set(f func()) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -936,7 +946,7 @@ func TestFirewallReloadDrill(t *testing.T) {
 		r.h.onRestart = func(h *drillHost) {
 			// meridian-up.sh replaces the main table; the guard stays.
 			h.set(func() { delete(h.tables, "inet meridian") })
-			time.Sleep(15 * time.Millisecond)
+			h.awaitSamples(2)
 			h.set(func() { h.tables["inet meridian"] = true })
 		}
 	})
@@ -959,7 +969,7 @@ func TestFirewallReloadDrill(t *testing.T) {
 	r2.h.set(func() {
 		r2.h.onRestart = func(h *drillHost) {
 			h.set(func() { delete(h.tables, "inet meridian"); delete(h.tables, GuardTable) })
-			time.Sleep(15 * time.Millisecond)
+			h.awaitSamples(2) // the drill must see the gap, however starved its sampler is
 			h.set(func() { h.tables["inet meridian"] = true; h.tables[GuardTable] = true })
 		}
 	})

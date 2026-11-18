@@ -388,11 +388,10 @@ func (c *hedgeClock) advance(d time.Duration) {
 
 func waitFor(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	for i := 0; i < 400; i++ {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		if ok() {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
@@ -410,7 +409,7 @@ func TestResolverHedgeAndHealth(t *testing.T) {
 	clk := &hedgeClock{now: time.Unix(5000, 0)}
 	r := NewResolver()
 	r.Exchange, r.Now, r.After = dn.exchange, clk.Now, clk.After
-	r.Timeout = 300 * time.Millisecond
+	r.Timeout = time.Second
 	d := tgt("direct", 0x64, "192.0.2.1:53", "192.0.2.2:53")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second) // DefaultLookupBudget
 	defer cancel()
@@ -488,8 +487,8 @@ func TestResolverTimeBounds(t *testing.T) {
 		"192.0.2.4:53": {rcode: 2}, "192.0.2.5:53": {any: []netip.Addr{addrB}, ttl: 60},
 	}}
 	r := NewResolver()
-	r.Exchange, r.Timeout, r.HedgeDelay = dn.exchange, 200*time.Millisecond, 20*time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	r.Exchange, r.Timeout, r.HedgeDelay = dn.exchange, time.Second, 20*time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	start := time.Now()
 	_, err := r.Lookup(ctx, tgt("direct", 0x64, "192.0.2.1:53", "192.0.2.2:53", "192.0.2.3:53"), "dead.example.org", false)

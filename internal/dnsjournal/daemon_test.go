@@ -627,6 +627,17 @@ func TestDaemonClearWhileWriting(t *testing.T) {
 	var before int64
 	for round := 0; round < 6; round++ {
 		time.Sleep(15 * time.Millisecond)
+		// An empty audit file needs no truncate (a clear of it is complete
+		// whatever the fault): wait for the resolver to have written into
+		// it since the last clear. Only a clear makes it shorter.
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+			if fi, err := os.Stat(audit); err == nil && fi.Size() > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("round %d: nothing written", round)
+			}
+		}
 		failing := round == 2 || round == 5 // these cannot empty the audit file; the last one is one of them
 		tr.set(failing)
 		before = written.Load()

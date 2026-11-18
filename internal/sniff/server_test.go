@@ -260,11 +260,10 @@ func (h *harness) closeOpen() {
 // waitFor polls cond for up to 5 s.
 func (h *harness) waitFor(cond func() bool) {
 	h.t.Helper()
-	for i := 0; i < 1000; i++ {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		if cond() {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
 	h.t.Fatal("condition not reached")
 }

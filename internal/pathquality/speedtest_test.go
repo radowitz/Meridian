@@ -57,6 +57,40 @@ func server(t *testing.T, n int, pace time.Duration) string {
 	return ln.Addr().String()
 }
 
+// trickleServer sends burst bytes at full speed, then 1 KiB every pace until
+// the client goes away: a steady transfer that never completes, independent
+// of how fast the machine is.
+func trickleServer(t *testing.T, burst int, pace time.Duration) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				if _, err := c.Write(make([]byte, burst)); err != nil {
+					return
+				}
+				small := make([]byte, 1<<10)
+				for {
+					time.Sleep(pace)
+					if _, err := c.Write(small); err != nil {
+						return
+					}
+				}
+			}(c)
+		}
+	}()
+	return ln.Addr().String()
+}
+
 type dialRec struct {
 	addr string
 	leg  Leg
@@ -127,7 +161,9 @@ func TestSpeedTestShortAndTimeout(t *testing.T) {
 		t.Fatalf("%+v", x)
 	}
 	// Throttled: times out with more than 1 MiB received: a valid slow sample.
-	x = SpeedTester{Dial: loopDial(server(t, 5<<20, 20*time.Millisecond), &rec), Run: &routeRunner{dev: "m03"}, Timeout: 600 * time.Millisecond}.Test(context.Background(), c, r, r.Legs[0], 1)
+	// The burst guarantees >1 MiB arrives early even on a loaded machine;
+	// the trickle keeps the transfer steady (no stall) until the deadline.
+	x = SpeedTester{Dial: loopDial(trickleServer(t, 3<<19, 20*time.Millisecond), &rec), Run: &routeRunner{dev: "m03"}, Timeout: 600 * time.Millisecond}.Test(context.Background(), c, r, r.Legs[0], 1)
 	if !x.OK || x.Bytes >= 5<<20 || x.Bytes < 1<<20 {
 		t.Fatalf("slow: %+v", x)
 	}

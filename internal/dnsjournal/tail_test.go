@@ -263,6 +263,40 @@ func TestTailRestartKeepsPosition(t *testing.T) {
 	f.expect("one.example.test", "two.example.test", "three.example.test")
 }
 
+// The new audit file got the inode number of the one read before the
+// restart (a filesystem reuses freed inodes): it is still another file, and
+// the lines not read are caught up from the rotated copy.
+func TestTailRestartInodeReused(t *testing.T) {
+	f := newTailFix(t)
+	f.write(f.line("192.0.2.10", "one.example.test") + f.line("192.0.2.10", "two.example.test"))
+	f.tail.Step()
+	f.tail.Close()
+	f.clock.Add(time.Second)
+	f.write(f.line("192.0.2.10", "three.example.test"))
+	f.rotate(true)
+	f.clock.Add(time.Minute)
+	f.write(f.line("192.0.2.10", "four.example.test") + f.line("192.0.2.10", "five.example.test") + f.line("192.0.2.10", "six.example.test"))
+	b, err := os.ReadFile(f.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p position
+	if err := json.Unmarshal(b, &p); err != nil || p.Head == "" {
+		t.Fatalf("position %s %v", b, err)
+	}
+	fi, err := os.Stat(f.path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Ino = inoOf(fi) // as if reused; the new file is longer than Offset
+	if err := writePosition(f.state, p); err != nil {
+		t.Fatal(err)
+	}
+	f.tail = f.newTailer(8 << 20)
+	f.tail.Step()
+	f.expect("one.example.test", "two.example.test", "three.example.test", "four.example.test", "five.example.test", "six.example.test")
+}
+
 // Rotated while the reader was down: the lines it had not read are taken
 // from the gzip-compressed rotated file, the ones it had read are not.
 func TestTailRestartCatchesUpFromGzip(t *testing.T) {

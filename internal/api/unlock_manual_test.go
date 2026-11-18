@@ -561,7 +561,7 @@ func TestUnlockManualAutoApplyRefusals(t *testing.T) {
 	t.Run("extra", func(t *testing.T) {
 		r := unlockRig(t)
 		v0 := installedVersion(t, r.s)
-		r.s.rulesAuto.lastRun = time.Now()
+		r.holdWindow()
 		code, out := adoptJSON(t, r.s, map[string]any{"service": "youtube-premium", "group": "us", "manual": true, "identity": groupIdentOf(t, r.s, "youtube-premium", "us")})
 		if f := fastOf(t, out); code != 200 || f.Status != FastScheduled {
 			t.Fatalf("%d %+v", code, out)
@@ -576,6 +576,7 @@ func TestUnlockManualAutoApplyRefusals(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		r.releaseWindow()
 		l := r.waitIdle(t)
 		if l.Status != FastSkipped || installedVersion(t, r.s) != v0 {
 			t.Fatalf("installed with a group change: %+v", l)
@@ -633,7 +634,7 @@ func TestUnlockAutoApplyRefusesExtras(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := unlockRig(t)
 			v0 := installedVersion(t, r.s)
-			r.s.rulesAuto.lastRun = time.Now() // inside the coalescing window
+			r.holdWindow() // inside the coalescing window
 			code, out := adoptJSON(t, r.s, map[string]any{"service": "youtube-premium", "exit": "us"})
 			if f := fastOf(t, out); code != 200 || f.Status != FastScheduled {
 				t.Fatalf("%d %+v", code, out)
@@ -641,6 +642,7 @@ func TestUnlockAutoApplyRefusesExtras(t *testing.T) {
 			if _, err := r.s.Store.Update(func(tp *model.Topology) (bool, error) { extra(tp); return true, nil }); err != nil {
 				t.Fatal(err)
 			}
+			r.releaseWindow()
 			l := r.waitIdle(t)
 			if l.Status != FastSkipped || installedVersion(t, r.s) != v0 {
 				t.Fatalf("installed with %s: %+v", name, l)

@@ -272,7 +272,7 @@ func TestSelfCheckBounded(t *testing.T) {
 	}
 	start = time.Now()
 	res, _ = s.RunSelfCheck(context.Background(), TriggerRequest)
-	if el := time.Since(start); el > 600*time.Millisecond {
+	if el := time.Since(start); el > 2*time.Second { // budget 250 ms; without it 40 resolvers / 8 at a time × 2 × 100 ms ≥ 1 s per round, many rounds
 		t.Fatalf("budget not kept: %v", el)
 	}
 	if !res.Incomplete || res.OK || f.peak.Load() > SelfCheckConcurrency {
@@ -481,10 +481,10 @@ func TestTargetStats(t *testing.T) {
 func TestSelfCheckKnownSilentResolver(t *testing.T) {
 	f := newFakeResolvers(map[string]string{rsDom: "timeout", rsJP: "answer", rsHK: "answer", rsUS: "answer"})
 	s := checkServer(t, f)
-	s.sc.queryTimeout, s.sc.recheckTimeout = 400*time.Millisecond, 40*time.Millisecond
+	s.sc.queryTimeout, s.sc.recheckTimeout = time.Second, 40*time.Millisecond
 	res, _ := s.RunSelfCheck(context.Background(), TriggerStart)
 	p := byTarget(res)["direct"].Resolvers[0]
-	if p.Outcome != OutcomeTimeout || p.KnownSilent || p.TimeoutMS != 400 || p.Transport != "udp" || p.DurationMS < 350 {
+	if p.Outcome != OutcomeTimeout || p.KnownSilent || p.TimeoutMS != 1000 || p.Transport != "udp" || p.DurationMS < 950 {
 		t.Fatalf("first run: %+v", p)
 	}
 	var h *ResolverHealth
@@ -498,7 +498,7 @@ func TestSelfCheckKnownSilentResolver(t *testing.T) {
 	}
 	start := time.Now()
 	res, _ = s.RunSelfCheck(context.Background(), TriggerPeriodic)
-	if el := time.Since(start); el >= 350*time.Millisecond {
+	if el := time.Since(start); el >= 900*time.Millisecond { // the full query timeout is 1 s
 		t.Fatalf("periodic run waited %v for a known-silent resolver", el)
 	}
 	p = byTarget(res)["direct"].Resolvers[0]

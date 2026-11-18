@@ -85,6 +85,8 @@ package dnsjournal
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/netip"
@@ -194,7 +196,11 @@ type position struct {
 	Ino         uint64 `json:"ino"`
 	Offset      int64  `json:"offset"`
 	LastNaiveMS int64  `json:"last_naive_ms"`
-	ZoneS       *int   `json:"zone_s,omitempty"`
+	// Head: a digest of the file's first bytes (up to Offset): an inode
+	// number alone may be reused by a new audit file after rotation
+	// (empty in positions written by older versions: the inode is trusted).
+	Head  string `json:"head,omitempty"`
+	ZoneS *int   `json:"zone_s,omitempty"`
 	// ClearMS: when a clear left something in the raw directory (0: none).
 	// ClearIno / ClearOff: the audit file it could not empty and how long
 	// that file was then (0: the audit file was emptied).
@@ -434,7 +440,9 @@ func (t *Tailer) savePosition(now time.Time, force bool) {
 	if t.f == nil && t.pos != nil {
 		// Nothing is open: where the next open is to start (the position
 		// loaded at start, or the one a clear left) is what must survive.
-		p.Ino, p.Offset = t.pos.Ino, t.pos.Offset
+		p.Ino, p.Offset, p.Head = t.pos.Ino, t.pos.Offset, t.pos.Head
+	} else if t.f != nil {
+		p.Head = headOf(t.f, p.Offset)
 	}
 	if !t.lastNaive.IsZero() {
 		p.LastNaiveMS = t.lastNaive.UnixMilli()
@@ -476,9 +484,11 @@ func (t *Tailer) open(now time.Time) bool {
 	if p := t.pos; p != nil {
 		t.pos = nil
 		switch {
-		case p.Ino == t.ino && p.Ino != 0 && fi.Size() >= p.Offset:
+		case p.Ino == t.ino && p.Ino != 0 && fi.Size() >= p.Offset && (p.Head == "" || headOf(f, p.Offset) == p.Head):
 			t.off = p.Offset
-		case p.Ino != t.ino && p.LastNaiveMS > 0:
+		case (p.Ino != t.ino || (p.Head != "" && headOf(f, p.Offset) != p.Head)) && p.LastNaiveMS > 0:
+			// Rotated while the reader was down (a reused inode number
+			// with other contents is another file).
 			// Rotated while the reader was down.
 			t.catchUp(now)
 		}
@@ -489,6 +499,21 @@ func (t *Tailer) open(now time.Time) bool {
 	}
 	t.posDirty = true
 	return true
+}
+
+// headLen bounds the bytes position.Head digests.
+const headLen = 256
+
+// headOf digests the first min(off, headLen) bytes of f ("" when they cannot
+// all be read: then they differ from any recorded head).
+func headOf(f *os.File, off int64) string {
+	n := min(off, headLen)
+	b := make([]byte, n)
+	if k, _ := f.ReadAt(b, 0); int64(k) != n {
+		return "-"
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:8])
 }
 
 // everOpened: the reader has read something before (in this process).

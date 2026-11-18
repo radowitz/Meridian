@@ -261,12 +261,14 @@ func TestRuleAutoApplyFailureCompensated(t *testing.T) {
 // coalesced into one later install of the final state.
 func TestRuleAutoApplyCoalesces(t *testing.T) {
 	r := newRuleRig(t)
-	// Wide enough for slow saves (-race): b and c must land in the window.
-	r.s.rulesAuto.gap = 3 * time.Second
+	// b and c must land in the window however slow the saves are: the gap
+	// is an hour until they have, then the coalesced run is due at once.
+	r.s.rulesAuto.gap = time.Hour
 	v0 := installedVersion(t, r.s)
 	a, _ := r.putRules(t, addRule("zz-a", "a.synth.example.org"))
 	b, _ := r.putRules(t, addRule("zz-b", "b.synth.example.org"))
 	c, _ := r.putRules(t, addRule("zz-c", "c.synth.example.org"))
+	r.releaseWindow()
 	if a.FastApply.Status != FastApplied || b.FastApply.Status != FastScheduled || c.FastApply.Status != FastScheduled || *b.ApplyRequired {
 		t.Fatalf("a %+v b %+v c %+v", a, b, c)
 	}
@@ -319,11 +321,22 @@ func TestRuleAutoApplyConcurrentChangeRefused(t *testing.T) {
 // left to install, and the run says so instead of installing a stale state.
 func TestRuleAutoApplyVersionMovedMeanwhile(t *testing.T) {
 	r := newRuleRig(t)
-	r.s.rulesAuto.gap = 3 * time.Second
+	// No timing window: the coalesced run is scheduled an hour out and
+	// fired by hand after the operator install.
+	r.s.rulesAuto.gap = time.Hour
 	r.putRules(t, addRule("zz-a", "a.synth.example.org"))
-	r.putRules(t, addRule("zz-b", "b.synth.example.org"))
+	if b, _ := r.putRules(t, addRule("zz-b", "b.synth.example.org")); b.FastApply.Status != FastScheduled {
+		t.Fatalf("b %+v", b)
+	}
 	opInstall(t, r.s)
 	v := installedVersion(t, r.s)
+	r.s.rulesAuto.mu.Lock()
+	if r.s.rulesAuto.timer == nil || !r.s.rulesAuto.timer.Stop() {
+		r.s.rulesAuto.mu.Unlock()
+		t.Fatal("no pending coalesced run")
+	}
+	r.s.rulesAuto.mu.Unlock()
+	r.s.rulesAutoFire()
 	l := r.waitIdle(t)
 	if l.Status != FastNone || installedVersion(t, r.s) != v {
 		t.Fatalf("last %+v", l)
@@ -400,6 +413,25 @@ func (noFetch) Get(context.Context, string) ([]byte, error) {
 // so its first evaluation finds the gateway busy. between runs (in the
 // firing goroutine, while no evaluation runs) after each failed attempt;
 // it is told the attempt number (1-based).
+// holdWindow puts the next save inside the coalescing window however long
+// a loaded machine takes to serve it: the gap is an hour until
+// releaseWindow, which makes the scheduled run due after 150 ms.
+func (r *ruleRig) holdWindow() {
+	r.s.rulesAuto.mu.Lock()
+	r.s.rulesAuto.gap = time.Hour
+	r.s.rulesAuto.lastRun = time.Now()
+	r.s.rulesAuto.mu.Unlock()
+}
+
+func (r *ruleRig) releaseWindow() {
+	r.s.rulesAuto.mu.Lock()
+	r.s.rulesAuto.gap = 150 * time.Millisecond
+	if r.s.rulesAuto.timer != nil {
+		r.s.rulesAuto.timer.Reset(150 * time.Millisecond)
+	}
+	r.s.rulesAuto.mu.Unlock()
+}
+
 func busyRig(t *testing.T, between func(r *ruleRig, attempt int)) (*ruleRig, int64, *int) {
 	t.Helper()
 	oldWait, oldSleep := rulesAutoBusyWait, rulesAutoSleep
@@ -408,12 +440,22 @@ func busyRig(t *testing.T, between func(r *ruleRig, attempt int)) (*ruleRig, int
 	r.s.rulesAuto.gap = 500 * time.Millisecond
 	r.putRules(t, addRule("zz-a", "a.synth.example.org"))
 	v1 := installedVersion(t, r.s)
+	// The next save falls in the window however slowly the machine serves
+	// it (an hour-long gap while it is made), then the coalesced run is due
+	// after the usual 500 ms.
 	r.s.rulesAuto.mu.Lock()
-	r.s.rulesAuto.lastRun = time.Now() // the next save falls in the window
+	r.s.rulesAuto.gap = time.Hour
+	r.s.rulesAuto.lastRun = time.Now()
 	r.s.rulesAuto.mu.Unlock()
 	if b, _ := r.putRules(t, addRule("zz-b", "b.synth.example.org")); b.FastApply.Status != FastScheduled {
 		t.Fatalf("b %+v", b)
 	}
+	r.s.rulesAuto.mu.Lock()
+	r.s.rulesAuto.gap = 500 * time.Millisecond
+	if r.s.rulesAuto.timer != nil {
+		r.s.rulesAuto.timer.Reset(500 * time.Millisecond)
+	}
+	r.s.rulesAuto.mu.Unlock()
 	if !r.s.lockNode(localNodeID) {
 		t.Fatal("lock")
 	}

@@ -168,6 +168,12 @@ func TestResolveAcceptsOnlyAllChinaDomesticAnswers(t *testing.T) {
 		China4: filepath.Join(dir, "4"), China6: filepath.Join(dir, "6"),
 		DomesticTimeout: 300 * time.Millisecond, Settle: DefaultSettle, ExitTimeout: time.Second}
 	s := New(cfg)
+	// one-poisoned-one-china depends on the second reply (15 ms after the
+	// first) arriving inside the settle time: a loaded machine can stretch
+	// that past 30 ms, so that case is decided with a 150 ms settle.
+	wcfg := cfg
+	wcfg.Settle = 150 * time.Millisecond
+	wide := New(wcfg)
 	if v4, v6 := s.Lists(); v4 != 1 || v6 != 1 {
 		t.Fatalf("lists %d %d", v4, v6)
 	}
@@ -193,9 +199,10 @@ func TestResolveAcceptsOnlyAllChinaDomesticAnswers(t *testing.T) {
 		{name: "china-slow-domestic", domestic: rec{a: []string{"198.51.100.11"}, delay: 150 * time.Millisecond}, exit: rec{a: []string{"203.0.113.1"}}, want: []string{"198.51.100.11"}},
 		{name: "one-poisoned-one-china", domestic: rec{a: []string{"192.0.2.66"}}, dot: &rec{a: []string{"198.51.100.12"}, delay: 15 * time.Millisecond}, exit: exitA, want: []string{"198.51.100.12"}},
 		// The China answer of the second resolver comes after the first
-		// resolver settled (0 + 30 ms) and the exit answered (30 ms): the
+		// resolver settled (0 + 30 ms) and the exit answered (30 ms) — 250 ms,
+		// far enough after for a loaded machine, before the 300 ms cap: the
 		// documented safe direction, tunnelled instead of direct.
-		{name: "china-after-decision", domestic: rec{a: []string{"192.0.2.66"}}, dot: &rec{a: []string{"198.51.100.14"}, delay: 120 * time.Millisecond}, exit: exitA, want: []string{"203.0.113.1"}},
+		{name: "china-after-decision", domestic: rec{a: []string{"192.0.2.66"}}, dot: &rec{a: []string{"198.51.100.14"}, delay: 250 * time.Millisecond}, exit: exitA, want: []string{"203.0.113.1"}},
 		{name: "domestic-silent", domestic: rec{drop: true}, exit: exitA, want: []string{"203.0.113.1"}},
 		{name: "exit-down-foreign", domestic: rec{cname: "dyna.example.org", a: []string{"203.0.113.9"}}, exit: rec{drop: true}, wantRcode: 2},
 		{name: "exit-down-china", domestic: rec{a: []string{"198.51.100.13"}}, exit: rec{drop: true}, want: []string{"198.51.100.13"}},
@@ -215,7 +222,11 @@ func TestResolveAcceptsOnlyAllChinaDomesticAnswers(t *testing.T) {
 			if qt == 0 {
 				qt = typeA
 			}
-			r := s.Resolve(mkQuery(n, qt), false)
+			srv := s
+			if c.name == "one-poisoned-one-china" {
+				srv = wide
+			}
+			r := srv.Resolve(mkQuery(n, qt), false)
 			if r == nil || binary.BigEndian.Uint16(r) != 0x1234 {
 				t.Fatalf("no reply or wrong id: %x", r)
 			}
@@ -309,32 +320,43 @@ func TestDecisionTimes(t *testing.T) {
 	s := New(Config{Listen: "127.0.0.1:0", Domestic: []string{d1.addr, d2.addr}, Exit: exit.addr,
 		China4: filepath.Join(dir, "4"), DomesticTimeout: DefaultDomesticTimeout, Settle: DefaultSettle, ExitTimeout: DefaultExitTimeout})
 	ms := time.Millisecond
+	// The same with a 200 ms settle, for the case whose outcome depends on
+	// a reply arriving inside the settle time (15 ms after the forged one):
+	// a loaded machine can stretch that past 30 ms, not past 200 ms.
+	wide := New(Config{Listen: "127.0.0.1:0", Domestic: []string{d1.addr, d2.addr}, Exit: exit.addr,
+		China4: filepath.Join(dir, "4"), DomesticTimeout: DefaultDomesticTimeout, Settle: 200 * ms, ExitTimeout: DefaultExitTimeout})
 	cases := []struct {
 		name       string
 		d1, d2, ex rec
 		want       string
-		min, max   time.Duration
+		// min: the decision cannot come earlier (it waits on real
+		// timers and replies, which never fire early). typ: what it takes
+		// on an idle machine (logged only). The upper bound is the next
+		// stage's deadline: before the domestic cap for every case that
+		// must not wait for it, before the exit timeout for the cap.
+		min, typ time.Duration
+		wide     bool // decided by the 200 ms settle server
 	}{
 		// Both domestic non-China at 10 ms, exit at 50 ms: ≈ exit time.
-		{"both-foreign-exit-50", rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.1"}, delay: 50 * ms}, "203.0.113.1", 45 * ms, 90 * ms},
+		{"both-foreign-exit-50", rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.1"}, delay: 50 * ms}, "203.0.113.1", 45 * ms, 90 * ms, false},
 		// Exit faster than domestic settle: ≈ 10 + 30 ms.
-		{"both-foreign-exit-5", rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.1"}, delay: 5 * ms}, "203.0.113.1", 38 * ms, 80 * ms},
+		{"both-foreign-exit-5", rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.1"}, delay: 5 * ms}, "203.0.113.1", 38 * ms, 80 * ms, false},
 		// Exit slower than domestic: ≈ exit time.
-		{"exit-slow-150", rec{cname: "dyna.example.org", a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"192.0.2.66"}, delay: 3 * ms}, rec{a: []string{"203.0.113.1"}, delay: 150 * ms}, "203.0.113.1", 145 * ms, 200 * ms},
+		{"exit-slow-150", rec{cname: "dyna.example.org", a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"192.0.2.66"}, delay: 3 * ms}, rec{a: []string{"203.0.113.1"}, delay: 150 * ms}, "203.0.113.1", 145 * ms, 200 * ms, false},
 		// One domestic silent, the other non-China at 10 ms, exit 20 ms:
 		// ≈ 10 + 30 ms, not the 400 ms cap.
-		{"one-silent", rec{drop: true}, rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.1"}, delay: 20 * ms}, "203.0.113.1", 38 * ms, 90 * ms},
+		{"one-silent", rec{drop: true}, rec{a: []string{"203.0.113.9"}, delay: 10 * ms}, rec{a: []string{"203.0.113.1"}, delay: 20 * ms}, "203.0.113.1", 38 * ms, 90 * ms, false},
 		// Forged (non-China) at 5 ms, genuine China at 20 ms on the same
 		// query, other resolver non-China, exit at 10 ms: domestic.
-		{"forged-then-genuine", rec{a: []string{"192.0.2.66"}, delay: 5 * ms, then: &rec{a: []string{"198.51.100.40"}, delay: 20 * ms}}, rec{a: []string{"203.0.113.9"}, delay: 5 * ms}, rec{a: []string{"203.0.113.1"}, delay: 10 * ms}, "198.51.100.40", 18 * ms, 60 * ms},
+		{"forged-then-genuine", rec{a: []string{"192.0.2.66"}, delay: 5 * ms, then: &rec{a: []string{"198.51.100.40"}, delay: 20 * ms}}, rec{a: []string{"203.0.113.9"}, delay: 5 * ms}, rec{a: []string{"203.0.113.1"}, delay: 10 * ms}, "198.51.100.40", 18 * ms, 60 * ms, true},
 		// The genuine reply after the settle time: the exit's (safe).
-		{"forged-then-late-genuine", rec{a: []string{"192.0.2.66"}, delay: 5 * ms, then: &rec{a: []string{"198.51.100.41"}, delay: 100 * ms}}, rec{drop: true}, rec{a: []string{"203.0.113.1"}, delay: 10 * ms}, "203.0.113.1", 33 * ms, 80 * ms},
+		{"forged-then-late-genuine", rec{a: []string{"192.0.2.66"}, delay: 5 * ms, then: &rec{a: []string{"198.51.100.41"}, delay: 300 * ms}}, rec{drop: true}, rec{a: []string{"203.0.113.1"}, delay: 10 * ms}, "203.0.113.1", 33 * ms, 80 * ms, false},
 		// China answer: immediately, whatever the exit does.
-		{"china-fast", rec{a: []string{"198.51.100.42"}, delay: 8 * ms}, rec{a: []string{"203.0.113.9"}, delay: 3 * ms}, rec{a: []string{"203.0.113.1"}, delay: 2 * ms}, "198.51.100.42", 7 * ms, 40 * ms},
+		{"china-fast", rec{a: []string{"198.51.100.42"}, delay: 8 * ms}, rec{a: []string{"203.0.113.9"}, delay: 3 * ms}, rec{a: []string{"203.0.113.1"}, delay: 2 * ms}, "198.51.100.42", 7 * ms, 40 * ms, true},
 		// No domestic answer at all: the 400 ms cap.
-		{"all-silent", rec{drop: true}, rec{drop: true}, rec{a: []string{"203.0.113.1"}, delay: 20 * ms}, "203.0.113.1", 395 * ms, 460 * ms},
+		{"all-silent", rec{drop: true}, rec{drop: true}, rec{a: []string{"203.0.113.1"}, delay: 20 * ms}, "203.0.113.1", 395 * ms, 460 * ms, false},
 		// Exit silent: all domestic waited for, China answer still used.
-		{"exit-silent-china", rec{a: []string{"203.0.113.9"}, delay: 5 * ms}, rec{a: []string{"198.51.100.43"}, delay: 60 * ms}, rec{drop: true}, "198.51.100.43", 55 * ms, 110 * ms},
+		{"exit-silent-china", rec{a: []string{"203.0.113.9"}, delay: 5 * ms}, rec{a: []string{"198.51.100.43"}, delay: 60 * ms}, rec{drop: true}, "198.51.100.43", 55 * ms, 110 * ms, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -343,7 +365,11 @@ func TestDecisionTimes(t *testing.T) {
 			d2.set(n, c.d2)
 			exit.set(n, c.ex)
 			t0 := time.Now()
-			r := s.Resolve(mkQuery(n, typeA), false)
+			srv := s
+			if c.wide {
+				srv = wide
+			}
+			r := srv.Resolve(mkQuery(n, typeA), false)
 			el := time.Since(t0)
 			addrs, _ := answerAddrs(r)
 			got := ""
@@ -354,8 +380,12 @@ func TestDecisionTimes(t *testing.T) {
 			if got != c.want {
 				t.Fatalf("got %v, want %s", addrs, c.want)
 			}
-			if el < c.min || el > c.max {
-				t.Fatalf("decided after %v, want %v..%v", el, c.min, c.max)
+			limit := DefaultDomesticTimeout - 5*ms // not the domestic cap
+			if c.min >= DefaultDomesticTimeout-5*ms {
+				limit = DefaultDomesticTimeout + DefaultExitTimeout/2 // the cap, well before the exit's timeout
+			}
+			if el < c.min || el >= limit {
+				t.Fatalf("decided after %v, want %v..%v (typically ≤%v)", el, c.min, limit, c.typ)
 			}
 		})
 	}

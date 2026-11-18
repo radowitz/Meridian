@@ -360,10 +360,23 @@ func itoa(n int) string {
 // forwarder finishes each with shutdown, in every view.
 func TestRelayShutdownAndActiveView(t *testing.T) {
 	h, _, _ := relayHarness(t, Config{}, false)
-	c1, c2 := h.connect("192.0.2.150:4001"), h.connect("203.0.113.200:4002")
+	// One after the other: the active view lists the newest connection
+	// first, so c2 must be accepted (numbered) after c1.
+	c1 := h.connect("192.0.2.150:4001")
 	h.roundTrip(c1, 0, raw)
+	c2 := h.connect("203.0.113.200:4002")
 	h.roundTrip(c2, 0, raw)
-	h.waitFor(func() bool { _, n := h.s.Active(nil, -1); return n == 2 })
+	// The byte counters are updated after the write to the client returns:
+	// wait for both connections to be counted, not just listed.
+	h.waitFor(func() bool {
+		all, n := h.s.Active(nil, -1)
+		for _, a := range all {
+			if a.BytesDown != int64(len(raw)) {
+				return false
+			}
+		}
+		return n == 2
+	})
 	act, n := h.s.Active(nil, 1)
 	if n != 2 || len(act) != 1 || act[0].Result != ActiveResult || act[0].Dest != "203.0.113.200:4002" || act[0].BytesDown != int64(len(raw)) {
 		t.Fatalf("active %d %+v", n, act)
