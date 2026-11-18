@@ -61,4 +61,4 @@ OpenSSH 9.8 起默认开启 `PerSourcePenalties`：同一来源短时间连接�
 
 ## 有预构建镜像吗
 
-仓库里只有构建工作流的定义（手动触发、默认只构建不推送）。镜像是否已发布以镜像仓库为准；没有时用 `install.sh --build` 本机构建或 `--image-tar` 载入，见 [install.md](install.md)。
+已发布的版本在 `ghcr.io/radowitz/meridian`（见 Releases）。网关拉不到时用 `install.sh --build` 本机构建或 `--image-tar` 载入，见 [install.md](install.md)。

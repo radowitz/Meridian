@@ -55,13 +55,13 @@ flowchart LR
 
 ```sh
 git clone https://github.com/<owner>/meridian.git && cd meridian
-sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --build
+sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.0
 sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-code
 ```
 
 浏览器打开 `http://<网关局域网 IPv4>:8787`，用终端里的一次性初始化码创建管理员，然后按向导：网关 → 模板 → 服务器（确认指纹）→ 拓扑 → 预检 → 部署。完整步骤见 [docs/user/quickstart.md](docs/user/quickstart.md)。
 
-目前**还没有发布预构建镜像**：仓库里只有手动触发的镜像构建工作流，所以上面用 `--build` 在本机构建。发布后可以改用 `--version vX.Y.Z`。
+镜像发布在 `ghcr.io/radowitz/meridian`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
 
 ## 文档
 
@@ -118,7 +118,7 @@ Meridian is a WireGuard policy-routing gateway with a web panel for a home LAN. 
 - **Observability and access**: live throughput; connection, DNS and link logs; remote WireGuard access.
 - **Safe install**: read-only preflight, transactional install with rollback and withdrawal; shipped binaries pinned by SHA-256 in `internal/artifacts/artifacts.lock`.
 
-**Quick start**: on Debian 13, run `deploy/debian/install.sh --build`, get the one-time code with `meridian setup-code`, open `http://<gateway>:8787` and follow the wizard. See [docs/user/quickstart.md](docs/user/quickstart.md). No prebuilt image yet; the installer, upgrade/rollback, wizard and templates have not been run end to end on real hosts.
+**Quick start**: on Debian 13, run `deploy/debian/install.sh --version v1.0.0`, get the one-time code with `meridian setup-code`, open `http://<gateway>:8787` and follow the wizard. See [docs/user/quickstart.md](docs/user/quickstart.md). Images: `ghcr.io/radowitz/meridian` (amd64/arm64); use `--build` or `--image-tar` if the gateway cannot reach ghcr.io. The installer, upgrade/rollback, wizard and templates have not been run end to end on real hosts.
 
 **Security**: the panel holds SSH credentials for every server; keep it on the LAN.
 
