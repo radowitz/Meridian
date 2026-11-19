@@ -519,6 +519,7 @@ func (a *Agent) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/action", a.serveAction)
 	mux.HandleFunc("POST /v1/probe", a.serveProbe)
+	mux.HandleFunc("POST /v1/exits/latency", a.serveExitLatency)
 	mux.HandleFunc("POST /v1/lists", a.serveLists)
 	mux.HandleFunc("POST /v1/lists/status", a.serveListsStatus)
 	mux.HandleFunc("POST /v1/remote-access/status", a.serveRemoteAccessStatus)

@@ -1,3 +1,4 @@
+import { ExitLatencyPanel, ExitLatencyValue, type ExitLatencyRow } from "./ExitLatency";
 import { MeshLegQuality } from "./MeshLegQuality";
 // 出口: region groups are the main view of exits. A region (香港, 美国 …)
 // holds one or more groups; each group has an ordered member list, a mode
@@ -218,8 +219,9 @@ export function MemberAttrs({ m }: { m: { ix_bound?: boolean; residential?: bool
   );
 }
 
-function memberHealth(m: GroupMemberView, observed: boolean): ReactNode {
-  if (!observed || !m.health) return <Typography.Text type="secondary">无健康样本</Typography.Text>;
+function memberHealth(m: GroupMemberView, observed: boolean, latency?: ExitLatencyRow): ReactNode {
+  if (latency && latency.state!=="not_measured") return <ExitLatencyValue row={latency} />;
+  if (!observed || !m.health) return <Typography.Text type="secondary" title="这是面板推算所需的组健康报告，不是隧道状态。实际路径以枢纽报告和上方网关延迟测量为准。">未收到组健康报告</Typography.Text>;
   const h = m.health;
   const tip = (
     <span>
@@ -267,8 +269,10 @@ function GroupCard({
   allGroups,
   nodes,
   sharedReports,
+  latencies,
 }: {
   g: RegionGroupView;
+  latencies?: Map<string,ExitLatencyRow>;
   /** Topology nodes by ID: nested / external exits get their badges in the member list. */
   nodes?: Map<string, Node>;
   /** Every group: decides whether this one's name needs region + ID to be unambiguous. */
@@ -496,7 +500,7 @@ function GroupCard({
                 <Typography.Text type="secondary">按配置应使用</Typography.Text>
                 <Typography.Text>{st.active ? name(st.active) : "—"}</Typography.Text>
                 <Typography.Text type="secondary" data-status="unverified" title="还没有收到这个组的健康样本：这是按配置计算的目标，不代表枢纽上实际在用。">
-                  未验证 · 无健康样本
+                  仅配置参考 · 未收到组健康报告
                 </Typography.Text>
               </>
             )}
@@ -647,7 +651,7 @@ function GroupCard({
                     </ul>
                   ) : null}
                 </div>
-                <div className="member-health">{m ? memberHealth(m, observed) : null}</div>
+                <div className="member-health">{m ? memberHealth(m, observed, latencies?.get(id)) : null}</div>
                 <Space size={2} className="member-move">
                   <Button
                     size="small"
@@ -1690,8 +1694,10 @@ function ExitNodes({
   joinMenu,
   onEdit,
   onAddExternal,
+  latencies,
 }: {
   topo: Topology;
+  latencies?: Map<string,ExitLatencyRow>;
   socks: SOCKSCredentialView[] | undefined;
   /** Exits in no region group: listed first, each with 「加入组…」. */
   ungrouped: Set<string>;
@@ -1714,6 +1720,7 @@ function ExitNodes({
             </Typography.Text>
             <MemberAttrs m={n} />
             <ExitKindTags node={n} name={name} />
+            <ExitLatencyValue row={latencies?.get(n.id)} />
           </Space>
           {n.external ? (
             <div className="state-line">
@@ -1810,6 +1817,8 @@ function carrierState(d: RegionGroupsView): GroupHubState | undefined {
 }
 
 export default function ExitsPage() {
+  const [latencyRows,setLatencyRows]=useState<ExitLatencyRow[]>([]);
+  const latencies=useMemo(()=>new Map(latencyRows.map(r=>[r.exit_id,r])),[latencyRows]);
   const groups = useApi(() => api.listGroups(), []);
   const doc = useTopologyDoc();
   const { markApplyRequired } = useStatus();
@@ -1934,6 +1943,7 @@ export default function ExitsPage() {
         </Button>
       }
     >
+      <ExitLatencyPanel onData={setLatencyRows} />
       <MeshLegQuality topo={doc.topo} />
       {changed ? <ApplyRequiredNotice what="地区组已修改" /> : null}
       <ApiErrorAlert error={act.error} onClose={act.clear} />
@@ -1988,6 +1998,7 @@ export default function ExitsPage() {
                     <GroupCard
                       key={g.id}
                       g={g}
+                      latencies={latencies}
                       allGroups={d.groups}
                       names={names}
                       nodes={nodeMap}
@@ -2013,6 +2024,7 @@ export default function ExitsPage() {
       </DataView>
       {doc.topo ? (
         <ExitNodes
+          latencies={latencies}
           topo={doc.topo}
           socks={socks.data?.credentials}
           ungrouped={new Set(groups.data ? ungrouped.map((n) => n.id) : [])}

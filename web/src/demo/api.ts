@@ -118,6 +118,8 @@ export const DEMO_ROUTES: DemoRoute[] = [
   R("GET", "/api/lists/job", "read"),
   R("GET", "/api/lists/status", "read"),
   // region groups
+  R("GET", "/api/exits/latency", "special"),
+  R("POST", "/api/exits/latency", "refuse"),
   R("GET", "/api/region-groups", "read"),
   R("GET", "/api/region-groups/:id", "read"),
   R("POST", "/api/region-groups", "refuse"),
@@ -491,6 +493,7 @@ export function makeDemoApi(responses: Record<string, DemoResponse>) {
       const rb = (r?.body ?? {}) as { exit?: string; group?: string };
       return r && (kind === "group" ? rb.group === b.group : rb.exit === b.exit) ? r : refusal();
     }
+    if (key === "GET /api/exits/latency") return { status: 200, body: { available: false, running: false, rows: [] } };
     if (key === "POST /api/region-groups/runtime/refresh") {
       // The read of the hub is not repeated: the stored state is shown.
       return responses["GET /api/region-groups"] ?? missing(method, path);

@@ -4,6 +4,14 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.2
+
+- Exits page measures gateway-to-exit TCP handshake latency through the
+  selected tunnel, shows results beside region-group members, and labels
+  external SOCKS measurements as reaching the carrier resolver.
+- Clarifies missing region-group health reports and keeps historical sniff
+  targets outside the current monitoring scope out of current alerts.
+
 ## v1.0.1
 
 - Lists page shows every rule-set (entries, last update, state, error) with

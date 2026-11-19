@@ -1124,3 +1124,17 @@ describe("dns log clear error words", () => {
     expect(clearErrorText({ part: "journal", op: "write", cause: "read_only", count: 1 })).toBe("结构化日志清除标记写入失败（文件系统只读）");
   });
 });
+
+
+it("does not report an inactive historical self-check target as a current tunnel fault", async () => {
+ const v=linkLog();
+ v.scope.unobserved.push({class:"sniff_target",kind:"sniff_target",id:"group:old",label:"旧规则目标",observed:false,note:"当前规则不检查"});
+ const old={...CARRY,class:"sniff_target",kind:"sniff_target",id:"group:old",label:"旧规则目标",stale:true};
+ linkApi(()=>v,{"GET /api/link-log/current":()=>currentAnswer({unknown:[old,{...CARRY,stale:true}]})});
+ mount(LinkLogsPage,"#/link-log");
+ const cur=await screen.findByTestId("link-log-current");
+ expect(within(cur).getByTestId("link-log-inactive-targets")).toHaveTextContent("不代表隧道故障");
+ const unknown=within(cur).getByTestId("link-log-unknown");
+ expect(unknown).not.toHaveTextContent("旧规则目标");
+ expect(unknown).toHaveTextContent(CARRY.label!);
+});

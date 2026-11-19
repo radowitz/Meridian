@@ -143,7 +143,7 @@ describe("region groups", () => {
     const hk = await screen.findByTestId("group-hk");
     const hkLive = within(hk).getByTestId("group-live");
     expect(within(hk).getByTestId("group-model")).toHaveTextContent("按配置应使用");
-    expect(within(hk).getByTestId("group-model").querySelector('[data-status="unverified"]')).toHaveTextContent("未验证");
+    expect(within(hk).getByTestId("group-model").querySelector('[data-status="unverified"]')).toHaveTextContent("仅配置参考 · 未收到组健康报告");
     // Without a hub read the member in use is unknown, not the target.
     expect(within(hk).getByTestId("group-actual")).toHaveTextContent("实际使用未知");
     expect(within(hk).getByTestId("group-actual")).not.toHaveTextContent("香港 IX");
@@ -1100,4 +1100,17 @@ describe("same-exit Mesh quality", () => {
     expect(screen.getByText("双腿不可用 · 黑洞")).toBeInTheDocument();
     expect(screen.getByText(/双腿无响应/)).toBeInTheDocument();
   });
+});
+
+
+it("shows measured gateway RTT beside a group member without inventing group health", async () => {
+ fakeApi({
+  "GET /api/topology":()=>topology(),
+  "GET /api/region-groups":()=>({groups:[group()],default_group:"hk",thresholds:THRESHOLDS}),
+  "GET /api/exits/latency":()=>({available:true,running:false,rows:[{exit_id:"hk-ix",name:"香港 IX",scope:"exit_resolver",state:"ok",rtt_ms:42.25,sent:3,received:3,stale:false,measured_at:NOW}]})
+ });
+ renderAt("#/exits",{foldsOpen:true});
+ const member=await screen.findByTestId("member-hk-hk-ix");
+ await waitFor(()=>expect(member).toHaveTextContent("42.3 ms · 网关实测"));
+ expect(within(screen.getByTestId("group-hk")).getByTestId("group-model")).toHaveTextContent("未收到组健康报告");
 });

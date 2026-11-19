@@ -13,11 +13,11 @@
 
 ```sh
 git clone https://github.com/<owner>/meridian.git && cd meridian
-sudo bash deploy/debian/install.sh --lan-addr 192.0.2.88 --version v1.0.1
+sudo bash deploy/debian/install.sh --lan-addr 192.0.2.88 --version v1.0.2
 ```
 
 - `--lan-addr` 是面板监听的局域网地址。不给时脚本会列出探测到的候选让你在终端确认。
-- `--version v1.0.1` 从 `ghcr.io/radowitz/meridian` 拉取预构建镜像（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机从源码构建，或在另一台机器上保存镜像再用 `--image-tar` 载入，见[安装网关](install.md#参数)。
+- `--version v1.0.2` 从 `ghcr.io/radowitz/meridian` 拉取预构建镜像（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机从源码构建，或在另一台机器上保存镜像再用 `--image-tar` 载入，见[安装网关](install.md#参数)。
 - 脚本同时创建 DNS 分流用的 SmartDNS 容器 `meridian-smartdns`（compose 的 `dns` profile）：已有 `/etc/smartdns/smartdns.conf` 时当场启动并确认在运行；全新安装时只创建，第 4 步「安装到网关」写好配置后由 meridian-host 启动并等它应答。已在运行的容器不动；已存在但停止的容器，有配置时启动并确认在运行，没有配置时留给 meridian-host。本机已经装了宿主 `smartdns.service`（例如发行版的 smartdns 包）时，meridian-host 重启的是这个宿主单元而不是容器，脚本也就不创建、不启动容器；要改用容器，先停用并禁用宿主单元再重跑。SmartDNS 镜像来自 Docker Hub，网关拉不到时先在别处 `docker save` 再 `docker load`。
 - 脚本结束时打印下一步命令。所有参数、重复运行和管理防火墙的说明见 [install.md](install.md)。
 

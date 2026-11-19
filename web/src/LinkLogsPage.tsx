@@ -112,8 +112,17 @@ function ObjectFacts({ o, w }: { o: LinkLogObjectState; w: Words }) {
 
 // --------------------------------------------------------------- current ---
 
-function Current({ summary, w, gapAfterS }: { summary: LinkLogSummary; w: Words; gapAfterS: number }) {
-  const { carrying, health, abnormal, unknown, flapping } = summary;
+function Current({ summary, w, gapAfterS, unobserved = [] }: { summary: LinkLogSummary; w: Words; gapAfterS: number; unobserved?: string[] }) {
+  const { carrying, health } = summary;
+  // A target removed from the active rules keeps its history in the ledger,
+  // but is no longer a current measurement. Do not present that old reading
+  // as an unknown current fault; the scope section explains the exclusion.
+  const ignored = new Set(unobserved);
+  const include = (o: LinkLogObjectState) => !ignored.has(`${o.kind}|${o.id}`);
+  const abnormal = summary.abnormal.filter(include);
+  const unknown = summary.unknown.filter(include);
+  const flapping = summary.flapping.filter(include);
+  const inactive = summary.unknown.length - unknown.length;
   return (
     <div data-testid="link-log-current" className="link-current">
       <Note inline>读取于 {absTime(summary.at)}
@@ -189,6 +198,7 @@ function Current({ summary, w, gapAfterS }: { summary: LinkLogSummary; w: Words;
           />
         )}
       </div>
+      {inactive > 0 ? <div data-testid="link-log-inactive-targets"><Typography.Text type="secondary">{inactive} 个历史自检目标已不在当前规则检查范围内，不代表隧道故障；见下方「未观测的对象」。</Typography.Text></div> : null}
       {unknown.length > 0 ? (
         <div data-testid="link-log-unknown" className="link-block">
           <Typography.Text strong>状态未知的对象（{unknown.length}）</Typography.Text>
@@ -483,7 +493,7 @@ function Journal({ v, w }: { v: LinkLogView; w: Words }) {
             <Skeleton active paragraph={{ rows: 3 }} />
           )
         ) : cur.data.available && cur.data.summary ? (
-          <Current summary={cur.data.summary} w={w} gapAfterS={v.timing.gap_after_s} />
+          <Current summary={cur.data.summary} w={w} gapAfterS={v.timing.gap_after_s} unobserved={v.scope.unobserved.filter(o => o.class === "sniff_target" || o.class === "external_exit").map(o => `${o.kind}|${o.id}`)} />
         ) : (
           <LogEmpty id="link-log-current" state={cur.data.code ?? "unavailable"} title="读不到当前状态">
             {cur.data.message || "采集服务没有回答。"}

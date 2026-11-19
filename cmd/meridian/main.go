@@ -153,7 +153,8 @@ func main() {
 		Host: hostClient,
 		// Unlock probes go through the same agent (/v1/probe), so the panel
 		// container needs no NET_ADMIN / NET_RAW of its own.
-		Prober: hostClient,
+		Prober:      hostClient,
+		ExitLatency: hostClient,
 		// List updates ("update now") run on the host through the agent's
 		// fixed list action (/v1/lists).
 		Lists: hostClient,

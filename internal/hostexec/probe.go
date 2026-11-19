@@ -80,30 +80,12 @@ const MaxProbeServices = 16
 
 // ValidateProbe checks a probe request completely before anything runs.
 func ValidateProbe(req ProbeRequest) error {
-	if !requestIDRe.MatchString(req.RequestID) {
-		return errors.New("request_id 不合法")
-	}
-	if !exitIDRe.MatchString(req.ExitID) {
-		return errors.New("exit_id 不合法")
+	if err := validateProbePath(req); err != nil {
+		return err
 	}
 	fam, ok := unlock.ParseFamily(req.Family)
 	if !ok || fam == unlock.FamilyAny {
 		return errors.New("family 只能是 ipv4 或 ipv6")
-	}
-	if req.Mark < minExitMark || req.Mark > maxExitMark {
-		return fmt.Errorf("mark %#x 不是 Meridian 出口 mark", req.Mark)
-	}
-	t4, err := netip.ParseAddr(req.TransitV4)
-	if err != nil || !t4.Is4() || !transit4.Contains(t4) {
-		return errors.New("transit_v4 必须在 10.66.200.0/24 里")
-	}
-	t6, err := netip.ParseAddr(req.TransitV6)
-	if err != nil || !t6.Is6() || t6.Is4In6() || !transit6.Contains(t6) {
-		return errors.New("transit_v6 必须在 fd66:0:0:ff::/64 里")
-	}
-	res, err := netip.ParseAddr(req.Resolver)
-	if err != nil || !res.Is6() || !tunnelULA.Contains(res) || transit6.Contains(res) {
-		return errors.New("resolver 必须是 fd66::/48 里的出口隧道地址")
 	}
 	if req.Region != "" && !regionRe.MatchString(req.Region) {
 		return errors.New("region 不合法")
@@ -132,6 +114,32 @@ func ValidateProbe(req ProbeRequest) error {
 			return fmt.Errorf("服务 %q 重复", s)
 		}
 		seen[s] = true
+	}
+	return nil
+}
+
+// validateProbePath is shared by platform probes and fixed tunnel-latency checks.
+func validateProbePath(req ProbeRequest) error {
+	if !requestIDRe.MatchString(req.RequestID) {
+		return errors.New("request_id 不合法")
+	}
+	if !exitIDRe.MatchString(req.ExitID) {
+		return errors.New("exit_id 不合法")
+	}
+	if req.Mark < minExitMark || req.Mark > maxExitMark {
+		return fmt.Errorf("mark %#x 不是 Meridian 出口 mark", req.Mark)
+	}
+	t4, err := netip.ParseAddr(req.TransitV4)
+	if err != nil || !t4.Is4() || !transit4.Contains(t4) {
+		return errors.New("transit_v4 必须在 10.66.200.0/24 里")
+	}
+	t6, err := netip.ParseAddr(req.TransitV6)
+	if err != nil || !t6.Is6() || t6.Is4In6() || !transit6.Contains(t6) {
+		return errors.New("transit_v6 必须在 fd66:0:0:ff::/64 里")
+	}
+	res, err := netip.ParseAddr(req.Resolver)
+	if err != nil || !res.Is6() || !tunnelULA.Contains(res) || transit6.Contains(res) {
+		return errors.New("resolver 必须是 fd66::/48 里的出口隧道地址")
 	}
 	return nil
 }

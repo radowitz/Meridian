@@ -1,3 +1,4 @@
+import type { ExitLatencyView } from "./ExitLatency";
 // Typed client for every panel API. One request function, one error type.
 //
 // Secrets: request bodies may carry passwords, private keys, passphrases or
@@ -444,6 +445,8 @@ export function rollback(mode: RollbackMode) {
 }
 
 /** Cheap, read-only: agent reachability, installed-vs-stored, pending transaction, job states. */
+export const getExitLatency = () => request<ExitLatencyView>("GET", "/api/exits/latency");
+export const measureExitLatency = () => request<ExitLatencyView>("POST", "/api/exits/latency", {});
 export const getStatus = () => request<PanelStatus>("GET", "/api/status");
 export const hostStatus = () => request<HostStatus>("GET", "/api/host");
 export const recoverHost = () => request<{ status: string; host?: HostReport | null }>("POST", "/api/host/recover", {});

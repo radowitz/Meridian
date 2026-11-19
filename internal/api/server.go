@@ -108,7 +108,12 @@ type Server struct {
 	// Prober is the host agent's read-only unlock probe (the same
 	// hostexec.Client as Host in main). Nil: the panel cannot probe and the
 	// scheduler records that, without inventing results.
-	Prober ProbeRuntime
+	Prober       ProbeRuntime
+	ExitLatency  ExitLatencyRuntime
+	latencyMu    sync.Mutex
+	latencyCache map[string]cachedExitLatency
+	latencyBusy  bool
+	latencyLast  time.Time
 	// ProbeJobTimeout bounds one probe job; zero means 15 minutes.
 	ProbeJobTimeout time.Duration
 	// Lists is the host agent's list update action (the same
@@ -254,6 +259,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/link-log/clear", s.postLinkLogClear)
 	mux.HandleFunc("POST /api/host/recover", s.postHostRecover)
 	mux.HandleFunc("POST /api/provision", s.postProvision)
+	mux.HandleFunc("GET /api/exits/latency", s.getExitLatency)
+	mux.HandleFunc("POST /api/exits/latency", s.measureExitLatency)
 	mux.HandleFunc("GET /api/pools", s.getPools)
 	mux.HandleFunc("POST /api/pools/health", s.postPoolHealth)
 	mux.HandleFunc("GET /api/unlock", s.getUnlock)
