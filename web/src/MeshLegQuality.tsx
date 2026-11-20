@@ -7,6 +7,7 @@ import {
   Fold,
   useApi,
   Note,
+  StatusTag,
 } from "./ui";
 
 const LEG: Record<string, string> = { direct: "直连 WireGuard", mesh: "Mesh 上的 WireGuard", blackhole: "双腿不可用 · 黑洞" };
@@ -27,7 +28,7 @@ function MeshLegChoices({ report, events }: { report?: MeshLegReport; events: Me
       const rtt = leg === "direct" ? report?.direct_rtt : report?.mesh_rtt;
       const loss = leg === "direct" ? report?.direct_loss : report?.mesh_loss;
       return <div key={leg} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 4, marginBlock: 2 }}>
-        {active === leg ? <Tag color="success">{leg === "direct" ? "直连" : "Mesh"} · 使用中</Tag>
+        {active === leg ? <StatusTag kind="ok">{leg === "direct" ? "直连" : "Mesh"} · 使用中</StatusTag>
           : <Typography.Text type="secondary">{leg === "direct" ? "直连" : "Mesh"}</Typography.Text>}
         {loss !== undefined ? <Tag color={loss === 1000 ? "error" : loss > 0 ? "warning" : "blue"} title="枢纽到出口的延迟与探测丢包">
           {loss < 1000 && rtt !== undefined ? `${rtt} ms` : "—"} · 丢包 {loss / 10}%

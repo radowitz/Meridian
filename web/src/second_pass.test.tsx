@@ -43,7 +43,7 @@ describe("import drawer: upload control and placeholder", () => {
 
 describe("remote access: add-device drawer", () => {
   keepFetch();
-  it("shows each mode as one sentence, its safety line visible and the long explanation collapsed", async () => {
+  it("shows each mode as one sentence and omits the redundant verification notice", async () => {
     await renderDemoPage("healthy", "remote");
     layoutChecks("#/remote");
     await userEvent.click(screen.getAllByRole("button", { name: /添加设备/ })[0]);
@@ -64,7 +64,7 @@ describe("remote access: add-device drawer", () => {
     // "can the phone reach home" statement is a visible safety notice in the devices section.
     expect(screen.getByTestId("remote-independent").querySelector(".ant-alert")).toBeNull();
     const notice = [...document.querySelectorAll<HTMLElement>(".section .safety-notice")].find((n) => n.textContent?.includes("面板验证不了"));
-    expect(notice).toBeDefined();
+    expect(notice).toBeUndefined();
   });
 });
 

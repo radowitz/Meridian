@@ -93,6 +93,7 @@
 4ee4ee51bd73a794d2ee4d9c46a9abaa16e77f0d40079905f51d04dd2549122b nodes/hk-resi-2/usr/local/sbin/meridian-routes.sh
 4fb5ebc448fe23954bdfbe5c70a42e22f69cf5bb4b1ca99a406020a7178ad5c5 nodes/hk-hub/etc/wireguard/m12.conf
 501efd8fbcc4931659ca978c735786ed378ce2f9544d0c9f8b8b588db7d73def nodes/jp/usr/local/sbin/meridian-up.sh
+5087975b54466108c3417a31f6785fdff2a0ad776d5e2df29baa31331fd232f6 nodes/hk-hub/usr/local/sbin/meridian-failover.sh
 542bf45c7a79b152fc2b2faa7dc9849c3b5a57d45865fb55fe722453f4000d3f nodes/hk-hub/etc/wireguard/m09.conf
 5506656f8a67e1557a90ed7968658a6534f47aeffed7ab2314af3129fff11517 nodes/hk-hub/etc/meridian/wss/server.yaml
 560c7b97bff2b7c7f84fdb8d01ea945612ff16016e321e2c5490b4b040a1b44c nodes/ds-relay/etc/smartdns/smartdns.conf
@@ -176,7 +177,6 @@ a52e260dc38413921437e46cb6acdc77370f7fa11ac457bc3f24f48c9b9f41ef nodes/hk-resi/e
 a6aac44efe923800c4070986afa914efca6ed39b4300a02d3275764337a27977 nodes/sg/etc/nftables.d/meridian.nft
 a8653566565cc0dcaae28166eb857b322086119c709ee0901ac3b2f8b70bf8d5 nodes/v6-exit/etc/wireguard/m01.conf
 a8bb28f962bfad5edfd8bf8cbedb1cbb6d283481693fa9896321bfe0922f4191 nodes/hk-hub/etc/wireguard/m10.conf
-a9736106a4b60af7cdbd276856fc0f8fb06cf0e56e191aa4f06e482cbf6954d1 nodes/hk-hub/usr/local/sbin/meridian-failover.sh
 ac38b636ca05e661372109edb6b7792a9d315de3831ee8956ffe5ac50a6e951c nodes/sg/usr/local/sbin/meridian-fwcompat.sh
 ac7317832fae9b1c51da8a71f29b5e3b7b6d4505daad2b7e8135e38488e71eab nodes/sg/etc/smartdns/smartdns.conf
 b0c8e0a65dcf9afe0f38ef7d2170dc8fde4d2e1b1a5ea2de7902912d40f24659 nodes/access/etc/sysctl.d/99-meridian.conf

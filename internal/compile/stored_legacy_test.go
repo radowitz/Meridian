@@ -10,11 +10,9 @@ import (
 
 // A stored topology in the pre-redesign format (exit pools, rule
 // target_pool, no region groups; internal/api/testdata) compiles to exactly
-// the bytes it compiled to before the T3 template work and the fixture
-// renaming. The golden was written by the compiler as it stood before T3
-// touched any code (docs/privacy-inventory.md「T3 处理结果」) and, unlike the
-// example goldens, is not regenerated: renaming the example fixtures is
-// data only and must not move a stored topology's output.
+// its pinned bundle. The fixture still uses the pre-T3 topology; the only
+// v1.0.3 change to the pin is the hub failover script for the zero-loss
+// Mesh latency threshold.
 func TestStoredLegacyTopologyCompileUnchanged(t *testing.T) {
 	raw, err := os.ReadFile("../api/testdata/pre-redesign-topology.json")
 	if err != nil {

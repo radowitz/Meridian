@@ -824,6 +824,7 @@ export function DeploymentGuide({ onChanged, header }: { onChanged?: () => void;
     });
 
   const open = run && (run.state === "active" || run.state === "stopped");
+  const autoReady = !!(open || view?.plan?.steps.length);
   return (
     <Section title="按顺序部署待变更节点" id="guide">
       <div data-testid="deploy-guide">
@@ -831,12 +832,13 @@ export function DeploymentGuide({ onChanged, header }: { onChanged?: () => void;
         <Note>{"可逐台确认，或启动自动检测并部署。"}{" "}
           顺序：挂在中继出口后面的出口 → 出口 → 备用枢纽 → 主枢纽 → 中继 → 网关；管理通道经过别的节点时，被经过的节点排在后面。每一步都是下面「远端节点」和「安装到本机」里的同一套预检和下发，只是按顺序串起来。只需核对、不会安装任何东西的节点单独列出，不受这个顺序约束。一台被预检阻断或连不上时，可以跳过它继续不依赖它的节点（同层的出口、其它中继）；依赖它的节点（它后面的枢纽、中继和网关，它转发的中继出口，经它管理的节点）继续等待。结果不明或失败的一步不能跳过，要先重新核对。
         </Note>
-        <Button disabled={!view || !!act.busy || inFlight} loading={act.busy === "auto"} onClick={() => confirm({
+        <Button disabled={!view || !autoReady || !!act.busy || inFlight} loading={act.busy === "auto"} onClick={() => confirm({
           title: "自动预检并部署待变更节点？",
           consequence: "按当前部署计划依次预检和下发，可能短暂中断相关路径。若预检阻断、拓扑变化或下发失败，将停在对应节点。",
           okText: "开始自动部署",
           onOk: () => act.run(() => deployPendingNodes(apply), "auto", () => void state.reload()),
         })}>自动检测并部署</Button>
+        {view && !autoReady ? <Typography.Text type="secondary" style={{ marginInlineStart: 8 }}>当前没有待部署节点</Typography.Text> : null}
         <ApiErrorAlert error={act.error} onClose={act.clear} />
         <DataView state={state} rows={4}>
           {(v) => (

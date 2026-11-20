@@ -114,6 +114,7 @@ export const DEMO_ROUTES: DemoRoute[] = [
   // lists
   R("GET", "/api/lists", "read"),
   R("PUT", "/api/lists/policy", "refuse"),
+  R("PUT", "/api/lists/schedule", "refuse"),
   R("POST", "/api/lists/update", "refuse"),
   R("GET", "/api/lists/job", "read"),
   R("GET", "/api/lists/status", "read"),

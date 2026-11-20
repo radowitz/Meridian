@@ -30,7 +30,6 @@
 2a14732459e1c8f546b08a0c518fc3b41b098c952d88da28b48290a061d74135 nodes/jp/usr/local/sbin/meridian-routes.sh
 2d712ec240f14c0a416b9a69ac492d11053ff752bfbca1d2d09a463f3cc2e855 nodes/hk-resi/etc/smartdns/smartdns.conf
 2ff892d7bf86d859ed247e52d65780c2e38452bded23477df43a8cac81f1c1a8 nodes/access/etc/nftables.d/meridian.nft
-36e49235df94ce6ece782cd4ea03fbb632e60fa2d3427700c928ef821322910e nodes/hk-hub/usr/local/sbin/meridian-failover.sh
 37d0812eae3bea6e8f4ae63eebdc1a2eab844b616422ed934b40c2fed03c81d8 nodes/sg/usr/local/sbin/meridian-fwcompat.sh
 3c4f8569f980717c7b10b80d906c37d9ac7d9e37e590ad79532cb45d66ae2bdb nodes/access/etc/systemd/system/meridian-fwcompat.service
 3c4f8569f980717c7b10b80d906c37d9ac7d9e37e590ad79532cb45d66ae2bdb nodes/hk-hub/etc/systemd/system/meridian-fwcompat.service
@@ -82,6 +81,7 @@
 71d6a9a7706209d25786c24c82c2a39f0659368709f20a2d319a6d831bb728f8 nodes/tw/etc/systemd/system/meridian-unlock.service
 71d6a9a7706209d25786c24c82c2a39f0659368709f20a2d319a6d831bb728f8 nodes/us/etc/systemd/system/meridian-unlock.service
 7911ed178053cee688da4e9a2188f1c68c5598183633c66a8a3197ead12a04c4 nodes/us/etc/smartdns/smartdns.conf
+7a3cc86e3b4f2f24f6a03014b573b30b3ca401bbecf82dd9500014cf8a9c1349 nodes/hk-hub/usr/local/sbin/meridian-failover.sh
 7e7ba0214b227e23987391fe012b5649c0b8e0061685082d7ecad8ab85ea035f nodes/us/usr/local/sbin/meridian-up.sh
 8108a3f5ae8687d1e87f4f5b003e6acdc3610df44a4619166151e84f43ad1673 nodes/gw/etc/nftables.d/meridian.nft
 863af922296cc5efac9d4e437ca1adba4198cce67e8d7fcfac4e10231fd420b5 nodes/access/etc/systemd/system/wstunnel-client-access-hub-wss.service

@@ -51,6 +51,7 @@ import {
   CopyButton,
   DataView,
   Facts,
+  Fold,
   IssueList,
   Link,
   Mono,
@@ -188,53 +189,38 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
     );
   }
 
+  const pending = (status?.nodes ?? []).filter(node => node.pending);
+  const gatewayPending = install.kind === "changed" || install.kind === "not_installed";
   return (
-    <Section
-      title="待安装的改动"
-      extra={
-        <Button size="small" icon={<ReloadOutlined />} loading={diff.loading} onClick={() => void diff.reload()}>
-          重新比较
-        </Button>
-      }
-    >
-      <Note>{"存储的拓扑编译出的文件与上一次应用的版本逐文件比较。"}{" "}密钥只以占位符出现，真实私钥只在写入宿主时注入。</Note>
-      {install.kind === "changed" && install.appliedOnly ? (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message={`改动已写入数据目录，但网关上运行的仍是 v${install.version ?? "?"}`}
-          description="逐行差分只和上一次「应用」的版本比，那一份已经包含这些改动，所以逐行看没有变化。下面列出的是安装会让网关上哪些文件新增、修改或删除（按已安装清单里的文件哈希比较）；这种情况下看不到逐行内容。"
-        />
-      ) : null}
-      {install.kind === "unknown" ? (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="网关上的安装是从旧版本接管的，没有内容摘要，无法判断是否与当前拓扑一致"
-          description={<Note>{"安装一次之后就能比较。"}</Note>}
-        />
-      ) : null}
-      <DataView state={diff} rows={3}>
-        {(d) =>
-          files.length === 0 && install.kind === "changed" && d.installed && installedCount(d.installed) > 0 ? (
-            <InstalledChanges diff={d.installed} version={install.version} />
-          ) : files.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                install.kind === "not_installed"
-                  ? "和上一次应用的版本相比没有文件变化；网关上还什么都没装。"
-                  : install.kind === "in_sync"
-                    ? "没有待安装的改动，网关上的安装和存储的拓扑一致。"
-                    : "和上一次应用的版本相比没有文件变化。"
-              }
-            />
+    <>
+      <Section title="待安装的改动">
+        {pending.length ? (
+          <ul className="plain-list" data-testid="pending-deploy-nodes">
+            {pending.map(node => <li key={node.node_id}>
+              <strong>{node.node_name || node.node_id}</strong>{node.reason ? ` · ${node.reason}` : ""}
+            </li>)}
+          </ul>
+        ) : null}
+        {gatewayPending && !pending.some(node => node.role === "gateway") ? <div>网关等待安装</div> : null}
+        {!pending.length && !gatewayPending ? (
+          <Typography.Text type="secondary">
+            {install.kind === "in_sync" && status?.nodes ? "没有待安装的改动" : "暂无可确认的待安装节点"}
+          </Typography.Text>
+        ) : null}
+        {install.kind === "changed" && diff.data?.installed && installedCount(diff.data.installed) > 0 ? (
+          <InstalledChanges diff={diff.data.installed} version={install.version} />
+        ) : null}
+      </Section>
+      <Fold title="与上次应用快照比较" summary={diff.data ? `${files.length} 个文件` : undefined}
+        extra={<Button size="small" icon={<ReloadOutlined />} loading={diff.loading} onClick={() => void diff.reload()}>重新比较</Button>}>
+        <Typography.Text type="secondary">当前编译文件与上次应用快照的差异。各节点的待安装状态见上方。</Typography.Text>
+        <DataView state={diff} rows={3}>
+          {() => files.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="与上次应用快照相比没有文件变化" />
           ) : (
-            <div data-testid="pending-diff">
+            <div data-testid="applied-snapshot-diff">
               <Typography.Paragraph>
-                {files.length} 个文件 · {byNode.length} 个节点 <Note inline>安装只写网关本机的文件；远端节点的文件在下面「远端节点」里下发。</Note>
+                {files.length} 个文件 · {byNode.length} 个节点
               </Typography.Paragraph>
               <Collapse
                 size="small"
@@ -244,7 +230,6 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
                     <Space size={6} wrap>
                       <Typography.Text strong>{node ? nodeName(node) : "其他"}</Typography.Text>
                       {node ? <span className="mono-small muted">{node}</span> : null}
-                      {node === "gw" ? <span className="muted">本机安装</span> : node ? <span className="muted">远端下发</span> : null}
                       <Typography.Text type="secondary">{list.length} 个文件</Typography.Text>
                     </Space>
                   ),
@@ -272,8 +257,9 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
             </div>
           )
         }
-      </DataView>
-    </Section>
+        </DataView>
+      </Fold>
+    </>
   );
 }
 

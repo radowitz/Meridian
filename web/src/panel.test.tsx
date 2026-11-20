@@ -376,7 +376,7 @@ describe("cloudflare", () => {
     });
     renderAt("#/cloudflare");
     expect(await screen.findAllByText("路由已发布 · 数据面未验证")).not.toHaveLength(0);
-    expect(screen.getAllByText("未验证").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Mesh 数据面：未验证")).toBeNull();
     expect(document.body.textContent).not.toMatch(/Mesh\s*可用(?!；|。)/);
     expect(screen.getByText(FP_OLD)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: btn("撤回") })).toBeInTheDocument();

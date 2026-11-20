@@ -81,8 +81,8 @@
   },
   "nodes/hka/usr/local/sbin/meridian-failover.sh": {
     "from_sha256": "5cb1ec1516a4fe221c27193e92d121ba4dfcf74ca7bf858ae218f54429b51fef",
-    "to_sha256": "486786adf38336eadeeb7d1ed4e33a59dd805ac36896d37c5fe8ac7b392d6535",
-    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row"
+    "to_sha256": "4e1a0133d10a6eadac3bf0af4b0001dcb422a16f8389b60cbb1ca30087a9ad04",
+    "reason": "networkd incident (2026-11): meridian-up.sh writes /etc/systemd/networkd.conf.d/90-meridian.conf (ManageForeignRoutingPolicyRules=no, ManageForeignRoutes=no) where systemd-networkd exists, so a networkd restart (unattended systemd upgrade) no longer deletes Meridian's ip rules; the failover loop re-runs meridian-routes.sh when its first policy rule priority is missing on two checks in a row; v1.0.3: prefer Mesh at a 5% latency advantage over a zero-loss direct leg"
   },
   "nodes/hka/usr/local/sbin/meridian-up.sh": {
     "from_sha256": "f1523ebfb58e2090b410f06e99a9f690cad55dcda65a1cf03a4b82140766b45d",

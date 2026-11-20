@@ -9283,6 +9283,9 @@
     ],
     "policy": "automatic",
     "saved": false,
+    "schedule": {
+     "interval_hours": 0
+    },
     "sources": [
      {
       "chnroute_base": "https://cdn.jsdelivr.net/gh/gaoyifan/china-operator-ip@ip-lists",

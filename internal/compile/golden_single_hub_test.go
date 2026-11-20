@@ -28,7 +28,8 @@ import (
 // mesh_transport.go). That change must not reach a topology without Mesh
 // edges: TestNoMeshCompileUnchangedByMeshTransport pins the same examples
 // with their Mesh edges removed, and the four examples that never had one,
-// to the compiler from before it.
+// to the compiler from before it. The example hub failover digest also
+// records the v1.0.3 zero-loss Mesh latency threshold.
 func goldenDigest(b *Bundle) string {
 	var lines []string
 	for p, body := range b.Files {
@@ -98,7 +99,8 @@ func TestGoldenSingleHubUnchanged(t *testing.T) {
 	}
 }
 
-// preLogCompile pins the example topologies to what the compiler produced
+// preLogCompile pins the example topologies, with the v1.0.3 Mesh selector
+// update in the Mesh example, to what the compiler produced
 // before the three logs and the SOCKS credential version existed (commit
 // 4824a78, the last one before that work): one SHA-256 over the apply order
 // and the "<sha256> <path>" line of every file, computed there with
@@ -123,7 +125,7 @@ var preLogCompile = map[string][2]string{
 	// its gateway scripts carry the protected switch transaction (T2; QA:
 	// failed-fallback counters restored, a killed pass past its commit point finishes;
 	// docs/review-391aa50.md).
-	"example":       {"76dc1d4fcf87d11294041d8910e337892802302211b349fffb11f8235e9c5f19", "01245a5aae06e61fe9098ab3108327b62516e9336fcf412d172a17a2278da08e"},
+	"example":       {"64b6e37cc0fbd5ea789292d5032113b2a70c802fa14f16ad09a2cf99974c070a", "5a3c48c9453a63f84c5512095f830694013d3978b7e70d625fc09a542e1cf4b3"},
 	"dual_hub":      {"9c77a6cb7140c28ebd71c9bf2c22a23a701be5f4aa4117b0a14bc51779d20a3a", "446dc28f0a6826bc4f24d759e9dc24a2ab2f3144a92a9e872186fa48c2c9be32"},
 	"shared_relays": {"a074fb85055c0b1a12a35a40f9194a9c7d66f776e2857bea2fd79733d27fabc4", "04ef8a7cb655ed12542e122f2db0247049d93c4d7688f4215a2f8a04be5d0af9"},
 	"nested":        {"d8e97ec433e32d27091c72ceaf062ab57e5b78cee682ebd906157ed21b914bb1", "f6cf850a3f0b198a3441b9b4f23ad733ac864f51b66d30d2c24cb8b681a77e2b"},

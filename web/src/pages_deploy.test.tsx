@@ -66,7 +66,7 @@ describe("deploy", () => {
         }),
     });
     renderAt("#/deploy");
-    expect(await screen.findByTestId("pending-diff")).toHaveTextContent("1 个文件");
+    expect(await screen.findByTestId("applied-snapshot-diff")).toHaveTextContent("1 个文件");
     await userEvent.click(await screen.findByRole("button", { name: /安装到网关/ }));
     await confirmModal("安装");
     const failed = await screen.findByTestId("txn-failed");
