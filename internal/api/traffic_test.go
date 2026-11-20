@@ -102,3 +102,32 @@ func TestTrafficConnections(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 }
+
+func TestTrafficUsagePersistsAcrossPanelAndGatewayRestarts(t *testing.T) {
+	s := newTest(t)
+	stub := &stubTraffic{st: hostexec.TrafficStatus{BootID: "boot-one", Counters: []hostexec.TrafficCounter{
+		{Name: "traffic_up_domestic", Bytes: 100, Handle: 5},
+		{Name: "traffic_down_domestic", Bytes: 800, Handle: 6},
+		{Name: "traffic_up_foreign", Bytes: 200, Handle: 7},
+		{Name: "traffic_down_foreign", Bytes: 900, Handle: 8},
+	}}}
+	s.Traffic = stub
+	if got := getTrafficView(t, s).Usage; got["domestic"] != 900 || got["foreign"] != 1100 {
+		t.Fatalf("initial totals: %v", got)
+	}
+	stub.st.Counters[0].Bytes += 70
+	restarted := &Server{Store: s.Store, Traffic: stub}
+	if got := getTrafficView(t, restarted).Usage; got["domestic"] != 970 || got["foreign"] != 1100 {
+		t.Fatalf("after panel restart: %v", got)
+	}
+	stub.st.BootID = "boot-two"
+	stub.st.Counters[0].Bytes, stub.st.Counters[1].Bytes = 180, 40
+	stub.st.Counters[2].Bytes, stub.st.Counters[3].Bytes = 30, 50
+	if v := getTrafficView(t, restarted); !v.Reset || v.Usage["domestic"] != 1190 || v.Usage["foreign"] != 1180 {
+		t.Fatalf("after gateway reboot: %+v", v)
+	}
+	stub.err = hostexec.ErrUnavailable
+	if v := getTrafficView(t, restarted); v.Available || v.Usage["domestic"] != 1190 {
+		t.Fatalf("temporary read failure: %+v", v)
+	}
+}

@@ -84,7 +84,7 @@ describe("deployment guide", () => {
     const rows = within(plan).getAllByRole("row").slice(1);
     expect(rows.map((r) => r.getAttribute("data-testid"))).toEqual(["plan-step-twnat", "plan-step-dc1", "plan-step-gw"]);
     expect(plan).toHaveTextContent("挂在中继出口 dc1 后面");
-    expect(screen.getByTestId("deploy-limits")).toHaveTextContent("不是端到端验证");
+    expect(screen.queryByTestId("deploy-limits")).toBeNull();
     expect(screen.getByTestId("deploy-remote-access-note")).toHaveTextContent("远程接入");
     await userEvent.click(within(plan).getByText(/跳过的节点/));
     expect(await screen.findByTestId("deploy-skip-myext")).toHaveTextContent("不装机");

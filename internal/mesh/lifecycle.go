@@ -186,3 +186,88 @@ func sameHost(a, b HostPin) bool {
 	a.Name, b.Name = "", ""
 	return a == b
 }
+
+// RetireOffline completes a pending single-leg withdrawal when its last
+// managed host has permanently retired. It revokes only recorded ownership.
+func (d *Deployer) RetireOffline(ctx context.Context, link, node string) (*Journal, error) {
+	deployMu.Lock()
+	defer deployMu.Unlock()
+	j, err := d.Load()
+	if err != nil {
+		return nil, err
+	}
+	if j == nil || !j.Underlay || j.State != StateCompensationFailed || j.Baseline != nil || len(j.WithdrawLinks) != 1 || j.WithdrawLinks[0] != link || node == "" || j.existing(node) || j.keepHost(node) {
+		return j, ErrBusy
+	}
+	found := false
+	for _, leg := range j.Legs {
+		if leg.LinkID == link && (leg.HubID == node || leg.ExitID == node) {
+			found = true
+		}
+	}
+	if !found {
+		return j, ErrNothingToWithdraw
+	}
+	for _, r := range j.Routes {
+		if r.State != ResRemoved && !j.keepRoute(r) {
+			return j, fmt.Errorf("%w：仍有待撤回的路由", ErrBusy)
+		}
+	}
+	for _, rm := range j.Remotes {
+		if rm.NodeID != node && rm.State != ResRemoved && !j.existing(rm.NodeID) && !j.keepHost(rm.NodeID) {
+			return j, fmt.Errorf("%w：仍有其他主机待恢复", ErrBusy)
+		}
+	}
+	for _, n := range j.Nodes {
+		if n.NodeID != node && n.State != ResRemoved && !j.existing(n.NodeID) && !j.keepHost(n.NodeID) {
+			return j, fmt.Errorf("%w：仍有其他注册待撤回", ErrBusy)
+		}
+	}
+	owned := false
+	for _, n := range j.Nodes {
+		owned = owned || (n.NodeID == node && n.CFID != "")
+	}
+	if !owned {
+		return j, fmt.Errorf("%w：缺少该节点的 Cloudflare 注册 ID", ErrBusy)
+	}
+	if err := d.bindCloudflare(); err != nil {
+		return j, err
+	}
+	if j.AccountID == "" || j.AccountID != d.AccountID {
+		return j, ErrAccountMismatch
+	}
+	for i := range j.Nodes {
+		n := &j.Nodes[i]
+		if n.NodeID != node || n.State == ResRemoved {
+			continue
+		}
+		if err := d.removeNode(ctx, n); err != nil {
+			return j, &StageError{Stage: "offline_retire", Err: errors.New(d.red(err.Error())), Journal: j}
+		}
+		n.State, n.Error = ResRemoved, ""
+		if err := d.save(j); err != nil {
+			return j, err
+		}
+	}
+	for i := range j.Remotes {
+		rm := &j.Remotes[i]
+		if rm.NodeID == node && rm.State != ResRemoved {
+			rm.State = ResRemoved
+			rm.Error = "操作者确认永久退役；Cloudflare 注册已撤销，未登录主机清理本机文件"
+		}
+	}
+	for i := range j.Legs {
+		if j.Legs[i].LinkID == link {
+			j.Legs[i].State = StateWithdrawn
+		}
+	}
+	j.WithdrawLinks, j.CompErrors = nil, nil
+	j.State = StateWithdrawn
+	for _, leg := range j.Legs {
+		if leg.State != StateWithdrawn {
+			j.State = StatePublished
+			break
+		}
+	}
+	return j, d.save(j)
+}

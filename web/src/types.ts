@@ -1753,12 +1753,18 @@ export interface ListsJob {
   id: string;
   /** running | done | failed */
   state: "running" | "done" | "failed";
+  scheduled?: boolean;
   policy: ListsPolicy;
   lists: string[];
   started_at: string;
   finished_at?: string;
   report?: ListsReport;
   error?: string;
+}
+
+export interface ListsSchedule {
+  interval_hours: number;
+  next_at?: string;
 }
 
 export interface ListsView {
@@ -1771,6 +1777,7 @@ export interface ListsView {
   lists: { geosite: string[] | null; keywords: { id: string; keyword: string }[]; chnroute: string[] };
   host_available: boolean;
   job: ListsJob | null;
+  schedule?: ListsSchedule;
 }
 
 /** The host agent's automatic SmartDNS re-read after list changes. */
@@ -4275,7 +4282,9 @@ export interface TrafficView {
   read_at?: string;
   /** A counter went backwards or was replaced: this sample is a new baseline, not a rate. */
   reset: boolean;
+  counter_epoch?: number;
   counters: Partial<Record<TrafficKey, { bytes: number; packets: number }>>;
+  usage_bytes?: { domestic?: number; foreign?: number };
   missing?: string[];
   /** agent_unavailable | read_failed | not_installed */
   code?: string;

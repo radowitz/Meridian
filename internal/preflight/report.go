@@ -233,25 +233,26 @@ type Report struct {
 	WARPDeps []string `json:"warp_deps,omitempty"`
 	// RA6: interfaces with main-table IPv6 routes learned from router
 	// advertisements ("ra6 <iface> <accept_ra|-> <default|prefix>").
-	RA6          map[string]RAState `json:"ra6,omitempty"`
-	Sysctl       map[string]string
-	Links        []string             `json:"links"`
-	WGLinks      []string             `json:"wg_links"`
-	WGPorts      map[string]int       `json:"wg_ports"`
-	Addrs        []Addr               `json:"addrs"`
-	Routes       []Route              `json:"routes"`
-	Rules        []Rule               `json:"rules"`
-	RTNames      map[int]string       `json:"rt_names"`
-	TableRoutes  map[string]bool      `json:"table_routes"`  // table (as printed) → has routes
-	TableDefault map[string]bool      `json:"table_default"` // table → has a default route
-	Listeners    []Listener           `json:"listeners"`
-	NFTTables    []string             `json:"nft_tables"`
-	Chains       []Chain              `json:"chains"`
-	Units        map[string]UnitState `json:"units"`
-	NFTConf      string               `json:"nftables_conf,omitempty"` // flush | noflush | absent
-	Procs        map[string]bool      `json:"procs"`
-	Paths        map[string]PathInfo  `json:"paths"`
-	Versions     map[string]string    `json:"versions"`
+	RA6           map[string]RAState `json:"ra6,omitempty"`
+	Sysctl        map[string]string
+	Links         []string             `json:"links"`
+	WGLinks       []string             `json:"wg_links"`
+	WGPorts       map[string]int       `json:"wg_ports"`
+	Addrs         []Addr               `json:"addrs"`
+	Routes        []Route              `json:"routes"`
+	Rules         []Rule               `json:"rules"`
+	RTNames       map[int]string       `json:"rt_names"`
+	TableRoutes   map[string]bool      `json:"table_routes"` // table (as printed) → has routes
+	OldMeshReturn bool                 `json:"old_mesh_return,omitempty"`
+	TableDefault  map[string]bool      `json:"table_default"` // table → has a default route
+	Listeners     []Listener           `json:"listeners"`
+	NFTTables     []string             `json:"nft_tables"`
+	Chains        []Chain              `json:"chains"`
+	Units         map[string]UnitState `json:"units"`
+	NFTConf       string               `json:"nftables_conf,omitempty"` // flush | noflush | absent
+	Procs         map[string]bool      `json:"procs"`
+	Paths         map[string]PathInfo  `json:"paths"`
+	Versions      map[string]string    `json:"versions"`
 	// Packages: installed version and apt candidate of the packages the
 	// install may need ("pkg" lines; absent from older reports).
 	Packages   map[string]PkgState  `json:"packages,omitempty"`
@@ -511,6 +512,8 @@ func Parse(text string) Report {
 					r.RTNames[id] = f[1]
 				}
 			}
+		case "old_mesh_return":
+			r.OldMeshReturn = rest == "169"
 		case "rtable4", "rtable6":
 			if len(f) == 2 && validName(f[0]) && len(r.TableRoutes) < maxItems {
 				r.TableRoutes[f[0]] = true

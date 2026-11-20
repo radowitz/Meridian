@@ -272,6 +272,20 @@ meridian_preflight() {
     q ip -6 rule show | head -n 300 | sed 's/^/rule6 /'
     q ip -4 route show table all | awk '{t=""; for (i=1;i<NF;i++) if ($i=="table") t=$(i+1); if (t!="") print t, ($1=="default" ? "default" : "route")}' | sort -u | head -n 400 | sed 's/^/rtable4 /'
     q ip -6 route show table all | awk '{t=""; for (i=1;i<NF;i++) if ($i=="table") t=$(i+1); if (t!="") print t, ($1=="default" ? "default" : "route")}' | sort -u | head -n 400 | sed 's/^/rtable6 /'
+    # An old primary Mesh return path can leave just its fail-closed routes
+    # and selectors after the WireGuard interface is removed.
+    if mr4=$(q ip -4 route show table 169) && mr6=$(q ip -6 route show table 169) &&
+       mp4=$(q ip -N -4 rule show) && mp6=$(q ip -N -6 rule show) &&
+       [ "$(printf '%s' "$mr4" | sed 's/[[:space:]]*$//')" = 'blackhole default metric 32767' ] &&
+       [ "$(printf '%s' "$mr6" | sed 's/[[:space:]]*$//')" = 'blackhole default dev lo metric 32767 pref medium' ]; then
+      mesh_selector='^17062:[[:space:]]+from all fwmark 0x4d52 lookup 169$'
+      if [ "$(printf '%s\n' "$mp4" | grep -E '(^17062:|lookup 169([[:space:]]|$))' | grep -c .)" = 1 ] &&
+         [ "$(printf '%s\n' "$mp6" | grep -E '(^17062:|lookup 169([[:space:]]|$))' | grep -c .)" = 1 ] &&
+         printf '%s\n' "$mp4" | grep -Eq "$mesh_selector" &&
+         printf '%s\n' "$mp6" | grep -Eq "$mesh_selector"; then
+        echo 'old_mesh_return 169'
+      fi
+    fi
   fi
   # Interfaces whose IPv6 routes come from router advertisements, with
   # their accept_ra: with IPv6 forwarding on, accept_ra=1 stops RA.

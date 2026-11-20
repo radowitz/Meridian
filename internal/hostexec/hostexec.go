@@ -397,6 +397,7 @@ type Agent struct {
 	// rate limit after a list update (smartdns_reload.go); defaults 10s, 5m.
 	DNSReloadWindow, DNSReloadMinGap time.Duration
 	dnsReload                        dnsReloader
+	trafficConnections               trafficConnectionsCache
 
 	// PreflightRoot replaces "/" for the files the install pre-check, the
 	// upstream status read and the forwarder's self-check (its target file)

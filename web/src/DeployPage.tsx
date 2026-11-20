@@ -1479,7 +1479,7 @@ export default function DeployPage() {
   const { route } = useRouter();
   useEffect(() => {
     const sec = route.query.get("section");
-    if (sec === "remote" || sec === "deployments" || sec === "guide") {
+    if (sec === "remote" || sec === "deployments" || sec === "guide" || sec === "gateway-install") {
       const t = window.setTimeout(() => document.getElementById(sec)?.scrollIntoView?.({ behavior: "smooth" }), 200);
       return () => window.clearTimeout(t);
     }
@@ -1501,6 +1501,13 @@ export default function DeployPage() {
         </Button>
       }
     >
+      <nav className="section-jumps" aria-label="部署章节">
+        <Link to={href("deploy") + "?section=guide"}>部署向导</Link>
+        <Link to={href("deploy") + "?section=gateway-install"}>网关</Link>
+        <Link to={href("deploy") + "?section=remote"}>远端节点</Link>
+        <Link to={href("deploy") + "?section=deployments"}>部署记录</Link>
+        <Link to={href("cloudflare") + "?section=mesh"}>Mesh</Link>
+      </nav>
       {doc.dirty ? (
         <Alert
           type="warning"
@@ -1527,7 +1534,7 @@ export default function DeployPage() {
         />
       </ErrorBoundary>
       <ErrorBoundary>
-        <InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} />
+        <div id="gateway-install"><InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} /></div>
       </ErrorBoundary>
       <ErrorBoundary>
         <RemoteNodes nodes={remote} servers={servers.data?.servers} onWithdrawn={() => void deployments.reload()} />

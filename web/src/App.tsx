@@ -24,6 +24,7 @@ import {
   WifiOutlined,
   DesktopOutlined,
   PlayCircleOutlined,
+  SearchOutlined,
 } from "@ant-design/icons";
 import {
   App as AntApp,
@@ -198,6 +199,69 @@ function rawHash(r: Route) {
 }
 
 const ROUTES = new Map(NAV.flatMap((g) => g.routes).map((r) => [r.key, r]));
+const PAGE_SHORTCUTS = NAV.flatMap(group => group.routes.map(page => ({ page, group: group.label })));
+
+function PageSearch({ active }: { active: string }) {
+  const { navigate } = useRouter();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [cursor, setCursor] = useState(0);
+  const results = PAGE_SHORTCUTS.filter(({ page, group }) =>
+    `${page.label} ${page.key || "overview"} ${group ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const show = useCallback(() => {
+    setQuery("");
+    setCursor(0);
+    setOpen(true);
+  }, []);
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (!event.repeat) show();
+      }
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  }, [show]);
+  const go = (key: string) => {
+    setOpen(false);
+    navigate(href(key));
+  };
+  return <>
+    <Button className="page-search-trigger" icon={<SearchOutlined />} aria-label="快速跳转" onClick={show}>
+      <span className="page-search-label">快速跳转</span><kbd>⌘/Ctrl K</kbd>
+    </Button>
+    <Modal open={open} title="快速跳转" onCancel={() => setOpen(false)} footer={null} width={520} destroyOnHidden
+      afterOpenChange={visible => { if (visible) document.getElementById("meridian-page-search")?.focus(); }}>
+      <Input id="meridian-page-search" prefix={<SearchOutlined />} value={query} aria-label="搜索页面"
+        placeholder="搜索页面，例如出口、部署"
+        onChange={event => { setQuery(event.target.value); setCursor(0); }}
+        onKeyDown={event => {
+          if (!results.length) return;
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            const delta = event.key === "ArrowDown" ? 1 : -1;
+            const index = (cursor + delta + results.length) % results.length;
+            setCursor(index);
+            document.getElementById(`page-search-result-${index}`)?.scrollIntoView?.({ block: "nearest" });
+          } else if (event.key === "Enter") {
+            event.preventDefault();
+            go(results[cursor].page.key);
+          }
+        }} />
+      <ul className="page-search-results">
+        {results.map(({ page, group }, index) => <li key={page.key}>
+          <button id={`page-search-result-${index}`} type="button" className={index === cursor ? "page-search-selected" : undefined}
+            aria-current={page.key === active ? "page" : undefined} onClick={() => go(page.key)}>
+            {page.icon}<span>{page.label}</span><small>{group}</small>
+          </button>
+        </li>)}
+      </ul>
+      {results.length === 0 ? <Typography.Text type="secondary">没有匹配的页面</Typography.Text> : null}
+    </Modal>
+  </>;
+}
 
 /** Removed pages: their old addresses open the overview (service groups: the rules, which now target region groups). */
 export const REDIRECTS: Record<string, string> = { leak: "", acceptance: "", "service-groups": "rules" };
@@ -723,10 +787,10 @@ function Shell({ themePref, setThemePref }: { themePref: ThemePref; setThemePref
   );
 
   const brand = (
-    <div className="brand">
-      <span className="brand-mark">M</span>
+    <a className="brand" href={href("")} aria-label="Meridian 首页" onClick={event => { event.preventDefault(); navigate(href("")); setDrawer(false); }}>
+      <span className="brand-mark" aria-hidden="true">M</span>
       {!collapsed || !wide ? <span className="brand-name">Meridian</span> : null}
-    </div>
+    </a>
   );
 
   return (
@@ -755,6 +819,7 @@ function Shell({ themePref, setThemePref }: { themePref: ThemePref; setThemePref
           </div>
           <div className="topbar-right">
             <PendingInstallIndicator compact={!wide} />
+            <PageSearch active={route.page} />
             <Tooltip title="使用说明">
               <Button
                 type="text"

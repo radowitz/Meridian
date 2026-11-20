@@ -1,7 +1,7 @@
 import { Button, Space, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
-import { ApiErrorAlert, Note, Section, TimeText, useApi } from "./ui";
+import { ApiErrorAlert, Fold, Note, TimeText, useApi } from "./ui";
 
 export interface ExitLatencyRow {
  exit_id: string; name: string; scope: "exit_resolver" | "carrier_resolver";
@@ -43,7 +43,7 @@ export function ExitLatencyPanel({onData}:{onData?:(rows:ExitLatencyRow[])=>void
   const id=setInterval(()=>{if(!document.hidden && !busy)void view.reload();},60_000);
   return ()=>clearInterval(id);
  },[busy,view.reload]);
- return <Section title="网关 → 各出口延迟" extra={<Button size="small" loading={busy} disabled={view.data?.available===false} onClick={()=>void refresh()}>测量延迟</Button>}>
+ return <Fold title="网关 → 各出口延迟" extra={<Button size="small" loading={busy} disabled={view.data?.available===false} onClick={()=>void refresh()}>测量延迟</Button>}>
   <Note mode="popover" label="延迟测量说明">从本地网关经当前隧道到出口解析服务的 TCP 握手往返时间，每轮最多 3 次取平均；不含上游 DNS 查询或网站响应时间。只测连通性，不参与自动切换。</Note>
   <ApiErrorAlert error={error ?? view.error} />
   {view.data?.available===false?<Typography.Text type="secondary">需升级宿主代理以测量延迟。</Typography.Text>:null}
@@ -62,5 +62,5 @@ export function ExitLatencyPanel({onData}:{onData?:(rows:ExitLatencyRow[])=>void
    })}
   </div>
   {!view.data && !view.error?<Space>读取中…</Space>:null}
- </Section>;
+ </Fold>;
 }

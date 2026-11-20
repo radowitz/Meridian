@@ -2,8 +2,11 @@ package mesh_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -370,5 +373,42 @@ func TestDeploymentCancellationUsesIndependentRecoveryContext(t *testing.T) {
 	j, err := d.Deploy(ctx, legSubset(meshPlan(t), 1))
 	if err == nil || !wrapped.restoredWithLiveContext || j.State != mesh.StateFailed || len(cf.nodes) != 0 || len(cf.routes) != 0 {
 		t.Fatalf("cancel recovery: %+v %v live=%v", j, err, wrapped.restoredWithLiveContext)
+	}
+}
+
+func TestRetireOfflinePreservesSharedHosts(t *testing.T) {
+	d, cf, rem := lifecycleDeployer(t)
+	const link = "ix-us7-mesh"
+	j := mesh.Journal{
+		Underlay: true, AccountID: d.AccountID, State: mesh.StateCompensationFailed,
+		WithdrawLinks: []string{link}, Existing: []string{"us7"},
+		Legs: []mesh.LegRecord{
+			{LegPlan: mesh.LegPlan{LinkID: link, HubID: "ix", ExitID: "us7"}, State: mesh.StatePublished},
+			{LegPlan: mesh.LegPlan{LinkID: "hk5-us7-mesh", HubID: "hk5", ExitID: "us7"}, State: mesh.StatePublished},
+		},
+		Nodes:   []mesh.OwnedNode{{NodeID: "ix", CFID: "old", State: mesh.ResCreated}, {NodeID: "hk5", CFID: "shared", State: mesh.ResCreated}},
+		Remotes: []mesh.OwnedRemote{{NodeID: "ix", State: mesh.ResCreated}, {NodeID: "hk5", State: mesh.ResCreated}},
+	}
+	cf.nodes["old"] = mesh.CFNode{ID: "old"}
+	cf.nodes["shared"] = mesh.CFNode{ID: "shared"}
+	b, err := json.Marshal(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(d.Dir, "deploy.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RetireOffline(context.Background(), link, "us7"); err == nil {
+		t.Fatal("reused exit accepted")
+	}
+	out, err := d.RetireOffline(context.Background(), link, "ix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != mesh.StatePublished || len(out.WithdrawLinks) != 0 || out.Legs[0].State != mesh.StateWithdrawn || out.Legs[1].State != mesh.StatePublished || len(rem.calls) != 0 {
+		t.Fatalf("unexpected retirement: %+v, SSH calls %v", out, rem.calls)
+	}
+	if len(cf.nodes) != 1 || cf.nodes["shared"].ID != "shared" || !strings.Contains(out.Remotes[0].Error, "未登录") {
+		t.Fatalf("retirement did not preserve ownership and residual audit: %+v %+v", cf.nodes, out.Remotes)
 	}
 }

@@ -31,7 +31,6 @@ import {
   Link,
   Mono,
   Page,
-  SafetyNotice,
   Section,
   StatusTag,
   TimeText,
@@ -881,14 +880,7 @@ export function DNSConfigView() {
             </Help>
             {!v.check_available ? <Typography.Text type="warning">面板现在没有宿主代理，不能检查。</Typography.Text> : null}
           </Section>
-          <Section title="解析路径（编译结果）">
-            <SafetyNotice kind="unverified" title="哪些是实测，哪些未验证">
-              <ul style={{ margin: 0, paddingInlineStart: 18 }}>
-                {v.unverified.map((x, i) => (
-                  <li key={i}>{x}</li>
-                ))}
-              </ul>
-            </SafetyNotice>
+          <Fold title="解析路径（编译结果）" summary={`${v.paths.length} 条`}>
             <div className="dns-plan" data-testid="dns-plan">
               <div className="dns-plan-line dns-plan-head" aria-hidden="true">
                 <span>名字</span>
@@ -899,7 +891,7 @@ export function DNSConfigView() {
                 <PathRow key={`${p.scope}:${p.id ?? i}`} row={p} />
               ))}
             </div>
-          </Section>
+          </Fold>
           <Fold title="账户标识" summary={accts.length ? `${accts.length} 个` : "没有"}>
             <Accounts accounts={accts} reload={() => void accounts.reload()} />
           </Fold>

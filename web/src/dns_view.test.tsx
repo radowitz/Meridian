@@ -211,6 +211,9 @@ describe("resolution settings page: guidance", () => {
     );
     expect(screen.getByRole("heading", { level: 1, name: "解析设置" })).toBeInTheDocument();
     const st = await screen.findByTestId("dns-upstream-status");
+    const compiled = screen.getByRole("button", { name: "解析路径（编译结果）" });
+    expect(compiled).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("dns-plan")).not.toBeVisible();
     expect(screen.getByRole("heading", { name: "境外解析上游（例如 NextDNS）" })).toBeVisible();
     expect(within(screen.getByTestId("dns-overseas-path")).getAllByRole("listitem").map((x) => x.textContent)).toEqual(["设备", "网关 SmartDNS", "隧道", "出口 SmartDNS", "境外解析上游"]);
     expect(document.querySelector(".dns-overrides")).not.toHaveAttribute("open");

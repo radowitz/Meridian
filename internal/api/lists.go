@@ -26,7 +26,8 @@ type ListsRuntime interface {
 }
 
 const (
-	listsJobKey = "lists_last_job"
+	listsJobKey      = "lists_last_job"
+	listsScheduleKey = "lists_schedule"
 
 	codeUpdateRunning   = "update_running"
 	codeHostUnavailable = "host_unavailable"
@@ -40,6 +41,7 @@ const (
 type listsJob struct {
 	ID         string        `json:"id"`
 	State      string        `json:"state"`
+	Scheduled  bool          `json:"scheduled,omitempty"`
 	Policy     lists.Policy  `json:"policy"`
 	Lists      []string      `json:"lists"`
 	StartedAt  time.Time     `json:"started_at"`
@@ -51,6 +53,7 @@ type listsJob struct {
 func (s *Server) registerLists(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/lists", s.getLists)
 	mux.HandleFunc("PUT /api/lists/policy", s.putListsPolicy)
+	mux.HandleFunc("PUT /api/lists/schedule", s.putListsSchedule)
 	mux.HandleFunc("POST /api/lists/update", s.postListsUpdate)
 	mux.HandleFunc("GET /api/lists/job", s.getListsJob)
 	mux.HandleFunc("GET /api/lists/status", s.getListsStatus)
@@ -90,6 +93,7 @@ func (s *Server) listsView(t model.Topology) map[string]any {
 		},
 		"host_available": s.Lists != nil,
 		"job":            s.currentListsJob(),
+		"schedule":       s.readListsSchedule(),
 	}
 }
 
@@ -179,16 +183,8 @@ func (s *Server) postListsUpdate(w http.ResponseWriter, r *http.Request) {
 	if len(kinds) == 0 {
 		kinds = []string{lists.KindGeosite, lists.KindChnroute}
 	}
-	req := hostexec.ListsRequest{RequestID: "lists-" + randHex(8), Policy: string(policy), Lists: kinds}
-	for _, k := range kinds {
-		if k == lists.KindGeosite {
-			req.Geosite = compile.GeositeNames(t)
-			req.Keywords = compile.KeywordSpecs(t)
-		}
-	}
-	// What remains is the topology's own names (too many categories, an
-	// invalid keyword in a draft): nothing the request can fix.
-	if err := hostexec.ValidateLists(req); err != nil {
+	req, err := prepareListsRequest(t, policy, kinds)
+	if err != nil {
 		writeListsErr(w, http.StatusUnprocessableEntity, codeInvalidLists, "", "拓扑里的名单无法提交给宿主："+err.Error())
 		return
 	}
@@ -199,12 +195,125 @@ func (s *Server) postListsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "名单更新已在进行", "code": codeUpdateRunning, "job": job})
 		return
 	}
-	job := &listsJob{ID: req.RequestID, State: "running", Policy: policy, Lists: kinds, StartedAt: time.Now().UTC()}
+	job := s.startListsJobLocked(req, false, time.Now().UTC())
+	s.listsMu.Unlock()
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+}
+
+func prepareListsRequest(t model.Topology, policy lists.Policy, kinds []string) (hostexec.ListsRequest, error) {
+	req := hostexec.ListsRequest{RequestID: "lists-" + randHex(8), Policy: string(policy), Lists: kinds}
+	for _, k := range kinds {
+		if k == lists.KindGeosite {
+			req.Geosite = compile.GeositeNames(t)
+			req.Keywords = compile.KeywordSpecs(t)
+		}
+	}
+	return req, hostexec.ValidateLists(req)
+}
+
+func (s *Server) startListsJobLocked(req hostexec.ListsRequest, scheduled bool, now time.Time) listsJob {
+	job := &listsJob{ID: req.RequestID, State: "running", Scheduled: scheduled, Policy: lists.Policy(req.Policy), Lists: req.Lists, StartedAt: now}
 	s.listsJob = job
 	snapshot := *job
-	s.listsMu.Unlock()
 	go s.runListsJob(job, req)
-	writeJSON(w, http.StatusAccepted, map[string]any{"job": snapshot})
+	return snapshot
+}
+
+type listsSchedule struct {
+	IntervalHours int        `json:"interval_hours"`
+	NextAt        *time.Time `json:"next_at,omitempty"`
+}
+
+func (s *Server) readListsSchedule() listsSchedule {
+	raw, ok, err := s.Store.Get(listsScheduleKey)
+	var schedule listsSchedule
+	if err != nil || !ok || json.Unmarshal([]byte(raw), &schedule) != nil {
+		return listsSchedule{}
+	}
+	return schedule
+}
+
+func (s *Server) saveListsSchedule(schedule listsSchedule) error {
+	raw, err := json.Marshal(schedule)
+	if err != nil {
+		return err
+	}
+	return s.Store.Put(listsScheduleKey, string(raw))
+}
+
+func (s *Server) putListsSchedule(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IntervalHours *int `json:"interval_hours"`
+	}
+	if err := decodeStrict(w, r, &body, []string{"interval_hours"}, nil, false); err != nil {
+		writeResErr(w, err)
+		return
+	}
+	if body.IntervalHours == nil || *body.IntervalHours < 0 || *body.IntervalHours > 168 {
+		writeListsErr(w, http.StatusUnprocessableEntity, codeInvalidField, "interval_hours", "更新间隔须为 1 至 168 小时，填 0 表示关闭")
+		return
+	}
+	s.listsMu.Lock()
+	schedule := s.readListsSchedule()
+	var err error
+	if schedule.IntervalHours != *body.IntervalHours {
+		schedule = listsSchedule{IntervalHours: *body.IntervalHours}
+		if schedule.IntervalHours > 0 {
+			next := time.Now().UTC().Add(time.Duration(schedule.IntervalHours) * time.Hour)
+			schedule.NextAt = &next
+		}
+		err = s.saveListsSchedule(schedule)
+	}
+	s.listsMu.Unlock()
+	if err != nil {
+		writeListsErr(w, http.StatusInternalServerError, "storage_error", "", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"schedule": schedule})
+}
+
+func (s *Server) RunListsScheduler(ctx context.Context) {
+	if s.Lists == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			s.runDueLists(time.Now().UTC())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) runDueLists(now time.Time) {
+	s.listsMu.Lock()
+	defer s.listsMu.Unlock()
+	schedule := s.readListsSchedule()
+	if schedule.IntervalHours <= 0 || schedule.NextAt == nil || now.Before(*schedule.NextAt) ||
+		(s.listsJob != nil && s.listsJob.State == "running") {
+		return
+	}
+	t, err := s.topology()
+	if err != nil {
+		return
+	}
+	req, err := prepareListsRequest(t, lists.Effective(t.Settings.ListSource), []string{lists.KindGeosite, lists.KindChnroute})
+	if err != nil {
+		return
+	}
+	next := now.Add(time.Duration(schedule.IntervalHours) * time.Hour)
+	schedule.NextAt = &next
+	if s.saveListsSchedule(schedule) == nil {
+		s.startListsJobLocked(req, true, now)
+	}
 }
 
 func (s *Server) runListsJob(job *listsJob, req hostexec.ListsRequest) {

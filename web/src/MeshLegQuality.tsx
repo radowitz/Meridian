@@ -1,7 +1,7 @@
-import { Button, Typography } from "antd";
+import { Button, Tag, Typography } from "antd";
 import { useState } from "react";
 import * as api from "./api";
-import type { Link, MeshLegReport, Topology } from "./types";
+import type { GroupHubState, Link, MeshLegReport, Topology } from "./types";
 import {
   ApiErrorAlert,
   Fold,
@@ -12,25 +12,74 @@ import {
 const LEG: Record<string, string> = { direct: "直连 WireGuard", mesh: "Mesh 上的 WireGuard", blackhole: "双腿不可用 · 黑洞" };
 const WHY: Record<string, string> = { stable: "保持", both_down: "双腿无响应", direct_down: "直连无响应", mesh_down: "Mesh 无响应", reachable: "恢复可达", quality: "Mesh 质量持续更好", direct_recovered: "直连持续达标且冷却结束", route_failed: "路由更新失败" };
 
+function MeshLegChoices({ report, events }: { report?: MeshLegReport; events: MeshLegReport[] }) {
+  const active = report?.result === "ok" ? report.active : undefined;
+  const lastSwitch = report?.switched && events.find(event =>
+    event.result === "ok" && event.active === active && event.switched === report.switched,
+  );
+  const reason = !report ? "暂无样本"
+    : report.result !== "ok" ? "切换失败"
+    : active === "blackhole" ? "两条链路均不可用"
+    : lastSwitch && report.reason === "stable" ? WHY[lastSwitch.reason]
+    : report.reason !== "stable" ? WHY[report.reason] : undefined;
+  return <>
+    {(["direct", "mesh"] as const).map(leg => {
+      const rtt = leg === "direct" ? report?.direct_rtt : report?.mesh_rtt;
+      const loss = leg === "direct" ? report?.direct_loss : report?.mesh_loss;
+      return <div key={leg} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 4, marginBlock: 2 }}>
+        {active === leg ? <Tag color="success">{leg === "direct" ? "直连" : "Mesh"} · 使用中</Tag>
+          : <Typography.Text type="secondary">{leg === "direct" ? "直连" : "Mesh"}</Typography.Text>}
+        {loss !== undefined ? <Tag color={loss === 1000 ? "error" : loss > 0 ? "warning" : "blue"} title="枢纽到出口的延迟与探测丢包">
+          {loss < 1000 && rtt !== undefined ? `${rtt} ms` : "—"} · 丢包 {loss / 10}%
+        </Tag> : null}
+        {active === leg && reason ? <Typography.Text type="secondary">{reason}</Typography.Text> : null}
+        {leg === "mesh" && (!active || active === "blackhole") && reason
+          ? <Typography.Text type="secondary">{` · ${reason}`}</Typography.Text> : null}
+      </div>;
+    })}
+  </>;
+}
+
+export function ExitMeshCarrier({ exit, topo, hubs, refresh }: {
+  exit: string;
+  topo: Topology;
+  hubs: GroupHubState[];
+  refresh: () => void;
+}) {
+  const peers = topo.nodes.filter(node => node.role === "hub" && topo.links.some(link =>
+    link.enabled && link.transport === "cf_mesh" &&
+    ((link.from === node.id && link.to === exit) || (link.from === exit && link.to === node.id)),
+  ));
+  if (!peers.length) return null;
+  return <div className="state-line" data-testid={`exit-mesh-${exit}`}>
+    {peers.map(peer => {
+      const hub = hubs.find(h => h.hub_node === peer.id);
+      const reports = hub?.mesh_legs ?? [];
+      const current = reports.find(r => r.exit === exit && !r.event);
+      return <div key={peer.id}>
+        <strong>{peer.name || peer.id}{hub?.carrying ? "（承载中）" : ""}</strong>
+        <MeshLegChoices report={current} events={reports.filter(r => r.exit === exit && r.event)} />
+      </div>;
+    })}
+    <Button type="link" size="small" onClick={refresh}>刷新 Mesh 状态</Button>
+  </div>;
+}
+
 /** The source is the hub's fixed read, not a panel simulation. */
 /** ids are exit IDs, or "exit@hub" when both hubs have a Mesh leg to exits (a report then matches its hub). */
 export function MeshLegRows({ reports, ids, history = false, hubNames = {} }: { reports: MeshLegReport[]; ids: string[]; history?: boolean; hubNames?: Record<string, string> }) {
   const legOf = (id: string) => { const i = id.lastIndexOf("@"); return i < 0 ? { exit: id, hub: "" } : { exit: id.slice(0, i), hub: id.slice(i + 1) }; };
   const label = (exit: string, hub?: string) => hub ? `${exit} · 经 ${hubNames[hub] ?? hub}` : exit;
   const events = reports.filter((r) => r.event).sort((a, b) => b.beat - a.beat);
-  const row = (r: MeshLegReport) => <>
-    <strong>{r.result === "ok" ? LEG[r.active] ?? "未知" : "路由状态未知"}</strong> · {WHY[r.reason] ?? r.reason}
-    <div>直连：丢包 {r.direct_loss}‰ · {r.direct_rtt || "—"} ms；Mesh：丢包 {r.mesh_loss}‰ · {r.mesh_rtt || "—"} ms</div>
-    <Typography.Text type="secondary">{new Date(r.beat * 1000).toLocaleString()} · 枢纽测量{r.switched ? ` · 最近切换 ${new Date(r.switched * 1000).toLocaleString()}` : ""}{r.result !== "ok" ? " · 应用失败，需检查枢纽路由" : ""}</Typography.Text>
-  </>;
   return <div data-testid="mesh-leg-quality" style={{ overflowWrap: "anywhere" }}>
     {ids.map((id) => {
       const leg = legOf(id);
-      const r = reports.find((r) => r.exit === leg.exit && (!leg.hub || r.hub === leg.hub) && !r.event);
-      return <div key={id} style={{ padding: "8px 0" }}><div><strong>{label(leg.exit, leg.hub)}</strong></div>{r ? row(r) : "未知 · 尚未读取当前配置的有效双腿质量"}</div>;
+      const matching = reports.filter(r => r.exit === leg.exit && (!leg.hub || r.hub === leg.hub));
+      const r = matching.find(r => !r.event);
+      return <div key={id} style={{ padding: "8px 0" }}><div><strong>{label(leg.exit, leg.hub)}</strong></div><MeshLegChoices report={r} events={matching.filter(r => r.event)} /></div>;
     })}
     {history ? <details><summary>枢纽切换记录（每出口最近 32 条，重启后清空）</summary>
-      {events.length ? events.map((r, i) => <div key={`${r.exit}-${r.hub ?? ""}-${r.beat}-${i}`} style={{ padding: "8px 0" }}>{label(r.exit, r.hub)} · {row(r)}</div>) : <div>尚无有效切换记录</div>}
+      {events.length ? events.map((r, i) => <div key={`${r.exit}-${r.hub ?? ""}-${r.beat}-${i}`} style={{ padding: "8px 0" }}>{label(r.exit, r.hub)} · {r.result === "ok" ? LEG[r.active] : "切换失败"} · {WHY[r.reason]} · {new Date(r.beat * 1000).toLocaleString()}</div>) : <div>尚无有效切换记录</div>}
     </details> : null}
   </div>;
 }

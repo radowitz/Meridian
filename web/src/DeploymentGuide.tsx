@@ -1,3 +1,4 @@
+import { deployPendingNodes } from "./automatic_deploy";
 // The ordered deployment guide: deploys every node with pending changes in
 // dependency order (exits → hubs → relays → gateway), one node at a time,
 // each with its own preflight, review and confirmation. Every step is the
@@ -24,7 +25,6 @@ import {
   DataView,
   ExecNote,
   Link,
-  SafetyNotice,
   Section,
   StatusTag,
   TimeText,
@@ -118,30 +118,10 @@ function useCountdown(seconds: number | undefined, key: string): number {
   return left;
 }
 
-/** What "done" proves and what it does not; remote access is independent. */
+/** Remote access has its own configuration page. */
 function Limits({ limits }: { limits: DeployView["limits"] }) {
   return (
     <>
-      <div data-testid="deploy-limits">
-        <SafetyNotice kind="unverified" title="「已安装」「已采纳」都不是端到端验证">
-          <Note>{"「已安装」：本次安装成功、服务已启动、健康检查通过；「已采纳」：没有重新执行和检查。"}{" "}
-            <div>
-              <Typography.Text strong>能证明</Typography.Text>
-              <ul className="plain-list">
-                {(limits?.proves ?? []).map((t) => (
-                  <li key={t}>{t}</li>
-                ))}
-              </ul>
-              <Typography.Text strong>不能证明（要另外实际验证）</Typography.Text>
-              <ul className="plain-list">
-                {(limits?.does_not_prove ?? []).map((t) => (
-                  <li key={t}>{t}</li>
-                ))}
-              </ul>
-            </div>
-          </Note>
-        </SafetyNotice>
-      </div>
       <Note testId="deploy-remote-access-note">
         {(limits?.independent ?? []).join("。")}。远程接入在 <Link to={href("remote")}>远程接入</Link> 页管理。
       </Note>
@@ -848,9 +828,15 @@ export function DeploymentGuide({ onChanged, header }: { onChanged?: () => void;
     <Section title="按顺序部署待变更节点" id="guide">
       <div data-testid="deploy-guide">
         {header}
-        <Note>{"一台一台按顺序预检、确认、下发；每台都要你单独确认，不会一次确认全部。"}{" "}
+        <Note>{"可逐台确认，或启动自动检测并部署。"}{" "}
           顺序：挂在中继出口后面的出口 → 出口 → 备用枢纽 → 主枢纽 → 中继 → 网关；管理通道经过别的节点时，被经过的节点排在后面。每一步都是下面「远端节点」和「安装到本机」里的同一套预检和下发，只是按顺序串起来。只需核对、不会安装任何东西的节点单独列出，不受这个顺序约束。一台被预检阻断或连不上时，可以跳过它继续不依赖它的节点（同层的出口、其它中继）；依赖它的节点（它后面的枢纽、中继和网关，它转发的中继出口，经它管理的节点）继续等待。结果不明或失败的一步不能跳过，要先重新核对。
         </Note>
+        <Button disabled={!view || !!act.busy || inFlight} loading={act.busy === "auto"} onClick={() => confirm({
+          title: "自动预检并部署待变更节点？",
+          consequence: "按当前部署计划依次预检和下发，可能短暂中断相关路径。若预检阻断、拓扑变化或下发失败，将停在对应节点。",
+          okText: "开始自动部署",
+          onOk: () => act.run(() => deployPendingNodes(apply), "auto", () => void state.reload()),
+        })}>自动检测并部署</Button>
         <ApiErrorAlert error={act.error} onClose={act.clear} />
         <DataView state={state} rows={4}>
           {(v) => (

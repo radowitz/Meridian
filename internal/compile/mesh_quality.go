@@ -148,12 +148,13 @@ mesh_leg_step() {
  ok=du && dl<loss && dr<rtt && lastgood
  if(ok){if(!good)good=now}else good=0
  want=old;why="stable";ready=(!sw || now-sw>=dwell)
+ better=(dl==0 && ml==0) ? (mr<dr && mr*100<=dr*95) : ((mr+ml)*(100+adv)<(dr+dl)*100)
  if(!du && !mu){want="blackhole";why="both_down"}
  else if(old=="direct" && !du){want="mesh";why="direct_down"}
  else if(old=="mesh" && !mu && du){want="direct";why="mesh_down"}
  else if(old=="blackhole"){want=du?"direct":"mesh";why="reachable"}
- else if(old=="direct" && mu && NR>=win && ready && (mr+ml)*(100+adv)<(dr+dl)*100){want="mesh";why="quality"}
- else if(old=="mesh" && ok && NR>=win && good && now-good>=ret && ready && (dr+dl)*100<=(mr+ml)*(100+adv)){want="direct";why="direct_recovered"}
+ else if(old=="direct" && mu && NR>=win && ready && better){want="mesh";why="quality"}
+ else if(old=="mesh" && ok && NR>=win && good && now-good>=ret && ready && !better){want="direct";why="direct_recovered"}
  if(want!=old)sw=now
  print want,sw,good,why,dl,dr,ml,mr
  }' "$dir/window")

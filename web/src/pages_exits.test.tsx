@@ -1089,15 +1089,17 @@ describe("overview: first-time order and all region groups", () => {
 });
 
 describe("same-exit Mesh quality", () => {
-  it("shows actual leg, both quality readings, time and switch reason separately from unknown exits", () => {
+  it("highlights the selected leg and keeps missing samples and history distinct", () => {
     render(<MeshLegRows ids={["synthetic-us", "synthetic-jp"]} history reports={[
       { plan: "synthetic", exit: "synthetic-us", beat: 1800000000, active: "mesh", reason: "quality", switched: 1800000000, direct_loss: 200, direct_rtt: 420, mesh_loss: 0, mesh_rtt: 70, result: "ok" },
       { plan: "synthetic", exit: "synthetic-us", beat: 1799999990, active: "blackhole", reason: "both_down", switched: 1799999990, direct_loss: 1000, direct_rtt: 0, mesh_loss: 1000, mesh_rtt: 0, result: "ok", event: true },
     ]} />);
-    expect(screen.getByText("Mesh 上的 WireGuard")).toBeInTheDocument();
-    expect(screen.getByText(/直连：丢包 200‰/)).toHaveTextContent("Mesh：丢包 0‰ · 70 ms");
-    expect(screen.getByText(/尚未读取当前配置的有效双腿质量/)).toBeInTheDocument();
-    expect(screen.getByText("双腿不可用 · 黑洞")).toBeInTheDocument();
+    expect(screen.getByText("Mesh · 使用中")).toBeInTheDocument();
+    expect(screen.getByText("420 ms · 丢包 20%")).toBeInTheDocument();
+    expect(screen.getByText("70 ms · 丢包 0%")).toBeInTheDocument();
+    expect(screen.getByText("Mesh 质量持续更好")).toBeInTheDocument();
+    expect(screen.getByText(/暂无样本/)).toBeInTheDocument();
+    expect(screen.getByText(/双腿不可用 · 黑洞/)).toBeInTheDocument();
     expect(screen.getByText(/双腿无响应/)).toBeInTheDocument();
   });
 });

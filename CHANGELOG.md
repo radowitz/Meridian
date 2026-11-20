@@ -4,6 +4,15 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.3
+
+- 重写面板布局和常用操作，加入键盘快速跳转、出口筛选和部署章节导航。
+- 首页网速每秒更新，显示最近 60 秒曲线，持久保存国内和境外累计流量。
+- 出口显示直连与 Mesh 的当前选择、延迟、丢包和切换原因。双路零丢包时，Mesh 延迟低至少 5% 可触发质量切换。
+- 支持已永久退役节点的 Mesh 离线撤回，以及拓扑保存后的自动检测、预检和按序下发。
+- 预检可识别旧 Mesh 回程路由残留，自动部署可重试受阻的预检并复用仍有效的结果。
+- 名单支持定时更新，关键词无匹配单独展示。编译后的解析路径默认收起。
+
 ## v1.0.2
 
 - Exits page measures gateway-to-exit TCP handshake latency through the

@@ -2136,3 +2136,31 @@ func TestSpeedTestSocketOwnedBySystemd(t *testing.T) {
 		t.Fatal("a foreign process on 9277 was not reported")
 	}
 }
+
+func TestPrimaryMeshReturnTableResidue(t *testing.T) {
+	for _, tc := range []struct {
+		name, server, alias string
+		signature           bool
+		block               bool
+	}{
+		{name: "exact managed residue", server: "srv-test", signature: true},
+		{name: "foreign routes", server: "srv-test", block: true},
+		{name: "different server", server: "srv-other", signature: true, block: true},
+		{name: "externally named table", server: "srv-test", alias: "vpn", signature: true, block: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := eval{
+				r: Report{Complete: true, OldMeshReturn: tc.signature,
+					Manifest: &NodeManifest{Server: "srv-test"}, RTNames: map[int]string{169: tc.alias},
+					TableRoutes: map[string]bool{"169": true}},
+				fp:  Footprint{Tables: []int{169}, TableNames: map[int]string{169: "meridian_return_mesh"}},
+				ctx: Context{Server: tc.server},
+				out: Evaluation{Ownership: OwnSame},
+			}
+			e.routes()
+			if got := has(e.out, Blocking, CodeTableInUse); got != tc.block {
+				t.Fatalf("table blocking = %v, want %v, findings = %v", got, tc.block, e.out.Findings)
+			}
+		})
+	}
+}

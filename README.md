@@ -2,7 +2,7 @@
 
 许可：`AGPL-3.0-only`
 
-Meridian 是一台跑在家里局域网上的 WireGuard 策略路由网关，带一个网页面板。把设备的网关和 DNS 指向它之后：国内流量照常经家里的路由器直连；境外流量按规则和地区组，经你自己的服务器（可选国内中继、境外枢纽、IX 专线）从你选的出口出去；隧道不通时失败关闭，不会悄悄改走本地宽带。
+Meridian 是一台跑在家里局域网上的 WireGuard 策略路由网关，带一个网页面板。把设备的网关和 DNS 指向它之后：国内流量照常经家里的路由器直连；境外流量按规则和地区组，经你自己的服务器（可选国内中继、境外枢纽、专线）从你选的出口出去；隧道不通时失败关闭，不会悄悄改走本地宽带。
 
 不用 Fake-IP，也不需要在设备上装客户端。家里路由器和已有的其他代理网关都不用改，Meridian 与它们并行，哪台设备指过来才经过它。
 
@@ -10,7 +10,7 @@ Meridian 是一台跑在家里局域网上的 WireGuard 策略路由网关，带
 flowchart LR
   dev["局域网设备<br/>网关和 DNS 指向 Meridian"] --> gw["Meridian 网关<br/>Debian 13"]
   gw -->|"国内名单 / chnroute"| rt["家里路由器"] --> cn["国内互联网"]
-  gw -->|"WireGuard（UDP / WSS）"| mid["可选：国内中继 → 枢纽 / IX 专线"]
+  gw -->|"WireGuard（UDP / WSS）"| mid["可选：国内中继 → 枢纽 / 专线"]
   mid --> ex["境外出口（按地区分组）"]
   gw -.->|"直连出口模板"| ex
   ex --> net["境外互联网"]
@@ -25,7 +25,7 @@ flowchart LR
 | 直连出口 | 网关 → 出口 | 出口到家里的线路本身就够好 |
 | 单中继 | 网关 → 国内服务器（兼枢纽）→ 出口 | 需要一跳国内中转 |
 | 中继 + 枢纽 | 网关 → 中继 → 枢纽 → 出口，可选备用枢纽（网关经 WSS 直拨，或经一组备用中继） | 多出口、需要备用路径 |
-| IX 专线 | 网关 → 中继 → IX 专线（受管主枢纽）→ 出口，可选备用枢纽 | 有专线的情况 |
+| 专线 | 网关 → 中继 → 专线（受管主枢纽）→ 出口，可选备用枢纽 | 有专线的情况 |
 
 ## 能力与原理
 
@@ -42,9 +42,10 @@ flowchart LR
 - **按域名嗅探**（可选）：从 TLS SNI / HTTP `Host` 读名字再选去向，设备绕开网关 DNS 时也能按名字分流。
 - **防泄露**：DNS 劫持并拦截已知 DoH；隧道断开即黑洞，不落回本地宽带；走隧道的域名不返回 AAAA。
 - **传输与切换**：网关到中继有 UDP 与 WSS 两条腿；多中继按路径质量分担；备用枢纽在主链路端到端不通时接管；地区组自动按顺序切换。
-- **Cloudflare Mesh**（可选）：给枢纽到出口的腿多一条底层路径，出口不变。
+- **Cloudflare Mesh**（可选）：枢纽可在到同一出口的直连与 Mesh 之间切换。出口页显示当前承载链路、延迟、丢包和切换原因。
 - **解锁探测**：从指定出口探测平台，按地区推荐出口，确认后采用。见 [docs/unlock-methods.md](docs/unlock-methods.md)。
-- **观察与接入**：实时吞吐；连接、解析、链路日志（[docs/logging.md](docs/logging.md)）；远程 WireGuard 接入（[docs/remote-access.md](docs/remote-access.md)）。
+- **观察与接入**：每秒刷新网速，持久保存国内与境外累计流量；连接、解析、链路日志（[docs/logging.md](docs/logging.md)）；远程 WireGuard 接入（[docs/remote-access.md](docs/remote-access.md)）。
+- **运维**：名单可定时更新。保存拓扑后可启动自动检测、预检和按序下发，遇到阻断会暂停。
 - **安装安全**：只读预检、事务式安装与回滚、撤回；下发二进制的版本与 SHA-256 固定在 `internal/artifacts/artifacts.lock`。
 
 细节见 [架构](docs/architecture.md)。
@@ -54,14 +55,14 @@ flowchart LR
 在一台 Debian 13（amd64 / arm64）上，局域网口已有静态地址：
 
 ```sh
-git clone https://github.com/<owner>/meridian.git && cd meridian
-sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.2
+git clone https://github.com/radowitz/Meridian.git && cd meridian
+sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.3
 sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-code
 ```
 
 浏览器打开 `http://<网关局域网 IPv4>:8787`，用终端里的一次性初始化码创建管理员，然后按向导：网关 → 模板 → 服务器（确认指纹）→ 拓扑 → 预检 → 部署。完整步骤见 [docs/user/quickstart.md](docs/user/quickstart.md)。
 
-镜像发布在 `ghcr.io/radowitz/meridian`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
+[v1.0.3 发布说明](https://github.com/radowitz/Meridian/releases/tag/v1.0.3) · 镜像 `ghcr.io/radowitz/meridian:v1.0.3`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
 
 ## 文档
 
@@ -83,7 +84,7 @@ sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-co
 
 ## 验证程度
 
-代码有 Go 与面板的自动化回归，部分数据面有 Linux 网络命名空间测试；仓库里的 `docs/evidence/` 是早期版本的历史执行记录。**这一版的安装脚本、升级 / 回滚、管理防火墙、首次配置向导、四种模板和镜像工作流都还没有在真实主机和真实网络上完整跑过**。自动化测试只证明生成的配置符合预期，不证明没有泄漏；上线前请按[验收清单](docs/verification.md)在真实设备上签收。
+GitHub Actions 运行 Go 和面板回归测试，部分数据面还使用 Linux 网络命名空间测试。真实环境验收请使用 [验收清单](docs/verification.md)，核对自己的网关、出口和故障切换路径。
 
 ## 开发
 
@@ -103,9 +104,9 @@ Meridian 以 **AGPL-3.0-only**（SPDX: `AGPL-3.0-only`）发布，全文见 [LIC
 
 ## English
 
-Meridian is a WireGuard policy-routing gateway with a web panel for a home LAN. Point a device's gateway and DNS at it: domestic traffic goes direct through the home router; foreign traffic follows your rules and per-region exit groups through your own servers (optional domestic relay, hub or IX line) and fails closed when no tunnel is up. No Fake-IP, no client apps, and the existing router stays untouched.
+Meridian is a WireGuard policy-routing gateway with a web panel for a home LAN. Point a device's gateway and DNS at it: domestic traffic goes direct through the home router; foreign traffic follows your rules and per-region exit groups through your own servers (optional domestic relay, hub or dedicated line) and fails closed when no tunnel is up. No Fake-IP, no client apps, and the existing router stays untouched.
 
-**Topologies** (first-run wizard): direct exit, single relay, relay + hub, IX line. See [docs/user/topologies.md](docs/user/topologies.md).
+**Topologies** (first-run wizard): direct exit, single relay, relay + hub, dedicated line. See [docs/user/topologies.md](docs/user/topologies.md).
 
 **How it works**
 
@@ -115,10 +116,11 @@ Meridian is a WireGuard policy-routing gateway with a web panel for a home LAN. 
 - **Transport and failover**: UDP and WSS legs to relays; multiple relays weighted by path quality; standby hub takes over when the primary is unreachable end to end; region groups fail over in order.
 - **Cloudflare Mesh** (optional): an extra underlay for the hub-to-exit leg; the exit stays the same.
 - **Unlock probing**: probes platforms from a chosen exit and recommends exits per region. See [docs/unlock-methods.md](docs/unlock-methods.md).
-- **Observability and access**: live throughput; connection, DNS and link logs; remote WireGuard access.
+- **Observability and access**: one-second throughput, persisted domestic and foreign usage; connection, DNS and link logs; remote WireGuard access.
+- **Operations**: scheduled list refresh and guided automatic provisioning with preflight checks.
 - **Safe install**: read-only preflight, transactional install with rollback and withdrawal; shipped binaries pinned by SHA-256 in `internal/artifacts/artifacts.lock`.
 
-**Quick start**: on Debian 13, run `deploy/debian/install.sh --version v1.0.2`, get the one-time code with `meridian setup-code`, open `http://<gateway>:8787` and follow the wizard. See [docs/user/quickstart.md](docs/user/quickstart.md). Images: `ghcr.io/radowitz/meridian` (amd64/arm64); use `--build` or `--image-tar` if the gateway cannot reach ghcr.io. The installer, upgrade/rollback, wizard and templates have not been run end to end on real hosts.
+**Quick start**: on Debian 13, run `deploy/debian/install.sh --version v1.0.3`, get the one-time code with `meridian setup-code`, open `http://<gateway>:8787` and follow the wizard. See [docs/user/quickstart.md](docs/user/quickstart.md). Images: `ghcr.io/radowitz/meridian` (amd64/arm64); use `--build` or `--image-tar` if the gateway cannot reach ghcr.io.
 
 **Security**: the panel holds SSH credentials for every server; keep it on the LAN.
 

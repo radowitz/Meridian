@@ -47,6 +47,7 @@ describe("rule-set helpers", () => {
 
 describe("lists page rule-sets", () => {
   it("lists every set, updates one and all, polls the job to its end", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
     const running: RuleSetBulkJob = { id: "rs-1", state: "running", total: 2, done: 1, failed: [], skipped: [], started_at: iso(0) };
     let jobReads = 0;
     const api = fakeApi({

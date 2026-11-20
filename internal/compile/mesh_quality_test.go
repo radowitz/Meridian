@@ -48,7 +48,7 @@ echo "rtt min/avg/max/mdev = $rtt/$rtt/$rtt/0.0 ms"
 	p := *topo.Settings.PathQuality
 	var st pathquality.MeshLegState
 	samples := []struct{ at, drecv, drtt, mrecv, mrtt int }{
-		{100, 5, 300, 5, 20}, {105, 5, 300, 5, 20}, {110, 5, 20, 5, 20}, {115, 5, 20, 5, 20},
+		{100, 5, 160, 5, 152}, {105, 5, 160, 5, 152}, {110, 5, 20, 5, 20}, {115, 5, 20, 5, 20},
 		{120, 0, 0, 5, 20}, {125, 5, 20, 5, 20}, {130, 5, 20, 5, 20}, {135, 5, 20, 5, 20},
 		{140, 5, 20, 5, 20}, {141, 0, 0, 5, 20}, {142, 0, 0, 0, 0}, {143, 5, 20, 0, 0},
 	}
@@ -62,6 +62,9 @@ echo "rtt min/avg/max/mdev = $rtt/$rtt/$rtt/0.0 ms"
 			t.Fatalf("%d: %v %s", v.at, err, out)
 		}
 		st, _, _, _ = pathquality.StepMesh(p, st, pathquality.LegSample{Sent: 5, Recv: v.drecv, RTTus: int64(v.drtt) * 1000}, pathquality.LegSample{Sent: 5, Recv: v.mrecv, RTTus: int64(v.mrtt) * 1000}, int64(v.at))
+		if v.at == 105 && st.Active != "mesh" {
+			t.Fatalf("5%% lower RTT at zero loss should select Mesh, got %s", st.Active)
+		}
 		raw, err := os.ReadFile(filepath.Join(root, "run/exit-legs/synthetic/state"))
 		if err != nil {
 			t.Fatal(err)

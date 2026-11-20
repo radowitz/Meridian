@@ -92,8 +92,9 @@ describe("overview", () => {
       "GET /api/status": () => panelStatus({ installOver: { installed_version: 7 } }),
       "GET /api/topology": () => topology(),
       "GET /api/traffic": () =>
-        view(n++ * 2, { down_domestic: n * 1_000_000, down_foreign: n * 2_000_000, up_domestic: n, up_foreign: n }, {
+        view(n++, { down_domestic: n * 500_000, down_foreign: n * 1_000_000, up_domestic: n, up_foreign: n }, {
           connections: { available: true, scope: "lan_and_remote_access", split: true, domestic: 3, foreign: 5, redirected: 1, total: 9 },
+          usage_bytes: { domestic: 12_500_000_000, foreign: 1_250_000_000_000 },
         }),
       "GET /api/region-groups": () => ({
         groups: [group({ id: "g0", name: "组0", actual: actualOK("hk-2") })],
@@ -123,6 +124,8 @@ describe("overview", () => {
     await waitFor(() => expect(screen.getByTestId("traffic-chart")).toHaveAttribute("data-state", "live"), { timeout: 5000 });
     await waitFor(() => expect(screen.getByTestId("traffic-down-dom")).toHaveTextContent("4.00Mbit/s"), { timeout: 5000 });
     expect(screen.getByTestId("traffic-conn-total")).toHaveTextContent("9");
+    expect(screen.getByTestId("traffic-used-domestic")).toHaveTextContent("12.50 GB");
+    expect(screen.getByTestId("traffic-used-foreign")).toHaveTextContent("1.25 TB");
     expect(screen.getByTestId("traffic-freshness")).toHaveTextContent("实时");
 
     // Hidden page: polling stops and the chart says so.

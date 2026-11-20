@@ -1502,6 +1502,14 @@ func (e *eval) routes() {
 				"如果表 "+name+" 有别的服务在用，下面会单独报告；否则可以忽略。")
 		}
 		if tableHas(n) && !containsInt(e.own.Tables, n) {
+			if n == 169 && e.fp.TableNames[n] == "meridian_return_mesh" && e.r.OldMeshReturn &&
+				e.r.Complete && !e.ctx.Gateway && e.out.Ownership == OwnSame &&
+				e.ctx.Server != "" && e.r.Manifest.Server == e.ctx.Server && e.r.RTNames[n] == "" {
+				e.add(Info, "old_mesh_return", "169",
+					"检测到旧 Meridian Mesh 回程的黑洞路由和策略规则，将随本次下发接管。", "")
+				e.change("route", "replace", "table 169", e.fp.TableNames[n])
+				continue
+			}
 			e.add(Blocking, CodeTableInUse, strconv.Itoa(n),
 				fmt.Sprintf("路由表 %d 里已经有路由，而 Meridian 要独占这个表（会替换其中的默认路由并加黑洞兜底）。", n),
 				"确认是谁在用表 "+strconv.Itoa(n)+"（ip route show table "+strconv.Itoa(n)+"）；仍在使用就换服务器，遗留的就清空后重新预检。")

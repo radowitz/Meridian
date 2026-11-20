@@ -52,7 +52,6 @@ import {
   Mono,
   Page,
   RefusedDialog,
-  SafetyNotice,
   Section,
   StatusTag,
   TimeText,
@@ -760,9 +759,6 @@ export default function RemotePage() {
                 </Space>
               }
             >
-              <SafetyNotice kind="unverified" title="手机从外网连回：面板验证不了">
-                面板只能生成配置和读网关上的握手记录。路由器转发、运营商是否放行 UDP、DDNS 是否指向正确的地址，都要你用手机在外网实际连一次才算验证。
-              </SafetyNotice>
               {!v.settings.endpoint || !v.settings.listen_port ? (
                 <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="先在上面填写 Endpoint 和监听端口，才能添加设备。" />
               ) : null}

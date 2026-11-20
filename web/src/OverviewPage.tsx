@@ -364,8 +364,8 @@ export default function OverviewPage() {
         <LeakStatusLine />
       </div>
       {firstOpen === -1 ? null : <Section title="下一步">{nextSteps}</Section>}
-      <TrafficChart />
-      <div className="tile-grid">
+      <div className="overview-workspace">
+        <TrafficChart />
         <Tile title="出口" to={href("exits")}>
           <TileData state={groups}>
             {(d) =>
@@ -397,7 +397,8 @@ export default function OverviewPage() {
             }
           </TileData>
         </Tile>
-
+      </div>
+      <div className="tile-grid">
         {upstream.data?.sharing ? (
           <Tile title="国内中继" to={href("exits")}>
             <RelayCard s={upstream.data.sharing} />

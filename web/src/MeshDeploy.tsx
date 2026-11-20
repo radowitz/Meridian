@@ -155,7 +155,6 @@ function RunResult({ result, error }: { result: MeshRunResult | null; error: Api
       showIcon
       style={{ marginBottom: 16 }}
       message={result.journal?.state === "withdrawn" ? "已撤回" : st?.label ?? "完成"}
-      description={result.journal?.state === "published" ? "Cloudflare 路由已发布。Mesh 数据面仍是未验证：这不表示 Mesh 可用。" : undefined}
     />
   );
 }
@@ -169,7 +168,7 @@ function JournalView({ journal, status }: { journal: MeshJournal; status: MeshSt
       <Facts
         items={[
           ["运行", <Mono copy>{journal.run_id}</Mono>],
-          ["状态", <Space wrap><StatusTag kind={st.kind}>{st.label}</StatusTag><StatusTag kind="unverified">数据面未验证</StatusTag></Space>],
+          ["状态", <Space wrap><StatusTag kind={st.kind}>{st.label}</StatusTag></Space>],
           ["开始", <TimeText value={journal.started} />],
           ["更新", <TimeText value={journal.updated} />],
           ["绑定账户", <Space wrap><Mono copy>{journal.account_id}</Mono>{busy ? <Note inline>撤回完成前不能换账户，同一账户可以替换 token</Note> : null}</Space>],
@@ -272,14 +271,14 @@ export default function MeshDeploy({ accounts, onAccountsChanged }: { accounts: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
 
-  async function run(kind: "deploy" | "withdraw", linkID?: string, confirmInstall?: boolean) {
+  async function run(kind: "deploy" | "withdraw", linkID?: string, confirmInstall?: boolean, retiredNode?: string) {
     setRunning(kind);
     setResult(null);
     setError(null);
     try {
-      const r = kind === "deploy" ? await api.meshDeploy({ ...(failAfter ? { fail_after: failAfter } : {}), ...(confirmInstall ? { confirm_install: true } : {}) }) : await api.meshWithdraw(linkID);
+      const r = kind === "deploy" ? await api.meshDeploy({ ...(failAfter ? { fail_after: failAfter } : {}), ...(confirmInstall ? { confirm_install: true } : {}) }) : await api.meshWithdraw(linkID, retiredNode);
       setResult(r);
-      message.success(kind === "deploy" ? "路由已发布；数据面仍未验证" : "已撤回");
+      message.success(kind === "deploy" ? "路由已发布" : "已撤回");
     } catch (e) {
       setError(e as ApiError);
     } finally {
@@ -312,17 +311,18 @@ export default function MeshDeploy({ accounts, onAccountsChanged }: { accounts: 
           if (notReady.length > 0) blockers.push(`${notReady.length} 个节点的服务器还没就绪`);
           if (busy && (journal?.state !== "published" || !journal.underlay)) blockers.push("已有部署需要恢复或迁移：先撤回，再重新下发枢纽、出口与网关");
           if (journal?.state === "published" && journal.underlay && !(s.plan?.legs ?? []).some(l => !(journal.legs ?? []).some(old => old.link_id === l.link_id && old.state === "published"))) blockers.push("当前 Mesh 腿均已发布");
+          const pendingLink = journal?.withdraw_links?.length === 1 ? journal.withdraw_links[0] : undefined;
+          const pendingLeg = journal?.legs?.find(l => l.link_id === pendingLink);
+          const retiredCandidates = journal?.state === "compensation_failed" && pendingLeg
+            ? [pendingLeg.hub_id, pendingLeg.exit_id].filter(id =>
+                journal.remotes?.some(r => r.node_id === id && r.state !== "removed") &&
+                !journal.legs?.some(l => l.link_id !== pendingLink && l.state !== "withdrawn" && (l.hub_id === id || l.exit_id === id)))
+            : [];
           const st = journal ? JOURNAL_STATE[journal.state] ?? { kind: "neutral" as const, label: journal.state } : null;
           const ck = checkSummary(acct?.permission_check ?? acctView?.permission_check);
 
           return (
             <Space direction="vertical" size={16} style={{ width: "100%" }}>
-              <Alert
-                type="warning"
-                showIcon
-                message="Mesh 数据面：未验证"
-                description={s.dataplane_note}
-              />
               {legacySidecar ? <Alert type="warning" showIcon message="旧版 sidecar 部署：只能撤回，撤回后改为主机级节点" /> : null}
               <Facts
                 items={[
@@ -339,7 +339,6 @@ export default function MeshDeploy({ accounts, onAccountsChanged }: { accounts: 
                     ),
                   ],
                   ["部署状态", st ? <StatusTag kind={st.kind}>{st.label}</StatusTag> : <StatusTag kind="neutral">从未部署</StatusTag>],
-                  ["数据面", <StatusTag kind="unverified">未验证</StatusTag>],
                 ]}
               />
               {s.credentials_error ? <Alert type="error" showIcon message="读取 Mesh 账户出错" description={s.credentials_error} /> : null}
@@ -412,6 +411,14 @@ export default function MeshDeploy({ accounts, onAccountsChanged }: { accounts: 
                 >
                   部署
                 </Button>
+                {retiredCandidates.map(id => (
+                  <Button key={id} danger disabled={!!running} onClick={() => confirm({
+                    title: `确认 ${id} 已永久退役？`,
+                    consequence: "撤销面板为这台主机创建的 Cloudflare 注册。主机上的残留文件需在重新启用前清理。其他仍在使用的节点保留。",
+                    okText: "确认永久退役",
+                    onOk: () => { void run("withdraw", pendingLink, false, id); },
+                  })}>离线退役 {id}</Button>
+                ))}
                 {busy ? (
                   <Button
                     danger

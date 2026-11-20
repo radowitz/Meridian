@@ -1,5 +1,5 @@
 import { ExitLatencyPanel, ExitLatencyValue, type ExitLatencyRow } from "./ExitLatency";
-import { MeshLegQuality } from "./MeshLegQuality";
+import { ExitMeshCarrier, MeshLegQuality } from "./MeshLegQuality";
 // 出口: region groups are the main view of exits. A region (香港, 美国 …)
 // holds one or more groups; each group has an ordered member list, a mode
 // (自动 / 手动) and two live lines kept apart: 实际使用, only from the hub's
@@ -86,7 +86,6 @@ import {
   RefList,
   RefusedDialog,
   REGION_CODES,
-  SafetyNotice,
   Fold,
   PROBLEM,
   SplitStatus,
@@ -389,7 +388,7 @@ function GroupCard({
         {g.exclude_residential ? <span className="muted">排除住宅</span> : null}
         {g.require_v6 ? <span className="muted">要求 IPv6</span> : null}
         {g.mesh_backup ? (
-          <Tooltip title="所有 WireGuard 成员都不可用时，经 Cloudflare Mesh 备路出去（数据面未验证）">
+          <Tooltip title="所有 WireGuard 成员都不可用时，经 Cloudflare Mesh 备路出去">
             <span className="muted">Mesh 备路</span>
           </Tooltip>
         ) : null}
@@ -1510,7 +1509,6 @@ function ExitDrawer({
       {blocked ? <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={blocked} /> : null}
       {error ? <ApiErrorAlert error={error} onClose={() => setError(null)} /> : null}
       {error?.issues && error.issues.length > 0 ? <IssueList issues={error.issues} /> : null}
-      <SafetyNotice kind="unverified">动态域名端点、嵌套出口和外部 SOCKS 出口都还没有在真实设备上验证。</SafetyNotice>
       {external ? (
         <>
           <Note>
@@ -1695,9 +1693,13 @@ function ExitNodes({
   onEdit,
   onAddExternal,
   latencies,
+  meshHubs,
+  refreshMesh,
 }: {
   topo: Topology;
   latencies?: Map<string,ExitLatencyRow>;
+  meshHubs: GroupHubState[];
+  refreshMesh: () => void;
   socks: SOCKSCredentialView[] | undefined;
   /** Exits in no region group: listed first, each with 「加入组…」. */
   ungrouped: Set<string>;
@@ -1706,6 +1708,12 @@ function ExitNodes({
   onAddExternal: () => void;
 }) {
   const exits = topo.nodes.filter((n) => n.role === "exit");
+  const [query, setQuery] = useState("");
+  const [meshOnly, setMeshOnly] = useState(false);
+  const meshEndpoints = new Set(topo.links.filter(link => link.enabled && link.transport === "cf_mesh").flatMap(link => [link.from, link.to]));
+  const term = query.trim().toLowerCase();
+  const visible = exits.filter(n => (!meshOnly || meshEndpoints.has(n.id)) &&
+    (!term || `${n.name} ${n.id} ${regionLabel(n.region)}`.toLowerCase().includes(term)));
   const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
   const hasExternal = exits.some(isExternalExit);
   const row = (n: Node) => {
@@ -1722,6 +1730,7 @@ function ExitNodes({
             <ExitKindTags node={n} name={name} />
             <ExitLatencyValue row={latencies?.get(n.id)} />
           </Space>
+          <ExitMeshCarrier exit={n.id} topo={topo} hubs={meshHubs} refresh={refreshMesh} />
           {n.external ? (
             <div className="state-line">
               承载 {name(n.external.carrier)} · 接口 <Mono>{n.external.interface}</Mono> · 代理 <Mono>{`${n.external.socks_address}:${n.external.socks_port}`}</Mono> · 凭据{" "}
@@ -1744,8 +1753,8 @@ function ExitNodes({
       </div>
     );
   };
-  const loose = exits.filter((n) => ungrouped.has(n.id));
-  const rest = exits.filter((n) => !ungrouped.has(n.id));
+  const loose = visible.filter((n) => ungrouped.has(n.id));
+  const rest = visible.filter((n) => !ungrouped.has(n.id));
   return (
     <Fold
       title="出口节点"
@@ -1754,7 +1763,7 @@ function ExitNodes({
       summary={
         <span data-testid="exit-nodes-summary">
           {exits.length} 个出口
-          {loose.length > 0 ? <span> · {loose.length} 个不在任何组里</span> : null}
+          {ungrouped.size > 0 ? <span> · {ungrouped.size} 个不在任何组里</span> : null}
         </span>
       }
       extra={
@@ -1767,7 +1776,13 @@ function ExitNodes({
         {"受管出口可以填动态域名端点，或者经另一台中继出口到达（嵌套出口）；外部 SOCKS 出口经一台受管的承载出口转给已有的 SOCKS5 代理。不在任何组里的出口规则不能经组用到，只能被规则直接固定。保存直接写入拓扑，安装后生效。"}
       </Note>
       {hasExternal ? <ExternalLimits /> : null}
+      {exits.length > 0 ? <div className="exit-filter">
+        <Input allowClear value={query} placeholder="搜索名称、节点或地区" aria-label="搜索出口节点" onChange={event => setQuery(event.target.value)} />
+        {meshEndpoints.size > 0 ? <Checkbox checked={meshOnly} onChange={event => setMeshOnly(event.target.checked)}>仅 Mesh</Checkbox> : null}
+        {visible.length !== exits.length ? <span className="muted">{visible.length} / {exits.length}</span> : null}
+      </div> : null}
       {exits.length === 0 ? <Note>拓扑里还没有出口。</Note> : null}
+      {exits.length > 0 && visible.length === 0 ? <Typography.Text type="secondary">没有匹配的出口</Typography.Text> : null}
       {loose.length > 0 ? (
         <div className="ungrouped" data-testid="ungrouped">
           {loose.map(row)}
@@ -1943,8 +1958,6 @@ export default function ExitsPage() {
         </Button>
       }
     >
-      <ExitLatencyPanel onData={setLatencyRows} />
-      <MeshLegQuality topo={doc.topo} />
       {changed ? <ApplyRequiredNotice what="地区组已修改" /> : null}
       <ApiErrorAlert error={act.error} onClose={act.clear} />
       <ApiErrorAlert error={hubAct.error} onClose={hubAct.clear} />
@@ -1953,6 +1966,8 @@ export default function ExitsPage() {
       ) : (
         <HubStateBar hub={groups.data?.hub_state} onRefresh={refreshHub} refreshing={refreshing} />
       )}
+      <ExitLatencyPanel onData={setLatencyRows} />
+      <MeshLegQuality topo={doc.topo} history />
       {groups.data?.carrying?.sharing ? (
         <Fold title="国内中继分担" summary={<SharingSummary s={groups.data.carrying.sharing} />} testId="fold-sharing">
           <RelaySharingView s={groups.data.carrying.sharing} />
@@ -2025,6 +2040,8 @@ export default function ExitsPage() {
       {doc.topo ? (
         <ExitNodes
           latencies={latencies}
+          meshHubs={groups.data?.hub_states?.length ? groups.data.hub_states : groups.data?.hub_state ? [groups.data.hub_state] : []}
+          refreshMesh={refreshHub}
           topo={doc.topo}
           socks={socks.data?.credentials}
           ungrouped={new Set(groups.data ? ungrouped.map((n) => n.id) : [])}

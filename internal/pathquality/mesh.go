@@ -74,6 +74,10 @@ func StepMesh(p model.PathQuality, old MeshLegState, direct, mesh LegSample, now
 	}
 	want, reason := st.Active, "stable"
 	dwell := st.Switched == 0 || now-st.Switched >= int64(p.MinDwellSec)
+	meshBetter := (m.RTT+m.Loss)*(100+p.SwitchAdvantagePct) < (d.RTT+d.Loss)*100
+	if d.Loss == 0 && m.Loss == 0 {
+		meshBetter = m.RTT < d.RTT && m.RTT*100 <= d.RTT*95
+	}
 	switch {
 	case !d.Up && !m.Up:
 		want, reason = "blackhole", "both_down"
@@ -85,9 +89,9 @@ func StepMesh(p model.PathQuality, old MeshLegState, direct, mesh LegSample, now
 		want, reason = "direct", "reachable"
 	case st.Active == "blackhole" && m.Up:
 		want, reason = "mesh", "reachable"
-	case st.Active == "direct" && m.Up && len(st.Direct) >= MeshWindow(p) && dwell && (m.RTT+m.Loss)*(100+p.SwitchAdvantagePct) < (d.RTT+d.Loss)*100:
+	case st.Active == "direct" && m.Up && len(st.Direct) >= MeshWindow(p) && dwell && meshBetter:
 		want, reason = "mesh", "quality"
-	case st.Active == "mesh" && good && len(st.Direct) >= MeshWindow(p) && st.DirectGoodSince > 0 && now-st.DirectGoodSince >= int64(p.ReturnAfterSec) && dwell && (d.RTT+d.Loss)*100 <= (m.RTT+m.Loss)*(100+p.SwitchAdvantagePct):
+	case st.Active == "mesh" && good && len(st.Direct) >= MeshWindow(p) && st.DirectGoodSince > 0 && now-st.DirectGoodSince >= int64(p.ReturnAfterSec) && dwell && !meshBetter:
 		want, reason = "direct", "direct_recovered"
 	}
 	if want != st.Active {

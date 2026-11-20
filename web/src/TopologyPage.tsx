@@ -1,3 +1,4 @@
+import { deployTopology } from "./automatic_deploy";
 import { NodeHostMesh } from "./host_mesh";
 import { Help, Note } from "./ui";
 import { MeshLegQuality, linkCarrier, type HubLegReport } from "./MeshLegQuality";
@@ -1590,6 +1591,10 @@ export default function TopologyPage() {
   const doc = useTopologyDoc();
   const { route, navigate } = useRouter();
   const confirm = useConfirmDanger();
+  const [autoDeploying, setAutoDeploying] = useState(false);
+  const [autoDeployError, setAutoDeployError] = useState("");
+  const [autoDeployDone, setAutoDeployDone] = useState(false);
+
   const servers = useApi(() => api.listServers(), []);
   const [deleting, setDeleting] = useState<Node | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1657,6 +1662,26 @@ export default function TopologyPage() {
 
       extra={
         <Space wrap>
+          <Button disabled={doc.saving || autoDeploying} loading={autoDeploying} onClick={() => confirm({
+            title: "保存并自动部署当前拓扑？",
+            consequence: "检测 Mesh 节点，必要时从 Cloudflare 官方源安装并注册 Connector，再按部署计划预检并下发待变更节点。预检失败时暂停，相关路径可能短暂中断。请保持此页面打开。",
+            okText: "保存并部署",
+            onOk: async () => {
+              setAutoDeploying(true);
+              setAutoDeployError("");
+              setAutoDeployDone(false);
+              try {
+                const saved = doc.dirty ? await doc.save(false) : null;
+                if (saved === false) throw new Error("拓扑未保存");
+                await deployTopology((saved?.topology ?? topo).links.some(l => l.enabled && l.transport === "cf_mesh"));
+                setAutoDeployDone(true);
+              } catch (error) {
+                setAutoDeployError(error instanceof Error ? error.message : String(error));
+              } finally {
+                setAutoDeploying(false);
+              }
+            },
+          })}>{doc.dirty ? "保存并部署" : "自动检测并部署"}</Button>
           <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>
             网关设置
           </Button>
@@ -1679,6 +1704,9 @@ export default function TopologyPage() {
     >
       <MeshLegQuality topo={topo} />
       <TopologyDocBar />
+      {autoDeployError ? <Alert type="error" showIcon message="自动部署已暂停" description={autoDeployError} /> : null}
+      {autoDeployDone ? <Alert type="success" showIcon message="部署完成，实时连通性请在出口或 Cloudflare 页查看" /> : null}
+
       {needsIXHubMigrationNotice(topo) && !migrationDismissed ? (
         <Alert
           type="info"

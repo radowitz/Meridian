@@ -232,6 +232,8 @@ func main() {
 	// Subscribed rule-sets: fetched again when their interval elapsed
 	// (failure keeps the active version; a less exact version is held).
 	go srv.RunRuleSetScheduler(context.Background())
+	go srv.RunListsScheduler(context.Background())
+	srv.StartTrafficSampler(context.Background())
 	// At boot the LAN address may not exist yet (ifupdown allow-hotplug +
 	// DHCP; Docker starts the container before the lease). Wait for it,
 	// bounded and with one log line every 10 s, instead of crash-looping

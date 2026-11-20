@@ -1,4 +1,4 @@
-// Real-time throughput on the overview: polls GET /api/traffic every 2 s
+// Real-time throughput on the overview: polls GET /api/traffic every second
 // while the page is visible, turns consecutive counter samples into rates
 // (a reset sample is a new baseline, never a rate) and shows the current
 // download / upload rates (domestic / foreign) and active connections.
@@ -7,7 +7,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { TrafficConnections, TrafficKey, TrafficView } from "./types";
 
-export const POLL_MS = 2000;
+export const POLL_MS = 1000;
+const HISTORY_MS = 60_000;
 /** No successful sample for this long: the panel says 过期 instead of 实时. */
 export const STALE_MS = 3 * POLL_MS + 1000;
 
@@ -21,6 +22,7 @@ export interface RatePoint {
 
 export interface Sample {
   t: number;
+  epoch?: number;
   counters: TrafficView["counters"];
 }
 
@@ -28,7 +30,7 @@ export interface Sample {
 export function sampleOf(v: TrafficView): Sample | null {
   if (!v.available || !v.read_at) return null;
   const t = Date.parse(v.read_at);
-  return Number.isFinite(t) ? { t, counters: v.counters } : null;
+  return Number.isFinite(t) ? { t, epoch: v.counter_epoch, counters: v.counters } : null;
 }
 
 /**
@@ -38,7 +40,7 @@ export function sampleOf(v: TrafficView): Sample | null {
  */
 export function rateBetween(prev: Sample | null, cur: TrafficView): RatePoint | null {
   const s = sampleOf(cur);
-  if (!prev || !s || cur.reset) return null;
+  if (!prev || !s || cur.reset || prev.epoch !== s.epoch) return null;
   const dt = (s.t - prev.t) / 1000;
   if (dt <= 0) return null;
   const v = {} as RatePoint["v"];
@@ -129,6 +131,81 @@ export function TrafficStats({ rate, conns }: { rate: RatePoint | null | undefin
   );
 }
 
+type TrendPoint = { t: number; down: number | null; up: number | null };
+
+function TrafficTrend({ points }: { points: TrendPoint[] }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const max = Math.max(1_000, ...points.flatMap(p => [p.down ?? 0, p.up ?? 0]));
+  const magnitude = 10 ** Math.floor(Math.log10(max));
+  const step = (max / magnitude <= 2 ? 2 : max / magnitude <= 5 ? 5 : 10) * magnitude;
+  const latest = points[points.length - 1]?.t ?? 0;
+  useEffect(() => {
+    const el = canvas.current;
+    if (!el || typeof CanvasRenderingContext2D === "undefined") return;
+    const draw = () => {
+      const { width, height } = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      el.width = Math.round(width * dpr);
+      el.height = Math.round(height * dpr);
+      const ctx = el.getContext("2d");
+      if (!ctx || !width || !height) return;
+      ctx.scale(dpr, dpr);
+      const css = getComputedStyle(el);
+      for (const [key, color] of [["down", "--m-accent"], ["up", "--m-role-relay"]] as const) {
+        ctx.beginPath();
+        ctx.strokeStyle = css.getPropertyValue(color).trim();
+        ctx.lineWidth = 2;
+        ctx.lineJoin = "round";
+        let previousTime: number | undefined;
+        for (const point of points) {
+          const value = point[key];
+          if (value === null) {
+            previousTime = undefined;
+            continue;
+          }
+          const x = 2 + (width - 4) * (1 - (latest - point.t) / HISTORY_MS);
+          const y = height - 2 - (height - 4) * value / step;
+          if (previousTime === undefined || point.t - previousTime > 2.5 * POLL_MS) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+          previousTime = point.t;
+        }
+        ctx.stroke();
+      }
+    };
+    draw();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(draw);
+    observer?.observe(el);
+    return () => observer?.disconnect();
+  }, [points, latest, step]);
+
+  const top = fmtRate(step);
+  return <figure className="traffic-trend" aria-label="最近 60 秒上传和下载速率">
+    <div className="traffic-chart-grid">
+      <span className="traffic-axis-max">{top.n} {top.unit}</span>
+      <canvas ref={canvas} aria-hidden="true" />
+    </div>
+    <figcaption>
+      <span>60 秒前</span>
+      <span className="traffic-legend"><span className="traffic-down-key">下载</span><span className="traffic-up-key">上传</span></span>
+      <span>现在</span>
+    </figcaption>
+  </figure>;
+}
+
+export function fmtTrafficUsage(bytes: number | undefined) {
+  if (bytes === undefined || !Number.isFinite(bytes) || bytes < 0) return "—";
+  const [scale, unit] = bytes >= 1e12 ? [1e12, "TB"] : [1e9, "GB"];
+  return `${(bytes / scale).toFixed(2)} ${unit}`;
+}
+
+function TrafficUsage({ usage }: { usage: TrafficView["usage_bytes"] }) {
+  if (usage?.domestic === undefined && usage?.foreign === undefined) return null;
+  return <dl className="traffic-usage" aria-label="累计已用流量">
+    <div><dt>国内已用</dt><dd className="num" data-testid="traffic-used-domestic">{fmtTrafficUsage(usage?.domestic)}</dd></div>
+    <div><dt>国外已用</dt><dd className="num" data-testid="traffic-used-foreign">{fmtTrafficUsage(usage?.foreign)}</dd></div>
+  </dl>;
+}
+
 const QUIET: Record<string, string> = {
   not_installed: "网速：数据面还没装计数器",
   agent_unavailable: "网速：宿主通道不可用",
@@ -137,6 +214,8 @@ const QUIET: Record<string, string> = {
 
 export default function TrafficChart() {
   const [last, setLast] = useState<RatePoint | null>(null);
+  const [history, setHistory] = useState<RatePoint[]>([]);
+  const [usage, setUsage] = useState<TrafficView["usage_bytes"]>();
   const [conns, setConns] = useState<TrafficConnections | null>(null);
   const [down, setDown] = useState<{ code: string; message?: string } | null>(null);
   const [lastOk, setLastOk] = useState<number | null>(null);
@@ -155,29 +234,36 @@ export default function TrafficChart() {
     // After a pause the old baseline would average over the hidden time: start over.
     prev.current = null;
     setLast(null);
+    setHistory([]);
     let stop = false;
     // Freshness clock independent of requests: a hanging request still goes 过期 on time.
     const clockTimer = setInterval(() => setNow(Date.now()), 1000);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const ctl = new AbortController();
     const tick = async () => {
+      const startedAt = Date.now();
       try {
         const v = await api.getTraffic(ctl.signal);
         if (stop) return;
         const t = Date.now();
         setConns(v.connections ?? null);
+        if (v.usage_bytes) setUsage(v.usage_bytes);
         if (!v.available) {
           setDown({ code: v.code ?? "read_failed", message: v.message });
           prev.current = null;
           setLast(null);
+          setHistory([]);
           if (v.connections?.available) setLastOk(t);
         } else {
           setDown(null);
+          const sample = sampleOf(v);
+          if (sample && prev.current && sample.t === prev.current.t) return;
           const p = rateBetween(prev.current, v);
-          prev.current = sampleOf(v);
+          prev.current = sample;
           // Rates use the gateway's read_at; freshness uses this browser's clock (no skew).
           // No valid rate (reset, missing counters, first sample): show —, never an old rate.
           setLast(p);
+          setHistory(points => p ? [...points.filter(point => p.t - point.t <= HISTORY_MS).slice(-60), p] : []);
           setLastOk(t);
         }
         setNow(t);
@@ -187,9 +273,11 @@ export default function TrafficChart() {
         setConns(null);
         prev.current = null;
         setLast(null);
+        setHistory([]);
         setNow(Date.now());
+      } finally {
+        if (!stop) timer = setTimeout(() => void tick(), Math.max(0, POLL_MS - (Date.now() - startedAt)));
       }
-      if (!stop) timer = setTimeout(() => void tick(), POLL_MS);
     };
     void tick();
     return () => {
@@ -204,11 +292,16 @@ export default function TrafficChart() {
     return (
       <div className="traffic-quiet" data-testid="traffic-chart" data-state="unavailable" title={down.message}>
         {QUIET[down.code] ?? "网速：读不到"}
+        <TrafficUsage usage={usage} />
       </div>
     );
   }
   const f = freshness(lastOk, now, hidden);
   const cur = f === "live" ? last : null;
+  const trend = history.map(({ t, v }) => {
+    const total = (a: number | null, b: number | null) => a === null || b === null ? null : a + b;
+    return { t, down: total(v.down_domestic, v.down_foreign), up: total(v.up_domestic, v.up_foreign) };
+  });
   const status =
     f === "live" ? `实时 · ${clock(lastOk!)}` : f === "paused" ? "已暂停" : f === "stale" ? `过期 · 更新于 ${clock(lastOk!)}` : "等待数据";
   return (
@@ -220,6 +313,8 @@ export default function TrafficChart() {
           {down ? ` · ${QUIET[down.code] ?? "读不到"}` : ""}
         </span>
       </div>
+      {cur && trend.length > 1 && trend.some(point => point.down !== null || point.up !== null) ? <TrafficTrend points={trend} /> : null}
+      <TrafficUsage usage={usage} />
       <TrafficStats rate={cur} conns={f === "live" ? conns : null} />
     </section>
   );

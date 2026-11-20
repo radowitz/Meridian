@@ -453,9 +453,10 @@ func (s *Server) postMeshWithdraw(w http.ResponseWriter, r *http.Request) {
 	// is bound to. An optional link_id selects a recorded leg; no host,
 	// credential, command or route can be supplied by the request.
 	var body struct {
-		LinkID string `json:"link_id,omitempty"`
+		LinkID      string `json:"link_id,omitempty"`
+		RetiredNode string `json:"retired_node,omitempty"`
 	}
-	if err := decodeStrict(w, r, &body, []string{"link_id"}, append(append([]string{}, meshRemoved...), "fail_after", "account"), true); err != nil {
+	if err := decodeStrict(w, r, &body, []string{"link_id", "retired_node"}, append(append([]string{}, meshRemoved...), "fail_after", "account"), true); err != nil {
 		writeResErr(w, err)
 		return
 	}
@@ -469,7 +470,18 @@ func (s *Server) postMeshWithdraw(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var j *mesh.Journal
 	d := s.deployer(rem, red)
-	if body.LinkID != "" {
+	if body.RetiredNode != "" {
+		t, loadErr := s.topology()
+		if loadErr != nil {
+			writeErr(w, http.StatusInternalServerError, loadErr)
+			return
+		}
+		if _, exists := t.NodeByID(body.RetiredNode); exists {
+			writeErr(w, http.StatusConflict, errors.New("永久退役节点必须先从拓扑移除"))
+			return
+		}
+		j, err = d.RetireOffline(ctx, body.LinkID, body.RetiredNode)
+	} else if body.LinkID != "" {
 		j, err = d.WithdrawLeg(ctx, body.LinkID)
 	} else {
 		j, err = d.Withdraw(ctx)

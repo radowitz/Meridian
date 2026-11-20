@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,6 +37,7 @@ type TrafficCounter struct {
 // (table not installed yet, or an older ruleset without counters).
 type TrafficStatus struct {
 	ReadAt   string           `json:"read_at"`
+	BootID   string           `json:"boot_id,omitempty"`
 	Counters []TrafficCounter `json:"counters"`
 	Missing  []string         `json:"missing,omitempty"`
 	Error    string           `json:"error,omitempty"`
@@ -98,6 +102,9 @@ func (a *Agent) TrafficStatus(ctx context.Context) TrafficStatus {
 		return st
 	}
 	st.Counters, st.Missing = append(st.Counters, got...), missing
+	if id, err := os.ReadFile("/proc/sys/kernel/random/boot_id"); err == nil {
+		st.BootID = strings.TrimSpace(string(id))
+	}
 	return st
 }
 
@@ -114,9 +121,28 @@ func (a *Agent) serveTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := a.TrafficStatus(r.Context())
-	cc := a.ConnStatus(r.Context())
+	cc := a.cachedTrafficConnections(r.Context())
 	st.Connections = &cc
 	writeJSON(w, http.StatusOK, st)
+}
+
+type trafficConnectionsCache struct {
+	mu     sync.Mutex
+	at     time.Time
+	counts ConnCounts
+}
+
+// Connection counting scans conntrack. Reuse it for a few traffic samples
+// while byte counters are read at one-second resolution.
+func (a *Agent) cachedTrafficConnections(ctx context.Context) ConnCounts {
+	cache := &a.trafficConnections
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if time.Since(cache.at) >= 5*time.Second {
+		cache.counts = a.ConnStatus(ctx)
+		cache.at = time.Now()
+	}
+	return cache.counts
 }
 
 // TrafficStatus asks the agent for the traffic counters.

@@ -4,7 +4,8 @@
 // resolution settings are pinned by URL so a
 // regrouping of the menu can never drop them. Synthetic data only.
 
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NAV } from "./App";
 import { fakeApi, renderAt } from "./testing";
@@ -36,6 +37,17 @@ const PINNED: [string, string][] = [
 ];
 
 describe("navigation", () => {
+  it("finds a page by keyword and opens it from the keyboard", async () => {
+    fakeApi();
+    renderAt("#/");
+    await screen.findByRole("heading", { level: 1, name: "概览" });
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    const search = await screen.findByRole("textbox", { name: "搜索页面" });
+    await userEvent.type(search, "deploy{Enter}");
+    expect(await screen.findByRole("heading", { level: 1, name: "部署" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/deploy");
+  });
+
   it("the menu holds exactly the pinned routes, each once", () => {
     expect(ROUTES.map((r) => [r.key ? `#/${r.key}` : "#/", r.label]).sort()).toEqual([...PINNED].sort());
     expect(NAV.length).toBeLessThanOrEqual(5);

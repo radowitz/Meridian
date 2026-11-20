@@ -202,3 +202,44 @@ func TestListsUpdateJob(t *testing.T) {
 		}
 	}
 }
+
+func TestListsScheduleUsesSharedJob(t *testing.T) {
+	s := newTest(t)
+	runtime := &fakeLists{release: make(chan struct{})}
+	s.Lists = runtime
+	if rr := do(s, "PUT", "/api/lists/schedule", []byte(`{"interval_hours":169}`)); rr.Code != 422 {
+		t.Fatalf("invalid interval: %d %s", rr.Code, rr.Body)
+	}
+	if rr := do(s, "PUT", "/api/lists/schedule", []byte(`{"interval_hours":24}`)); rr.Code != 200 {
+		t.Fatalf("save: %d %s", rr.Code, rr.Body)
+	}
+	schedule := s.readListsSchedule()
+	if schedule.IntervalHours != 24 || schedule.NextAt == nil {
+		t.Fatalf("stored schedule: %+v", schedule)
+	}
+	s.runDueLists(schedule.NextAt.Add(-time.Second))
+	if s.currentListsJob() != nil {
+		t.Fatal("timer started ahead of schedule")
+	}
+	s.runDueLists(*schedule.NextAt)
+	job := s.currentListsJob()
+	if job == nil || !job.Scheduled || len(job.Lists) != 2 || job.State != "running" {
+		t.Fatalf("scheduled job: %+v", job)
+	}
+	if rr := do(s, "POST", "/api/lists/update", nil); rr.Code != 409 {
+		t.Fatalf("manual update overlapped scheduled job: %d %s", rr.Code, rr.Body)
+	}
+	next := s.readListsSchedule().NextAt
+	if next == nil || !next.Equal(schedule.NextAt.Add(24*time.Hour)) {
+		t.Fatalf("next run: %v", next)
+	}
+	close(runtime.release)
+	waitJob(t, s)
+	if rr := do(s, "PUT", "/api/lists/schedule", []byte(`{"interval_hours":0}`)); rr.Code != 200 {
+		t.Fatalf("disable: %d %s", rr.Code, rr.Body)
+	}
+	s.runDueLists(next.Add(24 * time.Hour))
+	if got := s.currentListsJob(); got.ID != job.ID {
+		t.Fatal("disabled schedule started another job")
+	}
+}

@@ -73,6 +73,7 @@ import type {
   ListKind,
   ListsHostStatus,
   ListsJob,
+  ListsSchedule,
   ListsPolicy,
   ListsView,
   MeshRunBody,
@@ -584,7 +585,7 @@ export const meshDetect = (node_id?: string) =>
   request<{ detections: HostMeshDetection[] }>("POST", "/api/mesh/detect", node_id ? { node_id } : {});
 export const meshDeploy = (body: MeshRunBody = {}) => request<MeshRunResult>("POST", "/api/mesh/deploy", body);
 /** Takes nothing: servers, credentials, host keys and the account come from the journal. */
-export const meshWithdraw = (link_id?: string) => request<MeshRunResult>("POST", "/api/mesh/withdraw", link_id ? { link_id } : {});
+export const meshWithdraw = (link_id?: string, retired_node?: string) => request<MeshRunResult>("POST", "/api/mesh/withdraw", link_id ? { link_id, retired_node } : {});
 
 /** Legacy single-account endpoints (act on the Mesh account). Prefer the account API. */
 export const putMeshCredentials = (accountId: string, apiToken: string) =>
@@ -598,6 +599,8 @@ export const deleteMeshCredentials = () => request<{ credentials: null }>("DELET
 
 export const getLists = () => request<ListsView>("GET", "/api/lists");
 export const setListsPolicy = (policy: ListsPolicy) => request<ListsView>("PUT", "/api/lists/policy", { policy });
+export const setListsSchedule = (hours: number) =>
+  request<{ schedule: ListsSchedule }>("PUT", "/api/lists/schedule", { interval_hours: hours });
 /** 202 with the started job; 409 update_running; 503 host_unavailable. */
 export const updateLists = (body: { lists?: ListKind[]; policy?: ListsPolicy } = {}) =>
   request<{ job: ListsJob }>("POST", "/api/lists/update", body);

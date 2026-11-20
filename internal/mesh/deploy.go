@@ -1050,7 +1050,7 @@ func (d *Deployer) stagePreflight(ctx context.Context, j *Journal, p Plan, rec *
 		if !n.Install {
 			if err := d.hostHealth(ctx, j, n, rec); err != nil {
 				rec.Detail = append(rec.Detail, n.ID+": "+d.red(err.Error()))
-				failed = append(failed, n.ID)
+				failed = append(failed, n.ID+": "+d.red(err.Error()))
 				continue
 			}
 		}
@@ -1063,11 +1063,22 @@ func (d *Deployer) stagePreflight(ctx context.Context, j *Journal, p Plan, rec *
 			act = ActConnectorPreflight
 		}
 		out, err := d.exec(ctx, j, n.ID, act, script)
+		var conflicts []string
 		for _, l := range ParseChecks(d.red(out)) {
 			rec.Detail = append(rec.Detail, n.ID+": "+l)
+			if reason, ok := strings.CutPrefix(l, "MESH_CONFLICT "); ok {
+				conflicts = append(conflicts, reason)
+			}
 		}
 		if err != nil || !strings.Contains(out, "MESH_PREFLIGHT_OK") {
-			failed = append(failed, n.ID)
+			reason := strings.Join(conflicts, "；")
+			if reason == "" && err != nil {
+				reason = d.red(err.Error())
+			}
+			if reason == "" {
+				reason = "远端没有返回预检通过标记"
+			}
+			failed = append(failed, n.ID+": "+reason)
 		}
 	}
 	if len(failed) > 0 {

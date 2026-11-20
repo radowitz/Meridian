@@ -4,13 +4,12 @@ import {
 } from "./ui";
 // 名单: where geosite / China IP lists are downloaded from, a manual update,
 // and per-list results (actual source, fallback, kept previous version).
-// There is no scheduler: lists change only when someone starts an update.
 // The resolution settings that used to be the last section of this page
 // have their own page (#/dns); the section stays as a short pointer, and
 // `#/lists/dns` / `#/lists?section=dns` scroll to it.
 
 import { CloudDownloadOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Space, Tooltip, Typography } from "antd";
+import { Alert, App as AntApp, Button, Select, Space, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import * as api from "./api";
 import ListsRuleSets from "./ListsRuleSets";
@@ -74,8 +73,13 @@ function resultStatus(r: ListResult): { kind: StatusKind; label: string } {
     const fellBack = (r.attempts ?? []).some((a) => !a.ok);
     return fellBack ? { kind: "ok", label: "已更新（换源后）" } : { kind: "ok", label: "已更新" };
   }
+  if (noKeywordMatch(r)) return { kind: "unverified", label: r.current ? "无匹配，保留上一版" : "无匹配" };
   if (r.kept && r.current) return { kind: "attention", label: "失败，保留上一版" };
   return { kind: "failed", label: "失败，没有可用版本" };
+}
+
+function noKeywordMatch(r: ListResult) {
+  return r.kind === "keyword" && !r.updated && !!r.error?.startsWith("no published geosite domain contains ");
 }
 
 function Attempts({ attempts }: { attempts: ListAttempt[] | undefined }) {
@@ -162,6 +166,9 @@ function ReportTable({ report }: { report: ListsReport }) {
 
 function JobView({ job }: { job: ListsJob }) {
   const rep = job.report;
+  const results = rep?.lists ?? [];
+  const unmatched = results.filter(noKeywordMatch).length;
+  const onlyUnmatched = unmatched > 0 && !job.error && !rep?.error && results.every(r => r.updated || noKeywordMatch(r));
   const head: { kind: StatusKind; label: string } =
     job.state === "running"
       ? { kind: "running", label: "更新中" }
@@ -169,16 +176,19 @@ function JobView({ job }: { job: ListsJob }) {
         ? { kind: "failed", label: "没有执行" }
         : rep?.ok
           ? { kind: "ok", label: "全部更新" }
+          : onlyUnmatched
+            ? { kind: "ok", label: "更新完成" }
           : rep?.partial
             ? { kind: "attention", label: "部分更新" }
             : { kind: "failed", label: "全部失败" };
-  const kept = (rep?.lists ?? []).filter((l) => !l.updated && l.kept && l.current).length;
+  const kept = results.filter(l => !l.updated && l.kept && l.current && !noKeywordMatch(l)).length;
   return (
     <Space direction="vertical" size={12} style={{ width: "100%" }} data-testid="lists-job">
       <Facts
         items={[
           ["状态", <StatusTag kind={head.kind}>{head.label}</StatusTag>],
           ["来源策略", POLICY[job.policy]?.title ?? job.policy],
+          ["触发方式", job.scheduled ? "定时" : "手动"],
           ["时间", <TimeText value={job.finished_at || job.started_at} />],
         ]}
       />
@@ -189,6 +199,7 @@ function JobView({ job }: { job: ListsJob }) {
       {kept > 0 ? (
         <Alert type="warning" showIcon message={`${kept} 个名单下载或校验失败，网关上继续使用上一版。`} />
       ) : null}
+      {unmatched > 0 ? <Typography.Text type="secondary">{unmatched} 个关键词在 geosite 中没有匹配域名。</Typography.Text> : null}
       {rep?.error ? <Alert type="error" showIcon message={rep.error} /> : null}
       {(rep?.warnings ?? []).map((w) => (
         <Alert key={w} type="warning" showIcon message={w} />
@@ -211,6 +222,14 @@ export default function ListsPage() {
   const { status, refresh: refreshStatus } = useStatus();
   const { route } = useRouter();
   const v = view.data;
+  const scheduled = (v?.schedule?.interval_hours ?? 0) > 0;
+  useEffect(() => {
+    if (!scheduled || job?.state === "running") return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void view.reload();
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [scheduled, job?.state, view.reload]);
   const wantsDNS = route.params[0] === "dns" || route.query.get("section") === "dns";
 
   // The old way in to the resolution settings: bring its pointer into view.
@@ -262,6 +281,7 @@ export default function ListsPage() {
         if (r.job) setJob(r.job);
         if (r.job && r.job.state !== "running") {
           void hostStatus.reload();
+          if (r.job.scheduled) void view.reload();
           refreshStatus();
           return;
         }
@@ -347,6 +367,25 @@ export default function ListsPage() {
                 }
               />
             ) : null}
+            <Section title="定时更新">
+              <Space wrap>
+                <Select
+                  aria-label="名单自动更新间隔"
+                  value={v.schedule?.interval_hours ?? 0}
+                  loading={act.busy === "schedule"}
+                  disabled={!!act.busy}
+                  options={[...new Set([0, 6, 12, 24, 48, 168, v.schedule?.interval_hours ?? 0])].sort((a, b) => a - b)
+                    .map(hours => ({ value: hours, label: hours ? `每 ${hours} 小时` : "关闭" }))}
+                  style={{ minWidth: 140 }}
+                  onChange={hours => void act.run(async () => {
+                    const { schedule } = await api.setListsSchedule(hours);
+                    view.setData({ ...v, schedule });
+                    message.success("定时更新设置已保存");
+                  }, "schedule")}
+                />
+                {v.schedule?.next_at ? <Typography.Text type="secondary">下次更新 <TimeText value={v.schedule.next_at} /></Typography.Text> : null}
+              </Space>
+            </Section>
             <Section title="下载来源">
               <div className="option-cards" role="radiogroup" aria-label="下载来源">
                 {(v.policies ?? (["automatic", "domestic", "overseas"] as ListsPolicy[])).map((p) => (

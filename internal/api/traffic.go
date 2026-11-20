@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/radowitz/meridian/internal/hostexec"
 )
@@ -45,12 +48,14 @@ type trafficView struct {
 	Available bool                     `json:"available"`
 	ReadAt    string                   `json:"read_at,omitempty"`
 	Reset     bool                     `json:"reset"`
+	Epoch     uint64                   `json:"counter_epoch,omitempty"`
 	Counters  map[string]trafficSample `json:"counters"`
 	Missing   []string                 `json:"missing,omitempty"`
 	Code      string                   `json:"code,omitempty"`
 	Message   string                   `json:"message,omitempty"`
 	// Connections is null when the agent is unreachable or too old to read them.
-	Connections *connView `json:"connections"`
+	Connections *connView         `json:"connections"`
+	Usage       map[string]uint64 `json:"usage_bytes,omitempty"`
 }
 
 type connView struct {
@@ -82,10 +87,105 @@ func connectionsView(c *hostexec.ConnCounts) *connView {
 	return v
 }
 
-// trafficLast is the previous sample served, for reset detection.
+const trafficUsageKey = "gateway_traffic_usage"
+
+type trafficUsageCounter struct {
+	Total  uint64
+	Sample hostexec.TrafficCounter
+	BootID string
+}
+
 type trafficLast struct {
-	mu   sync.Mutex
-	seen map[string]hostexec.TrafficCounter
+	mu       sync.Mutex
+	seen     map[string]hostexec.TrafficCounter
+	bootID   string
+	epoch    uint64
+	sampling bool
+	latest   trafficView
+	usage    map[string]trafficUsageCounter
+	savedAt  time.Time
+	dirty    bool
+}
+
+// StartTrafficSampler shares a single host probe among all dashboard tabs and
+// collects usage even when the dashboard is closed.
+func (s *Server) StartTrafficSampler(ctx context.Context) {
+	if s.Traffic == nil {
+		return
+	}
+	s.traffic.mu.Lock()
+	if s.traffic.sampling {
+		s.traffic.mu.Unlock()
+		return
+	}
+	s.traffic.sampling = true
+	s.traffic.latest = trafficView{Counters: map[string]trafficSample{}}
+	s.traffic.mu.Unlock()
+	go s.sampleTraffic(ctx)
+}
+
+func (s *Server) sampleTraffic(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		v := s.readTraffic(ctx)
+		s.traffic.mu.Lock()
+		s.traffic.latest = v
+		s.traffic.mu.Unlock()
+		select {
+		case <-ctx.Done():
+		case <-ticker.C:
+		}
+	}
+	s.traffic.mu.Lock()
+	s.saveTrafficUsage(time.Now(), true)
+	s.traffic.mu.Unlock()
+}
+
+func (s *Server) loadTrafficUsage() {
+	if s.traffic.usage != nil {
+		return
+	}
+	var usage map[string]trafficUsageCounter
+	if s.Store != nil {
+		if raw, ok, err := s.Store.Get(trafficUsageKey); err == nil && ok {
+			if err := json.Unmarshal([]byte(raw), &usage); err != nil {
+				log.Printf("load traffic usage: %v", err)
+			}
+		}
+	}
+	if usage == nil {
+		usage = make(map[string]trafficUsageCounter)
+	}
+	s.traffic.usage = usage
+}
+
+func (s *Server) saveTrafficUsage(now time.Time, checkpoint bool) {
+	if s.Store == nil || !s.traffic.dirty || (!checkpoint && now.Sub(s.traffic.savedAt) < 30*time.Second) {
+		return
+	}
+	s.traffic.savedAt = now
+	raw, err := json.Marshal(s.traffic.usage)
+	if err == nil {
+		err = s.Store.Put(trafficUsageKey, string(raw))
+	}
+	if err != nil {
+		log.Printf("save traffic usage: %v", err)
+		return
+	}
+	s.traffic.dirty = false
+}
+
+func (s *Server) trafficUsageView() map[string]uint64 {
+	usage := map[string]uint64{}
+	for _, region := range []string{"domestic", "foreign"} {
+		up, hasUp := s.traffic.usage["traffic_up_"+region]
+		down, hasDown := s.traffic.usage["traffic_down_"+region]
+		if hasUp && hasDown {
+			usage[region] = up.Total + down.Total
+		}
+	}
+	return usage
 }
 
 // trafficKey drops the "traffic_" prefix of the nft counter name.
@@ -98,13 +198,22 @@ func trafficKey(name string) string {
 }
 
 func (s *Server) getTraffic(w http.ResponseWriter, r *http.Request) {
+	s.traffic.mu.Lock()
+	sampling, v := s.traffic.sampling, s.traffic.latest
+	s.traffic.mu.Unlock()
+	if !sampling {
+		v = s.readTraffic(r.Context())
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (s *Server) readTraffic(ctx context.Context) trafficView {
 	v := trafficView{Counters: map[string]trafficSample{}}
 	if s.Traffic == nil {
 		v.Code, v.Message = "agent_unavailable", "没有配置 host agent，读不到流量计数"
-		writeJSON(w, http.StatusOK, v)
-		return
+		return v
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), statusAgentTimeout)
+	ctx, cancel := context.WithTimeout(ctx, statusAgentTimeout)
 	defer cancel()
 	st, err := s.Traffic.TrafficStatus(ctx)
 	v.ReadAt = st.ReadAt
@@ -119,29 +228,58 @@ func (s *Server) getTraffic(w http.ResponseWriter, r *http.Request) {
 	case st.Error != "":
 		v.Code, v.Message = "read_failed", st.Error
 	}
+	s.traffic.mu.Lock()
+	defer s.traffic.mu.Unlock()
+	s.loadTrafficUsage()
+	defer func() { s.saveTrafficUsage(time.Now(), v.Reset) }()
 	if v.Code != "" {
-		writeJSON(w, http.StatusOK, v)
-		return
+		v.Usage = s.trafficUsageView()
+		return v
 	}
 	for _, m := range st.Missing {
 		v.Missing = append(v.Missing, trafficKey(m))
 	}
 	if len(st.Counters) == 0 {
 		v.Code, v.Message = "not_installed", "网关还没有流量计数器（还没有按当前版本安装）"
-		writeJSON(w, http.StatusOK, v)
-		return
+		v.Usage = s.trafficUsageView()
+		return v
 	}
 	v.Available = true
-	s.traffic.mu.Lock()
+	bootChanged := st.BootID != "" && s.traffic.bootID != "" && st.BootID != s.traffic.bootID
+	v.Reset = bootChanged
 	next := make(map[string]hostexec.TrafficCounter, len(st.Counters))
 	for _, c := range st.Counters {
 		next[c.Name] = c
 		v.Counters[trafficKey(c.Name)] = trafficSample{Bytes: c.Bytes, Packets: c.Packets}
-		if p, ok := s.traffic.seen[c.Name]; ok && (p.Handle != c.Handle || c.Bytes < p.Bytes || c.Packets < p.Packets) {
+		if p, ok := s.traffic.seen[c.Name]; ok && counterReset(p, c) {
 			v.Reset = true
+		}
+		p, known := s.traffic.usage[c.Name]
+		delta := c.Bytes
+		if known && !counterReset(p.Sample, c) && (p.BootID == "" || st.BootID == "" || p.BootID == st.BootID) {
+			delta -= p.Sample.Bytes
+		}
+		if !known || p.Sample != c || (st.BootID != "" && p.BootID != st.BootID) {
+			bootID := p.BootID
+			if st.BootID != "" {
+				bootID = st.BootID
+			}
+			s.traffic.usage[c.Name] = trafficUsageCounter{Total: p.Total + delta, Sample: c, BootID: bootID}
+			s.traffic.dirty = true
 		}
 	}
 	s.traffic.seen = next
-	s.traffic.mu.Unlock()
-	writeJSON(w, http.StatusOK, v)
+	if v.Reset {
+		s.traffic.epoch++
+	}
+	v.Epoch = s.traffic.epoch
+	if st.BootID != "" {
+		s.traffic.bootID = st.BootID
+	}
+	v.Usage = s.trafficUsageView()
+	return v
+}
+
+func counterReset(p, c hostexec.TrafficCounter) bool {
+	return p.Handle != c.Handle || c.Bytes < p.Bytes || c.Packets < p.Packets
 }
