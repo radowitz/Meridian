@@ -208,7 +208,9 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
           </Typography.Text>
         ) : null}
         {install.kind === "changed" && diff.data?.installed && installedCount(diff.data.installed) > 0 ? (
-          <InstalledChanges diff={diff.data.installed} version={install.version} />
+          <Fold title="网关待安装文件" summary={`${installedCount(diff.data.installed)} 个文件`}>
+            <InstalledChanges diff={diff.data.installed} version={install.version} />
+          </Fold>
         ) : null}
       </Section>
       <Fold title="与上次应用快照比较" summary={diff.data ? `${files.length} 个文件` : undefined}
