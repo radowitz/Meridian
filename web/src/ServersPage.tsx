@@ -782,6 +782,7 @@ function ServerDetail({
   onEdit,
   onDelete,
   onCredCreated,
+  fromDeploy,
 }: {
   server: ServerView | undefined;
   servers: ServerView[];
@@ -791,6 +792,7 @@ function ServerDetail({
   onEdit: () => void;
   onDelete: () => void;
   onCredCreated: (c: SSHCredentialView) => void;
+  fromDeploy?: boolean;
 }) {
   const r = server ? serverReadiness(server) : null;
   return (
@@ -808,6 +810,7 @@ function ServerDetail({
       open={!!server}
       onClose={onClose}
       width={680}
+      footer={fromDeploy ? <Link to={href("deploy")}>返回部署</Link> : undefined}
       extra={
         server ? (
           <Space>
@@ -1049,6 +1052,7 @@ export default function ServersPage() {
       ) : null}
 
       <ServerDetail
+        fromDeploy={route.query.get("from") === "deploy"}
         server={selected}
         servers={servers.data?.servers ?? []}
         creds={credList}

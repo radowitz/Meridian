@@ -66,6 +66,7 @@ export const DEMO_ROUTES: DemoRoute[] = [
   R("POST", "/api/deploy/runs/:id/install", "refuse"),
   R("POST", "/api/deploy/runs/:id/verify", "refuse"),
   R("POST", "/api/deploy/runs/:id/replan", "refuse"),
+  R("POST", "/api/deploy/runs/:id/repair-wg-port", "refuse"),
   R("POST", "/api/deploy/runs/:id/cancel", "refuse"),
   R("POST", "/api/deploy/runs/:id/skip", "refuse"),
   R("POST", "/api/deploy/runs/:id/unskip", "refuse"),

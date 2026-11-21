@@ -482,6 +482,8 @@ export const deployInstall = (runId: string, nodeId: string, preflightId: string
 /** Verify one verify-only step (`nodeId`) or every one not done (`"all"`): read-only, one server at a time. */
 export const deployVerify = (runId: string, target: { nodeId: string } | "all") =>
   request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/verify`, target === "all" ? { all: true } : { node_id: target.nodeId });
+export const deployRepairWGPort = (runId: string, preflightId: string) =>
+  request<{ change: MTUChange }>("POST", `/api/deploy/runs/${enc(runId)}/repair-wg-port`, { preflight_id: preflightId });
 export const deployReplan = (runId: string) => request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/replan`, {});
 export const deployCancel = (runId: string) => request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/cancel`, {});
 /** Skips the current blocked / unreachable step for this run (it stays pending; nodes that depend on it wait). */
@@ -495,8 +497,8 @@ export const uplinkMTU = () => request<UplinkMTUView>("GET", "/api/mtu/uplinks")
  * Writes exactly the shown suggestions into the links' MTU field (compare-and-set on `from`).
  * Changes the stored topology only: nothing is deployed until the deploy page's own confirmation.
  */
-export const adoptUplinkMTU = (changes: MTUChange[]) =>
-  request<MTUAdoptResult>("POST", "/api/mtu/adopt", { changes: changes.map(({ link_id, field, from, to }) => ({ link_id, field, from, to })) });
+export const adoptUplinkMTU = (changes: MTUChange[], deployRun?: string) =>
+  request<MTUAdoptResult>("POST", "/api/mtu/adopt" + (deployRun ? `?deploy_run=${enc(deployRun)}` : ""), { changes: changes.map(({ link_id, field, from, to }) => ({ link_id, field, from, to })) });
 
 /** Read-only preflight of a remote node's server over the pinned SSH channel. */
 export const provisionPreflight = (nodeId: string) =>

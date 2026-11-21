@@ -1,3 +1,4 @@
+import { AutoDeployProvider } from "./AutoDeployProgress";
 // Application shell: theme, panel token gate, sidebar + top bar, hash routes.
 
 import {
@@ -892,7 +893,7 @@ export default function App() {
           <RouterProvider>
             <StatusProvider>
               <TopologyProvider>
-                <Shell themePref={themePref} setThemePref={setThemePref} />
+                <AutoDeployProvider><Shell themePref={themePref} setThemePref={setThemePref} /></AutoDeployProvider>
               </TopologyProvider>
             </StatusProvider>
           </RouterProvider>

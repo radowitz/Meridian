@@ -31,7 +31,7 @@ import {
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, isApiError } from "./api";
-import { useTopologyDoc, useUnsavedGuard } from "./state";
+import { useOptionalStatus, useTopologyDoc, useUnsavedGuard } from "./state";
 import type { Issue } from "./types";
 import {
   STATUS,
@@ -564,9 +564,10 @@ export function SecretField({
 export function useConfirmDanger() {
   const { modal } = AntApp.useApp();
   return useCallback(
-    (o: { title: ReactNode; consequence: ReactNode; okText?: string; danger?: boolean; onOk: () => unknown }) => {
+    (o: { title: ReactNode; consequence: ReactNode; okText?: string; danger?: boolean; mobileFull?: boolean; onOk: () => unknown }) => {
       modal.confirm({
         title: o.title,
+        rootClassName: o.mobileFull ? "mobile-full-confirm" : undefined,
         content: o.consequence,
         okText: o.okText ?? "确定",
         okButtonProps: { danger: o.danger ?? true },
@@ -718,17 +719,23 @@ export function IssueList({ issues }: { issues: Issue[] }) {
  * Save bar for pages that edit the whole topology document (topology,
  * rules, leak settings). Registers the unsaved-changes guard while dirty.
  */
-export function TopologyDocBar() {
+export function TopologyDocBar({ bottom = false, onDeploy, deploying }: {
+  bottom?: boolean; onDeploy?: () => void; deploying?: boolean;
+} = {}) {
   const doc = useTopologyDoc();
+  const status = useOptionalStatus();
+  const pending = status?.install.kind === "changed" || status?.status?.nodes?.some(node => node.pending);
   const act = useAction();
   const { message } = AntApp.useApp();
   useUnsavedGuard(doc.dirty, "拓扑有未保存的修改，离开后会丢失。");
   const errors = doc.issues.filter((i) => i.severity === "error");
   return (
-    <div className="doc-bar sticky-bar">
+    <div className={`doc-bar sticky-bar${bottom ? " doc-bar-bottom" : ""}`}>
       <Space wrap>
         {doc.dirty ? (
           <StatusTag kind="attention">有未保存的修改</StatusTag>
+        ) : bottom && pending ? (
+          <StatusTag kind="pending">已保存，待安装</StatusTag>
         ) : doc.rulesApply ? (
           <RulesApplyLine fa={doc.rulesApply.fast_apply} applyRequired={doc.rulesApply.apply_required} />
         ) : (
@@ -739,19 +746,19 @@ export function TopologyDocBar() {
         <Button onClick={() => act.run(() => doc.validate(), "validate")} loading={act.busy === "validate"}>
           校验
         </Button>
-        <Button disabled={!doc.dirty} onClick={() => void doc.reload()}>
+        <Button disabled={!doc.dirty || deploying} onClick={() => void doc.reload()}>
           放弃修改
         </Button>
         <Button
-          disabled={!doc.dirty}
+          disabled={!doc.dirty || deploying}
           loading={act.busy === "draft"}
           onClick={() => act.run(async () => (await doc.save(true)) && message.success("已保存为草稿"), "draft")}
         >
           保存草稿
         </Button>
         <Button
-          type="primary"
-          disabled={!doc.dirty || errors.length > 0}
+          type={onDeploy ? "default" : "primary"}
+          disabled={!doc.dirty || errors.length > 0 || deploying}
           loading={act.busy === "save" || doc.saving}
           onClick={() =>
             act.run(async () => {
@@ -760,8 +767,11 @@ export function TopologyDocBar() {
             }, "save")
           }
         >
-          保存
+          {onDeploy ? "仅保存" : "保存"}
         </Button>
+        {onDeploy ? <Button type="primary" disabled={doc.saving || deploying || (doc.dirty && errors.length > 0)} loading={deploying} onClick={onDeploy}>
+          {doc.dirty ? "保存并部署" : "自动检测并部署"}
+        </Button> : null}
       </Space>
       {act.error ? <ApiErrorAlert error={act.error} onClose={act.clear} style={{ width: "100%", marginTop: 12, marginBottom: 0 }} /> : null}
     </div>

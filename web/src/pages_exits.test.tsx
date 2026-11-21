@@ -799,7 +799,7 @@ describe("domestic relays sharing the main path", () => {
     await userEvent.type(budget, "16");
     await userEvent.click(within(box).getByLabelText("启用吞吐探测"));
     expect(within(box).getByTestId("probe-cost-estimate")).toHaveTextContent("已关闭");
-    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await userEvent.click(screen.getByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     expect(saved!.settings.path_quality).toEqual({ speed_test_interval_sec: 3600, overrides: [{ relay: "access", nominal_mbps: 300 }], evict_after_sec: 45, probe_daily_budget_mb: 16, probe_off: true });
   });
@@ -895,10 +895,25 @@ describe("nested and external SOCKS exits", () => {
     expect(within(await screen.findByTestId("exit-node-my-socks")).getByTestId("external-tag-my-socks")).toHaveTextContent("外部 SOCKS · 仅 TCP · 仅 IPv4");
   });
 
-  it("shows the badges and limitations, offers only plain managed exits as relay exits and adds the relay link", async () => {
+  it.each(["save", "deploy", "blocked"])("adds a managed relay link (%s)", async (mode) => {
+    const deploy = mode !== "save";
+    const step = { node_id: "hk-ix", node_name: "香港 IX", phase: "pending", plan_target: { server_id: "server-hk" } };
+    const run = { id: "deploy-1", state: "active", current: step.node_id, steps: [step] };
     let saved: Topology | null = null;
+    let fingerprintPending = mode === "blocked";
+    let started = false;
     const api = fakeApi({
       "GET /api/topology": withKinds,
+      "GET /api/deploy": () => started ? { run } : { topology_version: "v1", plan: { steps: [step] } },
+      "POST /api/deploy/runs": () => { started = true; return { run }; },
+      "POST /api/deploy/runs/deploy-1/preflight": () => ({
+        run: { ...run, steps: [fingerprintPending
+          ? { ...step, phase: "blocked", message: "需要确认 SSH 主机指纹" }
+          : { ...step, phase: "review", can_install: true, preflight_id: "pf-1" }] },
+      }),
+      "POST /api/deploy/runs/deploy-1/install": () => ({
+        run: { ...run, state: "done", steps: [{ ...step, phase: "done" }] },
+      }),
       "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
       "GET /api/socks-credentials": () => ({ credentials: [SOCKS_CRED] }),
       "PUT /api/topology": (req) => {
@@ -938,10 +953,33 @@ describe("nested and external SOCKS exits", () => {
     expect(req).toHaveTextContent("现在有 0 条");
     expect(within(drawer).getByTestId("deploy-order")).toHaveTextContent("先在「部署」页重新下发中继出口 香港二号，再下发这个出口，然后两个枢纽");
     expect(within(drawer).getByRole("checkbox", { name: /补上一条直连 WG 链路 hk-ix → hk-2/ })).toBeChecked();
-    await userEvent.click(within(drawer).getByRole("button", { name: btn("保存到拓扑") }));
+    await userEvent.click(within(drawer).getByRole("button", { name: btn(deploy ? "保存并部署" : "仅保存") }));
+    if (deploy) {
+      expect(api.find("PUT /api/topology")).toHaveLength(0);
+      const detail = await screen.findByText(/将预检并下发当前待安装的节点和链路/);
+      const confirmation = detail.closest<HTMLElement>('[role="dialog"]')!;
+      await userEvent.click(within(confirmation).getByRole("button", { name: btn("保存并部署") }));
+      if (mode === "blocked") {
+        await screen.findByText("配置已保存，部署已暂停");
+        expect(screen.getByText(/需要确认 SSH 主机指纹/)).toBeVisible();
+        expect(screen.getByRole("link", { name: "查看部署并继续" })).toBeVisible();
+        expect(api.find("POST /api/deploy/runs/deploy-1/install")).toHaveLength(0);
+        expect(screen.getByRole("link", { name: "打开服务器" })).toHaveAttribute("href", "#/servers/server-hk?from=deploy");
+        fingerprintPending = false;
+        await userEvent.click(screen.getByRole("button", { name: btn("继续自动部署") }));
+        await screen.findByText("自动部署完成");
+        expect(api.find("POST /api/deploy/runs")).toHaveLength(1);
+        expect(api.find("POST /api/deploy/runs/deploy-1/install")).toHaveLength(1);
+      } else {
+        await screen.findByText("自动部署完成");
+        expect(api.find("POST /api/deploy/runs/deploy-1/install")[0].body).toEqual({ node_id: "hk-ix", preflight_id: "pf-1" });
+      }
+    } else {
+      expect(api.find("GET /api/deploy")).toHaveLength(0);
+    }
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     expect(saved!.nodes.find((n: Node) => n.id === "hk-ix")!.via_exit).toBe("hk-2");
-    expect(saved!.links).toEqual([{ id: "hk-ix-hk-2", from: "hk-ix", to: "hk-2", transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25 }]);
+    expect(saved!.links).toEqual([expect.objectContaining({ id: "hk-ix-hk-2", from: "hk-ix", to: "hk-2", transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25 })]);
     // The external exit went back unchanged, still without any secret.
     expect(saved!.nodes.find((n: Node) => n.id === "ext-1")!.external).toEqual(withKinds().nodes.find((n) => n.id === "ext-1")!.external);
     expect(api.find("PUT /api/topology")[0].raw).not.toMatch(/username|password/);
@@ -1095,8 +1133,10 @@ describe("same-exit Mesh quality", () => {
       { plan: "synthetic", exit: "synthetic-us", beat: 1799999990, active: "blackhole", reason: "both_down", switched: 1799999990, direct_loss: 1000, direct_rtt: 0, mesh_loss: 1000, mesh_rtt: 0, result: "ok", event: true },
     ]} />);
     expect(screen.getByText("Mesh · 使用中")).toBeInTheDocument();
-    expect(screen.getByText("420 ms · 丢包 20%")).toBeInTheDocument();
-    expect(screen.getByText("70 ms · 丢包 0%")).toBeInTheDocument();
+    expect(screen.getByText("420 ms")).toHaveAttribute("data-tone", "warn");
+    expect(screen.getByText("丢包 20%")).toBeInTheDocument();
+    expect(screen.getByText("70 ms")).toHaveAttribute("data-tone", "ok");
+    expect(screen.getByText("丢包 0%")).toBeInTheDocument();
     expect(screen.getByText("Mesh 质量持续更好")).toBeInTheDocument();
     expect(screen.getByText(/暂无样本/)).toBeInTheDocument();
     expect(screen.getByText(/双腿不可用 · 黑洞/)).toBeInTheDocument();
@@ -1113,6 +1153,7 @@ it("shows measured gateway RTT beside a group member without inventing group hea
  });
  renderAt("#/exits",{foldsOpen:true});
  const member=await screen.findByTestId("member-hk-hk-ix");
- await waitFor(()=>expect(member).toHaveTextContent("42.3 ms · 网关实测"));
+ expect(await within(member).findByText("42.3 ms")).toHaveAttribute("data-tone", "ok");
+ expect(member).toHaveTextContent("网关实测");
  expect(within(screen.getByTestId("group-hk")).getByTestId("group-model")).toHaveTextContent("未收到组健康报告");
 });

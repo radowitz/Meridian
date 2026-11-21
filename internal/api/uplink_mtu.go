@@ -430,6 +430,34 @@ func (s *Server) postUplinkMTUAdopt(w http.ResponseWriter, r *http.Request) {
 		writeCoded(w, http.StatusBadRequest, codeMTUNothing, "没有要采用的建议", nil)
 		return
 	}
+	var run *deployRun
+	var node, expectedTopology string
+	if runID := r.URL.Query().Get("deploy_run"); runID != "" {
+		s.deployMu.Lock()
+		defer s.deployMu.Unlock()
+		run = s.loadRunLocked()
+		if !run.open() || run.ID != runID || run.current() < 0 {
+			writeCoded(w, http.StatusConflict, codeDeployPlanStale, "部署引导已变化，重新检查 MTU", nil)
+			return
+		}
+		for _, step := range run.Steps {
+			if inFlight(step.Phase) {
+				writeCoded(w, http.StatusConflict, codeDeployStepRunning, "有部署步骤正在运行，稍后重新检查 MTU", nil)
+				return
+			}
+		}
+		node = run.Steps[run.current()].NodeID
+		live, err := s.liveDeploy()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		expectedTopology = topologyVersion(live.t)
+		if live.version != run.TopologyVersion {
+			writeCoded(w, http.StatusConflict, codeDeployPlanStale, "部署之前的拓扑已变化，重新检查 MTU", nil)
+			return
+		}
+	}
 	s.raMu.Lock()
 	defer s.raMu.Unlock()
 	t, err := s.topology()
@@ -458,6 +486,9 @@ func (s *Server) postUplinkMTUAdopt(w http.ResponseWriter, r *http.Request) {
 	proposal := mtuProposalFor(t, body.Changes)
 	var issues []validate.Issue
 	_, err = s.Store.Update(func(cur *model.Topology) (bool, error) {
+		if run != nil && topologyVersion(*cur) != expectedTopology {
+			return false, errMTUChanged
+		}
 		for _, c := range body.Changes {
 			found := false
 			for i := range cur.Links {
@@ -492,6 +523,12 @@ func (s *Server) postUplinkMTUAdopt(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	if run != nil {
+		for _, c := range body.Changes {
+			run.event(s.now(), node, fmt.Sprintf("自动修复：链路 %s MTU %d → %d（预检发现上联承载不足）", c.LinkID, c.FromEffective, c.To))
+		}
+		s.saveRunLocked(run)
 	}
 	stored, _ := s.topology()
 	writeJSON(w, http.StatusOK, map[string]any{

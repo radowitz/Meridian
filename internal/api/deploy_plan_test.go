@@ -15,6 +15,7 @@ import (
 	"github.com/radowitz/meridian/internal/credentials"
 	"github.com/radowitz/meridian/internal/defaults"
 	"github.com/radowitz/meridian/internal/model"
+	"github.com/radowitz/meridian/internal/preflight"
 	"github.com/radowitz/meridian/internal/sshexec"
 	"github.com/radowitz/meridian/internal/sshexec/sshtest"
 )
@@ -1494,5 +1495,97 @@ func TestDeploySkipSurvivesReplanAndRestart(t *testing.T) {
 	}
 	if out := f2.call(t, http.MethodPost, "/api/deploy/runs/"+run+"/skip", map[string]any{"node_id": "tw"}, http.StatusConflict); out.Code != codeDeploySkipUnknown {
 		t.Fatalf("%+v", out)
+	}
+}
+
+func TestDeployRepairsOnlyAutomaticWireGuardPorts(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		auto bool
+		nat  bool
+		want int
+	}{
+		{"automatic", true, false, http.StatusOK},
+		{"fixed", false, false, http.StatusConflict},
+		{"nat", true, true, http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDeployFix(t, "sg", "tw", "hk-hub")
+			topo, _, err := f.s.Store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range topo.Nodes {
+				if topo.Nodes[i].ID == "sg" || topo.Nodes[i].ID == "hk-hub" {
+					topo.Nodes[i].ListenPort = 0
+				}
+				if tc.nat && topo.Nodes[i].ID == "sg" {
+					topo.Nodes[i].NatDialOut = true
+					topo.Nodes[i].EndpointV4 = ""
+					topo.Nodes[i].EndpointV6 = ""
+				}
+			}
+			const old = 23000
+			for i := range topo.Links {
+				if topo.Links[i].ID == "hub-sg" {
+					topo.Links[i].WGPort = old
+					topo.Links[i].AutoWGPort = tc.auto
+					if tc.nat {
+						link := &topo.Links[i]
+						link.From, link.To = link.To, link.From
+						link.FromV4, link.ToV4 = link.ToV4, link.FromV4
+						link.FromULA, link.ToULA = link.ToULA, link.FromULA
+					}
+				}
+			}
+			if err := f.s.Store.Save(topo); err != nil {
+				t.Fatal(err)
+			}
+			runID := f.start(t)
+			run := f.s.loadRunLocked()
+			i := run.current()
+			step := &run.Steps[i]
+			live, err := f.s.liveDeploy()
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := &preflightRecord{
+				ID: "port-conflict", NodeID: step.NodeID, ExpiresAt: f.s.now().Add(time.Minute),
+				Bundle: live.bundles[step.NodeID], Target: live.identity(step.NodeID),
+				Evaluation: preflight.Evaluation{Blocking: true, Findings: []preflight.Finding{{
+					Severity: preflight.Blocking, Code: preflight.CodePortInUse,
+					Fix: &preflight.Fix{Kind: "link", ID: "hub-sg", Field: "wg_port"},
+				}}},
+			}
+			if err := f.s.savePreflight(rec); err != nil {
+				t.Fatal(err)
+			}
+			reviewed(run, step, rec, f.s.now())
+			f.s.saveRunLocked(run)
+			path := "/api/deploy/runs/" + runID + "/repair-wg-port"
+			f.call(t, http.MethodPost, path, map[string]any{"preflight_id": rec.ID}, tc.want)
+			saved, _, err := f.s.Store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, link := range saved.Links {
+				if link.ID != "hub-sg" {
+					continue
+				}
+				if (link.WGPort != old) != (tc.want == http.StatusOK) {
+					t.Fatalf("unexpected saved port %d", link.WGPort)
+				}
+			}
+			if tc.want == http.StatusOK {
+				var repaired bool
+				for _, event := range f.get(t).Run.Events {
+					repaired = repaired || strings.Contains(event.Text, "链路 hub-sg UDP 端口 23000 →")
+				}
+				if !repaired {
+					t.Fatal("repair event was not saved on the deployment run")
+				}
+			}
+			f.call(t, http.MethodPost, path, map[string]any{"preflight_id": rec.ID}, http.StatusConflict)
+		})
 	}
 }

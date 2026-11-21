@@ -1,3 +1,4 @@
+import { LatencyBadge } from "./LatencyBadge";
 import { Button, Space, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import * as api from "./api";
@@ -14,9 +15,12 @@ const stateWord: Record<string,string> = { not_measured:"尚未测量",not_insta
 export function ExitLatencyValue({row}:{row?:ExitLatencyRow}) {
  if(!row || row.state==="not_measured")return null;
  const ok=(row.state==="ok" || row.state==="partial") && row.rtt_ms!==undefined && Number.isFinite(row.rtt_ms) && row.rtt_ms>=0;
- return <Typography.Text type={row.stale?"warning":ok?undefined:"secondary"} title={`网关经隧道到${row.scope==="carrier_resolver"?"承载节点":"出口"}解析器的 TCP 握手；${row.received}/${row.sent} 次成功；测于 ${new Date(row.measured_at).toLocaleString()}${row.error?`；${row.error}`:""}`}>
-  {ok?`${row.rtt_ms!.toFixed(1)} ms · 网关实测`:stateWord[row.state] ?? "未知"}{row.stale?"（已过期）":""}
- </Typography.Text>;
+ return <span className="latency-reading">
+  <LatencyBadge ms={ok ? row.rtt_ms : undefined} digits={1} stale={row.stale} partial={ok && row.state==="partial"}
+    failed={row.state==="unreachable"} label={stateWord[row.state] ?? "未知"}
+    title={`网关到${row.scope==="carrier_resolver"?"承载节点":"出口"}解析器的 TCP 握手，${row.received}/${row.sent} 次成功，测于 ${new Date(row.measured_at).toLocaleString()}${row.error?`，${row.error}`:""}`} />
+  {ok ? <span className="muted">网关实测</span> : null}
+ </span>;
 }
 
 export function ExitLatencyPanel({onData}:{onData?:(rows:ExitLatencyRow[])=>void}) {
@@ -50,9 +54,9 @@ export function ExitLatencyPanel({onData}:{onData?:(rows:ExitLatencyRow[])=>void
   <div data-testid="gateway-exit-latency" style={{overflowWrap:"anywhere"}}>
    {view.data?.rows.map(r=>{
     const measured=(r.state==="ok" || r.state==="partial") && r.rtt_ms!==undefined && Number.isFinite(r.rtt_ms) && r.rtt_ms>=0;
-    return <div key={r.exit_id} data-testid={`exit-latency-${r.exit_id}`} style={{display:"flex",flexWrap:"wrap",gap:"4px 14px",padding:"8px 0",borderBottom:"1px solid var(--border-color, #eee)"}}>
+    return <div key={r.exit_id} data-testid={`exit-latency-${r.exit_id}`} className="latency-result-row">
      <Typography.Text strong>{r.name || r.exit_id}</Typography.Text>
-     <span>{measured?`${r.rtt_ms!.toFixed(1)} ms`:stateWord[r.state] ?? "未知"}</span>
+     <LatencyBadge ms={measured ? r.rtt_ms : undefined} digits={1} stale={r.stale} partial={measured && r.state==="partial"} failed={r.state==="unreachable"} label={stateWord[r.state] ?? "未知"} />
      {r.sent>0?<span className="muted">{r.received}/{r.sent} 次握手成功</span>:null}
      {r.stale?<Typography.Text type="warning">结果已过期，请重测</Typography.Text>:null}
      {r.state!=="not_measured"?<span className="muted">测于 <TimeText value={r.measured_at} /></span>:null}

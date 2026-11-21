@@ -1,4 +1,6 @@
-import { deployTopology } from "./automatic_deploy";
+import { AutoDeployProgress, useAutoDeployProgress } from "./AutoDeployProgress";
+import { newWireGuardPort } from "./wireguard_ports";
+import { applyDeployLinkChanges, deployTopology } from "./automatic_deploy";
 import { NodeHostMesh } from "./host_mesh";
 import { Help, Note } from "./ui";
 import { MeshLegQuality, linkCarrier, type HubLegReport } from "./MeshLegQuality";
@@ -87,6 +89,8 @@ import {
   Section,
   StatusTag,
   TopologyDocBar,
+  STACK_QUERY,
+  useMediaQuery,
   groupLabel,
   regionLabel,
   useApi,
@@ -447,7 +451,8 @@ export function dialEgressIX(l: Pick<TLink, "from" | "to">, topo: Topology): Nod
 export function newLink(topo: Topology, from: string, to: string, transport: Transport = "direct_wg", standby = false): TLink {
   let id = `${from}-${to}`;
   for (let i = 2; topo.links.some((l) => l.id === id); i++) id = `${from}-${to}-${i}`;
-  return { id, from, to, transport, enabled: true, standby, mtu: 1420, keepalive: 25 };
+  const wgPort = transport === "dedicated_line" ? undefined : newWireGuardPort(topo, from, to);
+  return { id, from, to, transport, enabled: true, standby, mtu: 1420, keepalive: 25, ...(wgPort ? { wg_port: wgPort, auto_wg_port: true } : {}) };
 }
 
 const TRANSPORT_OPTIONS = (Object.keys(transportLabel) as Transport[]).map((t) => ({ value: t, label: transportLabel[t] }));
@@ -1131,7 +1136,7 @@ function LinkDetail({
           <InputNumber min={0} max={600} value={link.keepalive} onChange={(v) => patch({ keepalive: v ?? undefined })} style={{ width: "100%" }} />
         </Row>
         <Row label="WireGuard 端口" help="监听端的 UDP 端口；不填时用监听节点的监听端口或 51820+分配序号。UDP+WSS 故障切换还占用下一个端口。">
-          <InputNumber min={1} max={65534} value={link.wg_port} onChange={(v) => patch({ wg_port: v ?? undefined })} style={{ width: "100%" }} aria-label="WireGuard 端口" />
+          <InputNumber min={1} max={65534} value={link.wg_port} onChange={(v) => patch({ wg_port: v ?? undefined, auto_wg_port: undefined })} style={{ width: "100%" }} aria-label="WireGuard 端口" />
         </Row>
       </Space.Compact>
       {link.transport === "wg_over_wss" || link.transport === "udp_wss_failover" || link.transport === "ix_replacement_wss" ? (
@@ -1591,9 +1596,9 @@ export default function TopologyPage() {
   const doc = useTopologyDoc();
   const { route, navigate } = useRouter();
   const confirm = useConfirmDanger();
-  const [autoDeploying, setAutoDeploying] = useState(false);
-  const [autoDeployError, setAutoDeployError] = useState("");
-  const [autoDeployDone, setAutoDeployDone] = useState(false);
+  const { progress, track } = useAutoDeployProgress();
+  const autoDeploying = progress?.phase === "running";
+  const phone = useMediaQuery(STACK_QUERY);
 
   const servers = useApi(() => api.listServers(), []);
   const [deleting, setDeleting] = useState<Node | null>(null);
@@ -1622,15 +1627,8 @@ export default function TopologyPage() {
     return hubs.flatMap((h) => (h.mesh_legs ?? []).map((r) => ({ ...r, hub: h.hub_node })));
   }, [groupsRt.data]);
 
-  if (!topo) {
-    return (
-      <Page title="拓扑">
-        {doc.error ? <ApiErrorAlert error={doc.error} onRetry={() => void doc.reload()} /> : <Typography.Text type="secondary">读取中…</Typography.Text>}
-      </Page>
-    );
-  }
-
-  const addNode = (role: Role) => {
+  const addNode = useCallback((role: Role) => {
+    if (!topo) return;
     let id = role === "gateway" ? "gw" : role;
     for (let i = 2; topo.nodes.some((n) => n.id === id); i++) id = `${role}-${i}`;
     const node: Node = {
@@ -1650,38 +1648,48 @@ export default function TopologyPage() {
     };
     doc.setTopo({ ...topo, nodes: [...topo.nodes, node] });
     select({ kind: "node", id });
-  };
+  }, [topo, doc.setTopo, select]);
+
+  const addExit = route.query.get("add") === "exit";
+  useEffect(() => {
+    if (addExit && topo) addNode("exit");
+  }, [addExit, topo, addNode]);
+
+  if (!topo) {
+    return (
+      <Page title="拓扑">
+        {doc.error ? <ApiErrorAlert error={doc.error} onRetry={() => void doc.reload()} /> : <Typography.Text type="secondary">读取中…</Typography.Text>}
+      </Page>
+    );
+  }
 
   const node = selected?.kind === "node" ? topo.nodes.find((n) => n.id === selected.id) : undefined;
   const link = selected?.kind === "link" ? topo.links.find((l) => l.id === selected.id) : undefined;
   const managedWithout = topo.nodes.filter((n) => n.managed && n.role !== "gateway" && !n.server_id);
 
+  const runDeployment = () => track(async (onUpdate, onRepair, onSaved) => {
+    const saved = doc.dirty ? await doc.save(false) : null;
+    if (saved === false) throw new Error("拓扑未保存");
+    onSaved();
+    await deployTopology((saved?.topology ?? topo).links.some(l => l.enabled && l.transport === "cf_mesh"), onUpdate,
+      changes => {
+        onRepair(changes);
+        doc.applyServerChange(t => applyDeployLinkChanges(t, changes));
+      });
+  }, !doc.dirty);
+  const confirmDeployment = () => confirm({
+    title: "保存并自动部署当前拓扑？",
+    consequence: "按部署计划预检并下发待变更节点，必要时会修复端口或降低 MTU。部署可能短暂中断相关路径。",
+    okText: "保存并部署",
+    mobileFull: phone,
+    onOk: () => { void runDeployment(); },
+  });
+
   return (
     <Page
       title="拓扑"
-
       extra={
         <Space wrap>
-          <Button disabled={doc.saving || autoDeploying} loading={autoDeploying} onClick={() => confirm({
-            title: "保存并自动部署当前拓扑？",
-            consequence: "检测 Mesh 节点，必要时从 Cloudflare 官方源安装并注册 Connector，再按部署计划预检并下发待变更节点。预检失败时暂停，相关路径可能短暂中断。请保持此页面打开。",
-            okText: "保存并部署",
-            onOk: async () => {
-              setAutoDeploying(true);
-              setAutoDeployError("");
-              setAutoDeployDone(false);
-              try {
-                const saved = doc.dirty ? await doc.save(false) : null;
-                if (saved === false) throw new Error("拓扑未保存");
-                await deployTopology((saved?.topology ?? topo).links.some(l => l.enabled && l.transport === "cf_mesh"));
-                setAutoDeployDone(true);
-              } catch (error) {
-                setAutoDeployError(error instanceof Error ? error.message : String(error));
-              } finally {
-                setAutoDeploying(false);
-              }
-            },
-          })}>{doc.dirty ? "保存并部署" : "自动检测并部署"}</Button>
           <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>
             网关设置
           </Button>
@@ -1703,9 +1711,7 @@ export default function TopologyPage() {
       }
     >
       <MeshLegQuality topo={topo} />
-      <TopologyDocBar />
-      {autoDeployError ? <Alert type="error" showIcon message="自动部署已暂停" description={autoDeployError} /> : null}
-      {autoDeployDone ? <Alert type="success" showIcon message="部署完成，实时连通性请在出口或 Cloudflare 页查看" /> : null}
+      <AutoDeployProgress onResume={!doc.dirty ? () => void runDeployment() : undefined} />
 
       {needsIXHubMigrationNotice(topo) && !migrationDismissed ? (
         <Alert
@@ -1787,8 +1793,9 @@ export default function TopologyPage() {
         title={node ? `节点 · ${node.name || node.id}` : link ? `链路 · ${link.name || link.id}` : ""}
         open={!!node || !!link}
         onClose={() => select(null)}
-        width={440}
-        mask={false}
+        width={phone ? "100%" : 440}
+        footer={phone ? <Button block onClick={() => select(null)}>完成编辑</Button> : undefined}
+        mask={phone}
         destroyOnHidden
         extra={
           node ? (
@@ -1843,6 +1850,7 @@ export default function TopologyPage() {
           select({ kind: "link", id: l.id });
         }}
       />
+      <TopologyDocBar bottom onDeploy={confirmDeployment} deploying={autoDeploying} />
       <SettingsDrawer open={settingsOpen} topo={topo} onClose={() => setSettingsOpen(false)} onChange={doc.setTopo} />
       <NodeDeleteDialog
         node={deleting}

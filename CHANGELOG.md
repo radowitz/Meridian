@@ -4,6 +4,14 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.4
+
+- 受管出口支持保存并自动部署。面板展示逐节点进度、阻断原因、SSH 限流倒计时和自动修复记录。
+- 新建的非 NAT 受管 WireGuard 链路可自动分配端口。预检发现自动分配的端口冲突时可换端口并复检，MTU 超过上联承载能力时可采用预检建议值。
+- 自动部署可有限重试暂时性 SSH 故障和过期预检。安装结果不明时先复核服务器记录，确认已安装后继续。
+- 优化导航、拓扑编辑栏、出口列表和窄屏操作。延迟与丢包分开显示，延迟色块区分较低、中等、较高、过期和无响应。
+- 首页网速图支持查看同一时刻的上传和下载。采集暂停时保留历史和空档，国内外累计流量显示可用的起始采样时间。
+
 ## v1.0.3
 
 - 重写面板布局和常用操作，加入键盘快速跳转、出口筛选和部署章节导航。

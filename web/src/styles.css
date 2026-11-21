@@ -1107,3 +1107,96 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
   .topbar { padding-inline: 8px !important; gap: 4px; }
   .topbar-right { gap: 2px; }
 }
+
+.doc-bar-bottom {
+  top: auto;
+  bottom: 0;
+  margin: 16px 0 0;
+  border: 1px solid var(--m-border);
+  border-radius: 8px;
+}
+.auto-deploy-progress { margin-block-end: 12px; }
+.auto-deploy-progress .ant-alert-description { overflow-wrap: anywhere; }
+.exit-node-main { min-width: 0; flex: 1 1 17rem; }
+.exit-node-details { margin-top: 4px; overflow-wrap: anywhere; }
+.exit-node-details summary { cursor: pointer; color: var(--m-text-2); }
+.traffic-inspect { min-height: 1.5em; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 767px) {
+  .doc-bar-bottom { padding-bottom: max(8px, env(safe-area-inset-bottom)); gap: 8px; }
+  .doc-bar-bottom .ant-space { column-gap: 4px !important; }
+  .auto-deploy-progress.ant-alert { flex-wrap: wrap; }
+  .auto-deploy-progress .ant-alert-action { margin-inline-start: 0; }
+  .mobile-full-confirm .ant-modal { width: 100% !important; max-width: 100%; margin: 0; top: 0; padding: 0; }
+  .mobile-full-confirm .ant-modal-content { min-height: 100dvh; border-radius: 0; }
+  .mobile-full-confirm .ant-modal-confirm-btns { position: sticky; bottom: 0; padding-block: 10px; background: var(--m-surface); }
+  .log-toolbar-filters { width: 100%; }
+  .exit-node-main { flex-basis: 100%; }
+}
+.exit-node-meta { display: flex; }
+.traffic-chart-grid canvas { touch-action: pan-y; }
+.traffic-chart-grid canvas:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px; }
+.traffic-usage small { overflow-wrap: anywhere; }
+
+@media (max-width: 767px) {
+  .mobile-full-confirm .ant-modal-confirm-body-wrapper { display: flex; flex-direction: column; min-height: calc(100dvh - 48px); }
+  .mobile-full-confirm .ant-modal-confirm-btns { margin-top: auto; }
+}
+
+/* Shared metrics, heading rhythm and active navigation. */
+.latency-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--m-surface-2);
+  color: var(--m-text-2);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.latency-badge[data-tone="ok"] { background: var(--m-ok-bg); color: var(--m-ok); }
+.latency-badge[data-tone="info"] { background: var(--m-info-bg); color: var(--m-info); }
+.latency-badge[data-tone="warn"] { background: var(--m-warn-bg); color: var(--m-warn); }
+.latency-badge[data-tone="bad"] { background: var(--m-bad-bg); color: var(--m-bad); }
+.latency-badge-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
+.latency-reading { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.latency-result-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--m-border);
+}
+.latency-result-row:last-child { border-bottom: 0; }
+.latency-result-row > strong, .latency-result-row > .ant-typography:first-child { min-width: min(9rem, 100%); }
+.nav-menu .ant-menu-item-selected { color: var(--m-accent); box-shadow: inset 3px 0 var(--m-accent); }
+.page-header { padding-bottom: 14px; border-bottom: 1px solid var(--m-border); }
+.section-title { font-size: 16px; font-weight: 650; }
+.section-head { row-gap: 8px; }
+.data-card-title { line-height: 1.4; }
+.ungrouped-item { align-items: flex-start; }
+@media (max-width: 767px) {
+  .page-header { margin-bottom: 16px; padding-bottom: 11px; }
+  .section { padding-top: 18px; }
+  .latency-result-row > .ant-typography:first-child { flex-basis: 100%; }
+  .group-row-mode:has(.latency-badge) { display: block; grid-column: 1; grid-row: 2; }
+  .group-row-state { grid-column: 2; grid-row: 1; }
+}
+
+:is(.exit-node-main, .overview-status, .doc-bar) .status-text:is(.status-ok, .status-pending, .status-running) {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--m-info-bg);
+  color: var(--m-info);
+  font-size: 12px;
+}
+:is(.exit-node-main, .overview-status, .doc-bar) .status-text.status-ok {
+  background: var(--m-ok-bg);
+  color: var(--m-ok);
+}

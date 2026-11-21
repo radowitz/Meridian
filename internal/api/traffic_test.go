@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/radowitz/meridian/internal/hostexec"
 )
@@ -105,7 +106,8 @@ func TestTrafficConnections(t *testing.T) {
 
 func TestTrafficUsagePersistsAcrossPanelAndGatewayRestarts(t *testing.T) {
 	s := newTest(t)
-	stub := &stubTraffic{st: hostexec.TrafficStatus{BootID: "boot-one", Counters: []hostexec.TrafficCounter{
+	const firstSample = "2026-11-17T00:00:00Z"
+	stub := &stubTraffic{st: hostexec.TrafficStatus{BootID: "boot-one", ReadAt: firstSample, Counters: []hostexec.TrafficCounter{
 		{Name: "traffic_up_domestic", Bytes: 100, Handle: 5},
 		{Name: "traffic_down_domestic", Bytes: 800, Handle: 6},
 		{Name: "traffic_up_foreign", Bytes: 200, Handle: 7},
@@ -117,8 +119,9 @@ func TestTrafficUsagePersistsAcrossPanelAndGatewayRestarts(t *testing.T) {
 	}
 	stub.st.Counters[0].Bytes += 70
 	restarted := &Server{Store: s.Store, Traffic: stub}
-	if got := getTrafficView(t, restarted).Usage; got["domestic"] != 970 || got["foreign"] != 1100 {
-		t.Fatalf("after panel restart: %v", got)
+	if v := getTrafficView(t, restarted); v.Usage["domestic"] != 970 || v.Usage["foreign"] != 1100 ||
+		v.UsageSince["domestic"].Format(time.RFC3339) != firstSample || v.UsageSince["foreign"].Format(time.RFC3339) != firstSample {
+		t.Fatalf("after panel restart: %+v", v)
 	}
 	stub.st.BootID = "boot-two"
 	stub.st.Counters[0].Bytes, stub.st.Counters[1].Bytes = 180, 40

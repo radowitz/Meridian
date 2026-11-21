@@ -116,6 +116,7 @@ export interface Link {
   mtu?: number;
   wss_mtu?: number;
   wg_port?: number;
+  auto_wg_port?: boolean;
   /** wstunnel client port on 127.0.0.1 of the dialing end (default 52000 + the link's slot). */
   wss_local_port?: number;
   keepalive?: number;
@@ -4285,6 +4286,7 @@ export interface TrafficView {
   counter_epoch?: number;
   counters: Partial<Record<TrafficKey, { bytes: number; packets: number }>>;
   usage_bytes?: { domestic?: number; foreign?: number };
+  usage_since?: { domestic?: string; foreign?: string };
   missing?: string[];
   /** agent_unavailable | read_failed | not_installed */
   code?: string;

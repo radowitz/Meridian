@@ -1,7 +1,7 @@
 // The overview's live stats panel (rates from counter samples, resets, gaps,
 // window, freshness, polling only while visible) and the one-screen layout.
 
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import TrafficChart, { POLL_MS, STALE_MS, TrafficStats, fmtCount, fmtRate, freshness, rateBetween, sampleOf } from "./TrafficChart";
 import { fakeApi, panelStatus, renderAt } from "./testing";
@@ -210,6 +210,30 @@ describe("traffic chart freshness", () => {
     act(() => void document.dispatchEvent(new Event("visibilitychange")));
     await flush(0);
     expect(screen.getByTestId("traffic-chart")).toHaveAttribute("data-state", "live");
+    expect(down()).toHaveTextContent("—");
+  });
+
+  it("shows upload and download together and keeps the chart during a read outage", async () => {
+    vi.useFakeTimers();
+    let i = 0;
+    fakeApi({ "GET /api/traffic": () => {
+      const n = i++;
+      if (n >= 3) return { available: false, reset: false, counters: {}, code: "read_failed" };
+      return view(n, {
+        down_domestic: n * 1_000_000, down_foreign: 0, up_domestic: n * 125_000, up_foreign: 0,
+      }, { usage_bytes: { domestic: 10 }, usage_since: { domestic: new Date(T0).toISOString() } });
+    } });
+    render(<TrafficChart />);
+    await flush(0);
+    await flush(POLL_MS);
+    await flush(POLL_MS);
+    const chart = screen.getByRole("img", { name: /上传下载图/ });
+    fireEvent.keyDown(chart, { key: "ArrowLeft" });
+    expect(screen.getByText(/下载 8.00 Mbit\/s · 上传 1.00 Mbit\/s/)).toBeVisible();
+    expect(screen.getByText(/起始采样/)).toBeVisible();
+    await flush(POLL_MS);
+    expect(screen.getByTestId("traffic-freshness")).toHaveTextContent("数据暂停");
+    expect(chart).toBeInTheDocument();
     expect(down()).toHaveTextContent("—");
   });
 
