@@ -40,6 +40,20 @@ func goldenDigest(b *Bundle) string {
 	return "# apply-order: " + strings.Join(b.Order, " ") + "\n" + strings.Join(lines, "\n") + "\n"
 }
 
+// Ignore the opt-in Hosts drop-in when comparing with historical
+// compiler snapshots. New golden files retain the directive.
+func withoutDNSHostsInclude(b *Bundle) *Bundle {
+	out := *b
+	out.Files = make(map[string]string, len(b.Files))
+	for p, body := range b.Files {
+		if strings.HasSuffix(p, "/etc/smartdns/smartdns.conf") {
+			body = strings.ReplaceAll(body, model.DNSHostsInclude+"\n", "")
+		}
+		out.Files[p] = body
+	}
+	return &out
+}
+
 func checkGolden(t *testing.T, name string, b *Bundle) {
 	t.Helper()
 	path := filepath.Join("testdata", name)
@@ -207,7 +221,7 @@ func TestCompileUnchangedSinceBeforeTheLogs(t *testing.T) {
 						gw = n.ID
 					}
 				}
-				sum := sha256.Sum256([]byte(goldenDigest(withLegacyFailoverComments(withoutLinkJournal(t, withoutTrafficCounters(t, topo, withoutProbeDNSException(t, topo, b)), gw)))))
+				sum := sha256.Sum256([]byte(goldenDigest(withLegacyFailoverComments(withoutLinkJournal(t, withoutTrafficCounters(t, topo, withoutProbeDNSException(t, topo, withoutDNSHostsInclude(b))), gw)))))
 				if os.Getenv("MERIDIAN_UPDATE_GOLDEN") == "1" {
 					t.Logf("%s (sniff %v, %s): %s", name, sniffed, vname, hex.EncodeToString(sum[:]))
 				} else if got := hex.EncodeToString(sum[:]); got != preLogCompile[name][si] {

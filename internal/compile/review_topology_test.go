@@ -56,7 +56,7 @@ func TestReviewTopologyBaseline(t *testing.T) {
 	got := reviewBaseline{Source: "391aa50c05d2b8e444875c08bd8bc3766922ef3b", TopologySHA256: hex.EncodeToString(sum[:]), Order: b.Order, Files: map[string]reviewFile{}}
 	// The failover scripts' comment text is role-neutral now; compared
 	// with the old wording so every other byte stays frozen.
-	for p, body := range withLegacyFailoverComments(b).Files {
+	for p, body := range withLegacyFailoverComments(withoutDNSHostsInclude(b)).Files {
 		sum := sha256.Sum256([]byte(body))
 		got.Files[p] = reviewFile{hex.EncodeToString(sum[:]), []byte(body)}
 	}

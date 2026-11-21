@@ -446,6 +446,19 @@ export function rollback(mode: RollbackMode) {
 }
 
 /** Cheap, read-only: agent reachability, installed-vs-stored, pending transaction, job states. */
+export interface DNSHostRecord {
+  name: string;
+  ip: string;
+}
+export interface DNSLocalView {
+  hosts: DNSHostRecord[];
+  hosts_enabled: boolean;
+  cache_enabled: boolean;
+}
+export const getDNSLocal = () => request<DNSLocalView>("GET", "/api/dns/local");
+export const changeDNSLocal = (action: "flush" | "add" | "delete", host?: DNSHostRecord) =>
+  request<DNSLocalView>("POST", "/api/dns/local", { action, host });
+
 export const getExitLatency = () => request<ExitLatencyView>("GET", "/api/exits/latency");
 export const measureExitLatency = () => request<ExitLatencyView>("POST", "/api/exits/latency", {});
 export const getStatus = () => request<PanelStatus>("GET", "/api/status");

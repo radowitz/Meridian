@@ -20,3 +20,17 @@ summary.dns-plan-line::-webkit-details-marker { display: none; }
   .dns-plan-line { grid-template-columns: minmax(0, 1fr); }
   .dns-plan-head { display: none; }
 }
+
+.dns-host-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  align-items: start;
+  gap: 8px 12px;
+  max-width: 760px;
+}
+.dns-host-form .ant-form-item { margin: 0; }
+.dns-host-form > button { margin-top: 30px; }
+@media (max-width: 640px) {
+  .dns-host-form { grid-template-columns: minmax(0, 1fr); }
+  .dns-host-form > button { justify-self: start; margin-top: 0; }
+}

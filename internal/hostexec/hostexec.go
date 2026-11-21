@@ -535,6 +535,7 @@ func (a *Agent) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/sniff/journal/summary", a.serveSniffJournalSummary)
 	mux.HandleFunc("POST /v1/sniff/journal/clear", a.serveSniffJournalClear)
 	mux.HandleFunc("POST /v1/dns/check", a.serveDNSCheck)
+	mux.HandleFunc("POST /v1/dns/local", a.serveDNSLocal)
 	mux.HandleFunc("POST /v1/dns/journal/status", a.serveDNSJournalStatus)
 	mux.HandleFunc("POST /v1/dns/journal", a.serveDNSJournal)
 	mux.HandleFunc("POST /v1/dns/journal/summary", a.serveDNSJournalSummary)

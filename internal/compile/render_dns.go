@@ -240,6 +240,7 @@ func renderGatewayDNS(t model.Topology, exits []ExitPlan, groups []GroupPlan, de
 	// and loads it on start, so answers of an old policy (an AAAA, an
 	// unlisted answer, an old list) survived the restart an install does.
 	sb.WriteString("cache-persist no\n")
+	sb.WriteString(model.DNSHostsInclude + "\n")
 	sb.WriteString("serve-expired yes\n")
 	sb.WriteString("rr-ttl-min 60\n")
 	if t.DNSLogOn() {

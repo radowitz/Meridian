@@ -101,6 +101,7 @@
 5821184a7bb8d6cd1f37d968a01e1bc1eb0981bf67442953a3f414246155ca54 nodes/hk-ix/etc/iproute2/rt_tables.d/meridian.conf
 5821184a7bb8d6cd1f37d968a01e1bc1eb0981bf67442953a3f414246155ca54 nodes/us/etc/iproute2/rt_tables.d/meridian.conf
 5b7632afa5f932a0e6f525428fb50691ddd460573411490f9e81629a04cab52f nodes/jp/etc/wireguard/m09.conf
+5b7f59ff02b638bb8792571ae14ca11a3dabac377ea9e88f30e2d38a2146764b nodes/gw/etc/smartdns/smartdns.conf
 5c249c4a20061e6cca2cfdd9aad240419797f177ee8f846278ee2f6a7f44ffbb nodes/access/etc/meridian/wss/server.crt
 5d179e6190435080c15f0eac79a267af8558b8e307239b0325b2751752e8d24b nodes/us-2/usr/local/sbin/meridian-fwcompat.sh
 5ea622e9a57efbbc6db3306ea6362e168b23ff4dbc855609d87b38107aad02b7 nodes/ds-relay/usr/local/sbin/meridian-fwcompat.sh
@@ -166,7 +167,6 @@
 990e2fd6b83c9c04930f2b08c1c4273c45e3566d6a571ba7344d63f71b56e58b nodes/access/etc/wireguard/m02.conf
 992c1b5791f03898480afd6ddcc33fc0be886ce9611bd100cd111be0f099ab4b nodes/hk-hub/etc/wireguard/m05.conf
 9d9bc0370d2bfeadeddc0ed6dde7cad3224d9cab327b5be83fe4f30c1d808366 nodes/jp/etc/smartdns/smartdns.conf
-9f111c234bf65b8d5eceae6cb2b03a885273f60aec52825b9e7016d01c05acef nodes/gw/etc/smartdns/smartdns.conf
 a06736aee67931e6e40e8a1a02044686d2f7d2c37be3489e13313bb355aec6ad nodes/hk-resi/usr/local/sbin/meridian-unlock-probe.sh
 a193e9e64d36b27f709bed4f4e29251a0aee64e6358380d104f7356f92158b2c nodes/us-2/usr/local/sbin/meridian-unlock-probe.sh
 a1de63680acaa5822632de3b7a5d4f3def1744c44777eb4fa245b263c04aed86 nodes/gw/etc/meridian/rules/decide.json

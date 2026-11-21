@@ -14,6 +14,7 @@
 // host name carries the {account} placeholder, with one invented example.
 
 import "./layout_b.css";
+import { DNSLocal } from "./DNSLocal";
 import { Alert, App as AntApp, Button, Input, InputNumber, Radio, Select, Space, Typography } from "antd";
 import { useEffect, useRef, useState, type HTMLAttributes } from "react";
 import * as api from "./api";
@@ -847,6 +848,7 @@ export function DNSConfigView() {
       {(v) => (
         <div className="dns-page">
           <UpstreamStatus v={v} onSetup={() => setSetup((n) => n + 1)} />
+          <DNSLocal />
           <Section title="境外解析上游（例如 NextDNS）">
             <ol className="dns-flow" aria-label="境外名字解析路径" data-testid="dns-overseas-path">
               {["设备", "网关 SmartDNS", "隧道", "出口 SmartDNS", "境外解析上游"].map((step) => <li key={step}>{step}</li>)}

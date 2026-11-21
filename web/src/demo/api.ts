@@ -220,6 +220,8 @@ export const DEMO_ROUTES: DemoRoute[] = [
   // resolution (DNS) view
   R("GET", "/api/dns", "read"),
   R("GET", "/api/dns/config", "special"),
+  R("GET", "/api/dns/local", "special"),
+  R("POST", "/api/dns/local", "refuse"),
   R("PUT", "/api/dns/upstream", "refuse"),
   R("POST", "/api/dns/check", "refuse"),
   R("GET", "/api/dns-accounts", "read"),
@@ -534,6 +536,7 @@ export function makeDemoApi(responses: Record<string, DemoResponse>) {
       const rows = hasRows(journal) ? (listOf(journal).page?.records ?? []).filter((x) => x.client === dev) : [];
       return related(sample, u.searchParams, rows, (x, from, to) => ms(x.time) >= from && ms(x.time) < to, (x) => lower(x.mac), {});
     }
+    if (key === "GET /api/dns/local") return { status: 200, body: { hosts: [], hosts_enabled: true, cache_enabled: true } };
     if (key === "GET /api/dns/config") {
       // One generated config per node of the synthetic topology.
       const node = u.searchParams.get("node");

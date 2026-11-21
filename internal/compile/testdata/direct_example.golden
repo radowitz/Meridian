@@ -23,7 +23,6 @@
 61895480849512a1c8bb40e34aa30218bf6f1305165cf4d44f613b40bf74ca8e nodes/gw/etc/wireguard/m01.conf
 62b82f75519763b9e4a27b6dcbba435a4a89221aff2ad0dfd0f47d84d3d76a83 nodes/exit-c/usr/local/sbin/meridian-routes.sh
 637a2b74cfa7e18ab7cdfb53c838ae09b7184f0f345072cac44c14f295120743 nodes/gw/usr/local/sbin/meridian-update-geosite.sh
-69682323c9d19937300aeb8baebdd9a7d5fe4f6f98053ead8cb85541b6e75700 nodes/gw/etc/smartdns/smartdns.conf
 69c3346b0fc96abfea021b75daa7778491f0f9df444fb831f6d2728a01d74426 nodes/exit-b/usr/local/sbin/meridian-fwcompat.sh
 6fbb87b9eadafa6a094c9d08be94fccff20ca47b152942f8d70a9da2de2ea4a4 nodes/gw/usr/local/sbin/meridian-verify.sh
 708c27eba3694b201160dd559f17193455da9e2fb1f6b6bf48597fab1ccb190e APPLY_ORDER.txt
@@ -37,6 +36,7 @@
 96c0f0eb0f5555f54c139604796e23f48e74e8759eeecd33b8fa0d24e13000a4 nodes/exit-a/usr/local/sbin/meridian-routes.sh
 96df68283c66adfd9333b641005aef12bd0611dab3e051f06a55c8224779c98f nodes/exit-a/etc/meridian/forwarding.conf
 a3096e0ed5c73c87e7423f08ceca4dfef2af622d9e922a37251657fb8a826026 nodes/exit-c/etc/smartdns/smartdns.conf
+a7818814ff7587d6363b8597020ad593470601c1879c16af8e97984f79d82813 nodes/gw/etc/smartdns/smartdns.conf
 a7eb88c6a57b6806d1594e8c857768caf6981e4362dea0fbe7fb2a4660a07246 nodes/exit-b/etc/wireguard/m01.conf
 a89117bff68f2945b37c7552fd849ca420960fb2fda0ba2fa9a00a22fccc405f nodes/exit-c/usr/local/sbin/meridian-up.sh
 a9ff1dd2937d3e8aa19e1cd71a83d66926b3479b155e7bcacf500efbc4462e1b nodes/exit-a/usr/local/sbin/meridian-up.sh
