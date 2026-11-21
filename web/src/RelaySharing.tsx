@@ -1,3 +1,4 @@
+import { LatencyBadge } from "./LatencyBadge";
 import {
   Help,
   Note,
@@ -82,7 +83,7 @@ function Measured({ m }: { m?: PathMeasured }) {
   return (
     <Tooltip title={`本轮：时延 ${v(m.last_rtt_ms, " ms", 1)}，丢包 ${v(m.last_loss_pct, "%", 0)}；左侧为多轮平滑值`}>
       <span data-testid="measured">
-        {v(m.rtt_ms, " ms")} · 丢包 {v(m.loss_pct, "%", 1)}{" "}
+        <LatencyBadge ms={m.rtt_ms} /> · 丢包 {v(m.loss_pct, "%", 1)}{" "}
         <Typography.Text type="secondary">
           （网关测量，<TimeText value={m.at} />）
         </Typography.Text>
@@ -104,7 +105,7 @@ function MeasuredShort({ m }: { m?: PathMeasured }) {
       }
     >
       <span data-testid="measured" className="nowrap" tabIndex={0}>
-        {v(m.rtt_ms, " ms")} · {v(m.loss_pct, "%", 1)}
+        <LatencyBadge ms={m.rtt_ms} /> · {v(m.loss_pct, "%", 1)}
       </span>
     </Tooltip>
   );

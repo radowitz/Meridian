@@ -1,3 +1,4 @@
+import { LatencyBadge } from "./LatencyBadge";
 // 概览, one screen: a status line (gateway version, carrying path, leak
 // check), the real-time throughput chart, then four compact cards — exits,
 // domestic relays, tunnels (only abnormal ones), remote access. Every fact
@@ -112,12 +113,12 @@ function PathFact({ c }: { c?: Carrying }) {
 }
 
 /** Latency of an exit from the hub's same-exit leg report (the leg in use), if any. */
-function latencyOf(exit: string | undefined, legs: MeshLegReport[]): string | null {
+function latencyOf(exit: string | undefined, legs: MeshLegReport[]): number | null {
   if (!exit) return null;
   const r = legs.find((x) => x.exit === exit && !x.event && x.result === "ok");
   if (!r) return null;
   const ms = r.active === "mesh" ? r.mesh_rtt : r.active === "direct" ? r.direct_rtt : 0;
-  return ms ? `${ms} ms` : null;
+  return ms > 0 ? ms : null;
 }
 
 const EXIT_ROWS = 4;
@@ -379,7 +380,7 @@ export default function OverviewPage() {
                       return (
                         <li key={g.id} className="group-row" data-testid={`groups-tile-row-${g.id}`}>
                           <EllipsisLink className="group-row-name" to={href("exits", g.id)} text={groupLabel(g, d.groups)} />
-                          <span className="group-row-mode muted">{lat ?? ""}</span>
+                          <span className="group-row-mode muted">{lat !== null ? <LatencyBadge ms={lat} title="枢纽到当前出口的探测延迟" /> : null}</span>
                           <span className="group-row-state">
                             <GroupActualCell g={g} nodeName={nodeName} />
                           </span>

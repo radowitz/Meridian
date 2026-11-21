@@ -1,3 +1,4 @@
+import { LatencyBadge } from "./LatencyBadge";
 import { Button, Tag, Typography } from "antd";
 import { useState } from "react";
 import * as api from "./api";
@@ -30,9 +31,10 @@ function MeshLegChoices({ report, events }: { report?: MeshLegReport; events: Me
       return <div key={leg} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 4, marginBlock: 2 }}>
         {active === leg ? <StatusTag kind="ok">{leg === "direct" ? "直连" : "Mesh"} · 使用中</StatusTag>
           : <Typography.Text type="secondary">{leg === "direct" ? "直连" : "Mesh"}</Typography.Text>}
-        {loss !== undefined ? <Tag color={loss === 1000 ? "error" : loss > 0 ? "warning" : "blue"} title="枢纽到出口的延迟与探测丢包">
-          {loss < 1000 && rtt !== undefined ? `${rtt} ms` : "—"} · 丢包 {loss / 10}%
-        </Tag> : null}
+        {loss !== undefined ? <>
+          <LatencyBadge ms={loss < 1000 ? rtt : undefined} failed={loss === 1000} label={loss === 1000 ? "无响应" : "无延迟样本"} title="枢纽到出口的探测延迟" />
+          <Tag color={loss === 1000 ? "error" : loss > 0 ? "warning" : "default"}>丢包 {loss / 10}%</Tag>
+        </> : null}
         {active === leg && reason ? <Typography.Text type="secondary">{reason}</Typography.Text> : null}
         {leg === "mesh" && (!active || active === "blackhole") && reason
           ? <Typography.Text type="secondary">{` · ${reason}`}</Typography.Text> : null}

@@ -1133,8 +1133,10 @@ describe("same-exit Mesh quality", () => {
       { plan: "synthetic", exit: "synthetic-us", beat: 1799999990, active: "blackhole", reason: "both_down", switched: 1799999990, direct_loss: 1000, direct_rtt: 0, mesh_loss: 1000, mesh_rtt: 0, result: "ok", event: true },
     ]} />);
     expect(screen.getByText("Mesh · 使用中")).toBeInTheDocument();
-    expect(screen.getByText("420 ms · 丢包 20%")).toBeInTheDocument();
-    expect(screen.getByText("70 ms · 丢包 0%")).toBeInTheDocument();
+    expect(screen.getByText("420 ms")).toHaveAttribute("data-tone", "warn");
+    expect(screen.getByText("丢包 20%")).toBeInTheDocument();
+    expect(screen.getByText("70 ms")).toHaveAttribute("data-tone", "ok");
+    expect(screen.getByText("丢包 0%")).toBeInTheDocument();
     expect(screen.getByText("Mesh 质量持续更好")).toBeInTheDocument();
     expect(screen.getByText(/暂无样本/)).toBeInTheDocument();
     expect(screen.getByText(/双腿不可用 · 黑洞/)).toBeInTheDocument();
@@ -1151,6 +1153,7 @@ it("shows measured gateway RTT beside a group member without inventing group hea
  });
  renderAt("#/exits",{foldsOpen:true});
  const member=await screen.findByTestId("member-hk-hk-ix");
- await waitFor(()=>expect(member).toHaveTextContent("42.3 ms · 网关实测"));
+ expect(await within(member).findByText("42.3 ms")).toHaveAttribute("data-tone", "ok");
+ expect(member).toHaveTextContent("网关实测");
  expect(within(screen.getByTestId("group-hk")).getByTestId("group-model")).toHaveTextContent("未收到组健康报告");
 });
