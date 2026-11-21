@@ -36,6 +36,13 @@ function doc(): Topology {
   } as unknown as Topology;
 }
 
+it("opens a new managed exit from the exits page shortcut", async () => {
+  const fake = fakeApi({ "GET /api/topology": doc });
+  renderAt("#/topology?add=exit");
+  expect(await screen.findByRole("textbox", { name: "节点名称" })).toHaveValue("出口 exit");
+  expect(fake.find("PUT /api/topology")).toHaveLength(0);
+});
+
 describe("whole-topology save", () => {
   it("sends the document without the blocks owned by their own endpoints", async () => {
     const fake = fakeApi({ "PUT /api/topology": (req) => ({ topology: req.body, issues: [], paths: [], draft: false }) });

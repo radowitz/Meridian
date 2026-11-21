@@ -215,8 +215,9 @@ type Link struct {
 	// 127.0.0.1 of the dialing end (zero: 52000 + slot). The slot is the
 	// link's persisted allocation (Topology.Allocations), not its
 	// position. See validate.TunnelPorts.
-	WGPort       int `json:"wg_port,omitempty"`
-	WSSLocalPort int `json:"wss_local_port,omitempty"`
+	WGPort       int  `json:"wg_port,omitempty"`
+	AutoWGPort   bool `json:"auto_wg_port,omitempty"`
+	WSSLocalPort int  `json:"wss_local_port,omitempty"`
 
 	// Keepalive nil means "use the default (25)". Zero on a NAT dial-out
 	// link is an error: PersistentKeepalive must stay on.

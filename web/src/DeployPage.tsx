@@ -1,3 +1,4 @@
+import { applyDeployLinkChanges } from "./automatic_deploy";
 // 部署: the operations centre. What an install would change, installing to
 // this gateway (one transaction, compensated on failure), rolling back,
 // pushing configuration to remote nodes over SSH, and what is installed now.
@@ -1514,6 +1515,7 @@ export default function DeployPage() {
       </ErrorBoundary>
       <ErrorBoundary>
         <DeploymentGuide
+          onLinkChanged={doc.dirty ? undefined : changes => doc.applyServerChange(t => applyDeployLinkChanges(t, changes))}
           onChanged={() => {
             refresh();
             void host.reload();

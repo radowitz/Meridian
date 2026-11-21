@@ -1,3 +1,4 @@
+import { newWireGuardPort } from "./wireguard_ports";
 import { ExitLatencyPanel, ExitLatencyValue, type ExitLatencyRow } from "./ExitLatency";
 import { ExitMeshCarrier, MeshLegQuality } from "./MeshLegQuality";
 // 出口: region groups are the main view of exits. A region (香港, 美国 …)
@@ -47,6 +48,7 @@ import {
 } from "antd";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as api from "./api";
+import { applyDeployLinkChanges, deployTopology } from "./automatic_deploy";
 import type { ApiError } from "./api";
 import { href, useRouter, useStatus, useTopologyDoc } from "./state";
 import { RELAY_STATUS, RelaySharingView } from "./RelaySharing";
@@ -1401,9 +1403,10 @@ export function withManagedExit(t: Topology, node: Node, v: ManagedValues): Topo
   else delete next.via_exit;
   let links = t.links;
   if (v.via_exit && v.add_link && relayLinks(t, node.id, v.via_exit).length === 0) {
+    const wgPort = newWireGuardPort(t, node.id, v.via_exit);
     links = [
       ...links,
-      { id: newLinkId(t, node.id, v.via_exit), from: node.id, to: v.via_exit, transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25 },
+      { id: newLinkId(t, node.id, v.via_exit), from: node.id, to: v.via_exit, transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25, ...(wgPort ? { wg_port: wgPort, auto_wg_port: true } : {}) },
     ];
   }
   return { ...t, nodes: t.nodes.map((n) => (n.id === node.id ? next : n)), links };
@@ -1428,11 +1431,12 @@ function ExitDrawer({
   /** Why saving is not possible now (unsaved topology edits elsewhere). */
   blocked?: string;
   onClose: () => void;
-  onSave: (next: Topology, what: string) => Promise<ApiError | null>;
+  onSave: (next: Topology, what: string, deploy: boolean) => Promise<ApiError | null>;
 }) {
   const [form] = Form.useForm();
   const [error, setError] = useState<ApiError | null>(null);
   const [saving, setSaving] = useState(false);
+  const confirm = useConfirmDanger();
   const node = mode.node;
   const external = mode.kind === "external";
   const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
@@ -1460,7 +1464,7 @@ function ExitDrawer({
         }
       : { endpoint_host: mode.node.endpoint_host ?? "", via_exit: mode.node.via_exit, add_link: true };
 
-  async function save() {
+  async function save(deploy = false) {
     let v: Record<string, unknown>;
     try {
       v = await form.validateFields();
@@ -1477,14 +1481,23 @@ function ExitDrawer({
       next = withManagedExit(topo, mode.node, v as unknown as ManagedValues);
       what = `出口 ${mode.node.name || mode.node.id} 已保存`;
     }
-    setSaving(true);
-    const err = await onSave(next, what);
-    setSaving(false);
-    setError(err);
-    if (err?.field) {
-      const map: Record<string, string> = { endpoint_host: "endpoint_host", via_exit: "via_exit" };
-      if (map[err.field]) form.setFields([{ name: map[err.field], errors: [err.message] }]);
-    }
+    const submit = async () => {
+      setSaving(true);
+      const err = await onSave(next, what, deploy);
+      setSaving(false);
+      setError(err);
+      if (err?.field) {
+        const map: Record<string, string> = { endpoint_host: "endpoint_host", via_exit: "via_exit" };
+        if (map[err.field]) form.setFields([{ name: map[err.field], errors: [err.message] }]);
+      }
+    };
+    if (!deploy) return submit();
+    confirm({
+      title: "保存出口并自动部署？",
+      consequence: "将预检并下发当前待安装的节点和链路。遇到上联 MTU 过大时会采用可验证的较低值。部署可能短暂中断相关路径，请保持此页面打开。",
+      okText: "保存并部署",
+      onOk: submit,
+    });
   }
 
   const relayLinkCount = mode.kind === "managed" && via ? relayLinks(topo, mode.node.id, via).length : 0;
@@ -1500,9 +1513,12 @@ function ExitDrawer({
       footer={
         <Space>
           <Button onClick={onClose}>取消</Button>
-          <Button type="primary" loading={saving} disabled={!!blocked} onClick={() => void save()}>
-            保存到拓扑
+          <Button type={external ? "primary" : "default"} loading={saving} disabled={!!blocked} onClick={() => void save()}>
+            {external ? "保存到拓扑" : "仅保存"}
           </Button>
+          {!external ? <Button type="primary" disabled={!!blocked || saving} onClick={() => void save(true)}>
+            保存并部署
+          </Button> : null}
         </Space>
       }
     >
@@ -1836,7 +1852,7 @@ export default function ExitsPage() {
   const latencies=useMemo(()=>new Map(latencyRows.map(r=>[r.exit_id,r])),[latencyRows]);
   const groups = useApi(() => api.listGroups(), []);
   const doc = useTopologyDoc();
-  const { markApplyRequired } = useStatus();
+  const { markApplyRequired, refresh } = useStatus();
   const { route } = useRouter();
   const { message } = AntApp.useApp();
   const [editing, setEditing] = useState<RegionGroupView | null | "new">(null);
@@ -1893,26 +1909,46 @@ export default function ExitsPage() {
   const socks = useApi(() => api.listSocksCredentials(), []);
   const [exitEdit, setExitEdit] = useState<{ kind: "external"; node: Node | null } | { kind: "managed"; node: Node } | null>(null);
   const [savedIssues, setSavedIssues] = useState<Issue[]>([]);
+  const [deployment, setDeployment] = useState<{ phase: "running" | "done" | "stopped"; detail?: string } | null>(null);
 
   /**
    * Writes a node change into the stored topology with one PUT (the same
    * request the topology editor's save sends). Refused while the shared
    * working copy has other unsaved edits, so they are never saved by accident.
    */
-  const saveExit = async (next: Topology, what: string, id: string): Promise<ApiError | null> => {
+  const saveExit = async (next: Topology, what: string, id: string, deploy: boolean): Promise<ApiError | null> => {
+    let saved: Topology;
     try {
-      const res = await api.putTopology(next, !!next.settings.draft);
+      const res = await api.putTopology(next, !deploy && !!next.settings.draft);
+      saved = res.topology;
       doc.applyServerChange(() => res.topology);
       markApplyRequired();
-      setChanged(true);
+      setChanged(!deploy);
       setSavedIssues((res.issues ?? []).filter((i) => i.node_id === id || i.exit_id === id));
       setExitEdit(null);
-      message.success(`${what}；按部署顺序重新下发后生效`);
+      if (!deploy) message.success(`${what}；按部署顺序重新下发后生效`);
       void groups.reload();
       void socks.reload();
-      return null;
     } catch (e) {
       return e instanceof api.ApiError ? e : new api.ApiError(0, {});
+    }
+    if (deploy) void runExitDeployment(saved);
+    return null;
+  };
+
+  const runExitDeployment = async (saved: Topology) => {
+    setDeployment({ phase: "running" });
+    try {
+      await deployTopology(saved.links.some(link => link.enabled && link.transport === "cf_mesh"), view => {
+        const step = view.run?.steps.find(item => item.node_id === view.run?.current);
+        setDeployment({ phase: "running", detail: step?.wait_seconds ? `${step.node_name}：SSH 限流，等待 ${step.wait_seconds} 秒` : step?.node_name });
+      }, changes => doc.applyServerChange(t => applyDeployLinkChanges(t, changes)));
+      setDeployment({ phase: "done" });
+    } catch (error) {
+      setDeployment({ phase: "stopped", detail: error instanceof Error ? error.message : String(error) });
+    } finally {
+      void groups.reload();
+      void refresh();
     }
   };
 
@@ -1953,11 +1989,21 @@ export default function ExitsPage() {
       title="出口"
 
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing("new")}>
-          新建地区组
-        </Button>
+        <Space wrap>
+          <Link to={`${href("topology")}?add=exit`}>添加受管出口</Link>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing("new")}>
+            新建地区组
+          </Button>
+        </Space>
       }
     >
+      {deployment ? <Alert
+        showIcon
+        type={deployment.phase === "stopped" ? "warning" : deployment.phase === "done" ? "success" : "info"}
+        message={deployment.phase === "stopped" ? "出口已保存，部署已暂停" : deployment.phase === "done" ? "自动部署完成" : "正在自动部署，请保持此页面打开"}
+        description={deployment.detail}
+        action={deployment.phase === "stopped" ? <Link to={href("deploy")}>查看部署并继续</Link> : undefined}
+      /> : null}
       {changed ? <ApplyRequiredNotice what="地区组已修改" /> : null}
       <ApiErrorAlert error={act.error} onClose={act.clear} />
       <ApiErrorAlert error={hubAct.error} onClose={hubAct.clear} />
@@ -2080,9 +2126,9 @@ export default function ExitsPage() {
           topo={doc.topo}
           socks={socks.data?.credentials}
           socksError={socks.error}
-          blocked={doc.dirty ? "拓扑有未保存的修改（拓扑、规则或泄漏页）：先在那里保存或放弃，再在这里保存，免得把它们一起写进去。" : undefined}
+          blocked={deployment?.phase === "running" ? "自动部署正在运行" : doc.dirty ? "拓扑有未保存的修改（拓扑、规则或泄漏页）：先在那里保存或放弃，再在这里保存，免得把它们一起写进去。" : undefined}
           onClose={() => setExitEdit(null)}
-          onSave={(next, what) => saveExit(next, what, exitEdit.node?.id ?? next.nodes[next.nodes.length - 1]?.id ?? "")}
+          onSave={(next, what, deploy) => saveExit(next, what, exitEdit.node?.id ?? next.nodes[next.nodes.length - 1]?.id ?? "", deploy)}
         />
       ) : null}
       <GroupDrawer

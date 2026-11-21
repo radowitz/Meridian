@@ -482,6 +482,8 @@ export const deployInstall = (runId: string, nodeId: string, preflightId: string
 /** Verify one verify-only step (`nodeId`) or every one not done (`"all"`): read-only, one server at a time. */
 export const deployVerify = (runId: string, target: { nodeId: string } | "all") =>
   request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/verify`, target === "all" ? { all: true } : { node_id: target.nodeId });
+export const deployRepairWGPort = (runId: string, preflightId: string) =>
+  request<{ change: MTUChange }>("POST", `/api/deploy/runs/${enc(runId)}/repair-wg-port`, { preflight_id: preflightId });
 export const deployReplan = (runId: string) => request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/replan`, {});
 export const deployCancel = (runId: string) => request<DeployView>("POST", `/api/deploy/runs/${enc(runId)}/cancel`, {});
 /** Skips the current blocked / unreachable step for this run (it stays pending; nodes that depend on it wait). */

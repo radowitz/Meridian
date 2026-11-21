@@ -1517,6 +1517,7 @@ func (s *Server) registerDeploy(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/deploy/runs/{id}/install", s.postDeployInstall)
 	mux.HandleFunc("POST /api/deploy/runs/{id}/verify", s.postDeployVerify)
 	mux.HandleFunc("POST /api/deploy/runs/{id}/replan", s.postDeployReplan)
+	mux.HandleFunc("POST /api/deploy/runs/{id}/repair-wg-port", s.postDeployRepairWGPort)
 	mux.HandleFunc("POST /api/deploy/runs/{id}/cancel", s.postDeployCancel)
 	mux.HandleFunc("POST /api/deploy/runs/{id}/skip", s.postDeploySkip)
 	mux.HandleFunc("POST /api/deploy/runs/{id}/unskip", s.postDeployUnskip)

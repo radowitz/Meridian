@@ -895,10 +895,23 @@ describe("nested and external SOCKS exits", () => {
     expect(within(await screen.findByTestId("exit-node-my-socks")).getByTestId("external-tag-my-socks")).toHaveTextContent("外部 SOCKS · 仅 TCP · 仅 IPv4");
   });
 
-  it("shows the badges and limitations, offers only plain managed exits as relay exits and adds the relay link", async () => {
+  it.each(["save", "deploy", "blocked"])("adds a managed relay link (%s)", async (mode) => {
+    const deploy = mode !== "save";
+    const step = { node_id: "hk-ix", node_name: "香港 IX", phase: "pending" };
+    const run = { id: "deploy-1", state: "active", current: step.node_id, steps: [step] };
     let saved: Topology | null = null;
     const api = fakeApi({
       "GET /api/topology": withKinds,
+      "GET /api/deploy": () => ({ topology_version: "v1", plan: { steps: [step] } }),
+      "POST /api/deploy/runs": () => ({ run }),
+      "POST /api/deploy/runs/deploy-1/preflight": () => ({
+        run: { ...run, steps: [mode === "blocked"
+          ? { ...step, phase: "blocked", message: "需要确认 SSH 主机指纹" }
+          : { ...step, phase: "review", can_install: true, preflight_id: "pf-1" }] },
+      }),
+      "POST /api/deploy/runs/deploy-1/install": () => ({
+        run: { ...run, state: "done", steps: [{ ...step, phase: "done" }] },
+      }),
       "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
       "GET /api/socks-credentials": () => ({ credentials: [SOCKS_CRED] }),
       "PUT /api/topology": (req) => {
@@ -938,10 +951,27 @@ describe("nested and external SOCKS exits", () => {
     expect(req).toHaveTextContent("现在有 0 条");
     expect(within(drawer).getByTestId("deploy-order")).toHaveTextContent("先在「部署」页重新下发中继出口 香港二号，再下发这个出口，然后两个枢纽");
     expect(within(drawer).getByRole("checkbox", { name: /补上一条直连 WG 链路 hk-ix → hk-2/ })).toBeChecked();
-    await userEvent.click(within(drawer).getByRole("button", { name: btn("保存到拓扑") }));
+    await userEvent.click(within(drawer).getByRole("button", { name: btn(deploy ? "保存并部署" : "仅保存") }));
+    if (deploy) {
+      expect(api.find("PUT /api/topology")).toHaveLength(0);
+      const detail = await screen.findByText(/将预检并下发当前待安装的节点和链路/);
+      const confirmation = detail.closest<HTMLElement>('[role="dialog"]')!;
+      await userEvent.click(within(confirmation).getByRole("button", { name: btn("保存并部署") }));
+      if (mode === "blocked") {
+        await screen.findByText("出口已保存，部署已暂停");
+        expect(screen.getByText(/需要确认 SSH 主机指纹/)).toBeVisible();
+        expect(screen.getByRole("link", { name: "查看部署并继续" })).toBeVisible();
+        expect(api.find("POST /api/deploy/runs/deploy-1/install")).toHaveLength(0);
+      } else {
+        await screen.findByText("自动部署完成");
+        expect(api.find("POST /api/deploy/runs/deploy-1/install")[0].body).toEqual({ node_id: "hk-ix", preflight_id: "pf-1" });
+      }
+    } else {
+      expect(api.find("GET /api/deploy")).toHaveLength(0);
+    }
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     expect(saved!.nodes.find((n: Node) => n.id === "hk-ix")!.via_exit).toBe("hk-2");
-    expect(saved!.links).toEqual([{ id: "hk-ix-hk-2", from: "hk-ix", to: "hk-2", transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25 }]);
+    expect(saved!.links).toEqual([expect.objectContaining({ id: "hk-ix-hk-2", from: "hk-ix", to: "hk-2", transport: "direct_wg", enabled: true, standby: false, mtu: 1420, keepalive: 25 })]);
     // The external exit went back unchanged, still without any secret.
     expect(saved!.nodes.find((n: Node) => n.id === "ext-1")!.external).toEqual(withKinds().nodes.find((n) => n.id === "ext-1")!.external);
     expect(api.find("PUT /api/topology")[0].raw).not.toMatch(/username|password/);

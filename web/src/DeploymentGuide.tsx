@@ -17,7 +17,7 @@ import { VerifyGroup } from "./DeployVerifyGroup";
 import { PreflightReport } from "./Preflight";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { href } from "./state";
-import type { DeployPhase, DeployRun, DeploySkip, DeployStep, DeployView, PreflightFinding } from "./types";
+import type { DeployPhase, DeployRun, DeploySkip, DeployStep, DeployView, MTUChange, PreflightFinding } from "./types";
 import { roleLabel } from "./types";
 import {
   ApiErrorAlert,
@@ -750,7 +750,7 @@ export function NodeBlockers({ blockers }: { blockers?: PreflightFinding[] }) {
   );
 }
 
-export function DeploymentGuide({ onChanged, header }: { onChanged?: () => void; header?: ReactNode }) {
+export function DeploymentGuide({ onChanged, header, onLinkChanged }: { onChanged?: () => void; header?: ReactNode; onLinkChanged?: (changes: MTUChange[]) => void }) {
   const state = useApi(() => api.getDeploy(), []);
   const act = useAction();
   const confirm = useConfirmDanger();
@@ -834,9 +834,9 @@ export function DeploymentGuide({ onChanged, header }: { onChanged?: () => void;
         </Note>
         <Button disabled={!view || !autoReady || !!act.busy || inFlight} loading={act.busy === "auto"} onClick={() => confirm({
           title: "自动预检并部署待变更节点？",
-          consequence: "按当前部署计划依次预检和下发，可能短暂中断相关路径。若预检阻断、拓扑变化或下发失败，将停在对应节点。",
+          consequence: "按当前部署计划依次预检和下发，可能短暂中断相关路径。必要时会采用预检支持的较低 MTU。若预检阻断、拓扑变化或下发失败，将停在对应节点。",
           okText: "开始自动部署",
-          onOk: () => act.run(() => deployPendingNodes(apply), "auto", () => void state.reload()),
+          onOk: () => act.run(() => deployPendingNodes(apply, onLinkChanged), "auto", () => void state.reload()),
         })}>自动检测并部署</Button>
         {view && !autoReady ? <Typography.Text type="secondary" style={{ marginInlineStart: 8 }}>当前没有待部署节点</Typography.Text> : null}
         <ApiErrorAlert error={act.error} onClose={act.clear} />
