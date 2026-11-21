@@ -162,7 +162,7 @@ describe("topology", () => {
     expect(detail).toHaveTextContent("旧的 SSH 地址");
     await pick("服务器", "香港机房", detail);
     await within(detail).findByRole("link", { name: "打开服务器" });
-    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await userEvent.click(screen.getByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     const body = JSON.parse(saved!) as Topology;
     const hub = body.nodes.find((n) => n.id === "hk-hub")!;
@@ -211,7 +211,7 @@ describe("gateway settings: resolver", () => {
     expect(drawer).toHaveTextContent("国内解析器能看到这些域名（包括国外的）");
     expect(drawer).toHaveTextContent("DNS 泄漏测试里会出现国内解析器");
 
-    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await userEvent.click(screen.getByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     const body = JSON.parse(saved!) as Topology;
     expect(body.settings.clients_ipv6_via_gateway).toBe(true);
@@ -236,7 +236,7 @@ describe("gateway settings: resolver", () => {
     expect(split).toBeChecked();
     expect(screen.getByRole("switch", { name: "客户端 IPv6 经本网关" })).toBeChecked();
     await userEvent.click(split);
-    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await userEvent.click(screen.getByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     const body = JSON.parse(saved!) as Topology;
     expect(body.settings.unlisted_domestic_dns).toBe(false);
@@ -406,7 +406,7 @@ describe("topology: deleting a deployed node", () => {
     await waitFor(() => expect(del).toBeEnabled());
     await userEvent.click(del);
     await waitFor(() => expect(screen.queryByTestId("node-delete")).toBeNull());
-    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await userEvent.click(screen.getByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(saved).toBeDefined());
     expect(saved!.nodes.some((n) => n.id === "us")).toBe(false);
     // Nothing was withdrawn or forgotten.
@@ -484,7 +484,7 @@ describe("ports", () => {
     expect(within(detail).getByLabelText("WireGuard 端口")).toHaveValue("51841");
     const local = within(detail).getByLabelText("wstunnel 本地端口");
     await userEvent.type(local, "52900");
-    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await userEvent.click(screen.getByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     const body = JSON.parse(saved!) as Topology;
     expect(body.links[0].wss_local_port).toBe(52900);
@@ -694,7 +694,7 @@ describe("topology: adding links", () => {
     await pick("终点", "主枢纽", dlg);
     await pick("承载方式", /WSS/, dlg);
     await userEvent.click(screen.getByRole("button", { name: btn("添加") }));
-    await userEvent.click(await screen.findByRole("button", { name: btn("保存") }));
+    await userEvent.click(await screen.findByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(s.api.find("PUT /api/topology")).toHaveLength(1));
     const l = s.saved().links.find((x) => x.from === "gw" && x.to === "hk-hub" && x.id.startsWith("gw-hk-hub"))!;
     expect(l.standby).toBe(false);
@@ -721,7 +721,7 @@ describe("topology: adding links", () => {
     const dlg = await screen.findByTestId("add-link-form");
     await pick("终点", "主枢纽", dlg);
     await userEvent.click(screen.getByRole("button", { name: btn("添加") }));
-    await userEvent.click(await screen.findByRole("button", { name: btn("保存") }));
+    await userEvent.click(await screen.findByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(s.api.find("PUT /api/topology")).toHaveLength(1));
     const added = s.saved().links.filter((x) => x.from === "gw" && x.to === "hk-hub");
     expect(added.at(-1)).toMatchObject({ transport: "direct_wg", standby: false, enabled: true });
@@ -748,7 +748,7 @@ describe("topology: adding links", () => {
     unmount();
     renderAt("#/topology/r-ix");
     await userEvent.click(await screen.findByRole("switch", { name: "连 IX 出口地址" }));
-    await userEvent.click(await screen.findByRole("button", { name: btn("保存") }));
+    await userEvent.click(await screen.findByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     expect(saved!.links.find((l) => l.id === "r-ix")!.dial_egress).toBe(true);
     expect(saved!.links.find((l) => l.id === "g-ix")!.dial_egress).toBeUndefined();

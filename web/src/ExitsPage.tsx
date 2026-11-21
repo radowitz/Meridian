@@ -1,3 +1,4 @@
+import { AutoDeployProgress, useAutoDeployProgress } from "./AutoDeployProgress";
 import { newWireGuardPort } from "./wireguard_ports";
 import { ExitLatencyPanel, ExitLatencyValue, type ExitLatencyRow } from "./ExitLatency";
 import { ExitMeshCarrier, MeshLegQuality } from "./MeshLegQuality";
@@ -101,6 +102,8 @@ import {
   useAction,
   useApi,
   useConfirmDanger,
+  STACK_QUERY,
+  useMediaQuery,
   noteRateLimited,
   RateLimitNote,
   useServerCooldown,
@@ -1437,6 +1440,7 @@ function ExitDrawer({
   const [error, setError] = useState<ApiError | null>(null);
   const [saving, setSaving] = useState(false);
   const confirm = useConfirmDanger();
+  const phone = useMediaQuery(STACK_QUERY);
   const node = mode.node;
   const external = mode.kind === "external";
   const name = (id: string) => topo.nodes.find((n) => n.id === id)?.name || id;
@@ -1496,6 +1500,7 @@ function ExitDrawer({
       title: "保存出口并自动部署？",
       consequence: "将预检并下发当前待安装的节点和链路。遇到上联 MTU 过大时会采用可验证的较低值。部署可能短暂中断相关路径，请保持此页面打开。",
       okText: "保存并部署",
+      mobileFull: true,
       onOk: submit,
     });
   }
@@ -1508,7 +1513,7 @@ function ExitDrawer({
       title={external ? (node ? `外部 SOCKS 出口「${node.name || node.id}」` : "添加外部 SOCKS 出口") : `出口「${node?.name || node?.id}」的到达方式`}
       open={open}
       onClose={onClose}
-      width={600}
+      width={phone ? "100%" : 600}
       destroyOnHidden
       footer={
         <Space>
@@ -1711,10 +1716,14 @@ function ExitNodes({
   latencies,
   meshHubs,
   refreshMesh,
+  groups,
+  pendingExits,
 }: {
   topo: Topology;
   latencies?: Map<string,ExitLatencyRow>;
   meshHubs: GroupHubState[];
+  groups: RegionGroupView[];
+  pendingExits: Set<string>;
   refreshMesh: () => void;
   socks: SOCKSCredentialView[] | undefined;
   /** Exits in no region group: listed first, each with 「加入组…」. */
@@ -1734,20 +1743,33 @@ function ExitNodes({
   const hasExternal = exits.some(isExternalExit);
   const row = (n: Node) => {
     const cred = n.external ? socks?.find((c) => c.id === n.external!.credential_id) : undefined;
+    const latency = latencies?.get(n.id);
+    const active = groups.filter(group => group.actual?.state === "ok" && group.actual.active === n.id);
+    const standby = groups.some(group => group.actual?.state === "ok" &&
+      group.member_status.some(member => member.id === n.id && member.health?.up === true && member.switchable === true));
+    const checkedAt = latency?.measured_at || active.flatMap(group => group.actual.read_at ?? []).sort().at(-1);
+    const pending = pendingExits.has(n.id);
     return (
       <div key={n.id} className="ungrouped-item" data-testid={`exit-node-${n.id}`}>
-        <div>
+        <div className="exit-node-main">
           <Space size={[4, 2]} wrap>
             <Link to={href("topology", n.id)}>{n.name || n.id}</Link>
+            {active.length ? <StatusTag kind="ok">当前使用</StatusTag> : standby ? <StatusTag kind="ok">可用备用</StatusTag> : null}
+            {pending ? <StatusTag kind="pending">待安装</StatusTag> : null}
+            {!latency || latency.state === "not_measured" ? <Typography.Text type="secondary">延迟未探测</Typography.Text> : <ExitLatencyValue row={latency} />}
+            {checkedAt ? <TimeText value={checkedAt} /> : null}
+          </Space>
+          <Space size={[4, 2]} wrap className="exit-node-meta">
             <Typography.Text type="secondary" className="mono-small">
               {n.id} · {regionLabel(n.region)}
             </Typography.Text>
             <MemberAttrs m={n} />
             <ExitKindTags node={n} name={name} />
-            <ExitLatencyValue row={latencies?.get(n.id)} />
           </Space>
           <ExitMeshCarrier exit={n.id} topo={topo} hubs={meshHubs} refresh={refreshMesh} />
-          {n.external ? (
+          {n.external || n.endpoint_host ? <details className="exit-node-details">
+            <summary>连接详情</summary>
+            {n.external ? (
             <div className="state-line">
               承载 {name(n.external.carrier)} · 接口 <Mono>{n.external.interface}</Mono> · 代理 <Mono>{`${n.external.socks_address}:${n.external.socks_port}`}</Mono> · 凭据{" "}
               {cred ? cred.name : n.external.credential_id || "—"}
@@ -1757,6 +1779,7 @@ function ExitNodes({
               动态域名端点 <Mono>{n.endpoint_host}</Mono>
             </div>
           ) : null}
+          </details> : null}
         </div>
         <Space size={4}>
           {ungrouped.has(n.id) ? joinMenu(n) : null}
@@ -1852,7 +1875,7 @@ export default function ExitsPage() {
   const latencies=useMemo(()=>new Map(latencyRows.map(r=>[r.exit_id,r])),[latencyRows]);
   const groups = useApi(() => api.listGroups(), []);
   const doc = useTopologyDoc();
-  const { markApplyRequired, refresh } = useStatus();
+  const { markApplyRequired, refresh, status } = useStatus();
   const { route } = useRouter();
   const { message } = AntApp.useApp();
   const [editing, setEditing] = useState<RegionGroupView | null | "new">(null);
@@ -1909,7 +1932,7 @@ export default function ExitsPage() {
   const socks = useApi(() => api.listSocksCredentials(), []);
   const [exitEdit, setExitEdit] = useState<{ kind: "external"; node: Node | null } | { kind: "managed"; node: Node } | null>(null);
   const [savedIssues, setSavedIssues] = useState<Issue[]>([]);
-  const [deployment, setDeployment] = useState<{ phase: "running" | "done" | "stopped"; detail?: string } | null>(null);
+  const { progress: deployment, track } = useAutoDeployProgress();
 
   /**
    * Writes a node change into the stored topology with one PUT (the same
@@ -1937,19 +1960,17 @@ export default function ExitsPage() {
   };
 
   const runExitDeployment = async (saved: Topology) => {
-    setDeployment({ phase: "running" });
-    try {
-      await deployTopology(saved.links.some(link => link.enabled && link.transport === "cf_mesh"), view => {
-        const step = view.run?.steps.find(item => item.node_id === view.run?.current);
-        setDeployment({ phase: "running", detail: step?.wait_seconds ? `${step.node_name}：SSH 限流，等待 ${step.wait_seconds} 秒` : step?.node_name });
-      }, changes => doc.applyServerChange(t => applyDeployLinkChanges(t, changes)));
-      setDeployment({ phase: "done" });
-    } catch (error) {
-      setDeployment({ phase: "stopped", detail: error instanceof Error ? error.message : String(error) });
-    } finally {
-      void groups.reload();
-      void refresh();
-    }
+    await track(async (onUpdate, onRepair) => {
+      try {
+        await deployTopology(saved.links.some(link => link.enabled && link.transport === "cf_mesh"), onUpdate, changes => {
+          onRepair(changes);
+          doc.applyServerChange(t => applyDeployLinkChanges(t, changes));
+        });
+      } finally {
+        void groups.reload();
+        void refresh();
+      }
+    }, true);
   };
 
   const afterChange = (fn: (t: Topology) => Topology, what: string) => {
@@ -1997,13 +2018,7 @@ export default function ExitsPage() {
         </Space>
       }
     >
-      {deployment ? <Alert
-        showIcon
-        type={deployment.phase === "stopped" ? "warning" : deployment.phase === "done" ? "success" : "info"}
-        message={deployment.phase === "stopped" ? "出口已保存，部署已暂停" : deployment.phase === "done" ? "自动部署完成" : "正在自动部署，请保持此页面打开"}
-        description={deployment.detail}
-        action={deployment.phase === "stopped" ? <Link to={href("deploy")}>查看部署并继续</Link> : undefined}
-      /> : null}
+      <AutoDeployProgress onResume={!doc.dirty && doc.topo ? () => void runExitDeployment(doc.topo!) : undefined} />
       {changed ? <ApplyRequiredNotice what="地区组已修改" /> : null}
       <ApiErrorAlert error={act.error} onClose={act.clear} />
       <ApiErrorAlert error={hubAct.error} onClose={hubAct.clear} />
@@ -2085,6 +2100,8 @@ export default function ExitsPage() {
       </DataView>
       {doc.topo ? (
         <ExitNodes
+          groups={groups.data?.groups ?? []}
+          pendingExits={new Set((status?.nodes ?? []).filter(node => node.pending).map(node => node.node_id))}
           latencies={latencies}
           meshHubs={groups.data?.hub_states?.length ? groups.data.hub_states : groups.data?.hub_state ? [groups.data.hub_state] : []}
           refreshMesh={refreshHub}

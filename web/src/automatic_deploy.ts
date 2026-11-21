@@ -1,5 +1,5 @@
 import * as api from "./api";
-import type { DeployView, MTUChange, Topology } from "./types";
+import type { DeployPhase, DeployView, MTUChange, Topology } from "./types";
 
 export function applyDeployLinkChanges(topo: Topology, changes: MTUChange[]): Topology {
   return {
@@ -10,6 +10,17 @@ export function applyDeployLinkChanges(topo: Topology, changes: MTUChange[]): To
       if (change?.field === "wg_port" && link.auto_wg_port && change.from === link.wg_port) return { ...link, wg_port: change.to };
       return link;
     }),
+  };
+}
+
+function withDeployPhase(view: DeployView, nodeId: string, phase: DeployPhase): DeployView {
+  if (!view.run) return view;
+  return {
+    ...view,
+    run: {
+      ...view.run,
+      steps: view.run.steps.map(step => step.node_id === nodeId ? { ...step, phase } : step),
+    },
   };
 }
 
@@ -66,6 +77,7 @@ export async function deployPendingNodes(
     let checked = step;
     if (!step.confirmation_valid || !step.can_install) {
       for (let attempt = 0; attempt < 2; attempt++) {
+        onUpdate(withDeployPhase(view, step.node_id, "preflighting"));
         view = await api.deployPreflight(run.id, step.node_id);
         onUpdate(view);
         const updated = view.run?.steps.find(s => s.node_id === step.node_id);
@@ -96,7 +108,7 @@ export async function deployPendingNodes(
         const { proposal } = await api.uplinkMTU();
         const changes = proposal?.changes.filter(change => change.field === "mtu" && linkIDs.has(change.link_id)) ?? [];
         if (!proposal?.error && changes.length === linkIDs.size) {
-          const adopted = await api.adoptUplinkMTU(changes);
+          const adopted = await api.adoptUplinkMTU(changes, run.id);
           adopted.adopted.forEach(change => repaired.add(change.link_id));
           onLinkChanged(adopted.adopted);
           view = await api.deployReplan(run.id);
@@ -128,6 +140,7 @@ export async function deployPendingNodes(
     }
 
     try {
+      onUpdate(withDeployPhase(view, step.node_id, "installing"));
       view = await api.deployInstall(run.id, step.node_id, checked.preflight_id);
     } catch (error) {
       // The server invalidates the review before it reports expiration.

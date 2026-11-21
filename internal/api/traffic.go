@@ -54,8 +54,9 @@ type trafficView struct {
 	Code      string                   `json:"code,omitempty"`
 	Message   string                   `json:"message,omitempty"`
 	// Connections is null when the agent is unreachable or too old to read them.
-	Connections *connView         `json:"connections"`
-	Usage       map[string]uint64 `json:"usage_bytes,omitempty"`
+	Connections *connView            `json:"connections"`
+	UsageSince  map[string]time.Time `json:"usage_since,omitempty"`
+	Usage       map[string]uint64    `json:"usage_bytes,omitempty"`
 }
 
 type connView struct {
@@ -90,9 +91,10 @@ func connectionsView(c *hostexec.ConnCounts) *connView {
 const trafficUsageKey = "gateway_traffic_usage"
 
 type trafficUsageCounter struct {
-	Total  uint64
-	Sample hostexec.TrafficCounter
-	BootID string
+	Total     uint64
+	Sample    hostexec.TrafficCounter
+	BootID    string
+	StartedAt time.Time
 }
 
 type trafficLast struct {
@@ -188,6 +190,32 @@ func (s *Server) trafficUsageView() map[string]uint64 {
 	return usage
 }
 
+func (s *Server) populateTrafficUsage(v *trafficView) {
+	v.Usage = s.trafficUsageView()
+	for region := range v.Usage {
+		var since time.Time
+		for _, direction := range []string{"up", "down"} {
+			counter, ok := s.traffic.usage["traffic_"+direction+"_"+region]
+			if !ok {
+				continue
+			}
+			if counter.StartedAt.IsZero() {
+				since = time.Time{}
+				break
+			}
+			if since.IsZero() || counter.StartedAt.Before(since) {
+				since = counter.StartedAt
+			}
+		}
+		if !since.IsZero() {
+			if v.UsageSince == nil {
+				v.UsageSince = make(map[string]time.Time)
+			}
+			v.UsageSince[region] = since
+		}
+	}
+}
+
 // trafficKey drops the "traffic_" prefix of the nft counter name.
 func trafficKey(name string) string {
 	const p = "traffic_"
@@ -233,7 +261,7 @@ func (s *Server) readTraffic(ctx context.Context) trafficView {
 	s.loadTrafficUsage()
 	defer func() { s.saveTrafficUsage(time.Now(), v.Reset) }()
 	if v.Code != "" {
-		v.Usage = s.trafficUsageView()
+		s.populateTrafficUsage(&v)
 		return v
 	}
 	for _, m := range st.Missing {
@@ -241,7 +269,7 @@ func (s *Server) readTraffic(ctx context.Context) trafficView {
 	}
 	if len(st.Counters) == 0 {
 		v.Code, v.Message = "not_installed", "网关还没有流量计数器（还没有按当前版本安装）"
-		v.Usage = s.trafficUsageView()
+		s.populateTrafficUsage(&v)
 		return v
 	}
 	v.Available = true
@@ -264,7 +292,13 @@ func (s *Server) readTraffic(ctx context.Context) trafficView {
 			if st.BootID != "" {
 				bootID = st.BootID
 			}
-			s.traffic.usage[c.Name] = trafficUsageCounter{Total: p.Total + delta, Sample: c, BootID: bootID}
+			if !known {
+				p.StartedAt, _ = time.Parse(time.RFC3339Nano, st.ReadAt)
+				if p.StartedAt.IsZero() {
+					p.StartedAt = time.Now()
+				}
+			}
+			s.traffic.usage[c.Name] = trafficUsageCounter{Total: p.Total + delta, Sample: c, BootID: bootID, StartedAt: p.StartedAt}
 			s.traffic.dirty = true
 		}
 	}
@@ -276,7 +310,7 @@ func (s *Server) readTraffic(ctx context.Context) trafficView {
 	if st.BootID != "" {
 		s.traffic.bootID = st.BootID
 	}
-	v.Usage = s.trafficUsageView()
+	s.populateTrafficUsage(&v)
 	return v
 }
 

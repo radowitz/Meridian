@@ -799,7 +799,7 @@ describe("domestic relays sharing the main path", () => {
     await userEvent.type(budget, "16");
     await userEvent.click(within(box).getByLabelText("启用吞吐探测"));
     expect(within(box).getByTestId("probe-cost-estimate")).toHaveTextContent("已关闭");
-    await userEvent.click(screen.getByRole("button", { name: btn("保存") }));
+    await userEvent.click(screen.getByRole("button", { name: btn("仅保存") }));
     await waitFor(() => expect(api.find("PUT /api/topology")).toHaveLength(1));
     expect(saved!.settings.path_quality).toEqual({ speed_test_interval_sec: 3600, overrides: [{ relay: "access", nominal_mbps: 300 }], evict_after_sec: 45, probe_daily_budget_mb: 16, probe_off: true });
   });
@@ -897,15 +897,17 @@ describe("nested and external SOCKS exits", () => {
 
   it.each(["save", "deploy", "blocked"])("adds a managed relay link (%s)", async (mode) => {
     const deploy = mode !== "save";
-    const step = { node_id: "hk-ix", node_name: "香港 IX", phase: "pending" };
+    const step = { node_id: "hk-ix", node_name: "香港 IX", phase: "pending", plan_target: { server_id: "server-hk" } };
     const run = { id: "deploy-1", state: "active", current: step.node_id, steps: [step] };
     let saved: Topology | null = null;
+    let fingerprintPending = mode === "blocked";
+    let started = false;
     const api = fakeApi({
       "GET /api/topology": withKinds,
-      "GET /api/deploy": () => ({ topology_version: "v1", plan: { steps: [step] } }),
-      "POST /api/deploy/runs": () => ({ run }),
+      "GET /api/deploy": () => started ? { run } : { topology_version: "v1", plan: { steps: [step] } },
+      "POST /api/deploy/runs": () => { started = true; return { run }; },
       "POST /api/deploy/runs/deploy-1/preflight": () => ({
-        run: { ...run, steps: [mode === "blocked"
+        run: { ...run, steps: [fingerprintPending
           ? { ...step, phase: "blocked", message: "需要确认 SSH 主机指纹" }
           : { ...step, phase: "review", can_install: true, preflight_id: "pf-1" }] },
       }),
@@ -958,10 +960,16 @@ describe("nested and external SOCKS exits", () => {
       const confirmation = detail.closest<HTMLElement>('[role="dialog"]')!;
       await userEvent.click(within(confirmation).getByRole("button", { name: btn("保存并部署") }));
       if (mode === "blocked") {
-        await screen.findByText("出口已保存，部署已暂停");
+        await screen.findByText("配置已保存，部署已暂停");
         expect(screen.getByText(/需要确认 SSH 主机指纹/)).toBeVisible();
         expect(screen.getByRole("link", { name: "查看部署并继续" })).toBeVisible();
         expect(api.find("POST /api/deploy/runs/deploy-1/install")).toHaveLength(0);
+        expect(screen.getByRole("link", { name: "打开服务器" })).toHaveAttribute("href", "#/servers/server-hk?from=deploy");
+        fingerprintPending = false;
+        await userEvent.click(screen.getByRole("button", { name: btn("继续自动部署") }));
+        await screen.findByText("自动部署完成");
+        expect(api.find("POST /api/deploy/runs")).toHaveLength(1);
+        expect(api.find("POST /api/deploy/runs/deploy-1/install")).toHaveLength(1);
       } else {
         await screen.findByText("自动部署完成");
         expect(api.find("POST /api/deploy/runs/deploy-1/install")[0].body).toEqual({ node_id: "hk-ix", preflight_id: "pf-1" });

@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 
@@ -125,6 +126,8 @@ func (s *Server) postDeployRepairWGPort(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	run.event(s.now(), step.NodeID, fmt.Sprintf("自动修复：链路 %s UDP 端口 %d → %d（原端口被占用）", change.LinkID, change.From, change.To))
+	s.saveRunLocked(run)
 	writeJSON(w, http.StatusOK, map[string]any{"change": change})
 }
 

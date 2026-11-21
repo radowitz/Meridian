@@ -4286,6 +4286,7 @@ export interface TrafficView {
   counter_epoch?: number;
   counters: Partial<Record<TrafficKey, { bytes: number; packets: number }>>;
   usage_bytes?: { domestic?: number; foreign?: number };
+  usage_since?: { domestic?: string; foreign?: string };
   missing?: string[];
   /** agent_unavailable | read_failed | not_installed */
   code?: string;

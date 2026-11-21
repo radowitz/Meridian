@@ -1576,6 +1576,15 @@ func TestDeployRepairsOnlyAutomaticWireGuardPorts(t *testing.T) {
 					t.Fatalf("unexpected saved port %d", link.WGPort)
 				}
 			}
+			if tc.want == http.StatusOK {
+				var repaired bool
+				for _, event := range f.get(t).Run.Events {
+					repaired = repaired || strings.Contains(event.Text, "链路 hub-sg UDP 端口 23000 →")
+				}
+				if !repaired {
+					t.Fatal("repair event was not saved on the deployment run")
+				}
+			}
 			f.call(t, http.MethodPost, path, map[string]any{"preflight_id": rec.ID}, http.StatusConflict)
 		})
 	}

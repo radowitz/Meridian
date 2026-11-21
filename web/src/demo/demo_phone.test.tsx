@@ -99,6 +99,17 @@ describe("demo at phone width: stacked cards", () => {
     });
   }
 
+  it("opens log filters in a full-width drawer with a bottom action", async () => {
+    phoneWidth();
+    await renderDemoPage("healthy", "dns-log");
+    fireEvent.click(await screen.findByRole("button", { name: "筛选" }));
+    const drawer = await screen.findByRole("dialog", { name: "日志筛选" });
+    expect(drawer.closest(".ant-drawer-content-wrapper")).toHaveStyle({ width: "100%" });
+    expect(within(drawer).getByTestId("dns-log-filters")).toBeVisible();
+    fireEvent.click(within(drawer).getByRole("button", { name: "查看结果" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "日志筛选" })).toBeNull());
+  });
+
   // The link journal at its busiest (the degraded scenario): the state now with its tables, the unknown and
   // flapping objects, and a timeline with a gap, changes found after it and a merged record — all as cards.
   it("link-log with observation gaps: every table is cards", async () => {

@@ -13,12 +13,12 @@
 // name is ever part of a link.
 
 import { EllipsisOutlined } from "@ant-design/icons";
-import { Button, Dropdown, Select, Space, Tag, Typography } from "antd";
+import { Button, Drawer, Dropdown, Select, Space, Tag, Typography } from "antd";
 import { useState, type ReactNode } from "react";
 import "./layout_b.css";
 import { href } from "./state";
 import type { LogRelatedQuery, LogRelatedView } from "./types";
-import { ApiErrorAlert, EmptyState, Mono, TimeText, bytes, formatAbsolute, useApi } from "./ui";
+import { ApiErrorAlert, EmptyState, Mono, TimeText, bytes, formatAbsolute, STACK_QUERY, useApi, useMediaQuery } from "./ui";
 
 /** A length of time in plain words, from seconds: 45 秒, 3 分 5 秒, 2 小时 4 分, 3 天 2 小时. */
 export function spanText(seconds: number | undefined | null): string {
@@ -98,15 +98,18 @@ export function LogToolbar({
   clearLabel?: string;
   clearDisabled?: boolean;
 }) {
+  const phone = useMediaQuery(STACK_QUERY);
+  const [open, setOpen] = useState(false);
+  const controls = filters ? <Space wrap data-testid={testId} className="log-toolbar-filters">{filters}</Space> : null;
   return (
     <div className="log-toolbar">
-      {filters ? (
-        <Space wrap data-testid={testId} className="log-toolbar-filters">
-          {filters}
-        </Space>
-      ) : (
-        <span />
-      )}
+      {phone && filters ? <>
+        <Button size="small" onClick={() => setOpen(true)}>筛选</Button>
+        <Drawer title="日志筛选" width="100%" open={open} onClose={() => setOpen(false)}
+          footer={<Button type="primary" block onClick={() => setOpen(false)}>查看结果</Button>}>
+          {controls}
+        </Drawer>
+      </> : controls ?? <span />}
       <Space wrap size={6} className="log-toolbar-side">
         {stats}
         {onRefresh ? (
