@@ -3295,6 +3295,7 @@ export interface SniffJournalView {
   page?: SniffJournalPage | null;
   summary?: SniffJournalSummary | null;
   labels: SniffDeviceLabel[] | null;
+  device_names?: Record<string, string>;
   /** The topology's setting (what the next install applies). */
   record_names: boolean;
   scope: SniffJournalScope;

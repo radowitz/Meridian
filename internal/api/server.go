@@ -38,9 +38,10 @@ import (
 )
 
 type Server struct {
-	Store   *store.Store
-	DataDir string
-	WebDir  string
+	deviceNames deviceNameCache
+	Store       *store.Store
+	DataDir     string
+	WebDir      string
 	// Token is required on /api except /api/health. An empty token disables
 	// the check so unit tests can call the handler directly. main always sets one.
 	Token string

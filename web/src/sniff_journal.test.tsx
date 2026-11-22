@@ -179,6 +179,27 @@ it("starts live refresh on open, updates a filtered first page and pauses on dem
   expect(screen.getByRole("button", { name: btn("开启实时刷新") })).toBeInTheDocument();
 });
 
+it("shows the discovered hostname again after deleting a manual note", async () => {
+  let useManualLabel = true;
+  journalApi(true, {
+    "GET /api/sniff/devices": () => ({
+      ...devices(true),
+      labels: useManualLabel ? devices(true).labels : [],
+      device_names: { "192.0.2.10": "phone.lan" },
+    }),
+    "DELETE /api/sniff/devices/192.0.2.10/label": () => {
+      useManualLabel = false;
+      return {};
+    },
+  });
+  const page = await openJournal();
+  await userEvent.click(await within(page).findByRole("button", { name: "查看 示例手机 的连接" }));
+  await userEvent.click(await screen.findByRole("button", { name: "改备注" }));
+  await userEvent.click(screen.getByRole("button", { name: btn("删除备注") }));
+  expect(await screen.findByText("phone.lan")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "加备注" })).toBeInTheDocument();
+});
+
 describe("connection log page: device connection journal", () => {
   it("the sniff card reads nothing of the journal and links to the page", async () => {
     const api = journalApi(false);

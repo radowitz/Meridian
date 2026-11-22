@@ -234,7 +234,8 @@ type sniffJournalView struct {
 	Page    json.RawMessage `json:"page,omitempty"`
 	Summary json.RawMessage `json:"summary,omitempty"`
 	// Labels are the operator's device labels (panel data).
-	Labels []model.DeviceLabel `json:"labels"`
+	Labels      []model.DeviceLabel `json:"labels"`
+	DeviceNames map[string]string   `json:"device_names,omitempty"`
 	// RecordNames is the topology's setting (what the next install
 	// applies); the page / summary says what the running forwarder does.
 	RecordNames bool `json:"record_names"`
@@ -327,6 +328,7 @@ func (s *Server) getSniffJournal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v.Page = body
+		v.DeviceNames = s.deviceNames.lookup(ctx, v.sourceAddresses())
 	}
 	writeJSON(w, http.StatusOK, v)
 }
@@ -359,6 +361,7 @@ func (s *Server) getSniffDevices(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v.Summary = body
+		v.DeviceNames = s.deviceNames.lookup(ctx, v.sourceAddresses())
 	}
 	writeJSON(w, http.StatusOK, v)
 }

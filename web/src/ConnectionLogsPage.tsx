@@ -314,6 +314,7 @@ function DeviceDetail({
   device,
   summary,
   label,
+  hostname,
   names: initialNames,
   onBack,
   onLabel,
@@ -322,6 +323,7 @@ function DeviceDetail({
   device: string;
   summary?: SniffDeviceSummary;
   label?: string;
+  hostname?: string;
   names: boolean;
   onBack: () => void;
   onLabel: () => void;
@@ -438,6 +440,8 @@ function DeviceDetail({
   const needsStatus = !device && st.data?.code === "no_socket";
   const runtime = useApi(() => needsStatus ? api.getSniff() : Promise.resolve(undefined), [needsStatus]);
   const labels = new Map((st.data?.labels ?? []).map(item => [item.address, item.label]));
+  const displayName = (address: string) => labels.get(address) || st.data?.device_names?.[address];
+  const deviceName = label || st.data?.device_names?.[device] || hostname;
   if (st.data && !device && (!st.data.available || (page?.stats.records === 0 && !page.active?.length))) {
     return <>
       <NamesLine names={names} setting={st.data.record_names} known={!!page} />
@@ -449,7 +453,7 @@ function DeviceDetail({
     return {
       title: "来源", kind: "ellipsis", width: 126,
       render: (_, row) => <Button type="link" size="small" onClick={() => { setSource(row.source); resetPaging(); }}
-        aria-label={`筛选来源 ${row.source}`} style={{ paddingInline: 0, maxWidth: "100%" }}><EllipsisText text={labels.get(row.source) || row.source} /></Button>,
+        aria-label={`筛选来源 ${row.source}`} title={row.source} style={{ paddingInline: 0, maxWidth: "100%" }}><EllipsisText text={displayName(row.source) || row.source} /></Button>,
     };
   }
   return (
@@ -460,8 +464,8 @@ function DeviceDetail({
         <Button size="small" onClick={onBack}>
           ← 全部设备
         </Button>
-        <Typography.Text strong>{label || device}</Typography.Text>
-        {label ? <Mono>{device}</Mono> : null}
+        <Typography.Text strong>{deviceName || device}</Typography.Text>
+        {deviceName ? <Mono>{device}</Mono> : null}
         {summary?.mac ? <Typography.Text type="secondary">MAC {summary.mac}</Typography.Text> : null}
         <Button size="small" type="text" aria-expanded={editing} onClick={() => setEditing(!editing)}>
           {label ? "改备注" : "加备注"}
@@ -524,7 +528,7 @@ function DeviceDetail({
           />
         </details>
       ) : null}
-      {source ? <Space wrap><Typography.Text strong>来源 {source}</Typography.Text><Button size="small" onClick={() => { setSource(""); resetPaging(); }}>清除来源筛选</Button></Space> : null}
+      {source ? <Space wrap><Typography.Text strong>来源 {displayName(source) ? `${displayName(source)}（${source}）` : source}</Typography.Text><Button size="small" onClick={() => { setSource(""); resetPaging(); }}>清除来源筛选</Button></Space> : null}
       <LogToolbar
         testId="sniff-journal-filters"
         onRefresh={() => void st.reload()}
@@ -722,7 +726,7 @@ export default function ConnectionLogsPage() {
   const sum = v?.summary;
   const names = sum?.record_names ?? false;
   const labels = new Map((v?.labels ?? []).map((l: SniffDeviceLabel) => [l.address, l.label]));
-  const rows: DeviceRow[] = (sum?.devices ?? []).map((d) => ({ ...d, label: labels.get(d.device) }));
+  const rows: DeviceRow[] = (sum?.devices ?? []).map((d) => ({ ...d, label: labels.get(d.device) || v?.device_names?.[d.device] }));
   const stats = sum?.stats;
   const clear = () =>
     confirm({
@@ -832,6 +836,7 @@ export default function ConnectionLogsPage() {
                 device={device}
                 summary={sum?.devices?.find((d) => d.device === device)}
                 label={labels.get(device)}
+                hostname={v.device_names?.[device]}
                 names={names}
                 onBack={() => {
                   setDevice(null);
