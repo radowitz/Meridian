@@ -4,6 +4,12 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.5
+
+- 网关新增 DNS 缓存和 Hosts 管理。
+- 连接日志查询更快，可主动断开连接；网关事件触发自动刷新，实时刷新默认开启。
+- 连接日志可从 DHCP 租约和反向 DNS 识别设备名，按手动备注、主机名、IP 的顺序显示。
+
 ## v1.0.4
 
 - 受管出口支持保存并自动部署。面板展示逐节点进度、阻断原因、SSH 限流倒计时和自动修复记录。
