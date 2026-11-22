@@ -934,6 +934,7 @@ func (s *Server) addActive(r ConnRecord, client, upstream net.Conn) *activeConn 
 	s.activeMu.Lock()
 	s.active[r.Conn] = ac
 	s.activeMu.Unlock()
+	s.Journal.notifyChange()
 	return ac
 }
 
@@ -1577,6 +1578,7 @@ func (s *Server) finish(r *ConnRecord, result string) {
 		s.activeMu.Lock()
 		delete(s.active, r.Conn)
 		s.activeMu.Unlock()
+		s.Journal.notifyChange()
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/radowitz/meridian/internal/hostexec"
@@ -277,6 +278,32 @@ func (s *Server) journalBase() (sniffJournalView, SniffJournalRuntime, error) {
 		v.Code, v.Message = "agent_unavailable", "没有配置 host agent，读不到嗅探服务的连接日志"
 	}
 	return v, rt, nil
+}
+
+func (s *Server) getSniffJournalChanges(w http.ResponseWriter, r *http.Request) {
+	after := r.URL.Query().Get("after")
+	if after != "" {
+		if _, err := strconv.ParseUint(after, 10, 64); err != nil {
+			writeErr(w, http.StatusBadRequest, errors.New("实时刷新游标不正确"))
+			return
+		}
+	}
+	rt, ok := s.Sniff.(interface {
+		SniffJournalChanges(context.Context, string) (hostexec.SniffJournalAnswer, error)
+	})
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("实时连接日志不可用"))
+		return
+	}
+	ans, err := rt.SniffJournalChanges(r.Context(), after)
+	var view sniffJournalView
+	body, _ := journalAnswer(&view, ans, err)
+	if !view.Available {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("实时连接日志暂不可用"))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) getSniffJournal(w http.ResponseWriter, r *http.Request) {

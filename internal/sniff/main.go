@@ -183,6 +183,25 @@ func (s *Server) StatusHandler() http.Handler {
 		}
 		write(w, page)
 	})
+	mux.HandleFunc("GET /v1/journal/changes", func(w http.ResponseWriter, r *http.Request) {
+		if noJournal(w) {
+			return
+		}
+		after := r.URL.Query().Get("after")
+		revision, changed := s.Journal.changeSnapshot()
+		if after == revision {
+			timer := time.NewTimer(15 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-changed:
+				revision, _ = s.Journal.changeSnapshot()
+			case <-timer.C:
+			}
+		}
+		write(w, map[string]string{"revision": revision})
+	})
 	mux.HandleFunc("/v1/journal/summary", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "GET only", http.StatusMethodNotAllowed)

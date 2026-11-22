@@ -803,6 +803,9 @@ export function getSniffJournal(query: SniffJournalQuery = {}) {
   const qs = q.toString();
   return request<SniffJournalView>("GET", `/api/sniff/journal${qs ? `?${qs}` : ""}`);
 }
+export function waitForSniffJournalChange(after: string, signal: AbortSignal) {
+  return request<{ revision: string }>("GET", `/api/sniff/journal/changes?after=${enc(after)}`, undefined, signal);
+}
 /** The per-device summary of the journal and the operator's device labels. */
 export const getSniffDevices = () => request<SniffJournalView>("GET", "/api/sniff/devices");
 export const putSniffDeviceLabel = (address: string, label: string) =>

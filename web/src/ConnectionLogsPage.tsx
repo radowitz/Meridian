@@ -358,22 +358,63 @@ function DeviceDetail({
     };
   }, [device, source, target, result, range, search, before]);
   const st = useApi(async () => {
+    const hours = RANGES.find(x => x.value === range)?.hours ?? 0;
+    const requestQuery = live && !before ? { ...query, from: sinceHours(hours) } : query;
     try {
-      return await api.getSniffJournal(query);
+      return await api.getSniffJournal(requestQuery);
     } catch (error) {
       if (!(error instanceof api.ApiError) || error.status !== 400) throw error;
-      const { page_only: _, ...legacy } = query;
+      const { page_only: _, ...legacy } = requestQuery;
       return api.getSniffJournal(legacy);
     }
   }, [JSON.stringify(query), refreshKey]);
-  const liveOnPage = live && !before && !text && !source && !target && !result && range === "all";
+  const liveOnPage = live && !before;
+  const [liveStatus, setLiveStatus] = useState<"connecting" | "ready" | "retrying">("connecting");
   useEffect(() => {
-    if (!liveOnPage || st.loading || !st.data?.available) return;
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void st.reload();
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [liveOnPage, st.loading, st.data?.available, st.reload]);
+    if (!liveOnPage) return;
+    let session: AbortController | undefined;
+    const start = () => {
+      session?.abort();
+      if (document.hidden) {
+        setLiveStatus("connecting");
+        return;
+      }
+      session = new AbortController();
+      const { signal } = session;
+      setLiveStatus("connecting");
+      async function follow() {
+        let revision = "";
+        while (!signal.aborted) {
+          try {
+            const update = await api.waitForSniffJournalChange(revision, signal);
+            if (signal.aborted) return;
+            if (!update.revision) throw new Error("Missing journal revision");
+            setLiveStatus("ready");
+            if (update.revision === revision) continue;
+            revision = update.revision;
+            await st.reload(true);
+          } catch {
+            if (signal.aborted) return;
+            setLiveStatus("retrying");
+            revision = "";
+          }
+          // Bound page reads when many connections change in a burst.
+          await new Promise(resolve => window.setTimeout(resolve, revision ? 350 : 2000));
+        }
+      }
+      void follow();
+    };
+    start();
+    document.addEventListener("visibilitychange", start);
+    return () => {
+      session?.abort();
+      document.removeEventListener("visibilitychange", start);
+    };
+  }, [liveOnPage, st.reload]);
+  const liveButton = <Button size="small" aria-pressed={live} onClick={() => setLive(on => !on)}>
+    {!live ? "开启实时刷新" : !liveOnPage ? "实时刷新已暂停" : liveStatus === "retrying" ? "实时刷新重连中 · 暂停" :
+      liveStatus === "connecting" ? "实时刷新连接中 · 暂停" : "暂停实时刷新"}
+  </Button>;
   const page = st.data?.page;
   const names = page?.record_names ?? initialNames;
   const records = page?.records ?? [];
@@ -401,7 +442,7 @@ function DeviceDetail({
     return <>
       <NamesLine names={names} setting={st.data.record_names} known={!!page} />
       {needsStatus && runtime.loading ? <Skeleton active /> : <JournalEmpty v={st.data} sniff={runtime.data} />}
-      <Button size="small" onClick={() => void st.reload()}>刷新</Button>
+      <Space><Button size="small" onClick={() => void st.reload()}>刷新</Button>{liveButton}</Space>
     </>;
   }
   function sourceColumn<R extends SniffRecord>(): DataColumn<R> {
@@ -487,9 +528,7 @@ function DeviceDetail({
       <LogToolbar
         testId="sniff-journal-filters"
         onRefresh={() => void st.reload()}
-        stats={<Button size="small" aria-pressed={live} onClick={() => setLive(on => !on)}>
-          {live ? liveOnPage ? "暂停实时刷新" : "实时刷新已暂停" : "开启实时刷新"}
-        </Button>}
+        stats={liveButton}
         filters={
           <>
             <Select

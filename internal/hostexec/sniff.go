@@ -467,6 +467,22 @@ func (a *Agent) serveSniffJournal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.journalCall(r.Context(), http.MethodGet, "/v1/journal?"+q.Values().Encode()))
 }
 
+func (a *Agent) serveSniffJournalChanges(w http.ResponseWriter, r *http.Request) {
+	if !a.authorize(w, r) {
+		return
+	}
+	var req struct {
+		After string `json:"after"`
+	}
+	if err := decodeJournalRequest(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, SniffJournalAnswer{Code: "bad_request", Error: "请求格式不正确"})
+		return
+	}
+	a.init()
+	writeJSON(w, http.StatusOK, a.journalCall(r.Context(), http.MethodGet,
+		"/v1/journal/changes?"+(url.Values{"after": {req.After}}).Encode()))
+}
+
 func (a *Agent) serveSniffJournalSummary(w http.ResponseWriter, r *http.Request) {
 	if !a.authorize(w, r) {
 		return
@@ -538,6 +554,11 @@ func (c *Client) journalPost(ctx context.Context, path string, body any) (SniffJ
 		ans.Code = "bad_request"
 	}
 	return ans, nil
+}
+
+// SniffJournalChanges waits for a connection change or the heartbeat deadline.
+func (c *Client) SniffJournalChanges(ctx context.Context, after string) (SniffJournalAnswer, error) {
+	return c.journalPost(ctx, "/v1/sniff/journal/changes", map[string]string{"after": after})
 }
 
 // SniffJournal asks the agent for one page of the connection journal.

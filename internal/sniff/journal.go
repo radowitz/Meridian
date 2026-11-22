@@ -211,6 +211,10 @@ type Journal struct {
 	quit     chan struct{}
 	done     chan struct{}
 
+	changeMu sync.Mutex
+	changed  chan struct{}
+	revision uint64
+
 	mu      sync.Mutex // segs, f, w, nextID, dirty, stats below
 	segs    []*segment
 	f       *os.File
@@ -251,7 +255,7 @@ func OpenJournal(cfg JournalConfig) (*Journal, error) {
 	if cfg.SyncInterval <= 0 {
 		cfg.SyncInterval = JournalSyncInterval
 	}
-	j := &Journal{cfg: cfg, segMax: cfg.MaxBytes / 16, segRecs: (cfg.MaxRecords + 7) / 8, segSpan: cfg.MaxAge / 24}
+	j := &Journal{changed: make(chan struct{}), revision: uint64(time.Now().UnixNano()), cfg: cfg, segMax: cfg.MaxBytes / 16, segRecs: (cfg.MaxRecords + 7) / 8, segSpan: cfg.MaxAge / 24}
 	// One block per segment file, the purge's temporary file and the marker.
 	j.budget = cfg.MaxBytes - j.segMax - journalBlockSlack*(JournalMaxSegments+2)
 	if j.segMax < JournalMaxLine || j.budget < 2*j.segMax {
@@ -283,6 +287,29 @@ func (j *Journal) now() time.Time {
 		return j.cfg.Now()
 	}
 	return time.Now()
+}
+
+// notifyChange wakes all live viewers without queuing per-connection events.
+func (j *Journal) notifyChange() {
+	if j == nil {
+		return
+	}
+	j.changeMu.Lock()
+	j.revision++
+	if j.changed != nil {
+		close(j.changed)
+		j.changed = nil
+	}
+	j.changeMu.Unlock()
+}
+
+func (j *Journal) changeSnapshot() (string, <-chan struct{}) {
+	j.changeMu.Lock()
+	defer j.changeMu.Unlock()
+	if j.changed == nil {
+		j.changed = make(chan struct{})
+	}
+	return strconv.FormatUint(j.revision, 10), j.changed
 }
 
 // Add hands r to the writer without ever blocking: when the queue is full
@@ -635,6 +662,7 @@ func (j *Journal) writeBatch(batch []ConnRecord) {
 				sg.note(r)
 			}
 			j.dirty = true
+			j.notifyChange()
 		}
 		buf.Reset()
 		pending = pending[:0]
@@ -907,6 +935,7 @@ func (j *Journal) Clear() int {
 	j.cleared = &now
 	j.unclean = nil
 	syncDir(j.cfg.Dir)
+	j.notifyChange()
 	return n
 }
 
