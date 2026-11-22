@@ -3235,6 +3235,7 @@ export interface SniffJournalPage {
   /** First page without a result filter: matching connections still being relayed (not records yet). */
   active?: SniffRecord[] | null;
   active_matched?: number;
+  page_only?: boolean;
 }
 
 export interface SniffDeviceSummary {
@@ -3310,6 +3311,7 @@ export interface SniffJournalQuery {
   text?: string;
   before?: number;
   limit?: number;
+  page_only?: true;
 }
 
 // ------------------------------------------------- ordered deployment guide ---

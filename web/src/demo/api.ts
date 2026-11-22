@@ -198,6 +198,7 @@ export const DEMO_ROUTES: DemoRoute[] = [
   R("PUT", "/api/sniff/devices/:addr/label", "refuse"),
   R("DELETE", "/api/sniff/devices/:addr/label", "refuse"),
   R("POST", "/api/sniff/journal/clear", "refuse"),
+  R("POST", "/api/sniff/connections/disconnect", "refuse"),
   R("GET", "/api/sniff/journal/related", "special"),
   // DNS query journal and link journal: every scenario has generated
   // responses for them (the real reader and collector on synthetic input,

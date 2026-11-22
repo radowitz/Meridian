@@ -808,6 +808,8 @@ export const getSniffDevices = () => request<SniffJournalView>("GET", "/api/snif
 export const putSniffDeviceLabel = (address: string, label: string) =>
   request<{ label: SniffDeviceLabel }>("PUT", `/api/sniff/devices/${enc(address)}/label`, { label });
 export const deleteSniffDeviceLabel = (address: string) => request<unknown>("DELETE", `/api/sniff/devices/${enc(address)}/label`);
+export const disconnectSniffConnections = () =>
+  request<{ disconnected: number }>("POST", "/api/sniff/connections/disconnect", { confirm: true });
 /** Clears the journal on the gateway (the dedicated fixed action; asks for confirmation in the UI first). */
 export const clearSniffJournal = () => request<{ cleared: unknown }>("POST", "/api/sniff/journal/clear", { confirm: true });
 

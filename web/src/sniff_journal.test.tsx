@@ -126,7 +126,7 @@ function journalApi(names: boolean, extra: Record<string, (r: FakeRequest) => un
 }
 
 /** Renders the connection log page at `hash` (router only: the page needs no shell). */
-function mountPage(hash = "#/conn-log") {
+function mountPage(hash = "#/conn-log?view=devices") {
   window.history.replaceState(null, "", `/${hash}`);
   return render(
     <AntApp>
@@ -138,9 +138,24 @@ function mountPage(hash = "#/conn-log") {
 }
 
 async function openJournal(hash?: string) {
-  mountPage(hash);
+  mountPage(hash ?? "#/conn-log?view=devices");
   return screen.findByTestId("sniff-journal");
 }
+
+it("opens a query without waiting for device counts and confirms disconnecting active connections", async () => {
+  const api = journalApi(true, {
+    "POST /api/sniff/connections/disconnect": () => ({ disconnected: 3 }),
+  });
+  mountPage("#/conn-log");
+  await waitFor(() => expect(api.find("GET /api/sniff/journal")).toHaveLength(1));
+  expect(api.find("GET /api/sniff/devices")).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: btn("断开所有连接") }));
+  expect(api.find("POST /api/sniff/connections/disconnect")).toHaveLength(0);
+  const text = await screen.findByText(/立即关闭网关嗅探服务/);
+  await userEvent.click(within(text.closest<HTMLElement>('[role="dialog"]')!).getByRole("button", { name: btn("断开所有连接") }));
+  await screen.findByText("已断开 3 条连接");
+  expect(api.find("POST /api/sniff/connections/disconnect")[0].body).toEqual({ confirm: true });
+});
 
 describe("connection log page: device connection journal", () => {
   it("the sniff card reads nothing of the journal and links to the page", async () => {
@@ -226,6 +241,9 @@ describe("connection log page: device connection journal", () => {
     expect(await within(d).findByText("www.example.com")).toBeInTheDocument();
     await userEvent.type(within(d).getByRole("textbox", { name: "按名字搜索" }), "www");
     await waitFor(() => expect(api.find("GET /api/sniff/journal").some((c) => c.query.get("text") === "www")).toBe(true));
+    const searches = api.find("GET /api/sniff/journal").filter(c => c.query.has("text"));
+    expect(searches.map(c => c.query.get("text"))).toEqual(["www"]);
+    expect(searches[0].query.get("page_only")).toBe("true");
   });
 
   it("labels are saved and removed through the panel", async () => {

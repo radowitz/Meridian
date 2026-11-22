@@ -243,6 +243,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sniff/selfcheck", s.postSniffSelfCheck)
 	mux.HandleFunc("GET /api/sniff/journal", s.getSniffJournal)
 	mux.HandleFunc("POST /api/sniff/journal/clear", s.postSniffJournalClear)
+	mux.HandleFunc("POST /api/sniff/connections/disconnect", s.postSniffDisconnect)
 	mux.HandleFunc("GET /api/sniff/devices", s.getSniffDevices)
 	mux.HandleFunc("PUT /api/sniff/devices/{addr}/label", s.putDeviceLabel)
 	mux.HandleFunc("DELETE /api/sniff/devices/{addr}/label", s.deleteDeviceLabel)

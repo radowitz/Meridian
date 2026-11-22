@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -539,6 +540,13 @@ func TestJournalQueryAndSummary(t *testing.T) {
 	}
 	if len(ids) != 60 || ids[0] != 60 || ids[59] != 1 {
 		t.Fatalf("paging: %d ids %v…", len(ids), ids[:3])
+	}
+	for _, before := range []uint64{0, 45, 10, 1} {
+		full := q(JournalQuery{Device: "192.0.2.10", Limit: 3, Before: before})
+		fast := q(JournalQuery{Device: "192.0.2.10", Limit: 3, Before: before, PageOnly: true})
+		if !fast.PageOnly || !reflect.DeepEqual(full.Records, fast.Records) || full.NextBefore != fast.NextBefore {
+			t.Fatalf("page-only query changed results at cursor %d", before)
+		}
 	}
 	for _, bad := range []JournalQuery{{Device: "nope"}, {Target: "a b"}, {Result: "maybe"}, {From: "yesterday"}, {Limit: 201}, {Text: strings.Repeat("x", 65)}, {Text: "a\nb"}} {
 		if _, err := j.Query(bad); err == nil {

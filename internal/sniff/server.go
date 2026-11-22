@@ -776,7 +776,7 @@ func (s *Server) handle(c net.Conn) {
 	// From here the connection is relayed: it is in the active view until
 	// its one final record is written (finishRelay).
 	rec.DecideMS = s.now().Sub(start).Milliseconds()
-	ac := s.addActive(rec)
+	ac := s.addActive(rec, c, up)
 	if len(buf) > 0 {
 		if _, err := up.Write(buf); err != nil {
 			s.finishRelay(&rec, ac, writeEnd(EndUpstreamReset, EndUpstreamError, err))
@@ -824,6 +824,7 @@ const (
 	EndClientError    = "client_error"    // reading from / writing to the client failed otherwise (Reason)
 	EndUpstreamError  = "upstream_error"  // reading from / writing to the upstream failed otherwise (Reason)
 	EndIdleTimeout    = "idle_timeout"    // no data either way for IdleTimeout (or a write stalled that long)
+	EndOperatorClosed = "operator_closed" // the panel disconnected an active relay
 	EndShutdown       = "shutdown"        // the forwarder stopped (Close) while the connection was open
 )
 
@@ -862,6 +863,8 @@ type relayEnd struct {
 // relayResult is the result of a relayed connection (the ok definition).
 func relayResult(e relayEnd) string {
 	switch {
+	case e.End == EndOperatorClosed:
+		return ResultClientClosed
 	case e.End == EndShutdown:
 		return ResultShutdown
 	case e.Down > 0:
@@ -920,16 +923,36 @@ func writeEnd(resetEnd, errEnd string, err error) relayEnd {
 // activeConn is a connection being relayed: its record as of the relay's
 // start and the bytes relayed so far.
 type activeConn struct {
-	rec      ConnRecord
-	up, down atomic.Int64
+	rec              ConnRecord
+	client, upstream net.Conn
+	disconnected     atomic.Bool
+	up, down         atomic.Int64
 }
 
-func (s *Server) addActive(r ConnRecord) *activeConn {
-	ac := &activeConn{rec: r}
+func (s *Server) addActive(r ConnRecord, client, upstream net.Conn) *activeConn {
+	ac := &activeConn{rec: r, client: client, upstream: upstream}
 	s.activeMu.Lock()
 	s.active[r.Conn] = ac
 	s.activeMu.Unlock()
 	return ac
+}
+
+// DisconnectActive closes the relay sockets that were active at the time
+// of the request. New connections are still accepted.
+func (s *Server) DisconnectActive() int {
+	s.activeMu.Lock()
+	current := make([]*activeConn, 0, len(s.active))
+	for _, ac := range s.active {
+		if ac.disconnected.CompareAndSwap(false, true) {
+			current = append(current, ac)
+		}
+	}
+	s.activeMu.Unlock()
+	for _, ac := range current {
+		_ = ac.client.Close()
+		_ = ac.upstream.Close()
+	}
+	return len(current)
 }
 
 // ActiveResult is ConnRecord.Result of a connection in the active view.
@@ -971,6 +994,9 @@ func (s *Server) relaying() int {
 
 // finishRelay writes the one final record of a relayed connection.
 func (s *Server) finishRelay(r *ConnRecord, ac *activeConn, e relayEnd) {
+	if ac.disconnected.Load() {
+		e.End, e.Reason = EndOperatorClosed, ""
+	}
 	e.Up, e.Down = ac.up.Load(), ac.down.Load()
 	r.End, r.Reason, r.BytesUp, r.BytesDown = e.End, e.Reason, e.Up, e.Down
 	s.finish(r, relayResult(e))

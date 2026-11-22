@@ -361,6 +361,33 @@ func (s *Server) postSniffJournalClear(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"cleared": body})
 }
 
+func (s *Server) postSniffDisconnect(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err := decodeBody(w, r, &b); err != nil || !b.Confirm {
+		writeErr(w, http.StatusBadRequest, errors.New("断开所有连接需要确认"))
+		return
+	}
+	rt, ok := s.Sniff.(interface {
+		SniffDisconnect(context.Context) (hostexec.SniffJournalAnswer, error)
+	})
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("宿主代理不支持断开连接"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	ans, err := rt.SniffDisconnect(ctx)
+	v := sniffJournalView{}
+	body, code := journalAnswer(&v, ans, err)
+	if code != http.StatusOK || !v.Available {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("断开连接失败："+v.Message))
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
 // deviceLabelsKey is the store key of the device labels.
 const deviceLabelsKey = "sniff_device_labels"
 

@@ -1025,6 +1025,8 @@ type JournalQuery struct {
 	Before uint64 `json:"before,omitempty"`
 	// Limit is the page size (0: 50; at most JournalPageMax).
 	Limit int `json:"limit,omitempty"`
+	// PageOnly avoids scanning older records solely to count matches.
+	PageOnly bool `json:"page_only,omitempty"`
 }
 
 // JournalSummaryQuery bounds a summary's time range.
@@ -1111,6 +1113,9 @@ func (q JournalQuery) Values() url.Values {
 	set("from", q.From)
 	set("to", q.To)
 	set("text", q.Text)
+	if q.PageOnly {
+		v.Set("page_only", "true")
+	}
 	if q.Before > 0 {
 		v.Set("before", strconv.FormatUint(q.Before, 10))
 	}
@@ -1142,6 +1147,11 @@ func JournalQueryFrom(v url.Values) (JournalQuery, error) {
 			q.To = s
 		case "text":
 			q.Text = s
+		case "page_only":
+			if s != "true" {
+				return q, errors.New("page_only: expected true")
+			}
+			q.PageOnly = true
 		case "before":
 			n, err := strconv.ParseUint(s, 10, 64)
 			if err != nil {
@@ -1165,9 +1175,10 @@ func JournalQueryFrom(v url.Values) (JournalQuery, error) {
 type JournalPage struct {
 	RecordNames bool            `json:"record_names"`
 	Records     []JournalRecord `json:"records"`
-	// Matched counts every visible record the filters match; NextBefore is
-	// the cursor of the next (older) page, 0 when there is none. Records
-	// are in the order they were finished, newest first.
+	// PageOnly indicates that Matched covers only the records examined
+	// on this page (including the lookahead), rather than all matches.
+	// NextBefore is the cursor of the next page, or zero at the end.
+	PageOnly   bool         `json:"page_only,omitempty"`
 	Matched    int          `json:"matched"`
 	NextBefore uint64       `json:"next_before,omitempty"`
 	Stats      JournalStats `json:"stats"`
@@ -1299,20 +1310,24 @@ func (j *Journal) Query(q JournalQuery) (JournalPage, error) {
 	if p.text != "" && !j.cfg.RecordNames {
 		return JournalPage{}, ErrNamesNotRecorded
 	}
-	page := JournalPage{RecordNames: j.cfg.RecordNames, Records: []JournalRecord{}}
+	page := JournalPage{RecordNames: j.cfg.RecordNames, Records: []JournalRecord{}, PageOnly: p.PageOnly}
 	j.each(func(r *JournalRecord) bool {
 		if !p.match(r) {
 			return true
 		}
-		page.Matched++
 		if p.Before > 0 && r.ID >= p.Before {
+			if !p.PageOnly {
+				page.Matched++
+			}
 			return true
 		}
+		page.Matched++
 		switch {
 		case len(page.Records) < p.Limit:
 			page.Records = append(page.Records, *r)
 		case page.NextBefore == 0:
 			page.NextBefore = page.Records[len(page.Records)-1].ID
+			return !p.PageOnly
 		}
 		return true
 	})

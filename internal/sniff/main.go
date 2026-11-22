@@ -226,6 +226,13 @@ func (s *Server) StatusHandler() http.Handler {
 		s.recent.clear()
 		write(w, map[string]any{"cleared": n, "stats": s.Journal.Stats()})
 	})
+	mux.HandleFunc("POST /v1/connections/disconnect", func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength != 0 || r.URL.RawQuery != "" {
+			http.Error(w, "no parameters", http.StatusBadRequest)
+			return
+		}
+		write(w, map[string]int{"disconnected": s.DisconnectActive()})
+	})
 	mux.HandleFunc("/v1/selfcheck", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
