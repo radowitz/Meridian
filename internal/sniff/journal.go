@@ -1221,7 +1221,7 @@ type JournalPage struct {
 }
 
 // JournalActiveMax bounds JournalPage.Active.
-const JournalActiveMax = 50
+const JournalActiveMax = 300
 
 // ErrNamesNotRecorded refuses a text search when names are not recorded.
 var ErrNamesNotRecorded = errors.New("names are not recorded: a text search has nothing to match")

@@ -582,30 +582,14 @@ function DeviceDetail({
           {problem}
         </Typography.Text>
       ) : null}
-      {(page?.active ?? []).length > 0 ? (
-        <div data-testid="sniff-journal-active">
-          <Typography.Text strong>
-            正在转发 {page?.active_matched ?? page?.active?.length}
-            {(page?.active_matched ?? 0) > (page?.active?.length ?? 0) ? `（列出最新的 ${page?.active?.length} 条）` : ""}
-          </Typography.Text>
-          <DataTable<SniffRecord>
-            size="small"
-            rowKey={(r) => `a${r.conn ?? r.start + r.dest}`}
-            dataSource={page?.active ?? []}
-            pageSize={50}
-            pagination={false}
-            secondary={(r) => <Facts items={recordDetails(r)} />}
-            columns={[
-              { title: "开始", kind: "fixed", width: 90, render: (_, r) => <TimeText value={r.start} /> },
-              ...(!device ? [sourceColumn<SniffRecord>()] : []),
-              { title: "目的地址", kind: "ellipsis", width: 140, mono: true, card: "title", dataIndex: "dest" },
-              { title: "判断依据", kind: "flex", width: 190, render: (_, r) => decidedBy(r, names) },
-              { title: "去向", kind: "ellipsis", width: 120, render: (_, r) => targetText(r.target) },
-              { title: "已持续", kind: "fixed", width: 90, render: (_, r) => durationText(r.duration_ms) },
-            ]}
-          />
-        </div>
-      ) : null}
+      <LiveConnections
+        initial={page?.active ?? []}
+        initialMatched={page?.active_matched}
+        device={device || source}
+        names={names}
+        showSource={!device}
+        source={sourceColumn<SniffRecord>()}
+      />
       <DataTable<SniffJournalRecord>
         size="small"
         rowKey={(r) => String(r.id)}
@@ -856,5 +840,119 @@ export default function ConnectionLogsPage() {
         </Section>}
       </div>
     </Page>
+  );
+}
+
+/** Bytes per second as text (metacubexd style). */
+function rate(n: number) {
+  return `${bytes(Math.max(0, Math.round(n)))}/s`;
+}
+
+type LiveRow = SniffRecord & { up_rate: number; down_rate: number };
+type LiveSort = "down_rate" | "up_rate" | "bytes_down" | "bytes_up" | "start";
+const LIVE_SORTS: { value: LiveSort; label: string }[] = [
+  { value: "down_rate", label: "按下载速度" },
+  { value: "up_rate", label: "按上传速度" },
+  { value: "bytes_down", label: "按下载总量" },
+  { value: "bytes_up", label: "按上传总量" },
+  { value: "start", label: "按开始时间" },
+];
+
+/**
+ * The connections being relayed, refreshed every second while the page is
+ * visible: each row's upload and download speed is the change of its byte
+ * counters since the previous read (keyed by the forwarder's conn number).
+ */
+function LiveConnections({ initial, initialMatched, device, names, showSource, source }: {
+  initial: SniffRecord[];
+  initialMatched?: number;
+  device: string;
+  names: boolean;
+  showSource: boolean;
+  source: DataColumn<SniffRecord>;
+}) {
+  const [rows, setRows] = useState<LiveRow[]>(() => initial.map(r => ({ ...r, up_rate: 0, down_rate: 0 })));
+  const [matched, setMatched] = useState(initialMatched ?? initial.length);
+  const [paused, setPaused] = useState(false);
+  const [sort, setSort] = useState<LiveSort>("down_rate");
+  useEffect(() => {
+    setRows(initial.map(r => ({ ...r, up_rate: 0, down_rate: 0 })));
+    setMatched(initialMatched ?? initial.length);
+  }, [device]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (paused) return;
+    let prev = new Map<string, { up: number; down: number; at: number }>();
+    let stopped = false;
+    let timer = 0;
+    const key = (r: SniffRecord) => `${r.conn ?? ""}|${r.start}|${r.source}`;
+    const tick = async () => {
+      if (!document.hidden) {
+        try {
+          const v = await api.getSniffJournal({ device: device || undefined, limit: 1, page_only: true });
+          if (stopped) return;
+          const at = performance.now();
+          const next = new Map<string, { up: number; down: number; at: number }>();
+          const list = (v.page?.active ?? []).map(r => {
+            const k = key(r);
+            const up = r.bytes_up ?? 0, down = r.bytes_down ?? 0;
+            const p = prev.get(k);
+            next.set(k, { up, down, at });
+            const dt = p ? (at - p.at) / 1000 : 0;
+            return { ...r, up_rate: p && dt > 0 ? (up - p.up) / dt : 0, down_rate: p && dt > 0 ? (down - p.down) / dt : 0 };
+          });
+          prev = next;
+          setRows(list);
+          setMatched(v.page?.active_matched ?? list.length);
+        } catch {
+          // keep the last rows; the next tick retries
+        }
+      }
+      if (!stopped) timer = window.setTimeout(tick, 1000);
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [paused, device]);
+  const sorted = useMemo(() => {
+    const out = [...rows];
+    out.sort((a, b) => sort === "start" ? b.start.localeCompare(a.start) : (Number(b[sort] ?? 0) - Number(a[sort] ?? 0)));
+    return out;
+  }, [rows, sort]);
+  if (rows.length === 0) return null;
+  const upRate = rows.reduce((n, r) => n + r.up_rate, 0);
+  const downRate = rows.reduce((n, r) => n + r.down_rate, 0);
+  return (
+    <div data-testid="sniff-journal-active">
+      <Space wrap style={{ marginBottom: 8 }}>
+        <Typography.Text strong>
+          正在转发 {matched}
+          {matched > rows.length ? `（列出最新的 ${rows.length} 条）` : ""}
+        </Typography.Text>
+        <Typography.Text data-testid="sniff-live-rate">↑ {rate(upRate)} · ↓ {rate(downRate)}</Typography.Text>
+        <Select size="small" aria-label="活动连接排序" value={sort} onChange={setSort} options={LIVE_SORTS} className="input-w200" />
+        <Button size="small" aria-pressed={paused} onClick={() => setPaused(x => !x)}>{paused ? "继续实时" : "暂停实时"}</Button>
+      </Space>
+      <DataTable<LiveRow>
+        size="small"
+        rowKey={(r) => `a${r.conn ?? r.start + r.dest}`}
+        dataSource={sorted}
+        pageSize={50}
+        pagination={false}
+        secondary={(r) => <Facts items={recordDetails(r)} />}
+        columns={[
+          ...(showSource ? [source as unknown as DataColumn<LiveRow>] : []),
+          { title: "主机", kind: "ellipsis", width: 180, card: "title", render: (_, r) => <EllipsisText text={(names && r.name) || r.dest} /> },
+          { title: "判断依据", kind: "flex", width: 170, render: (_, r) => decidedBy(r, names) },
+          { title: "去向", kind: "ellipsis", width: 110, render: (_, r) => targetText(r.target) },
+          { title: "↑ 速度", kind: "fixed", width: 96, render: (_, r) => <Mono>{rate(r.up_rate)}</Mono> },
+          { title: "↓ 速度", kind: "fixed", width: 96, render: (_, r) => <Mono>{rate(r.down_rate)}</Mono> },
+          { title: "↑ 总量", kind: "fixed", width: 88, render: (_, r) => bytes(r.bytes_up ?? 0) },
+          { title: "↓ 总量", kind: "fixed", width: 88, render: (_, r) => bytes(r.bytes_down ?? 0) },
+          { title: "已持续", kind: "fixed", width: 84, render: (_, r) => durationText(r.duration_ms) },
+        ]}
+      />
+    </div>
   );
 }

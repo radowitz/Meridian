@@ -147,7 +147,7 @@ it("opens a query without waiting for device counts and confirms disconnecting a
     "POST /api/sniff/connections/disconnect": () => ({ disconnected: 3 }),
   });
   mountPage("#/conn-log");
-  await waitFor(() => expect(api.find("GET /api/sniff/journal")).toHaveLength(1));
+  await waitFor(() => expect(api.find("GET /api/sniff/journal")).not.toHaveLength(0));
   expect(api.find("GET /api/sniff/devices")).toHaveLength(0);
   await userEvent.click(screen.getByRole("button", { name: btn("断开所有连接") }));
   expect(api.find("POST /api/sniff/connections/disconnect")).toHaveLength(0);
