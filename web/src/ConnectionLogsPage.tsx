@@ -333,7 +333,7 @@ function DeviceDetail({
   const [text, setText] = useState("");
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
-  const [live, setLive] = useState(false);
+  const [live, setLive] = useState(true);
   const [cursors, setCursors] = useState<number[]>([]);
   useEffect(() => {
     if (text === search) return;

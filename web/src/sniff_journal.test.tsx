@@ -157,7 +157,7 @@ it("opens a query without waiting for device counts and confirms disconnecting a
   expect(api.find("POST /api/sniff/connections/disconnect")[0].body).toEqual({ confirm: true });
 });
 
-it("refreshes a filtered first page on a server notification and pauses on demand", async () => {
+it("starts live refresh on open, updates a filtered first page and pauses on demand", async () => {
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   let notify: ((value: { revision: string }) => void) | undefined;
   const api = journalApi(true, {
@@ -169,8 +169,8 @@ it("refreshes a filtered first page on a server notification and pauses on deman
   mountPage("#/conn-log");
   const source = await screen.findAllByRole("button", { name: "筛选来源 192.0.2.10" });
   await userEvent.click(source[0]);
-  await userEvent.click(screen.getByRole("button", { name: btn("开启实时刷新") }));
   await waitFor(() => expect(notify).toBeDefined());
+  expect(api.find("GET /api/sniff/journal/changes")[0].query.get("after")).toBe("");
   const before = api.find("GET /api/sniff/journal").length;
   notify?.({ revision: "2" });
   await waitFor(() => expect(api.find("GET /api/sniff/journal")).toHaveLength(before + 1));

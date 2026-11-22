@@ -595,13 +595,14 @@ export function installDemoFetch(answer: DemoAnswer, target: { fetch: typeof fet
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const method = (init?.method ?? (typeof input === "object" && "method" in input ? input.method : "GET")).toUpperCase();
     const u = new URL(url, "http://demo.invalid");
-    pending.n++;
+    const waitingForJournal = u.pathname === "/api/sniff/journal/changes" && u.searchParams.get("after") === "1";
+    if (!waitingForJournal) pending.n++;
     try {
       await Promise.resolve();
       const signal = init?.signal;
       if (signal?.aborted) throw new DOMException("aborted", "AbortError");
       // The fixture is static, so waiting for its current revision only produces a heartbeat.
-      if (u.pathname === "/api/sniff/journal/changes" && u.searchParams.get("after") === "1") {
+      if (waitingForJournal) {
         await new Promise<void>((resolve, reject) => {
           const timeout = setTimeout(() => {
             signal?.removeEventListener("abort", abort);
@@ -626,7 +627,7 @@ export function installDemoFetch(answer: DemoAnswer, target: { fetch: typeof fet
       if (reply.unhandled) gaps.push(`${method} ${u.pathname}`);
       return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status, headers: { "Content-Type": "application/json" } });
     } finally {
-      pending.n--;
+      if (!waitingForJournal) pending.n--;
     }
   }) as typeof fetch;
   return { gaps, pending };
