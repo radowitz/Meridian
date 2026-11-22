@@ -402,6 +402,10 @@ func (a *Agent) doDNSReload(q dnsReq, merged int) (lists.DNSReloadResult, bool) 
 		return res, false
 	}
 	defer func() { <-a.sem }()
+	return a.doDNSReloadLocked(ctx, q, res)
+}
+
+func (a *Agent) doDNSReloadLocked(ctx context.Context, q dnsReq, res lists.DNSReloadResult) (lists.DNSReloadResult, bool) {
 	// Under the lock: no publication, install or rollback changes the
 	// files or the recorded baseline until this restart is over.
 	digest, err := dnsFilesDigest(a.listsDir())

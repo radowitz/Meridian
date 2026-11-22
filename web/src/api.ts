@@ -446,6 +446,19 @@ export function rollback(mode: RollbackMode) {
 }
 
 /** Cheap, read-only: agent reachability, installed-vs-stored, pending transaction, job states. */
+export interface DNSHostRecord {
+  name: string;
+  ip: string;
+}
+export interface DNSLocalView {
+  hosts: DNSHostRecord[];
+  hosts_enabled: boolean;
+  cache_enabled: boolean;
+}
+export const getDNSLocal = () => request<DNSLocalView>("GET", "/api/dns/local");
+export const changeDNSLocal = (action: "flush" | "add" | "delete", host?: DNSHostRecord) =>
+  request<DNSLocalView>("POST", "/api/dns/local", { action, host });
+
 export const getExitLatency = () => request<ExitLatencyView>("GET", "/api/exits/latency");
 export const measureExitLatency = () => request<ExitLatencyView>("POST", "/api/exits/latency", {});
 export const getStatus = () => request<PanelStatus>("GET", "/api/status");
@@ -790,11 +803,16 @@ export function getSniffJournal(query: SniffJournalQuery = {}) {
   const qs = q.toString();
   return request<SniffJournalView>("GET", `/api/sniff/journal${qs ? `?${qs}` : ""}`);
 }
+export function waitForSniffJournalChange(after: string, signal: AbortSignal) {
+  return request<{ revision: string }>("GET", `/api/sniff/journal/changes?after=${enc(after)}`, undefined, signal);
+}
 /** The per-device summary of the journal and the operator's device labels. */
 export const getSniffDevices = () => request<SniffJournalView>("GET", "/api/sniff/devices");
 export const putSniffDeviceLabel = (address: string, label: string) =>
   request<{ label: SniffDeviceLabel }>("PUT", `/api/sniff/devices/${enc(address)}/label`, { label });
 export const deleteSniffDeviceLabel = (address: string) => request<unknown>("DELETE", `/api/sniff/devices/${enc(address)}/label`);
+export const disconnectSniffConnections = () =>
+  request<{ disconnected: number }>("POST", "/api/sniff/connections/disconnect", { confirm: true });
 /** Clears the journal on the gateway (the dedicated fixed action; asks for confirmation in the UI first). */
 export const clearSniffJournal = () => request<{ cleared: unknown }>("POST", "/api/sniff/journal/clear", { confirm: true });
 

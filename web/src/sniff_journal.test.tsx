@@ -126,7 +126,7 @@ function journalApi(names: boolean, extra: Record<string, (r: FakeRequest) => un
 }
 
 /** Renders the connection log page at `hash` (router only: the page needs no shell). */
-function mountPage(hash = "#/conn-log") {
+function mountPage(hash = "#/conn-log?view=devices") {
   window.history.replaceState(null, "", `/${hash}`);
   return render(
     <AntApp>
@@ -138,9 +138,67 @@ function mountPage(hash = "#/conn-log") {
 }
 
 async function openJournal(hash?: string) {
-  mountPage(hash);
+  mountPage(hash ?? "#/conn-log?view=devices");
   return screen.findByTestId("sniff-journal");
 }
+
+it("opens a query without waiting for device counts and confirms disconnecting active connections", async () => {
+  const api = journalApi(true, {
+    "POST /api/sniff/connections/disconnect": () => ({ disconnected: 3 }),
+  });
+  mountPage("#/conn-log");
+  await waitFor(() => expect(api.find("GET /api/sniff/journal")).toHaveLength(1));
+  expect(api.find("GET /api/sniff/devices")).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: btn("断开所有连接") }));
+  expect(api.find("POST /api/sniff/connections/disconnect")).toHaveLength(0);
+  const text = await screen.findByText(/立即关闭网关嗅探服务/);
+  await userEvent.click(within(text.closest<HTMLElement>('[role="dialog"]')!).getByRole("button", { name: btn("断开所有连接") }));
+  await screen.findByText("已断开 3 条连接");
+  expect(api.find("POST /api/sniff/connections/disconnect")[0].body).toEqual({ confirm: true });
+});
+
+it("starts live refresh on open, updates a filtered first page and pauses on demand", async () => {
+  vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  let notify: ((value: { revision: string }) => void) | undefined;
+  const api = journalApi(true, {
+    "GET /api/sniff/journal/changes": r => {
+      if (!r.query.get("after")) return { revision: "1" };
+      return new Promise<{ revision: string }>(resolve => { notify = resolve; });
+    },
+  });
+  mountPage("#/conn-log");
+  const source = await screen.findAllByRole("button", { name: "筛选来源 192.0.2.10" });
+  await userEvent.click(source[0]);
+  await waitFor(() => expect(notify).toBeDefined());
+  expect(api.find("GET /api/sniff/journal/changes")[0].query.get("after")).toBe("");
+  const before = api.find("GET /api/sniff/journal").length;
+  notify?.({ revision: "2" });
+  await waitFor(() => expect(api.find("GET /api/sniff/journal")).toHaveLength(before + 1));
+  expect(api.find("GET /api/sniff/journal").at(-1)?.query.get("device")).toBe("192.0.2.10");
+  await userEvent.click(screen.getByRole("button", { name: btn("暂停实时刷新") }));
+  expect(screen.getByRole("button", { name: btn("开启实时刷新") })).toBeInTheDocument();
+});
+
+it("shows the discovered hostname again after deleting a manual note", async () => {
+  let useManualLabel = true;
+  journalApi(true, {
+    "GET /api/sniff/devices": () => ({
+      ...devices(true),
+      labels: useManualLabel ? devices(true).labels : [],
+      device_names: { "192.0.2.10": "phone.lan" },
+    }),
+    "DELETE /api/sniff/devices/192.0.2.10/label": () => {
+      useManualLabel = false;
+      return {};
+    },
+  });
+  const page = await openJournal();
+  await userEvent.click(await within(page).findByRole("button", { name: "查看 示例手机 的连接" }));
+  await userEvent.click(await screen.findByRole("button", { name: "改备注" }));
+  await userEvent.click(screen.getByRole("button", { name: btn("删除备注") }));
+  expect(await screen.findByText("phone.lan")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "加备注" })).toBeInTheDocument();
+});
 
 describe("connection log page: device connection journal", () => {
   it("the sniff card reads nothing of the journal and links to the page", async () => {
@@ -226,6 +284,9 @@ describe("connection log page: device connection journal", () => {
     expect(await within(d).findByText("www.example.com")).toBeInTheDocument();
     await userEvent.type(within(d).getByRole("textbox", { name: "按名字搜索" }), "www");
     await waitFor(() => expect(api.find("GET /api/sniff/journal").some((c) => c.query.get("text") === "www")).toBe(true));
+    const searches = api.find("GET /api/sniff/journal").filter(c => c.query.has("text"));
+    expect(searches.map(c => c.query.get("text"))).toEqual(["www"]);
+    expect(searches[0].query.get("page_only")).toBe("true");
   });
 
   it("labels are saved and removed through the panel", async () => {

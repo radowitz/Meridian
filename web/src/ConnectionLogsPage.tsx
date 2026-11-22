@@ -20,7 +20,7 @@ import {
 // the queries of the same device around its start, and the page shows the
 // connections around a query when it is opened with ?device=&at=[&mac=].
 
-import { Alert, Button, Input, Select, Skeleton, Space, Tag, Typography } from "antd";
+import { Alert, App as AntApp, Button, Input, Select, Skeleton, Space, Tag, Typography } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { LogEmpty, LogIntro, LogPager, LogStats, LogToolbar, RelatedPanel, ageText, relatedHref, relatedOf, sinceHours } from "./log_common";
@@ -32,6 +32,7 @@ import type {
   SniffJournalQuery,
   SniffJournalRecord,
   SniffJournalScope,
+  SniffJournalStats,
   SniffJournalView,
   SniffRecord,
   SniffView,
@@ -299,42 +300,125 @@ function RelatedConnections({ records, names }: { records: SniffJournalRecord[];
   );
 }
 
+function UncleanStop({ stats }: { stats?: SniffJournalStats }) {
+  const previous = stats?.unclean_stop;
+  if (!previous) return null;
+  return <Alert type="warning" showIcon data-testid="sniff-journal-unclean" message={<span>
+    嗅探服务上一次没有正常退出（被强行终止、崩溃或断电；最后确认运行于 <TimeText value={previous.last_alive} />
+    ）：当时仍打开的{previous.active >= 0 ? ` ${previous.active} 条` : ""}连接没有记录。清空日志后不再提示。
+  </span>} />;
+}
+
 /** One device: its label, summary, and filterable, paged records. */
 function DeviceDetail({
   device,
   summary,
   label,
-  names,
+  hostname,
+  names: initialNames,
   onBack,
   onLabel,
+  refreshKey,
 }: {
   device: string;
   summary?: SniffDeviceSummary;
   label?: string;
+  hostname?: string;
   names: boolean;
   onBack: () => void;
   onLabel: () => void;
+  refreshKey?: number;
 }) {
   const [target, setTarget] = useState("");
   const [result, setResult] = useState("");
   const [range, setRange] = useState("all");
   const [text, setText] = useState("");
+  const [search, setSearch] = useState("");
+  const [source, setSource] = useState("");
+  const [live, setLive] = useState(true);
   const [cursors, setCursors] = useState<number[]>([]);
+  useEffect(() => {
+    if (text === search) return;
+    const timer = window.setTimeout(() => {
+      setSearch(text);
+      setCursors([]);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [text, search]);
   const before = cursors.length > 0 ? cursors[cursors.length - 1] : 0;
   const query: SniffJournalQuery = useMemo(() => {
     const h = RANGES.find((x) => x.value === range)?.hours ?? 0;
     return {
-      device,
+      device: device || source || undefined,
       target: target || undefined,
       result: result || undefined,
       from: sinceHours(h),
-      text: names && text.trim() ? text.trim() : undefined,
+      text: search.trim() || undefined,
       before: before || undefined,
       limit: 50,
+      page_only: true,
     };
-  }, [device, target, result, range, text, before, names]);
-  const st = useApi(() => api.getSniffJournal(query), [JSON.stringify(query)]);
+  }, [device, source, target, result, range, search, before]);
+  const st = useApi(async () => {
+    const hours = RANGES.find(x => x.value === range)?.hours ?? 0;
+    const requestQuery = live && !before ? { ...query, from: sinceHours(hours) } : query;
+    try {
+      return await api.getSniffJournal(requestQuery);
+    } catch (error) {
+      if (!(error instanceof api.ApiError) || error.status !== 400) throw error;
+      const { page_only: _, ...legacy } = requestQuery;
+      return api.getSniffJournal(legacy);
+    }
+  }, [JSON.stringify(query), refreshKey]);
+  const liveOnPage = live && !before;
+  const [liveStatus, setLiveStatus] = useState<"connecting" | "ready" | "retrying">("connecting");
+  useEffect(() => {
+    if (!liveOnPage) return;
+    let session: AbortController | undefined;
+    const start = () => {
+      session?.abort();
+      if (document.hidden) {
+        setLiveStatus("connecting");
+        return;
+      }
+      session = new AbortController();
+      const { signal } = session;
+      setLiveStatus("connecting");
+      async function follow() {
+        let revision = "";
+        while (!signal.aborted) {
+          try {
+            const update = await api.waitForSniffJournalChange(revision, signal);
+            if (signal.aborted) return;
+            if (!update.revision) throw new Error("Missing journal revision");
+            setLiveStatus("ready");
+            if (update.revision === revision) continue;
+            revision = update.revision;
+            await st.reload(true);
+          } catch {
+            if (signal.aborted) return;
+            setLiveStatus("retrying");
+            revision = "";
+          }
+          // Bound page reads when many connections change in a burst.
+          await new Promise(resolve => window.setTimeout(resolve, revision ? 350 : 2000));
+        }
+      }
+      void follow();
+    };
+    start();
+    document.addEventListener("visibilitychange", start);
+    return () => {
+      session?.abort();
+      document.removeEventListener("visibilitychange", start);
+    };
+  }, [liveOnPage, st.reload]);
+  const liveButton = <Button size="small" aria-pressed={live} onClick={() => setLive(on => !on)}>
+    {!live ? "开启实时刷新" : !liveOnPage ? "实时刷新已暂停" : liveStatus === "retrying" ? "实时刷新重连中 · 暂停" :
+      liveStatus === "connecting" ? "实时刷新连接中 · 暂停" : "暂停实时刷新"}
+  </Button>;
   const page = st.data?.page;
+  const names = page?.record_names ?? initialNames;
   const records = page?.records ?? [];
   const resetPaging = () => setCursors([]);
   const [editing, setEditing] = useState(false);
@@ -353,19 +437,40 @@ function DeviceDetail({
     }
   };
   const problem = st.data ? journalProblem(st.data) : null;
+  const needsStatus = !device && st.data?.code === "no_socket";
+  const runtime = useApi(() => needsStatus ? api.getSniff() : Promise.resolve(undefined), [needsStatus]);
+  const labels = new Map((st.data?.labels ?? []).map(item => [item.address, item.label]));
+  const displayName = (address: string) => labels.get(address) || st.data?.device_names?.[address];
+  const deviceName = label || st.data?.device_names?.[device] || hostname;
+  if (st.data && !device && (!st.data.available || (page?.stats.records === 0 && !page.active?.length))) {
+    return <>
+      <NamesLine names={names} setting={st.data.record_names} known={!!page} />
+      {needsStatus && runtime.loading ? <Skeleton active /> : <JournalEmpty v={st.data} sniff={runtime.data} />}
+      <Space><Button size="small" onClick={() => void st.reload()}>刷新</Button>{liveButton}</Space>
+    </>;
+  }
+  function sourceColumn<R extends SniffRecord>(): DataColumn<R> {
+    return {
+      title: "来源", kind: "ellipsis", width: 126,
+      render: (_, row) => <Button type="link" size="small" onClick={() => { setSource(row.source); resetPaging(); }}
+        aria-label={`筛选来源 ${row.source}`} title={row.source} style={{ paddingInline: 0, maxWidth: "100%" }}><EllipsisText text={displayName(row.source) || row.source} /></Button>,
+    };
+  }
   return (
     <Space direction="vertical" style={{ width: "100%" }} data-testid="sniff-device" className="sniff-device">
-      <div className="log-device-head">
+      {!device && st.data ? <NamesLine names={names} setting={st.data.record_names} known={!!page} /> : null}
+      {!device ? <UncleanStop stats={page?.stats} /> : null}
+      {device ? <div className="log-device-head">
         <Button size="small" onClick={onBack}>
           ← 全部设备
         </Button>
-        <Typography.Text strong>{label || device}</Typography.Text>
-        {label ? <Mono>{device}</Mono> : null}
+        <Typography.Text strong>{deviceName || device}</Typography.Text>
+        {deviceName ? <Mono>{device}</Mono> : null}
         {summary?.mac ? <Typography.Text type="secondary">MAC {summary.mac}</Typography.Text> : null}
         <Button size="small" type="text" aria-expanded={editing} onClick={() => setEditing(!editing)}>
           {label ? "改备注" : "加备注"}
         </Button>
-      </div>
+      </div> : null}
       {editing ? (
         <Space wrap>
           <Input
@@ -423,8 +528,11 @@ function DeviceDetail({
           />
         </details>
       ) : null}
+      {source ? <Space wrap><Typography.Text strong>来源 {displayName(source) ? `${displayName(source)}（${source}）` : source}</Typography.Text><Button size="small" onClick={() => { setSource(""); resetPaging(); }}>清除来源筛选</Button></Space> : null}
       <LogToolbar
         testId="sniff-journal-filters"
+        onRefresh={() => void st.reload()}
+        stats={liveButton}
         filters={
           <>
             <Select
@@ -462,10 +570,7 @@ function DeviceDetail({
               value={names ? text : ""}
               disabled={!names}
               placeholder={names ? "名字包含…" : "未记录名字"}
-              onChange={(e) => {
-                setText(e.target.value);
-                resetPaging();
-              }}
+              onChange={e => setText(e.target.value)}
               className="input-w200"
             />
           </>
@@ -492,6 +597,7 @@ function DeviceDetail({
             secondary={(r) => <Facts items={recordDetails(r)} />}
             columns={[
               { title: "开始", kind: "fixed", width: 90, render: (_, r) => <TimeText value={r.start} /> },
+              ...(!device ? [sourceColumn<SniffRecord>()] : []),
               { title: "目的地址", kind: "ellipsis", width: 140, mono: true, card: "title", dataIndex: "dest" },
               { title: "判断依据", kind: "flex", width: 190, render: (_, r) => decidedBy(r, names) },
               { title: "去向", kind: "ellipsis", width: 120, render: (_, r) => targetText(r.target) },
@@ -506,19 +612,19 @@ function DeviceDetail({
         dataSource={records}
         pageSize={50}
         pagination={false}
-        locale={{ emptyText: page ? (page.matched === 0 ? "没有符合筛选条件的连接：放宽去向、结果或时间范围" : "这一页没有记录") : "读取中…" }}
+        locale={{ emptyText: page ? (page.matched === 0 && (!page.page_only || before === 0) ? "没有符合筛选条件的连接：放宽去向、结果或时间范围" : "这一页没有记录") : "读取中…" }}
         secondary={(r) => <Facts items={recordDetails(r)} />}
-        columns={recordColumns(names)}
+        columns={device ? recordColumns(names) : [sourceColumn<SniffJournalRecord>(), ...recordColumns(names)]}
       />
       <LogPager
         cursors={cursors}
         setCursors={setCursors}
-        next={page?.next_before}
+        next={st.loading ? undefined : page?.next_before}
         noun="记录"
         matched={
-          page ? (
+          st.loading ? <span role="status">正在读取连接…</span> : page ? (
             <span data-testid="sniff-journal-matched">
-              共 {page.matched} 条已结束的连接符合{cursors.length > 0 ? `（第 ${cursors.length + 1} 页）` : ""}
+              {page.page_only ? `本页 ${records.length} 条` : `共 ${page.matched} 条已结束的连接符合`}{cursors.length > 0 ? `（第 ${cursors.length + 1} 页）` : ""}
             </span>
           ) : null
         }
@@ -602,11 +708,17 @@ export default function ConnectionLogsPage() {
   const { route, navigate } = useRouter();
   const related = relatedOf(route.query);
   const linked = related ? "" : (route.query.get("device") ?? "");
-  const st = useApi(() => api.getSniffDevices(), []);
-  const sniff = useApi(() => api.getSniff(), []);
+  const { message } = AntApp.useApp();
+  const [view, setView] = useState<"recent" | "devices">(linked || related || route.query.get("view") === "devices" ? "devices" : "recent");
+  const st = useApi(() => view === "devices" ? api.getSniffDevices() : Promise.resolve(undefined), [view]);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [disconnectError, setDisconnectError] = useState<api.ApiError | null>(null);
+  const unavailable = st.data != null && !st.data.available;
+  const sniff = useApi(() => unavailable ? api.getSniff() : Promise.resolve(undefined), [unavailable]);
   const [device, setDevice] = useState<string | null>(linked || null);
   useEffect(() => {
-    if (linked) setDevice(linked);
+    if (linked) { setView("devices"); setDevice(linked); }
   }, [linked]);
   const [clearErr, setClearErr] = useState<api.ApiError | null>(null);
   const confirm = useConfirmDanger();
@@ -614,7 +726,7 @@ export default function ConnectionLogsPage() {
   const sum = v?.summary;
   const names = sum?.record_names ?? false;
   const labels = new Map((v?.labels ?? []).map((l: SniffDeviceLabel) => [l.address, l.label]));
-  const rows: DeviceRow[] = (sum?.devices ?? []).map((d) => ({ ...d, label: labels.get(d.device) }));
+  const rows: DeviceRow[] = (sum?.devices ?? []).map((d) => ({ ...d, label: labels.get(d.device) || v?.device_names?.[d.device] }));
   const stats = sum?.stats;
   const clear = () =>
     confirm({
@@ -632,11 +744,30 @@ export default function ConnectionLogsPage() {
         }
       },
     });
+  const disconnect = () => confirm({
+    title: "断开所有连接？",
+    consequence: "立即关闭网关嗅探服务当前正在转发的 TCP 连接。历史日志保留，设备可以重新连接。",
+    okText: "断开所有连接",
+    onOk: async () => {
+      setDisconnectError(null);
+      setDisconnecting(true);
+      try {
+        const result = await api.disconnectSniffConnections();
+        message.success(`已断开 ${result.disconnected} 条连接`);
+        setRefreshKey(key => key + 1);
+        if (view === "devices") void st.reload();
+      } catch (error) {
+        setDisconnectError(error instanceof api.ApiError ? error : new api.ApiError(0, {}));
+      } finally {
+        setDisconnecting(false);
+      }
+    },
+  });
   const keep: ReactNode = stats
     ? `最近 ${ageText(stats.max_age_s)}、最多 ${stats.max_records} 条、不超过 ${bytes(stats.max_bytes)}，先到的上限生效，超出时删最旧的。`
     : "最近 24 小时、最多 50000 条、不超过 32 MiB，先到的上限生效，超出时删最旧的。";
   return (
-    <Page title="连接日志">
+    <Page title="连接日志" extra={<Button danger loading={disconnecting} onClick={disconnect}>断开所有连接</Button>}>
       <div data-testid="sniff-journal" className="sniff-journal">
         <Help title="记录范围与保存说明">
           <LogIntro
@@ -667,7 +798,16 @@ export default function ConnectionLogsPage() {
             </RelatedPanel>
           </Section>
         ) : null}
-        <Section
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Button type={view === "recent" ? "primary" : "default"} aria-pressed={view === "recent"} onClick={() => setView("recent")}>最近连接</Button>
+          <Button type={view === "devices" ? "primary" : "default"} aria-pressed={view === "devices"} onClick={() => setView("devices")}>按设备查看</Button>
+        </Space>
+        {disconnectError ? <ApiErrorAlert error={disconnectError} /> : null}
+        {view === "recent" ? (
+          <Section title="全部设备的连接">
+            <DeviceDetail device="" names={false} onBack={() => setView("devices")} onLabel={() => {}} refreshKey={refreshKey} />
+          </Section>
+        ) : <Section
           title={device ? "连接记录" : "设备"}
           extra={
             <LogToolbar
@@ -683,20 +823,7 @@ export default function ConnectionLogsPage() {
             {v ? <NamesLine names={names} setting={v.record_names} known={!!sum} /> : null}
             {st.error ? <ApiErrorAlert error={st.error} onRetry={() => void st.reload()} /> : null}
             {clearErr ? <ApiErrorAlert error={clearErr} /> : null}
-            {stats?.unclean_stop ? (
-              <Alert
-                type="warning"
-                showIcon
-                data-testid="sniff-journal-unclean"
-                message={
-                  <span>
-                    嗅探服务上一次没有正常退出（被强行终止、崩溃或断电；最后确认运行于 <TimeText value={stats.unclean_stop.last_alive} />
-                    ）：当时仍打开的
-                    {stats.unclean_stop.active >= 0 ? ` ${stats.unclean_stop.active} 条` : ""}连接没有记录。清空日志后不再提示。
-                  </span>
-                }
-              />
-            ) : null}
+            <UncleanStop stats={stats} />
             {sum?.truncated ? <Note inline>设备太多，只列出最近出现的 {rows.length} 个。</Note> : null}
             {!v ? (
               st.error ? null : (
@@ -705,9 +832,11 @@ export default function ConnectionLogsPage() {
             ) : device ? (
               <DeviceDetail
                 key={device}
+                refreshKey={refreshKey}
                 device={device}
                 summary={sum?.devices?.find((d) => d.device === device)}
                 label={labels.get(device)}
+                hostname={v.device_names?.[device]}
                 names={names}
                 onBack={() => {
                   setDevice(null);
@@ -724,7 +853,7 @@ export default function ConnectionLogsPage() {
               <JournalEmpty v={v} sniff={sniff.data} />
             )}
           </Space>
-        </Section>
+        </Section>}
       </div>
     </Page>
   );

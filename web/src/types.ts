@@ -3235,6 +3235,7 @@ export interface SniffJournalPage {
   /** First page without a result filter: matching connections still being relayed (not records yet). */
   active?: SniffRecord[] | null;
   active_matched?: number;
+  page_only?: boolean;
 }
 
 export interface SniffDeviceSummary {
@@ -3294,6 +3295,7 @@ export interface SniffJournalView {
   page?: SniffJournalPage | null;
   summary?: SniffJournalSummary | null;
   labels: SniffDeviceLabel[] | null;
+  device_names?: Record<string, string>;
   /** The topology's setting (what the next install applies). */
   record_names: boolean;
   scope: SniffJournalScope;
@@ -3310,6 +3312,7 @@ export interface SniffJournalQuery {
   text?: string;
   before?: number;
   limit?: number;
+  page_only?: true;
 }
 
 // ------------------------------------------------- ordered deployment guide ---

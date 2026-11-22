@@ -23,7 +23,7 @@ function emptyState(id: string): string | null {
 }
 
 // The two log scenarios: nothing is recording (off / not installed), and everything records but has no data yet.
-const LOGS: Record<string, Record<string, () => void>> = {
+const LOGS: Record<string, Record<string, () => void | Promise<void>>> = {
   "logs-off": {
     "dns-log": () => {
       expect(emptyState("dns-log")).toBe("not-enabled");
@@ -33,8 +33,8 @@ const LOGS: Record<string, Record<string, () => void>> = {
       expect(screen.queryByTestId("dns-log-unavailable")).toBeNull();
       expect(screen.getByRole("button", { name: /打开解析日志/ })).toBeInTheDocument();
     },
-    "conn-log": () => {
-      expect(emptyState("conn-log")).toBe("not-enabled");
+    "conn-log": async () => {
+      expect(await screen.findByTestId("conn-log-empty")).toHaveAttribute("data-state", "not-enabled");
       expect(screen.getByTestId("conn-log-empty")).toHaveTextContent("去开启按域名嗅探");
     },
     "link-log": () => {

@@ -161,7 +161,7 @@ func TestNoMeshCompileUnchangedByMeshTransport(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		sum := sha256.Sum256([]byte(goldenDigest(withLegacyFailoverComments(withoutTrafficCounters(t, topo, withoutProbeDNSException(t, topo, b))))))
+		sum := sha256.Sum256([]byte(goldenDigest(withLegacyFailoverComments(withoutTrafficCounters(t, topo, withoutProbeDNSException(t, topo, withoutDNSHostsInclude(b)))))))
 		if got := hex.EncodeToString(sum[:]); got != noMeshCompile[name] {
 			t.Errorf("%s: a topology without Mesh edges compiles differently than before the Mesh underlay (%s, pinned %s)", name, got, noMeshCompile[name])
 		}

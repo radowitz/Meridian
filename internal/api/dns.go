@@ -67,6 +67,8 @@ func (s *Server) registerDNS(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/dns/config", s.getDNSConfig)
 	mux.HandleFunc("PUT /api/dns/upstream", s.putDNSUpstream)
 	mux.HandleFunc("POST /api/dns/check", s.postDNSCheck)
+	mux.HandleFunc("GET /api/dns/local", s.dnsLocal)
+	mux.HandleFunc("POST /api/dns/local", s.dnsLocal)
 	mux.HandleFunc("GET /api/dns-accounts", s.listDNSAccounts)
 	mux.HandleFunc("POST /api/dns-accounts", s.createDNSAccount)
 	mux.HandleFunc("PATCH /api/dns-accounts/{id}", s.patchDNSAccount)

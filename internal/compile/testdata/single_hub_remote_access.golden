@@ -66,7 +66,6 @@
 4467943de092cb6627fcb08a33afa6c17c0d6bd67eac64c9e88eb990c33d4ede nodes/hk-ix/usr/local/sbin/meridian-routes.sh
 4470e0432e4628b5826e04608b6af5e3f3395e0de8861fd7f1f5036e7bc8e160 nodes/hk-hub/etc/iproute2/rt_tables.d/meridian.conf
 456846ab57e15dfa85d178b2bc2c8e76a9a2ef2634f75ec2b6a1ac3ceea5f265 nodes/gw/etc/meridian/wss/client-gw-access.trust.pem
-461786b97c14324c577f7a2e4b4e701a9647ef5e3240e700f64ea69647272f88 nodes/gw/etc/smartdns/smartdns.conf
 46992190bc4aba0a3914c9661913dec6e21a452c1b2a9ce28f7f98c198fb7887 nodes/us-2/etc/nftables.d/meridian.nft
 4767ec6cf2ee441afe4d82b88c3869c9e1466c4c849fde85f6c1a576c7277115 nodes/gw/usr/local/sbin/meridian-up.sh
 48094d8ac9bccdc30067921d9103397ed9c737a0593c1694664fc803286ca1a3 nodes/access/etc/systemd/system/meridian-node.service
@@ -278,4 +277,5 @@ f6b51308b802db0b9f49ed01126521b850b5bf8832257ecf7facd6922673f99e nodes/hk-resi-2
 f748a2ff9ab22ab7555fd538cfa5aabaec59019b170a12d4335f1066cd120d48 nodes/hk-ix/etc/wireguard/m23.conf
 f74d0a6fc67c49e17912cc1d90c93c9a26689baf58d78cc2a4385bb06213e04d nodes/access/etc/systemd/system/wstunnel-meridian.service
 f74d0a6fc67c49e17912cc1d90c93c9a26689baf58d78cc2a4385bb06213e04d nodes/hk-hub/etc/systemd/system/wstunnel-meridian.service
+f7d5ca471e9b5cc6ce9fc95c89979217fd780b87fa0b3ac0df16629b7392e3dc nodes/gw/etc/smartdns/smartdns.conf
 ff0924ec662694b65fa6270680d0329572e99a6c47a02772ca976f204b00aef7 nodes/access/etc/wireguard/m13.conf

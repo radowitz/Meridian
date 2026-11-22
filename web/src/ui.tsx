@@ -240,7 +240,7 @@ export interface ApiState<T> {
   error: ApiError | null;
   loading: boolean;
   /** Re-run the loader; keeps the old data while loading. */
-  reload: () => Promise<void>;
+  reload: (background?: boolean) => Promise<void>;
   /** Replace the data locally (after a mutation returned the new object). */
   setData: (fn: T | ((old: T | undefined) => T | undefined)) => void;
 }
@@ -259,9 +259,9 @@ export function useApi<T>(loader: () => Promise<T>, deps: unknown[] = []): ApiSt
   const loaderRef = useRef(loader);
   loaderRef.current = loader;
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (background = false) => {
     const my = ++seq.current;
-    setLoading(true);
+    if (!background) setLoading(true);
     try {
       const d = await loaderRef.current();
       if (my !== seq.current) return;

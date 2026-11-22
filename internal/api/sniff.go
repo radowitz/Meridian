@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/radowitz/meridian/internal/hostexec"
@@ -233,7 +234,8 @@ type sniffJournalView struct {
 	Page    json.RawMessage `json:"page,omitempty"`
 	Summary json.RawMessage `json:"summary,omitempty"`
 	// Labels are the operator's device labels (panel data).
-	Labels []model.DeviceLabel `json:"labels"`
+	Labels      []model.DeviceLabel `json:"labels"`
+	DeviceNames map[string]string   `json:"device_names,omitempty"`
 	// RecordNames is the topology's setting (what the next install
 	// applies); the page / summary says what the running forwarder does.
 	RecordNames bool `json:"record_names"`
@@ -279,6 +281,32 @@ func (s *Server) journalBase() (sniffJournalView, SniffJournalRuntime, error) {
 	return v, rt, nil
 }
 
+func (s *Server) getSniffJournalChanges(w http.ResponseWriter, r *http.Request) {
+	after := r.URL.Query().Get("after")
+	if after != "" {
+		if _, err := strconv.ParseUint(after, 10, 64); err != nil {
+			writeErr(w, http.StatusBadRequest, errors.New("实时刷新游标不正确"))
+			return
+		}
+	}
+	rt, ok := s.Sniff.(interface {
+		SniffJournalChanges(context.Context, string) (hostexec.SniffJournalAnswer, error)
+	})
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("实时连接日志不可用"))
+		return
+	}
+	ans, err := rt.SniffJournalChanges(r.Context(), after)
+	var view sniffJournalView
+	body, _ := journalAnswer(&view, ans, err)
+	if !view.Available {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("实时连接日志暂不可用"))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, body)
+}
+
 func (s *Server) getSniffJournal(w http.ResponseWriter, r *http.Request) {
 	q, err := sniff.JournalQueryFrom(r.URL.Query())
 	if err != nil {
@@ -300,6 +328,7 @@ func (s *Server) getSniffJournal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v.Page = body
+		v.DeviceNames = s.deviceNames.lookup(ctx, v.sourceAddresses())
 	}
 	writeJSON(w, http.StatusOK, v)
 }
@@ -332,6 +361,7 @@ func (s *Server) getSniffDevices(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		v.Summary = body
+		v.DeviceNames = s.deviceNames.lookup(ctx, v.sourceAddresses())
 	}
 	writeJSON(w, http.StatusOK, v)
 }
@@ -359,6 +389,33 @@ func (s *Server) postSniffJournalClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"cleared": body})
+}
+
+func (s *Server) postSniffDisconnect(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err := decodeBody(w, r, &b); err != nil || !b.Confirm {
+		writeErr(w, http.StatusBadRequest, errors.New("断开所有连接需要确认"))
+		return
+	}
+	rt, ok := s.Sniff.(interface {
+		SniffDisconnect(context.Context) (hostexec.SniffJournalAnswer, error)
+	})
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("宿主代理不支持断开连接"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	ans, err := rt.SniffDisconnect(ctx)
+	v := sniffJournalView{}
+	body, code := journalAnswer(&v, ans, err)
+	if code != http.StatusOK || !v.Available {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("断开连接失败："+v.Message))
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // deviceLabelsKey is the store key of the device labels.

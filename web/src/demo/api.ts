@@ -194,10 +194,12 @@ export const DEMO_ROUTES: DemoRoute[] = [
   R("PUT", "/api/sniff", "refuse"),
   R("POST", "/api/sniff/selfcheck", "refuse"),
   R("GET", "/api/sniff/journal", "special"),
+  R("GET", "/api/sniff/journal/changes", "special"),
   R("GET", "/api/sniff/devices", "read"),
   R("PUT", "/api/sniff/devices/:addr/label", "refuse"),
   R("DELETE", "/api/sniff/devices/:addr/label", "refuse"),
   R("POST", "/api/sniff/journal/clear", "refuse"),
+  R("POST", "/api/sniff/connections/disconnect", "refuse"),
   R("GET", "/api/sniff/journal/related", "special"),
   // DNS query journal and link journal: every scenario has generated
   // responses for them (the real reader and collector on synthetic input,
@@ -220,6 +222,8 @@ export const DEMO_ROUTES: DemoRoute[] = [
   // resolution (DNS) view
   R("GET", "/api/dns", "read"),
   R("GET", "/api/dns/config", "special"),
+  R("GET", "/api/dns/local", "special"),
+  R("POST", "/api/dns/local", "refuse"),
   R("PUT", "/api/dns/upstream", "refuse"),
   R("POST", "/api/dns/check", "refuse"),
   R("GET", "/api/dns-accounts", "read"),
@@ -500,6 +504,7 @@ export function makeDemoApi(responses: Record<string, DemoResponse>) {
       // The read of the hub is not repeated: the stored state is shown.
       return responses["GET /api/region-groups"] ?? missing(method, path);
     }
+    if (key === "GET /api/sniff/journal/changes") return { status: 200, body: { revision: "1" } };
     if (key === "GET /api/sniff/journal") {
       // One generated page per device of the synthetic journal; any other filter shows that device's (or the newest) page.
       // A scenario whose own journal lists nothing answers that for every device (the pages of its base are not its data).
@@ -534,6 +539,7 @@ export function makeDemoApi(responses: Record<string, DemoResponse>) {
       const rows = hasRows(journal) ? (listOf(journal).page?.records ?? []).filter((x) => x.client === dev) : [];
       return related(sample, u.searchParams, rows, (x, from, to) => ms(x.time) >= from && ms(x.time) < to, (x) => lower(x.mac), {});
     }
+    if (key === "GET /api/dns/local") return { status: 200, body: { hosts: [], hosts_enabled: true, cache_enabled: true } };
     if (key === "GET /api/dns/config") {
       // One generated config per node of the synthetic topology.
       const node = u.searchParams.get("node");
@@ -589,10 +595,26 @@ export function installDemoFetch(answer: DemoAnswer, target: { fetch: typeof fet
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const method = (init?.method ?? (typeof input === "object" && "method" in input ? input.method : "GET")).toUpperCase();
     const u = new URL(url, "http://demo.invalid");
-    pending.n++;
+    const waitingForJournal = u.pathname === "/api/sniff/journal/changes" && u.searchParams.get("after") === "1";
+    if (!waitingForJournal) pending.n++;
     try {
       await Promise.resolve();
-      if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
+      const signal = init?.signal;
+      if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+      // The fixture is static, so waiting for its current revision only produces a heartbeat.
+      if (waitingForJournal) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            signal?.removeEventListener("abort", abort);
+            resolve();
+          }, 15000);
+          const abort = () => {
+            clearTimeout(timeout);
+            reject(new DOMException("aborted", "AbortError"));
+          };
+          signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
       let body: unknown;
       if (typeof init?.body === "string") {
         try {
@@ -605,7 +627,7 @@ export function installDemoFetch(answer: DemoAnswer, target: { fetch: typeof fet
       if (reply.unhandled) gaps.push(`${method} ${u.pathname}`);
       return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status, headers: { "Content-Type": "application/json" } });
     } finally {
-      pending.n--;
+      if (!waitingForJournal) pending.n--;
     }
   }) as typeof fetch;
   return { gaps, pending };

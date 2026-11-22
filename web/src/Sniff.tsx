@@ -105,6 +105,7 @@ export const RESULT: Record<string, string> = {
 
 /** How a relayed connection ended (ConnRecord.end). */
 export const SNIFF_END: Record<string, string> = {
+  operator_closed: "面板主动断开",
   client_closed: "客户端关闭",
   upstream_closed: "上游关闭",
   client_reset: "客户端重置",

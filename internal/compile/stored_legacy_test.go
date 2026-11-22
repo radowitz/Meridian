@@ -33,7 +33,7 @@ func TestStoredLegacyTopologyCompileUnchanged(t *testing.T) {
 	}
 	// Only the failover scripts' comment text may differ (role-neutral
 	// wording); every other byte is pinned.
-	if got := goldenDigest(withLegacyFailoverComments(b)); got != string(want) {
+	if got := goldenDigest(withLegacyFailoverComments(withoutDNSHostsInclude(b))); got != string(want) {
 		t.Fatal("a stored pre-redesign topology no longer compiles to its pinned bytes")
 	}
 }

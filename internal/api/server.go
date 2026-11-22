@@ -38,9 +38,10 @@ import (
 )
 
 type Server struct {
-	Store   *store.Store
-	DataDir string
-	WebDir  string
+	deviceNames deviceNameCache
+	Store       *store.Store
+	DataDir     string
+	WebDir      string
 	// Token is required on /api except /api/health. An empty token disables
 	// the check so unit tests can call the handler directly. main always sets one.
 	Token string
@@ -241,8 +242,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sniff", s.getSniff)
 	mux.HandleFunc("PUT /api/sniff", s.putSniff)
 	mux.HandleFunc("POST /api/sniff/selfcheck", s.postSniffSelfCheck)
+	mux.HandleFunc("GET /api/sniff/journal/changes", s.getSniffJournalChanges)
 	mux.HandleFunc("GET /api/sniff/journal", s.getSniffJournal)
 	mux.HandleFunc("POST /api/sniff/journal/clear", s.postSniffJournalClear)
+	mux.HandleFunc("POST /api/sniff/connections/disconnect", s.postSniffDisconnect)
 	mux.HandleFunc("GET /api/sniff/devices", s.getSniffDevices)
 	mux.HandleFunc("PUT /api/sniff/devices/{addr}/label", s.putDeviceLabel)
 	mux.HandleFunc("DELETE /api/sniff/devices/{addr}/label", s.deleteDeviceLabel)
