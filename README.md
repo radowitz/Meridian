@@ -1,5 +1,7 @@
 # Meridian
 
+简体中文 | [English](README.en.md)
+
 许可：`AGPL-3.0-only`
 
 Meridian 是一台跑在家里局域网上的 WireGuard 策略路由网关，带一个网页面板。把设备的网关和 DNS 指向它之后：国内流量照常经家里的路由器直连；境外流量按规则和地区组，经你自己的服务器（可选国内中继、境外枢纽、专线）从你选的出口出去；隧道不通时失败关闭，不会悄悄改走本地宽带。
@@ -56,13 +58,13 @@ flowchart LR
 
 ```sh
 git clone https://github.com/radowitz/Meridian.git && cd meridian
-sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.3
+sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.5
 sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-code
 ```
 
 浏览器打开 `http://<网关局域网 IPv4>:8787`，用终端里的一次性初始化码创建管理员，然后按向导：网关 → 模板 → 服务器（确认指纹）→ 拓扑 → 预检 → 部署。完整步骤见 [docs/user/quickstart.md](docs/user/quickstart.md)。
 
-[v1.0.3 发布说明](https://github.com/radowitz/Meridian/releases/tag/v1.0.3) · 镜像 `ghcr.io/radowitz/meridian:v1.0.3`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
+[v1.0.5 发布说明](https://github.com/radowitz/Meridian/releases/tag/v1.0.5) · 镜像 `ghcr.io/radowitz/meridian:v1.0.5`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
 
 ## 文档
 
@@ -102,26 +104,3 @@ MERIDIAN_BIND=127.0.0.1:8787 MERIDIAN_DATA=/tmp/meridian MERIDIAN_WEB_DIR=web/di
 
 Meridian 以 **AGPL-3.0-only**（SPDX: `AGPL-3.0-only`）发布，全文见 [LICENSE](LICENSE)。修改后通过网络向他人提供面板时，须向这些用户提供对应源码。面板打包和下发的第三方组件（其中 SmartDNS 是 GPL-3.0）及其许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-## English
-
-Meridian is a WireGuard policy-routing gateway with a web panel for a home LAN. Point a device's gateway and DNS at it: domestic traffic goes direct through the home router; foreign traffic follows your rules and per-region exit groups through your own servers (optional domestic relay, hub or dedicated line) and fails closed when no tunnel is up. No Fake-IP, no client apps, and the existing router stays untouched.
-
-**Topologies** (first-run wizard): direct exit, single relay, relay + hub, dedicated line. See [docs/user/topologies.md](docs/user/topologies.md).
-
-**How it works**
-
-- **Routing**: ordered rules, first match wins (region group, exit, direct, reject), then the domestic list, chnroute and the default group. SmartDNS writes answers into per-rule nftsets; nft marks connections; tunneled traffic is source-rewritten so relays and hubs pick the exit.
-- **Sniffing** (optional): routes by TLS SNI / HTTP `Host`, even when a device bypasses the gateway DNS.
-- **Leak protection**: DNS on 53/853 is hijacked and known DoH blocked; tunnel down means blackhole, never the home uplink; tunneled names get no AAAA.
-- **Transport and failover**: UDP and WSS legs to relays; multiple relays weighted by path quality; standby hub takes over when the primary is unreachable end to end; region groups fail over in order.
-- **Cloudflare Mesh** (optional): an extra underlay for the hub-to-exit leg; the exit stays the same.
-- **Unlock probing**: probes platforms from a chosen exit and recommends exits per region. See [docs/unlock-methods.md](docs/unlock-methods.md).
-- **Observability and access**: one-second throughput, persisted domestic and foreign usage; connection, DNS and link logs; remote WireGuard access.
-- **Operations**: scheduled list refresh and guided automatic provisioning with preflight checks.
-- **Safe install**: read-only preflight, transactional install with rollback and withdrawal; shipped binaries pinned by SHA-256 in `internal/artifacts/artifacts.lock`.
-
-**Quick start**: on Debian 13, run `deploy/debian/install.sh --version v1.0.3`, get the one-time code with `meridian setup-code`, open `http://<gateway>:8787` and follow the wizard. See [docs/user/quickstart.md](docs/user/quickstart.md). Images: `ghcr.io/radowitz/meridian` (amd64/arm64); use `--build` or `--image-tar` if the gateway cannot reach ghcr.io.
-
-**Security**: the panel holds SSH credentials for every server; keep it on the LAN.
-
-**License**: AGPL-3.0-only. See [LICENSE](LICENSE).
