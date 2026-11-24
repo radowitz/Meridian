@@ -208,5 +208,5 @@ export function socksTrackingProblem(t: SOCKSVersionTracking | undefined): strin
 export function socksRotatedMessage(res: { credential: SOCKSCredentialView; pending?: string[]; note?: string }): string {
   if (res.note) return res.note;
   if (res.pending?.length) return `已轮换：承载节点 ${res.pending.join("、")} 待下发，重新预检并安装后才用新的用户名和密码`;
-  return "已轮换；承载节点重新装机后生效";
+  return "已轮换；承载节点重新下发后生效";
 }

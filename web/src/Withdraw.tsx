@@ -8,7 +8,7 @@
 // outcomes withdrawn / already_withdrawn / recovered are shown as done.
 
 import { DeleteOutlined, RollbackOutlined, StopOutlined, UndoOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Button, Input, Modal, Space, Tooltip, Typography } from "antd";
+import { Alert, App as AntApp, Button, Input, Modal, Popconfirm, Space, Tooltip, Typography } from "antd";
 import { useEffect, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
@@ -44,9 +44,9 @@ import {
 // ------------------------------------------------------------- labels ---
 
 export const DEPLOYMENT_STATUS: Record<string, { kind: StatusKind; label: string; tip?: string }> = {
-  installed: { kind: "ok", label: "已安装", tip: "最近一次装机成功，安装在部署时绑定的服务器上" },
-  left_behind: { kind: "failed", label: "有残留", tip: "装机失败后补偿没有全部完成，服务器上留有东西" },
-  unknown: { kind: "unverified", label: "结果不明", tip: "装机中断或没有输出成功标记：服务器上可能留有东西" },
+  installed: { kind: "ok", label: "已安装", tip: "最近一次下发成功，安装在部署时绑定的服务器上" },
+  left_behind: { kind: "failed", label: "有残留", tip: "下发失败后补偿没有全部完成，服务器上留有东西" },
+  unknown: { kind: "unverified", label: "结果不明", tip: "下发中断或没有输出成功标记：服务器上可能留有东西" },
   withdrawing: { kind: "running", label: "撤回中" },
   withdraw_interrupted: { kind: "unverified", label: "撤回被中断", tip: "面板在撤回过程中退出：结果不明，重新生成计划会读出服务器上的状态" },
   withdrawn: { kind: "neutral", label: "已撤回" },
@@ -63,14 +63,14 @@ const WITHDRAW_STATE: Record<string, string> = {
   refused: "被拒绝（没有改动）",
   not_started: "没有开始（没有改动）",
   unknown: "结果不明",
-  recovered: "中断的装机已补偿",
+  recovered: "中断的下发已补偿",
   recovery_incomplete: "补偿未全部完成",
   abandoned: "已放弃（未核实）",
 };
 
 const MODE_LABEL: Record<WithdrawMode, string> = {
   manifest: "撤回",
-  journal: "恢复中断的装机",
+  journal: "恢复中断的下发",
   legacy: "旧版清理",
 };
 
@@ -134,7 +134,7 @@ function setLines(s: WithdrawSet): [ReactNode, ReactNode][] {
 }
 
 const PACKAGES_KEPT =
-  "按设计保留：装机时安装的软件包（wireguard-tools、nftables、smartdns 等）不会卸载；运行中的转发等 sysctl 值保持到重启；Docker、别的 WireGuard 接口、别的 nft 表和文件都不碰。";
+  "按设计保留：下发时安装的软件包（wireguard-tools、nftables、smartdns 等）不会卸载；运行中的转发等 sysctl 值保持到重启；Docker、别的 WireGuard 接口、别的 nft 表和文件都不碰。";
 
 // ------------------------------------------------------- withdraw dialog ---
 
@@ -245,7 +245,7 @@ export function WithdrawDialog({
           {mode === "manifest"
             ? "撤回只处理服务器上 Meridian 受管清单列出的内容：停用并删除这些服务、接口、路由表的规则和路由、nft 表和文件；内容改动过的文件会保留并列出。"
             : mode === "journal"
-              ? "服务器上有一次没有正常结束的装机。恢复按服务器上的 journal 和这次装机的工作目录补偿：撤掉这次新建的、恢复被替换的，和装机失败时的自动补偿相同。"
+              ? "服务器上有一次没有正常结束的下发。恢复按服务器上的 journal 和这次下发的工作目录补偿：撤掉这次新建的、恢复被替换的，和下发失败时的自动补偿相同。"
               : "旧版清理：服务器上是没有受管清单的旧版 Meridian。"}
           {" "}面板只连部署时绑定的服务器（地址、端口、用户、主机指纹和凭据都须一致），先只读生成计划，确认后才执行；执行前状态变了会被拒绝。
         </Note>
@@ -427,7 +427,7 @@ export function DeploymentRecords({
   return (
     <Section title="部署记录与撤回" id="deployments">
       <Note>{"从拓扑删除节点不会撤回服务器上的安装：记录留在这里直到撤回完成，在那之前这台服务器和它的凭据不能删除或改指向。"}{" "}
-        每个远端节点装机成功后，面板记下它装在哪台服务器上（地址、端口、用户、固定的主机指纹和凭据）。撤回只连这台服务器、只移除受管清单列出的内容。
+        每个远端节点下发成功后，面板记下它装在哪台服务器上（地址、端口、用户、固定的主机指纹和凭据）。撤回只连这台服务器、只移除受管清单列出的内容。
       </Note>
       {state.error ? <ApiErrorAlert error={state.error} /> : null}
       {err ? <ApiErrorAlert error={err} onClose={() => setErr(null)} /> : null}
@@ -509,7 +509,7 @@ export function DeploymentRecords({
                 const busy = d.status === "withdrawing";
                 const more: MoreAction[] = [];
                 if (d.on_host && (d.status === "unknown" || d.status === "left_behind")) {
-                  more.push({ key: "journal", icon: <UndoOutlined />, label: "恢复中断的装机", disabled: busy, onClick: () => setDlg({ d, mode: "journal" }) });
+                  more.push({ key: "journal", icon: <UndoOutlined />, label: "恢复中断的下发", disabled: busy, onClick: () => setDlg({ d, mode: "journal" }) });
                 }
                 if (d.on_host) more.push({ key: "abandon", icon: <StopOutlined />, label: "放弃（服务器已不存在）", disabled: busy, onClick: () => setAbandon(d) });
                 return (
@@ -519,9 +519,9 @@ export function DeploymentRecords({
                         撤回
                       </Button>
                     ) : (
-                      <Button size="small" icon={<DeleteOutlined />} onClick={() => void forget(d)}>
-                        删除记录
-                      </Button>
+                      <Popconfirm title="删除这条部署记录？" description="只删除面板里的记录，不能恢复；服务器上已经没有这次部署。" okText="删除" okButtonProps={{ danger: true }} cancelText="取消" onConfirm={() => forget(d)}>
+                        <Button size="small" icon={<DeleteOutlined />}>删除记录</Button>
+                      </Popconfirm>
                     )}
                   </RowActions>
                 );

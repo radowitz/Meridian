@@ -313,13 +313,13 @@ func refusalText(code string) string {
 	case "manifest_present":
 		return "服务器上有清单：按清单撤回，不用旧版清理"
 	case "journal_incomplete":
-		return "服务器上有一次没有正常结束的装机：先用「恢复中断的装机」补偿它"
+		return "服务器上有一次没有正常结束的下发：先用「恢复中断的下发」补偿它"
 	case "journal_clean", "journal_missing":
-		return "服务器上没有未结束的装机，不需要恢复"
+		return "服务器上没有未结束的下发，不需要恢复"
 	case "journal_other":
 		return "服务器上未结束的运行属于另一个节点或面板部署：拒绝"
 	case "journal_unrecoverable":
-		return "未结束的装机缺少工作目录或参数，面板无法据此补偿：请登录服务器按 /var/lib/meridian/node/journal 手动处理"
+		return "未结束的下发缺少工作目录或参数，面板无法据此补偿：请登录服务器按 /var/lib/meridian/node/journal 手动处理"
 	case "plan_changed":
 		return "审阅计划之后服务器上的状态变了：重新生成计划再确认"
 	case "not_root":
@@ -516,7 +516,7 @@ func (s *Server) postWithdraw(w http.ResponseWriter, r *http.Request) {
 		rec.Message = "撤回没有全部完成：下面列出了没能移除的内容；清单保留，处理后可以再次撤回（只处理还在的东西）"
 		status = http.StatusBadGateway
 	case wo.Compensated && !wo.Incomplete:
-		rec.State, rec.Message = withdrawStateRecovered, "中断的装机已补偿：这次装机新建的内容已撤掉，被替换的文件已恢复"
+		rec.State, rec.Message = withdrawStateRecovered, "中断的下发已补偿：这次下发新建的内容已撤掉，被替换的文件已恢复"
 		if wo.Restored {
 			rec.Message += "；之前的安装已重新生效"
 		}

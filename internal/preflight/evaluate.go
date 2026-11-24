@@ -602,7 +602,7 @@ func (e *eval) ownership() {
 		case "compensated":
 			if len(j.Leftovers) > 0 {
 				e.add(Warning, CodePreviousLeftovers, "/var/lib/meridian/node/journal",
-					"上一次装机失败并已补偿，但记录了没有撤掉的残留："+strings.Join(j.Leftovers, "；")+"。",
+					"上一次下发失败并已补偿，但记录了没有撤掉的残留："+strings.Join(j.Leftovers, "；")+"。",
 					"逐项核对这些残留是否影响这台主机；确认无碍后可以继续。")
 			}
 		default:
@@ -611,8 +611,8 @@ func (e *eval) ownership() {
 				left = "记录的残留：" + strings.Join(j.Leftovers, "；") + "。"
 			}
 			e.add(Blocking, CodePreviousRun, "/var/lib/meridian/node/journal",
-				fmt.Sprintf("上一次装机（运行 %s）没有正常结束（状态 %s）：它改了什么、补偿是否完成都无法确认。%s", orDash(j.Run), j.State, left),
-				"在部署页对这个节点执行「恢复中断的装机」：面板按服务器上的 journal 和工作目录补偿这次装机（与失败时的自动补偿相同），完成后重新预检。工作目录缺失时只能登录服务器按 /var/lib/meridian/node/journal 手动处理。")
+				fmt.Sprintf("上一次下发（运行 %s）没有正常结束（状态 %s）：它改了什么、补偿是否完成都无法确认。%s", orDash(j.Run), j.State, left),
+				"在部署页对这个节点执行「恢复中断的下发」：面板按服务器上的 journal 和工作目录补偿这次下发（与失败时的自动补偿相同），完成后重新预检。工作目录缺失时只能登录服务器按 /var/lib/meridian/node/journal 手动处理。")
 		}
 	}
 	switch {
@@ -661,7 +661,7 @@ func (e *eval) system() {
 		if r.UID > 0 {
 			who = strconv.Itoa(r.UID)
 		}
-		e.add(Blocking, CodeNotRoot, "uid", fmt.Sprintf("登录用户不是 root（uid %s）：装机要写 /etc、启动接口和服务，需要 root。", who),
+		e.add(Blocking, CodeNotRoot, "uid", fmt.Sprintf("登录用户不是 root（uid %s）：下发要写 /etc、启动接口和服务，需要 root。", who),
 			"把服务器的 SSH 用户改成 root（服务器页编辑），或为 root 配置密钥登录。这一版不支持经 sudo 提权。")
 	}
 	e.platform()
@@ -778,7 +778,7 @@ func (e *eval) platform() {
 	}
 	if len(osOK) == 0 {
 		e.add(Blocking, CodeOSUnsupported, "os",
-			fmt.Sprintf("系统是 %s，不在支持范围内（只支持 %s）。其它发行版和版本的软件包名、版本和默认防火墙没有验证过，装机脚本不会在上面运行。", name, supportedList()),
+			fmt.Sprintf("系统是 %s，不在支持范围内（只支持 %s）。其它发行版和版本的软件包名、版本和默认防火墙没有验证过，下发脚本不会在上面运行。", name, supportedList()),
 			"换用支持的系统（"+supportedList()+"），或把这台主机重装为其中之一。")
 		return
 	}
@@ -796,7 +796,7 @@ func (e *eval) platform() {
 			e.out.Platform = p.Name
 			detail := ""
 			if p.OSID == "ubuntu" {
-				detail = "Ubuntu 20.04 自带的 nftables（0.9.3）和 wireguard-tools 由装机经 apt 安装（--no-install-recommends，不会装 wireguard-dkms，也不改 iptables 的 alternatives）；远端规则集已按 nft 0.9.3 复核并避开了传输层头表达式（th dport），但没有在 0.9.3 上执行过：装机时 meridian-up.sh 先 nft -c，失败会在激活前停止并补偿。"
+				detail = "Ubuntu 20.04 自带的 nftables（0.9.3）和 wireguard-tools 由下发经 apt 安装（--no-install-recommends，不会装 wireguard-dkms，也不改 iptables 的 alternatives）；远端规则集已按 nft 0.9.3 复核并避开了传输层头表达式（th dport），但没有在 0.9.3 上执行过：下发时 meridian-up.sh 先 nft -c，失败会在激活前停止并补偿。"
 			}
 			e.add(Info, CodePlatform, "platform", "支持的平台："+p.Name+"（"+name+"）。"+detail, "")
 			return
@@ -931,7 +931,7 @@ func (e *eval) memory() {
 	}
 	r := e.r
 	need := int64(MemHeadroomKB)
-	parts := []string{fmt.Sprintf("装机余量 %s", kb(MemHeadroomKB))}
+	parts := []string{fmt.Sprintf("基础余量 %s", kb(MemHeadroomKB))}
 	running := func(unit string) bool { return e.out.Ownership == OwnSame && containsStr(e.own.Units, unit) }
 	if e.fp.DNS && !running("meridian-smartdns.service") {
 		need += MemSmartDNSKB
@@ -959,7 +959,7 @@ func (e *eval) memory() {
 			"先释放内存（停掉不用的服务或容器）或换一台内存更多的服务器，然后重新预检。")
 	case r.MemAvailKB < need:
 		e.add(Warning, CodeMemoryBudget, "memory",
-			fmt.Sprintf("可用内存 %s，低于这个节点的预算 %s（%s）：装机和隧道进程可能挤占已有服务。", kb(r.MemAvailKB), kb(need), budget),
+			fmt.Sprintf("可用内存 %s，低于这个节点的预算 %s（%s）：下发和隧道进程可能挤占已有服务。", kb(r.MemAvailKB), kb(need), budget),
 			"确认已有服务的内存余量后再继续。")
 	default:
 		e.add(Info, CodeMemoryBudget, "memory", fmt.Sprintf("内存预算 %s（%s），可用 %s：够用。解析器只绑定隧道地址。", kb(need), budget, kb(r.MemAvailKB)), "")
@@ -1108,7 +1108,7 @@ func (e *eval) paths() {
 	}
 	if len(occupied) > 0 {
 		e.add(Blocking, CodePathOccupied, strings.Join(occupied, " "),
-			"这些路径上已经有不属于 Meridian 的文件（不在受管清单里，也没有 Meridian 标记）："+strings.Join(occupied, "、")+"。装机会覆盖它们，可能破坏已有服务（例如另一份 SmartDNS 配置）。",
+			"这些路径上已经有不属于 Meridian 的文件（不在受管清单里，也没有 Meridian 标记）："+strings.Join(occupied, "、")+"。下发会覆盖它们，可能破坏已有服务（例如另一份 SmartDNS 配置）。",
 			"确认它们属于哪个服务：仍在用就换一台服务器或调整拓扑；确认不用了就先备份移走（mv 到别处），再重新预检。面板不会覆盖不属于它的文件。")
 	}
 	if len(legacy) > 0 && !e.ctx.Gateway && e.out.Ownership == OwnNone {
@@ -1148,7 +1148,7 @@ func (e *eval) interfaces() {
 			}
 		case exists:
 			e.add(Blocking, CodeInterfaceExists, ip.Name,
-				fmt.Sprintf("网络接口 %s 已经存在，但不在 Meridian 的受管清单里。装机会对它执行 wg syncconf / wg-quick，覆盖它现有的配置。", ip.Name),
+				fmt.Sprintf("网络接口 %s 已经存在，但不在 Meridian 的受管清单里。下发会对它执行 wg syncconf / wg-quick，覆盖它现有的配置。", ip.Name),
 				"确认这个接口属于谁：属于别的服务就换服务器或改拓扑让 Meridian 用别的接口号；是遗留的就先 wg-quick down / ip link del 它再重新预检。")
 		default:
 			e.change("interface", "create", ip.Name, joinPrefixes(ip.Addresses))
@@ -1737,7 +1737,7 @@ func (e *eval) nft() {
 			e.change("nft", "replace", t, "受管表：原子替换")
 		case exists:
 			e.add(Blocking, CodeNFTTableExists, t,
-				fmt.Sprintf("nft 表 %s 已经存在但不在受管清单里；装机会整表删除并重建它。", t),
+				fmt.Sprintf("nft 表 %s 已经存在但不在受管清单里；下发会整表删除并重建它。", t),
 				"确认是谁建的这个表（nft list table "+t+"）；是旧版 Meridian 留下的就删除后重新预检，否则换服务器。")
 		default:
 			e.change("nft", "create", t, "")
@@ -1874,7 +1874,7 @@ func (e *eval) fwCompatBlockers(fam string, iptDrop bool, other []string) []stri
 // change list.
 func (e *eval) fwCompatPlan(fam, tool, src string) {
 	have := e.r.IptOurs[fam]
-	state := "这台主机上还没有 Meridian 的规则，装机时加入"
+	state := "这台主机上还没有 Meridian 的规则，下发时加入"
 	if have > 0 {
 		state = fmt.Sprintf("DOCKER-USER 里已有 %d 条带 Meridian 注释的规则（之前的安装）：补齐缺的，删掉旧规则集的", have)
 	}
@@ -1920,7 +1920,7 @@ func (e *eval) fwCompatSummary() {
 		}
 	}
 	e.add(Info, CodeFWCompat, e.fp.FWChain,
-		"转发共存（meridian-fwcompat.sh）："+strings.Join(parts, "；")+"。每次运行（装机、开机、Docker 重启）按当时的策略决定：以后某个族变成 DROP 时，它在下一次 Docker 启动或 meridian-up.sh 时自动补上；FORWARD 是 DROP 却没有 DOCKER-USER 时它不改任何东西，让 meridian-up.sh 失败（服务显示 failed），隧道不会起来。", "")
+		"转发共存（meridian-fwcompat.sh）："+strings.Join(parts, "；")+"。每次运行（下发、开机、Docker 重启）按当时的策略决定：以后某个族变成 DROP 时，它在下一次 Docker 启动或 meridian-up.sh 时自动补上；FORWARD 是 DROP 却没有 DOCKER-USER 时它不改任何东西，让 meridian-up.sh 失败（服务显示 failed），隧道不会起来。", "")
 }
 
 func (e *eval) dockerRunning() bool {
@@ -2162,7 +2162,7 @@ func (e *eval) plan() {
 	}
 	if e.fp.Forward4 && r.Sysctl["net.ipv4.ip_forward"] != "1" {
 		e.change("sysctl", "set", "net.ipv4.ip_forward=1", "当前 "+orDash(r.Sysctl["net.ipv4.ip_forward"]))
-		e.add(Info, CodeForwardEnable, "net.ipv4.ip_forward", "这台主机现在没有开 IPv4 转发（"+orDash(r.Sysctl["net.ipv4.ip_forward"])+"）；装机会全局打开它。", "主机上若有依赖「不转发」的设置，请先评估。")
+		e.add(Info, CodeForwardEnable, "net.ipv4.ip_forward", "这台主机现在没有开 IPv4 转发（"+orDash(r.Sysctl["net.ipv4.ip_forward"])+"）；下发会全局打开它。", "主机上若有依赖「不转发」的设置，请先评估。")
 	}
 	if e.fp.Forward6 && r.Sysctl["net.ipv6.conf.all.forwarding"] != "1" {
 		e.change("sysctl", "set", "net.ipv6.conf.all.forwarding=1", "当前 "+orDash(r.Sysctl["net.ipv6.conf.all.forwarding"])+"；打开后这台主机不再接受 IPv6 路由通告（除非 accept_ra=2）")
@@ -2211,7 +2211,7 @@ func (e *eval) sysctlPlan() {
 	} else {
 		msg += "这里不改 all/default（" + rp + "），其它接口保持原样。send_redirects 是 all 与接口取或，所以 all.send_redirects=0 是必需的全局项（只影响自身值为 0 的接口）。"
 	}
-	msg += "转发（ip_forward / all.forwarding）是全局开关，见上一项；第一次装机失败时，补偿把这些键恢复成装机前读到的值；撤回不改运行中的值（Docker 等也依赖转发），重启后不再设置。"
+	msg += "转发（ip_forward / all.forwarding）是全局开关，见上一项；第一次下发失败时，补偿把这些键恢复成下发前读到的值；撤回不改运行中的值（Docker 等也依赖转发），重启后不再设置。"
 	e.add(Info, CodeSysctlScope, "sysctl", msg, "")
 }
 
@@ -2351,7 +2351,7 @@ func (e *eval) ra() {
 	if len(already) > 0 {
 		msg += "已经是 accept_ra=2：" + strings.Join(already, "、") + "。"
 	}
-	msg += "第一次装机失败时补偿恢复原值；撤回不改（转发仍开着，改回 1 会让 IPv6 断掉），重启后两者都回到主机自己的设置。"
+	msg += "第一次下发失败时补偿恢复原值；撤回不改（转发仍开着，改回 1 会让 IPv6 断掉），重启后两者都回到主机自己的设置。"
 	if fwd == "1" && len(kept) > 0 {
 		msg += "注意：这台主机现在已经打开了 IPv6 转发，这些接口的通告可能已经被忽略，默认路由也许正在倒计时。"
 	}
@@ -2477,7 +2477,7 @@ func (e *eval) external() {
 				where = "它的路由在 " + dev + " 上"
 			}
 			e.add(Blocking, CodeExternalIface, res,
-				fmt.Sprintf("外部 SOCKS 出口 %s 的 SOCKS 地址 %s 不经接口 %s 路由（%s）。装机后承载节点只经 %s 连它，连不上就失败关闭。", x.ID, x.SOCKS, x.Iface, where, x.Iface),
+				fmt.Sprintf("外部 SOCKS 出口 %s 的 SOCKS 地址 %s 不经接口 %s 路由（%s）。下发后承载节点只经 %s 连它，连不上就失败关闭。", x.ID, x.SOCKS, x.Iface, where, x.Iface),
 				"检查那条隧道的地址和路由，或把拓扑里外部出口的「承载接口」改成真正路由这个地址的接口，然后重新预检。")
 			continue
 		}
@@ -2486,12 +2486,12 @@ func (e *eval) external() {
 		case !probed:
 			e.add(Warning, CodeExternalProxy, res,
 				fmt.Sprintf("预检没有报告到 SOCKS %s:%d 的 TCP 连接结果（较旧的预检或报告被截断）。", x.SOCKS, x.Port),
-				"重新预检；装机后在出口状态里看健康探测。")
+				"重新预检；下发后在出口状态里看健康探测。")
 		case !ok:
 			if why, deployed := e.externalDeployed(x); deployed {
 				e.add(Warning, CodeExternalProxy, res,
 					fmt.Sprintf("从这台主机连不上外部 SOCKS 出口 %s 的 SOCKS %s:%d（5 秒内没有建立 TCP 连接）。%s：只有经外部出口 %s 的流量受影响（它现在不通，承载节点对它失败关闭），这台主机上的其它出口和这次安装的其它改动不受影响；这次安装既不会造成也不能修复它。", x.ID, x.SOCKS, x.Port, why, x.ID),
-					"可以继续安装。另行确认那台设备在线、隧道通、SOCKS 在这个地址和端口上监听；装机后在出口状态里看它的健康探测。")
+					"可以继续安装。另行确认那台设备在线、隧道通、SOCKS 在这个地址和端口上监听；下发后在出口状态里看它的健康探测。")
 			} else {
 				e.add(Blocking, CodeExternalProxy, res,
 					fmt.Sprintf("从这台主机连不上外部 SOCKS 出口 %s 的 SOCKS %s:%d（5 秒内没有建立 TCP 连接）。%s，所以这次安装是在这台主机上首次启用这个外部出口配置：连不上就不装。", x.ID, x.SOCKS, x.Port, why),
@@ -2499,7 +2499,7 @@ func (e *eval) external() {
 			}
 		default:
 			e.add(Info, CodeExternal, res,
-				fmt.Sprintf("外部 SOCKS 出口 %s：接口 %s 存在并路由 %s，SOCKS 端口 %d 接受 TCP 连接（预检没有发送凭据；凭据是否正确装机后由健康探测确认）。", x.ID, x.Iface, x.SOCKS, x.Port), "")
+				fmt.Sprintf("外部 SOCKS 出口 %s：接口 %s 存在并路由 %s，SOCKS 端口 %d 接受 TCP 连接（预检没有发送凭据；凭据是否正确下发后由健康探测确认）。", x.ID, x.Iface, x.SOCKS, x.Port), "")
 		}
 	}
 }
@@ -2544,7 +2544,7 @@ func (e *eval) externalDeployed(x ExternalPlan) (string, bool) {
 	case e.ctx.Server == "" || m.Server != e.ctx.Server:
 		return "主机上的安装清单没有记录这台服务器，无法确认已经部署的配置", false
 	case e.r.Journal != nil && e.r.Journal.State != "done":
-		return "主机上最近一次装机没有正常完成，无法确认已经部署的配置", false
+		return "主机上最近一次下发没有正常完成，无法确认已经部署的配置", false
 	}
 	want := m.Files[upScript]
 	pi, seen := e.r.Paths[upScript]

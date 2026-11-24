@@ -208,3 +208,22 @@ func TestRuleChangeZeroToOneRule(t *testing.T) {
 		}
 	}
 }
+
+// With remote access the QUIC exemption lines name a set of interfaces
+// (iifname { "lan", "mra" }); renumbered rules must still mask alike.
+func TestMaskNFTQUICInterfaceSet(t *testing.T) {
+	head := "table inet meridian {\n  chain forward {\n"
+	tail := "    iifname { \"ens192\", \"mra\" } meta mark 0x101-0x140 udp dport 443 reject with icmpx port-unreachable comment \"QUIC switch: tunnelled UDP 443 refused\"\n  }\n}\n"
+	a := head + "    iifname { \"ens192\", \"mra\" } udp dport 443 ip daddr @r16c return comment \"above the QUIC switch: exempt\"\n" + tail
+	b := head + "    iifname { \"ens192\", \"mra\" } udp dport 443 ip daddr @r17c return comment \"above the QUIC switch: exempt\"\n" +
+		"    iifname { \"ens192\", \"mra\" } udp dport 443 ip6 daddr @r1_6 return comment \"above the QUIC switch: exempt\"\n" + tail
+	ma, okA := maskNFT(a, nil)
+	mb, okB := maskNFT(b, nil)
+	if !okA || !okB || ma != mb {
+		t.Fatalf("masked differ (ok %v %v):\n%s\n---\n%s", okA, okB, ma, mb)
+	}
+	c := strings.ReplaceAll(b, `"mra" } meta`, `"wg9" } meta`)
+	if mc, _ := maskNFT(c, nil); mc == ma {
+		t.Fatal("a change of the QUIC switch interfaces was masked")
+	}
+}

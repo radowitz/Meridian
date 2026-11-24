@@ -353,6 +353,37 @@ interface TopologyCtx {
 
 const TopologyContext = createContext<TopologyCtx | null>(null);
 
+/**
+ * Whether two JSON-shaped values serialize alike (JSON.stringify(a) ===
+ * JSON.stringify(b)), checking shared references first: keys whose value is
+ * undefined count as absent, and key order matters as it does there.
+ */
+export function sameJSON(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  // JSON.stringify writes NaN and ±Infinity as null.
+  if (typeof a === "number" && !Number.isFinite(a)) a = null;
+  if (typeof b === "number" && !Number.isFinite(b)) b = null;
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const y = b as unknown[];
+    if (a.length !== y.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      // JSON.stringify writes undefined array entries as null.
+      if (!sameJSON(a[i] === undefined ? null : a[i], y[i] === undefined ? null : y[i])) return false;
+    }
+    return true;
+  }
+  const ka = Object.keys(a).filter((k) => (a as Record<string, unknown>)[k] !== undefined);
+  const kb = Object.keys(b).filter((k) => (b as Record<string, unknown>)[k] !== undefined);
+  if (ka.length !== kb.length) return false;
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] !== kb[i] || !sameJSON((a as Record<string, unknown>)[ka[i]], (b as Record<string, unknown>)[kb[i]])) return false;
+  }
+  return true;
+}
+
 export function TopologyProvider({ children }: { children: ReactNode }) {
   const { markApplyRequired, refresh } = useStatus();
   const [base, setBase] = useState<Topology | null>(null);
@@ -378,7 +409,9 @@ export function TopologyProvider({ children }: { children: ReactNode }) {
     void reload();
   }, [reload]);
 
-  const dirty = useMemo(() => !!base && !!topo && JSON.stringify(base) !== JSON.stringify(topo), [base, topo]);
+  // Edits replace only the changed branch, so the shared subtrees (the rule
+  // list, untouched nodes) compare by reference instead of a full stringify.
+  const dirty = useMemo(() => !!base && !!topo && !sameJSON(base, topo), [base, topo]);
 
   const save = useCallback(
     async (draft: boolean) => {

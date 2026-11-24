@@ -1,6 +1,7 @@
 import {
   Help,
   Note,
+  SearchInput,
 } from "./ui";
 // 解析日志 (#/dns-log): the gateway resolver's query journal
 // (internal/api/dns_journal.go). Off by default: its content is the names
@@ -31,7 +32,7 @@ import {
 // device around its time, and the page shows the queries around a
 // connection when opened with ?device=&at=[&mac=] (log_common.tsx).
 
-import { Alert, Button, Checkbox, Input, Select, Skeleton, Space, Tag, Typography } from "antd";
+import { Alert, App as AntApp, Button, Checkbox, Select, Skeleton, Space, Tag, Typography } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { LogEmpty, LogIntro, LogPager, LogStats, LogToolbar, RelatedPanel, ScopeLists, WhenText, ageText, relatedHref, relatedOf, sinceHours } from "./log_common";
@@ -564,13 +565,13 @@ function DataSections({ v, clearTick, askClear }: { v: DNSLogView; clearTick: nu
                 className="input-w200"
                 options={RANGES.map(({ value, label }) => ({ value, label }))}
               />
-              <Input
+              <SearchInput
                 aria-label="按名字搜索"
                 value={text}
                 maxLength={64}
                 placeholder="名字包含…"
-                onChange={(e) => {
-                  setText(e.target.value);
+                onSearch={(t) => {
+                  setText(t);
                   reset();
                 }}
                 className="input-w200"
@@ -737,6 +738,7 @@ function ClearResidualAlert({ left, failed, onRetry }: { left: ClearLeft; failed
 }
 
 export default function DNSLogsPage() {
+  const { message } = AntApp.useApp();
   const { route, navigate } = useRouter();
   const related = relatedOf(route.query);
   const view = useApi(() => api.getDNSLog(), []);
@@ -754,6 +756,7 @@ export default function DNSLogsPage() {
     try {
       await api.clearDNSLog();
       setLastLeft(null);
+      message.success("解析日志已清空");
     } catch (e) {
       const left = api.dnsClearLeft(e);
       if (left) setLastLeft(left);

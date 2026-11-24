@@ -1,6 +1,6 @@
 # 排错
 
-先确定问题在哪一段：**面板/安装** → **预检** → **远端装机** → **隧道** → **分流与 DNS**。下面按这个顺序给出看哪里、怎么判断。
+先确定问题在哪一段：**面板/安装** → **预检** → **远端下发** → **隧道** → **分流与 DNS**。下面按这个顺序给出看哪里、怎么判断。
 
 ## 面板打不开
 
@@ -24,7 +24,7 @@
 | `wan_interface_missing` / `wan_no_default_route` | 节点的 WAN 接口填错，结论里写了默认路由实际所在的网卡 |
 | `forward_policy_drop` | Docker 把 FORWARD 设成了 DROP。可共存时只是警告；不能共存（ufw、firewalld、别的 nft drop 链）时阻断 |
 | `nftables_flush_on_reload` | `nftables.service` 的重载会清空所有规则，包括 Meridian 的：`systemctl disable nftables.service` 后择时重启，**不要** `stop` |
-| `path_occupied` / `managed_by_other` / `legacy_install` / `previous_run_incomplete` | 有不属于这次部署的文件或旧安装：先备份移走、在原处撤回、做旧版清理或恢复中断的装机 |
+| `path_occupied` / `managed_by_other` / `legacy_install` / `previous_run_incomplete` | 有不属于这次部署的文件或旧安装：先备份移走、在原处撤回、做旧版清理或恢复中断的下发 |
 | `ssh_rate_limited` | 服务器在握手前限速了面板的来源地址，不是密码问题。等倒计时结束再试，少点「重新获取指纹」（[FAQ](faq.md#ssh-被限速--只能经中继管理)） |
 
 完整的发现列表和每一项的处理见[参考手册](../install-debian13.md#预检发现冲突时怎么办)。
@@ -83,4 +83,4 @@ ManageForeignRoutes=no
 
 - 某台设备：把它的网关和 DNS 改回路由器地址。
 - 面板版本：[upgrade-rollback.md](upgrade-rollback.md#回滚)。
-- 远端节点和网关的数据面：「部署」页的撤回（远端按装机清单撤回，网关撤回到只剩局域网兜底表），见[参考手册](../install-debian13.md)第 9 节。
+- 远端节点和网关的数据面：「部署」页的撤回（远端按下发清单撤回，网关撤回到只剩局域网兜底表），见[参考手册](../install-debian13.md)第 9 节。

@@ -37,7 +37,7 @@ import type {
   SniffRecord,
   SniffView,
 } from "./types";
-import { ApiErrorAlert, DataTable, EllipsisText, Facts, Link, LinkButton, Mono, Page, Section, TimeText, bytes, useApi, useConfirmDanger, type DataColumn, type FactItem } from "./ui";
+import { ApiErrorAlert, DataTable, EllipsisText, Facts, Link, LinkButton, Mono, Page, SearchInput, Section, TimeText, bytes, useApi, useConfirmDanger, type DataColumn, type FactItem } from "./ui";
 
 /** Where the switch of name recording is (the sniff card on the rules page). */
 const SNIFF_SETTINGS = `${href("rules")}?section=sniff`;
@@ -332,19 +332,10 @@ function DeviceDetail({
   const [target, setTarget] = useState("");
   const [result, setResult] = useState("");
   const [range, setRange] = useState("all");
-  const [text, setText] = useState("");
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
   const [live, setLive] = useState(true);
   const [cursors, setCursors] = useState<number[]>([]);
-  useEffect(() => {
-    if (text === search) return;
-    const timer = window.setTimeout(() => {
-      setSearch(text);
-      setCursors([]);
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [text, search]);
   const before = cursors.length > 0 ? cursors[cursors.length - 1] : 0;
   const query: SniffJournalQuery = useMemo(() => {
     const h = RANGES.find((x) => x.value === range)?.hours ?? 0;
@@ -565,12 +556,15 @@ function DeviceDetail({
               className="input-w200"
               options={RANGES.map(({ value, label }) => ({ value, label }))}
             />
-            <Input
+            <SearchInput
               aria-label="按名字搜索"
-              value={names ? text : ""}
+              value={names ? search : ""}
               disabled={!names}
               placeholder={names ? "名字包含…" : "未记录名字"}
-              onChange={e => setText(e.target.value)}
+              onSearch={t => {
+                setSearch(t);
+                setCursors([]);
+              }}
               className="input-w200"
             />
           </>
@@ -589,6 +583,7 @@ function DeviceDetail({
         names={names}
         showSource={!device}
         source={sourceColumn<SniffRecord>()}
+        paused={!liveOnPage}
       />
       <DataTable<SniffJournalRecord>
         size="small"
@@ -721,6 +716,7 @@ export default function ConnectionLogsPage() {
         setClearErr(null);
         try {
           await api.clearSniffJournal();
+          message.success("连接日志已清空");
           setDevice(null);
           await st.reload();
         } catch (e) {
@@ -863,7 +859,9 @@ const LIVE_SORTS: { value: LiveSort; label: string }[] = [
  * visible: each row's upload and download speed is the change of its byte
  * counters since the previous read (keyed by the forwarder's conn number).
  */
-function LiveConnections({ initial, initialMatched, device, names, showSource, source }: {
+function LiveConnections({ initial, initialMatched, device, names, showSource, source, paused }: {
+  /** Follows the page's live switch (one pause for the whole page). */
+  paused: boolean;
   initial: SniffRecord[];
   initialMatched?: number;
   device: string;
@@ -873,7 +871,6 @@ function LiveConnections({ initial, initialMatched, device, names, showSource, s
 }) {
   const [rows, setRows] = useState<LiveRow[]>(() => initial.map(r => ({ ...r, up_rate: 0, down_rate: 0 })));
   const [matched, setMatched] = useState(initialMatched ?? initial.length);
-  const [paused, setPaused] = useState(false);
   const [sort, setSort] = useState<LiveSort>("down_rate");
   useEffect(() => {
     setRows(initial.map(r => ({ ...r, up_rate: 0, down_rate: 0 })));
@@ -932,7 +929,7 @@ function LiveConnections({ initial, initialMatched, device, names, showSource, s
         </Typography.Text>
         <Typography.Text data-testid="sniff-live-rate">↑ {rate(upRate)} · ↓ {rate(downRate)}</Typography.Text>
         <Select size="small" aria-label="活动连接排序" value={sort} onChange={setSort} options={LIVE_SORTS} className="input-w200" />
-        <Button size="small" aria-pressed={paused} onClick={() => setPaused(x => !x)}>{paused ? "继续实时" : "暂停实时"}</Button>
+        {paused ? <Typography.Text type="secondary">实时刷新已暂停</Typography.Text> : null}
       </Space>
       <DataTable<LiveRow>
         size="small"
@@ -940,12 +937,11 @@ function LiveConnections({ initial, initialMatched, device, names, showSource, s
         dataSource={sorted}
         pageSize={50}
         pagination={false}
-        secondary={(r) => <Facts items={recordDetails(r)} />}
+        secondary={(r) => <Facts items={[["判断依据", decidedBy(r, names)], ...recordDetails(r)]} />}
         columns={[
           ...(showSource ? [source as unknown as DataColumn<LiveRow>] : []),
-          { title: "主机", kind: "ellipsis", width: 180, card: "title", render: (_, r) => <EllipsisText text={(names && r.name) || r.dest} /> },
-          { title: "判断依据", kind: "flex", width: 170, render: (_, r) => decidedBy(r, names) },
-          { title: "去向", kind: "ellipsis", width: 110, render: (_, r) => targetText(r.target) },
+          { title: "主机", kind: "flex", width: 220, card: "title", render: (_, r) => <EllipsisText text={(names && r.name) || r.dest} /> },
+          { title: "去向", kind: "ellipsis", width: 120, render: (_, r) => targetText(r.target) },
           { title: "↑ 速度", kind: "fixed", width: 96, render: (_, r) => <Mono>{rate(r.up_rate)}</Mono> },
           { title: "↓ 速度", kind: "fixed", width: 96, render: (_, r) => <Mono>{rate(r.down_rate)}</Mono> },
           { title: "↑ 总量", kind: "fixed", width: 88, render: (_, r) => bytes(r.bytes_up ?? 0) },

@@ -298,7 +298,7 @@ func (s *Server) maybeAutoApply(trigger string) *autoCheck {
 		return finish(AutoBusy, "按顺序部署引导 "+id+" 还没有结束（进行中，或停在某个节点等待处理）：自动安装推迟到它完成或被取消")
 	}
 	if !s.lockNode(localNodeID) {
-		return finish(AutoBusy, "网关正在预检、装机或撤回（可能是按顺序部署引导的一步），推迟到下一次评估")
+		return finish(AutoBusy, "网关正在预检、下发或撤回（可能是按顺序部署引导的一步），推迟到下一次评估")
 	}
 	s.autoInstalling.Store(true)
 	defer func() {

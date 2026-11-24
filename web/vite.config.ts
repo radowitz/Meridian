@@ -56,7 +56,7 @@ export default defineConfig(({ command }) => ({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test-setup.ts"],
-    include: ["src/**/*.test.tsx"],
+    include: ["src/**/*.test.tsx", "src/**/*.test.ts"],
     testTimeout: 30000,
     // CSS is not processed in tests, except the panel's own stylesheet: ui_layout.test.tsx reads it as text
     // (`styles.css?raw`) to guard the wrapping rules a browser found and jsdom cannot see.

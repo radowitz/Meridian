@@ -69,7 +69,7 @@ var (
 	reNFTSetOpen  = regexp.MustCompile(`^  set ` + ruleSetName + ` \{$`)
 	reNFTSetBody  = regexp.MustCompile(`^    (type (ipv4_addr|ipv6_addr)|flags interval(, timeout)?|elements = \{ [0-9a-fA-F.:/, ]+ \})$`)
 	reNFTRuleLine = regexp.MustCompile(`^    (ether saddr [0-9a-fA-F:]+ )?((ip|ip6) saddr [0-9a-fA-F.:/]+ )?(ip|ip6) daddr @(` + ruleSetName + `|chnroute|chnroute6) meta mark set (0x[0-9a-f]+) return$`)
-	reNFTQUICLine = regexp.MustCompile(`^    iifname \S+ udp dport 443 (ip|ip6) daddr @(` + ruleSetName + `|chnroute|chnroute6) return comment "above the QUIC switch: exempt"$`)
+	reNFTQUICLine = regexp.MustCompile(`^    iifname (?:\{ "[^"]+"(?:, "[^"]+")* \}|\S+) udp dport 443 (ip|ip6) daddr @(` + ruleSetName + `|chnroute|chnroute6) return comment "above the QUIC switch: exempt"$`)
 	reNFTSniffRes = regexp.MustCompile(`^    (ip|ip6) daddr [0-9a-fA-F.:]+ meta mark (0x[0-9a-f]+) meta l4proto \{ tcp, udp \} th dport 53 accept comment "resolver of the target file"$`)
 	reNFTMarks    = regexp.MustCompile(`0x[0-9a-f]+`)
 	reNFTGroupTgt = regexp.MustCompile(`^(# group (\S+) mark 0x[0-9a-f]+ transit \S+) target \S+((?: \S+)*)$`)
@@ -127,6 +127,8 @@ func maskNFT(body string, groups map[string]bool) (string, bool) {
 			continue
 		}
 		if reNFTQUICLine.MatchString(l) {
+			// One interface or a set of them (the LAN plus remote access);
+			// they stay compared on the QUIC switch line itself.
 			inRun = true
 			continue
 		}

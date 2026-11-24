@@ -178,7 +178,7 @@ var deployLimits = struct {
 }{
 	Proves: []string{
 		"在这次运行中实际安装的网关：meridian-host 的安装事务已提交——文件写入、接口与防火墙激活、服务启动，事务里的健康检查通过",
-		"在这次运行中实际下发的远端节点：装机脚本完成激活并写下清单，面板在同一登录里读回服务器上的记录，与装上去的内容一致（读回失败、不完整或不一致时这一步是「结果不明」，不算装好）",
+		"在这次运行中实际下发的远端节点：下发脚本完成激活并写下清单，面板在同一登录里读回服务器上的记录，与装上去的内容一致（读回失败、不完整或不一致时这一步是「结果不明」，不算装好）",
 		"「已在服务器上（采纳）」：预检完整读到的服务器记录（网关是安装清单）已经是这份内容；没有重新执行，也没有重新检查健康——服务现在是否在运行没有核实",
 	},
 	DoesNotProve: []string{
@@ -273,7 +273,7 @@ func tierReason(t model.Topology, n model.Node, pending map[string]bool) string 
 			for _, x := range ext {
 				ids = append(ids, x.ID)
 			}
-			fmt.Fprintf(&b, "；承载外部 SOCKS 出口 %s（它们没有自己的装机步骤，相关配置随这台下发）", joinLabels(t, ids))
+			fmt.Fprintf(&b, "；承载外部 SOCKS 出口 %s（它们没有自己的下发步骤，相关配置随这台下发）", joinLabels(t, ids))
 		}
 		return b.String()
 	case tierBackupHub:
@@ -706,12 +706,12 @@ func (l *deployLive) plan(extra ...map[string]bool) *deployPlan {
 		switch {
 		case model.IsExternal(n):
 			p.Skipped = append(p.Skipped, planSkip{NodeID: n.ID, NodeName: n.Name, Role: string(n.Role), Kind: "external",
-				Why: fmt.Sprintf("外部 SOCKS 出口：面板不登录、不装机；它的配置随承载节点 %s 下发", nodeLabel(t, n.External.Carrier))})
+				Why: fmt.Sprintf("外部 SOCKS 出口：面板不登录、不下发；它的配置随承载节点 %s 下发", nodeLabel(t, n.External.Carrier))})
 		case !n.Managed:
-			p.Skipped = append(p.Skipped, planSkip{NodeID: n.ID, NodeName: n.Name, Role: string(n.Role), Kind: "unmanaged", Why: "不受管（例如 IX 专线）：不需要装机"})
+			p.Skipped = append(p.Skipped, planSkip{NodeID: n.ID, NodeName: n.Name, Role: string(n.Role), Kind: "unmanaged", Why: "不受管（例如 IX 专线）：不需要下发"})
 		case n.Role == model.RoleRelay && !forcedIn(extra, n.ID) && !hasEnabledLink(t, n.ID):
 			p.Skipped = append(p.Skipped, planSkip{NodeID: n.ID, NodeName: n.Name, Role: string(n.Role), Kind: "inactive",
-				Why: "中继的链路全部停用：它不在主路径上，也不参与分担，这次不装机；启用它的链路后再部署"})
+				Why: "中继的链路全部停用：它不在主路径上，也不参与分担，这次不下发；启用它的链路后再部署"})
 		default:
 			st, ok := l.states[n.ID]
 			forced := false
@@ -1791,7 +1791,7 @@ func (s *Server) busyMessage(node string) string {
 	if node == localNodeID && s.autoInstalling.Load() {
 		return "无人值守的解锁自动安装正在安装网关：等它结束（通常一两分钟）后再点这一步；两者不会同时执行"
 	}
-	return "这个节点正在预检、装机或撤回（另一个操作占用）：等它结束后再试"
+	return "这个节点正在预检、下发或撤回（另一个操作占用）：等它结束后再试"
 }
 
 // --------------------------------------------------------------- preflight ---
@@ -2083,9 +2083,9 @@ func (s *Server) deployRemoteInstall(ctx context.Context, runID string, st deplo
 		case outcome == "refused" || outcome == "compensated" || outcome == "left_behind":
 			step.Outcome = outcome
 			why := map[string]string{
-				"refused":     "服务器上的执行前复核拒绝了这次装机，没有改动",
-				"compensated": "装机失败，已补偿（服务器回到这次下发之前）",
-				"left_behind": "装机失败，补偿没有全部完成（有残留）",
+				"refused":     "服务器上的执行前复核拒绝了这次下发，没有改动",
+				"compensated": "下发失败，已补偿（服务器回到这次下发之前）",
+				"left_behind": "下发失败，补偿没有全部完成（有残留）",
 			}[outcome]
 			stopAt(run, step, phaseFailed, step.NodeName+"："+why, now)
 		case outcome == "unknown":

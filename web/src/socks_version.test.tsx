@@ -174,7 +174,7 @@ describe("SOCKS credentials section", () => {
 
   it("words of a rotation's answer", () => {
     expect(socksRotatedMessage({ credential: cred(), pending: ["dc1", "dc2"] })).toContain("承载节点 dc1、dc2 待下发");
-    expect(socksRotatedMessage({ credential: cred(), pending: [] })).toBe("已轮换；承载节点重新装机后生效");
+    expect(socksRotatedMessage({ credential: cred(), pending: [] })).toBe("已轮换；承载节点重新下发后生效");
     expect(socksRotatedMessage({ credential: cred(), note: "服务器给的说明" })).toBe("服务器给的说明");
     expect(socksUnrecorded([cred(), cred({ tracked: false }), cred({ tracked: false, carriers: [] })])).toHaveLength(1);
   });

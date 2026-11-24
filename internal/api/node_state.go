@@ -299,7 +299,7 @@ func (s *Server) nodeStates(t model.Topology, b *compile.Bundle, gw statusInstal
 		case !ok || !o.Installed:
 			row.State, row.Reason = nodeNotInstalled, "这个节点还没有经面板成功装过（或已撤回）"
 		case o.Outcome == "unknown" || o.Outcome == "left_behind":
-			row.State, row.Reason = nodeUnknown, "最近一次装机结果不明或有残留：先预检查看服务器上的 journal"
+			row.State, row.Reason = nodeUnknown, "最近一次下发结果不明或有残留：先预检查看服务器上的 journal"
 		case o.InstalledBundle == "":
 			row.State, row.Reason = nodeUnknown, "这个节点在升级前装过，面板没有记录装上去的内容摘要：对它做一次预检（只读）即可补上"
 		default:

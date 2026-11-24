@@ -25,6 +25,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  App as AntApp,
   Radio,
   Select,
   Space,
@@ -56,6 +57,7 @@ import {
   type DataColumn,
   type MoreAction,
   Note,
+  SearchInput,
 } from "./ui";
 
 export const MATCH_TYPES: { value: string; label: string; help: string; placeholder: string }[] = [
@@ -396,7 +398,7 @@ export function RuleDrawer({
             </Tooltip>
           ) : null}
           <Button type="primary" loading={checking} onClick={() => void submit(false)}>
-            {rule ? "应用修改" : "添加"}
+            {rule ? "确定修改" : "添加"}
           </Button>
         </Space>
       }
@@ -412,7 +414,8 @@ export function RuleDrawer({
         <Alert type="error" showIcon style={{ marginBottom: 16 }} message={`这条规则有 ${errors.length} 个问题，已标在对应字段上`} />
       ) : null}
       {warnings.length > 0 ? <IssueList issues={warnings} /> : null}
-      <Form form={form} layout="vertical" initialValues={initial} requiredMark="optional" autoComplete="off" style={{ marginTop: warnings.length ? 12 : 0 }}>
+      <Form form={form} layout="vertical" initialValues={initial} requiredMark="optional" autoComplete="off" style={{ marginTop: warnings.length ? 12 : 0 }} onFinish={() => void submit(false)}>
+        <button type="submit" hidden aria-hidden tabIndex={-1} />
         <Form.Item name="name" label="名称" rules={[{ required: true, message: "请填写名称" }]}>
           <Input placeholder="例如 公司 API" />
         </Form.Item>
@@ -541,6 +544,7 @@ export function RuleDrawer({
 export const RULES_PAGE_SIZE = 50;
 
 export default function RulesPage() {
+  const { message } = AntApp.useApp();
   const doc = useTopologyDoc();
   const { route, navigate } = useRouter();
   const confirm = useConfirmDanger();
@@ -954,13 +958,14 @@ export default function RulesPage() {
     >
       <TopologyDocBar />
       <div className="toolbar-row">
-        <Input
+        <SearchInput
           allowClear
           prefix={<SearchOutlined />}
           placeholder="搜索名称、域名或去向"
           value={q}
-          onChange={(e) => {
-            setQ(e.target.value);
+          delay={120}
+          onSearch={(t) => {
+            setQ(t);
             setPage(1);
           }}
           className="toolbar-search"
@@ -1134,6 +1139,7 @@ export default function RulesPage() {
         }}
         onApply={(r, insertAt) => {
           const exists = topo.rules.some((x) => x.id === r.id);
+          message.success(exists ? "规则已修改，点「保存」后生效" : "规则已加入列表，点「保存」后生效");
           if (!exists && ordered) {
             const next = [...topo.rules];
             next.splice(Math.max(0, Math.min(next.length, (insertAt ?? 1) - 1)), 0, r);

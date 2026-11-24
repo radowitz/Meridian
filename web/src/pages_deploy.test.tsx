@@ -246,7 +246,7 @@ describe("deploy: remote nodes", () => {
     const remote = await screen.findByTestId("remote-node-us");
     expect(screen.getByTestId("page-help")).toHaveTextContent("单独处理时先「生成密钥并下发」到远端节点，再「安装到网关」");
     expect(screen.getByTestId("keyless-nodes")).toHaveTextContent("还没有密钥");
-    expect(within(remote).getByTestId("keyless-us")).toHaveTextContent("第一次装机");
+    expect(within(remote).getByTestId("keyless-us")).toHaveTextContent("第一次下发");
     const main = within(remote).getByRole("button", { name: /生成密钥并下发/ });
     expect(main).toHaveClass("ant-btn-primary");
     const withKey = screen.getByTestId("remote-node-hk-2");
@@ -417,7 +417,7 @@ describe("deploy: install pre-check for remote nodes", () => {
       "POST /api/provision/preflight": () => ({ preflight: CLEAN() }),
       "POST /api/provision": () =>
         reply(502, {
-          error: "装机失败，补偿没有全部完成",
+          error: "下发失败，补偿没有全部完成",
           code: "provision_failed_leftovers",
           outcome: "left_behind",
           leftovers: ["interface m07"],
@@ -431,7 +431,7 @@ describe("deploy: install pre-check for remote nodes", () => {
     await userEvent.click(screen.getByTestId("preflight-execute"));
     expect(await screen.findByTestId("provision-leftovers")).toHaveTextContent("interface m07");
     expect(screen.getByTestId("provision-kept")).toHaveTextContent("package wireguard-tools");
-    expect(screen.getByText("装机失败，有残留没有撤掉")).toBeInTheDocument();
+    expect(screen.getByText("下发失败，有残留没有撤掉")).toBeInTheDocument();
     expect(screen.queryByText("脚本已在服务器上执行完毕")).toBeNull();
   });
 
@@ -748,7 +748,7 @@ describe("deploy: deployment records and withdraw", () => {
       "GET /api/servers": () => ({ servers: [server({ id: "srv-2", name: "美国机", address: "198.51.100.40" })] }),
       "POST /api/provision/preflight": () => ({
         preflight: preflightRec({
-          findings: [{ severity: "blocking", code: "previous_run_incomplete", resource: "/var/lib/meridian/node/journal", message: "上一次装机没有正常结束", action: "在部署页恢复" }],
+          findings: [{ severity: "blocking", code: "previous_run_incomplete", resource: "/var/lib/meridian/node/journal", message: "上一次下发没有正常结束", action: "在部署页恢复" }],
           counts: { blocking: 1, warning: 0, info: 0 },
         }),
       }),
@@ -757,7 +757,7 @@ describe("deploy: deployment records and withdraw", () => {
     renderAt("#/deploy");
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     const fix = await screen.findByTestId("preflight-recovery");
-    await userEvent.click(within(fix).getByRole("button", { name: /恢复中断的装机/ }));
+    await userEvent.click(within(fix).getByRole("button", { name: /恢复中断的下发/ }));
     await userEvent.click(await screen.findByTestId("withdraw-plan"));
     await screen.findByTestId("withdraw-plan-view");
     expect(api.find("POST /api/provision/withdraw/plan")[0].body).toEqual({ node_id: "us", mode: "journal" });

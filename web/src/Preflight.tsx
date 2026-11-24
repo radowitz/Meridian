@@ -42,7 +42,7 @@ const SEVERITY: Record<PreflightFinding["severity"], { title: string; type: "err
 };
 
 const OWNERSHIP: Record<string, string> = {
-  none: "主机上没有 Meridian：第一次装机",
+  none: "主机上没有 Meridian：第一次下发",
   same: "已由本面板为这个节点装过：这次是更新",
   other: "属于另一个节点或另一个面板",
   legacy: "有旧版 Meridian 的痕迹，但没有受管清单",

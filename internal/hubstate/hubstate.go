@@ -606,7 +606,7 @@ func Evaluate(g GroupSpec, rd *Read, current Identity, currentPlan string, stale
 	a.DeployedMatches = bp(matches)
 	if !matches {
 		a.State, a.Code = StateVersionMismatch, CodePlanDiffers
-		a.Message = "枢纽运行的地区组计划不是面板当前的配置：枢纽还没有按当前拓扑装机"
+		a.Message = "枢纽运行的地区组计划不是面板当前的配置：枢纽还没有按当前拓扑下发"
 		return a
 	}
 	member := map[string]bool{}

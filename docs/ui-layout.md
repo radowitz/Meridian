@@ -241,7 +241,7 @@ are split: the first fact in the tag, the rest beside it (`inline`, cut with
 "…") or only in the tooltip and a visually hidden span (`hidden`). The wrapper
 carries `data-status` and the whole label as its text. Used for the group
 actual state (exits, overview), Cloudflare permission check ("可读 · 写权限未确认"),
-server login "未选择 · 密码", node key "还没有 · 第一次装机".
+server login "未选择 · 密码", node key "还没有 · 第一次下发".
 
 ### Per page
 
@@ -263,7 +263,7 @@ server login "未选择 · 密码", node key "还没有 · 第一次装机".
 | Keys | SSH: 名称, 种类, 指纹 (ellipsis), 创建, 最近轮换, 使用者, 操作; SOCKS likewise | — | "不可查看" next to 已设置. |
 | Cloudflare / Mesh | Accounts: 名称, Account ID (ellipsis + copy), Token, 权限检查 (`SplitStatus`), Mesh, 绑定部署, 操作; checks and permission tables with widths; Mesh readiness: tag 未就绪 + "还需：…" text; pinned hosts with ellipsis | — | "写权限未确认" alert. |
 | Remote access | Devices: 设备, 模式, 地址 (ellipsis), 状态, 密钥, 启用, 操作 | Independent-resource note (second pass) | Router command is a `CommandBlock` (one line, scrolls in its box). "手机在外网能否连回来，面板验证不了" (`SafetyNotice unverified`, devices section; second pass). |
-| Deploy | Remote nodes: 节点, 服务器, 安装状态, 密钥 (`SplitStatus`), 操作 (one button + menu); binaries: ellipsis SHA / path; guide plan and run: #, 节点, 现在/状态, 为什么在这个位置/说明 (flex 320, wraps); deployment records: 节点, 服务器 (fingerprint on one line), 状态, 操作 (撤回 or 删除记录 + menu: 恢复中断的装机, 放弃) | Guide order, push/preflight explanation, binaries, diff intro, deployment-record intro | "不会一次确认全部"、"已装好不是端到端验证"、retry note, all alerts about refusals, leftovers and unknown outcomes. |
+| Deploy | Remote nodes: 节点, 服务器, 安装状态, 密钥 (`SplitStatus`), 操作 (one button + menu); binaries: ellipsis SHA / path; guide plan and run: #, 节点, 现在/状态, 为什么在这个位置/说明 (flex 320, wraps); deployment records: 节点, 服务器 (fingerprint on one line), 状态, 操作 (撤回 or 删除记录 + menu: 恢复中断的下发, 放弃) | Guide order, push/preflight explanation, binaries, diff intro, deployment-record intro | "不会一次确认全部"、"已装好不是端到端验证"、retry note, all alerts about refusals, leftovers and unknown outcomes. |
 | Unlock | Matrix: compact cells (one word per family, grade as "*", expiry as a clock icon; full label in title + hidden text; detail drawer), exit header names cut with tooltip, `WideGrid` (frozen first column, scroll hint), filters by region group / exit / service / family; catalog 服务, 能告诉你什么, 检测的平台, 地址族, 规则; state, history, owner candidate tables with widths; coverage: 地区 96, 项目 ellipsis, 脚本 ellipsis, 结果 (tag + adapter / reason), 说明 flex (wraps), filters by section and by implemented / not | Legend descriptions, schedule details, routing details, catalog intro | Validation notice; launcher fail-closed note; "自动选择未在真实平台和真实网关上验证" and "自动安装未在真实网关上验证" (`SafetyNotice unverified`); coverage "只在合成样本上测过" (`SafetyNotice`). |
 | WSS | Links: 链路, 拨号端, 路径, 操作; parties: 一端, 已安装, 下次下发 | — | — (border colour now uses the theme variable, was a light-only fallback). |
 

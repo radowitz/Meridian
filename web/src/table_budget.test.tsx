@@ -207,7 +207,7 @@ describe("table width budget at 1280 with real-size rows", () => {
       node_name: `${id} ${LONG}`,
       role: "exit",
       kind: "remote",
-      reason: "出口要先于枢纽装好：枢纽装机时要用到出口的公钥，管理通道也经过它；这是一个很长的原因说明。",
+      reason: "出口要先于枢纽装好：枢纽下发时要用到出口的公钥，管理通道也经过它；这是一个很长的原因说明。",
       warnings: ["服务器上已有 wstunnel，面板不会覆盖它"],
       plan_state: "changed",
       phase: "pending",

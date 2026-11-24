@@ -1090,7 +1090,7 @@ func ResolveNodeKey(t *model.Topology, nodeID string, policy KeyPolicy) (key str
 	}
 	switch policy {
 	case KeyReuse:
-		return "", false, fmt.Errorf("节点 %s 没有已保存的 WireGuard 私钥；首次装机请生成密钥", nodeID)
+		return "", false, fmt.Errorf("节点 %s 没有已保存的 WireGuard 私钥；首次下发请生成密钥", nodeID)
 	case KeyGenerateIfMissing:
 		if strings.TrimSpace(n.PublicKey) != "" {
 			return "", false, fmt.Errorf("节点 %s 只有公钥没有私钥；请在拓扑中补私钥或清空公钥后重新生成", nodeID)

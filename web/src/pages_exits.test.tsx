@@ -256,7 +256,7 @@ describe("region groups: the hub's actual state", () => {
   it("explains stale, version mismatch and failed switches with their fix and no member", async () => {
     const groups = [
       group({ id: "a", name: "甲", actual: { ...NEVER_READ, state: "stale", code: "heartbeat_old", message: "枢纽这个组的心跳已停 300 秒（超过 135 秒）", read_at: NOW } }),
-      group({ id: "b", name: "乙", is_default: false, actual: { ...NEVER_READ, state: "version_mismatch", code: "plan_differs", message: "枢纽还没有按当前拓扑装机", read_at: NOW, deployed_matches: false } }),
+      group({ id: "b", name: "乙", is_default: false, actual: { ...NEVER_READ, state: "version_mismatch", code: "plan_differs", message: "枢纽还没有按当前拓扑下发", read_at: NOW, deployed_matches: false } }),
       group({
         id: "c",
         name: "丙",
@@ -1066,7 +1066,7 @@ describe("SOCKS credentials", () => {
     const row = await screen.findByTestId("socks-row-socks-1");
     await menuItem(within(row).getByRole("button", { name: "马来西亚代理 的更多操作" }), "轮换");
     const drawer = await screen.findByRole("dialog");
-    expect(drawer).toHaveTextContent("承载节点重新装机后才生效");
+    expect(drawer).toHaveTextContent("承载节点重新下发后才生效");
     await userEvent.type(within(drawer).getByLabelText("SOCKS 用户名"), "rotated-user");
     await userEvent.type(within(drawer).getByLabelText("SOCKS 密码"), "rotated-pass");
     await userEvent.click(within(drawer).getByRole("button", { name: btn("轮换") }));
@@ -1116,7 +1116,7 @@ describe("overview: first-time order and all region groups", () => {
     });
     // hk-hub, hk-ix, hk-resi, us have no key; hk-2 has one.
     expect(first).toHaveTextContent("4 个远端节点还没有密钥");
-    expect(screen.getByRole("link", { name: "远端节点第一次装机" })).toHaveAttribute("href", "#/deploy?section=remote");
+    expect(screen.getByRole("link", { name: "远端节点第一次下发" })).toHaveAttribute("href", "#/deploy?section=remote");
     const order = steps.map((s) => s.getAttribute("data-testid"));
     const idx = (text: string) => steps.findIndex((s) => s.textContent?.includes(text));
     expect(idx("远端节点还没有密钥")).toBeLessThan(steps.length - 1);

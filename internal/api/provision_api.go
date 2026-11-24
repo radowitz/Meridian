@@ -98,7 +98,7 @@ func refuseNodePeerKeys(w http.ResponseWriter, b *compile.Bundle, nodeID string)
 	}
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 		"code": codePeerKeysMissing,
-		"error": fmt.Sprintf("拒绝装机：节点 %s 的 WireGuard 配置里这些对端没有可用的公钥（缺失、仍是占位符或格式不对）：%s。"+
+		"error": fmt.Sprintf("拒绝下发：节点 %s 的 WireGuard 配置里这些对端没有可用的公钥（缺失、仍是占位符或格式不对）：%s。"+
 			"受管节点的密钥由面板自动生成；这里列出的是不受管的对端，或公钥是手工填写且无效的节点：在拓扑里填入 44 字符的 base64 公钥，或清空后让面板生成。没有连接服务器。",
 			nodeID, strings.Join(peers, "、")),
 		"peer_key_problems": probs,
@@ -125,7 +125,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !node.Managed {
-		writeResErr(w, &credentials.Error{Code: codeBadRequest, Field: "node_id", Msg: "该节点不需要装机（例如 IX 专线）"})
+		writeResErr(w, &credentials.Error{Code: codeBadRequest, Field: "node_id", Msg: "该节点不需要下发（例如 IX 专线）"})
 		return
 	}
 	dep, err := s.deploymentID()
@@ -199,7 +199,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		}
 	case first:
 		writeCoded(w, http.StatusConflict, codePreflightRequired,
-			fmt.Sprintf("节点 %s 在服务器 %s 上还没有成功装过：第一次装机前必须先预检并审阅结果（POST /api/provision/preflight），再带上 preflight_id 执行", node.ID, ident.ServerName), nil)
+			fmt.Sprintf("节点 %s 在服务器 %s 上还没有成功装过：第一次下发前必须先预检并审阅结果（POST /api/provision/preflight），再带上 preflight_id 执行", node.ID, ident.ServerName), nil)
 		return
 	}
 	// Re-run immediately before execution, pinned to the same identity.
@@ -351,7 +351,7 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 			if code == "" {
 				code = sshexec.CodeStageFailed
 			}
-			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "传输面板下发的二进制失败，没有执行装机：" + err.Error(), "code": code, "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "传输面板下发的二进制失败，没有执行下发：" + err.Error(), "code": code, "outcome": "not_started", "node_id": node.ID, "server_id": node.ServerID})
 		}
 		return
 	}
@@ -440,15 +440,15 @@ func (s *Server) postProvision(w http.ResponseWriter, r *http.Request) {
 		code, status = codeProvisionRefused, http.StatusConflict
 		base["outcome"] = "refused"
 		base["reason"] = so.Refused
-		msg = fmt.Sprintf("服务器上的执行前复核拒绝了这次装机（%s），没有改动任何东西：重新预检查看原因", so.Refused)
+		msg = fmt.Sprintf("服务器上的执行前复核拒绝了这次下发（%s），没有改动任何东西：重新预检查看原因", so.Refused)
 	case so.Incomplete:
 		code = codeProvisionLeftovers
 		base["outcome"] = "left_behind"
-		msg = "装机失败，补偿没有全部完成：下面列出了留在服务器上的东西（也记录在服务器的 /var/lib/meridian/node/journal）。处理之前，下一次预检会阻止再次装机"
+		msg = "下发失败，补偿没有全部完成：下面列出了留在服务器上的东西（也记录在服务器的 /var/lib/meridian/node/journal）。处理之前，下一次预检会阻止再次下发"
 	case so.Compensated:
 		code = codeProvisionCompensated
 		base["outcome"] = "compensated"
-		msg = "装机失败，已补偿：这次新建的文件、接口、表、规则和服务已撤掉，被替换的文件已恢复"
+		msg = "下发失败，已补偿：这次新建的文件、接口、表、规则和服务已撤掉，被替换的文件已恢复"
 		if len(so.Kept) > 0 {
 			msg += "；按设计保留了安装的软件包（见 kept）"
 		}

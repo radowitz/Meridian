@@ -55,7 +55,7 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { WSSLinkStatus } from "./WSS";
 import { UplinkMTUCard } from "./Preflight";
@@ -132,7 +132,7 @@ function transportHelp(tr: Transport, t: Topology): string {
 const ROLE_HELP: Record<Role, string> = {
   gateway: "本机：家里的网关，LAN 流量从这里进入。",
   relay: "国内中继，把流量送进 IX 专线。",
-  ix: "IX 专线的一段，不需要装机，也没有服务器。",
+  ix: "IX 专线的一段，不需要下发，也没有服务器。",
   hub: "境外枢纽，按地区组把流量分给各个出口。",
   exit: "出口：流量在这里离开到公网。",
 };
@@ -311,15 +311,19 @@ function toFlow(topo: Topology, servers: Map<string, ServerView>, issues: Issue[
   };
 }
 
-function Canvas({
+const Canvas = memo(function Canvas({
   topo,
+  live,
   servers,
   issues,
   legs,
   onSelect,
   onChange,
 }: {
+  /** The document as drawn: may lag the live one while typing elsewhere. */
   topo: Topology;
+  /** The live document: edits from the canvas start from it. */
+  live: { current: Topology };
   servers: Map<string, ServerView>;
   issues: Issue[];
   legs: HubLegReport[] | null;
@@ -343,11 +347,12 @@ function Canvas({
   const onConnect = useCallback(
     (conn: Connection) => {
       if (!conn.source || !conn.target || conn.source === conn.target) return;
-      const link = newLink(topo, conn.source, conn.target);
-      onChange({ ...topo, links: [...topo.links, link] });
+      const cur = live.current;
+      const link = newLink(cur, conn.source, conn.target);
+      onChange({ ...cur, links: [...cur.links, link] });
       onSelect({ kind: "link", id: link.id });
     },
-    [onChange, onSelect, topo],
+    [onChange, onSelect, live],
   );
 
   return (
@@ -361,7 +366,7 @@ function Canvas({
         edgeTypes={EDGE_TYPES}
         deleteKeyCode={null}
         onNodeDragStop={(_, node) =>
-          onChange({ ...topo, nodes: topo.nodes.map((n) => (n.id === node.id ? { ...n, x: Math.round(node.position.x), y: Math.round(node.position.y) } : n)) })
+          onChange({ ...live.current, nodes: live.current.nodes.map((n) => (n.id === node.id ? { ...n, x: Math.round(node.position.x), y: Math.round(node.position.y) } : n)) })
         }
         onNodeClick={(_, n) => onSelect({ kind: "node", id: n.id })}
         onEdgeClick={(_, e) => onSelect({ kind: "link", id: e.id })}
@@ -380,8 +385,9 @@ function Canvas({
           <Button
             size="small"
             onClick={() => {
-              const pos = autoLayout(topo.nodes, topo.region_groups);
-              onChange({ ...topo, nodes: topo.nodes.map((n) => ({ ...n, ...(pos.get(n.id) ?? {}) })) });
+              const cur = live.current;
+              const pos = autoLayout(cur.nodes, cur.region_groups);
+              onChange({ ...cur, nodes: cur.nodes.map((n) => ({ ...n, ...(pos.get(n.id) ?? {}) })) });
               setNodes((cur) => cur.map((n) => ({ ...n, position: pos.get(n.id) ?? n.position })));
               window.setTimeout(() => flow.fitView({ duration: 200 }), 0);
             }}
@@ -395,7 +401,7 @@ function Canvas({
       </Space>
     </div>
   );
-}
+});
 
 // ------------------------------------------------------------ node drawer ---
 
@@ -553,7 +559,7 @@ function HubRoleFields({ node, topo, patch }: { node: Node; topo: Topology; patc
       {tier !== "backup" ? (
         <Flag
           label="IX 即主枢纽"
-          help="这台主枢纽就是 IX：专线上一台能登录、受管的服务器。它通过所选的服务器记录装机和下发（可以是中继上的端口转发，只用密码登录也可以）。中继用普通 WireGuard 拨它的国内入口地址，出口拨它的境外出口地址。"
+          help="这台主枢纽就是 IX：专线上一台能登录、受管的服务器。它通过所选的服务器记录下发配置（可以是中继上的端口转发，只用密码登录也可以）。中继用普通 WireGuard 拨它的国内入口地址，出口拨它的境外出口地址。"
           checked={!!node.ix_line}
           onChange={(v) => patch(v ? { ix_line: true, hub_tier: node.hub_tier ?? (hubs.length > 1 ? "primary" : undefined) } : { ix_line: undefined, ingress_v4: undefined, ingress_interface: undefined })}
         />
@@ -670,9 +676,9 @@ function NodeDetail({
       {node.role === "gateway" ? (
         <Note>网关是运行面板的这台机器，不关联远端服务器；在「部署」页安装到本机。</Note>
       ) : node.role === "exit" && node.external ? (
-        <Note>外部 SOCKS 出口不装机，没有服务器：面板从不登录那台代理设备。</Note>
+        <Note>外部 SOCKS 出口不下发，没有服务器：面板从不登录那台代理设备。</Note>
       ) : !node.managed ? (
-        <Note>这个节点不需要装机（例如 IX 专线），没有服务器。</Note>
+        <Note>这个节点不需要下发（例如 IX 专线），没有服务器。</Note>
       ) : (
         <>
           {serversError ? <ApiErrorAlert error={serversError} /> : null}
@@ -721,12 +727,12 @@ function NodeDetail({
               {node.role === "hub" || node.role === "exit" ? <div><NodeHostMesh nodeId={node.id} /></div> : null}
               {!server.ready ? (
                 <Note>
-                  装机和 Mesh 部署前要先在服务器页完成：选择密钥、确认主机指纹、通过连接测试。
+                  下发和 Mesh 部署前要先在服务器页完成：选择密钥、确认主机指纹、通过连接测试。
                 </Note>
               ) : null}
             </div>
           ) : needsServer && !node.server_id ? (
-            <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="还没有选择服务器：这个节点不能装机，也不能参与 Mesh 部署。" />
+            <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="还没有选择服务器：这个节点不能下发，也不能参与 Mesh 部署。" />
           ) : null}
           {legacySSH ? (
             <Alert
@@ -1560,7 +1566,7 @@ function NodeDeleteDialog({
             <StatusTag kind={DEPLOYMENT_STATUS[dep.rec.status]?.kind ?? "neutral"}>{DEPLOYMENT_STATUS[dep.rec.status]?.label ?? dep.rec.status}</StatusTag>
             <span className="mono-small"> {`${dep.rec.server_name || dep.rec.server_id} · ${dep.rec.address}:${dep.rec.port}`}</span>
             <Note>
-              从拓扑删除节点和撤回服务器上的安装是两件事。撤回只移除 Meridian 受管清单列出的服务、接口、路由、nft 表和文件；装机时安装的软件包（wireguard-tools、nftables、smartdns 等）按设计保留。
+              从拓扑删除节点和撤回服务器上的安装是两件事。撤回只移除 Meridian 受管清单列出的服务、接口、路由、nft 表和文件；下发时安装的软件包（wireguard-tools、nftables、smartdns 等）按设计保留。
             </Note>
             <Radio.Group value={choice} onChange={(e) => setChoice(e.target.value)} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <Radio value="keep">仅从拓扑删除（保留服务器上的安装，之后仍可在部署页撤回）</Radio>
@@ -1606,6 +1612,10 @@ export default function TopologyPage() {
   const [adding, setAdding] = useState<{ from?: string } | null>(null);
   const [migrationDismissed, setMigrationDismissed] = useState(false);
   const topo = doc.topo;
+  // The canvas redraws from a deferred copy, so typing in a drawer is not held up by the layout.
+  const canvasTopo = useDeferredValue(topo);
+  const liveTopo = useRef(topo as Topology);
+  liveTopo.current = topo as Topology;
   const allocation = useAllocationView(topo);
 
   const selected: Selection = useMemo(() => {
@@ -1734,7 +1744,7 @@ export default function TopologyPage() {
           showIcon
           style={{ marginBottom: 12 }}
           message={`${managedWithout.length} 个受管节点还没有选择服务器：${managedWithout.map((n) => n.name || n.id).join("、")}`}
-          description="点节点，在右侧选择它运行的服务器。没有服务器的节点不能装机，也不能参与 Mesh 部署。"
+          description="点节点，在右侧选择它运行的服务器。没有服务器的节点不能下发，也不能参与 Mesh 部署。"
         />
       ) : null}
       {doc.dirty && (allocation.view?.changes ?? []).length > 0 ? (
@@ -1768,7 +1778,7 @@ export default function TopologyPage() {
         <span className="legend-line error">有错误</span>
       </div>
       <ReactFlowProvider>
-        <Canvas topo={topo} servers={serverMap} issues={doc.issues} legs={legs} onSelect={select} onChange={doc.setTopo} />
+        <Canvas topo={canvasTopo ?? topo} live={liveTopo} servers={serverMap} issues={doc.issues} legs={legs} onSelect={select} onChange={doc.setTopo} />
       </ReactFlowProvider>
       <ClickableIssues issues={doc.issues} />
       {doc.paths.length > 0 ? (

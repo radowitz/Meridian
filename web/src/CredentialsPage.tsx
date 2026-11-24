@@ -726,7 +726,7 @@ function SocksCreateDrawer({ open, onClose, onCreated }: { open: boolean; onClos
         showIcon
         style={{ marginBottom: 16 }}
         message="外部 SOCKS 出口所用代理的用户名和密码。"
-        description={<Note>{"只在装机时写进承载节点的转发配置；面板从不登录那台代理设备，也不会再显示这两个值。"}</Note>}
+        description={<Note>{"只在下发时写进承载节点的转发配置；面板从不登录那台代理设备，也不会再显示这两个值。"}</Note>}
       />
       {act.error && !fieldHandled ? <ApiErrorAlert error={act.error} /> : null}
       <Form form={form} layout="vertical" autoComplete="off" requiredMark="optional">
@@ -789,7 +789,7 @@ function SocksRotateDrawer({ cred, onClose, onDone }: { cred: SOCKSCredentialVie
         showIcon
         style={{ marginBottom: 16 }}
         message="轮换保留同一个 ID，引用它的外部出口改用新的用户名和密码。"
-        description="新值要在承载节点重新装机后才生效；先在代理上改好，再轮换，再到「部署」页重新下发承载节点。轮换后承载节点显示「有待下发的变更」并写明原因，之前做的预检作废，要重新预检。"
+        description="新值要在承载节点重新下发后才生效；先在代理上改好，再轮换，再到「部署」页重新下发承载节点。轮换后承载节点显示「有待下发的变更」并写明原因，之前做的预检作废，要重新预检。"
       />
       {act.error && !fieldHandled ? <ApiErrorAlert error={act.error} /> : null}
       <Form form={form} layout="vertical" autoComplete="off">
@@ -921,7 +921,7 @@ export function SocksSection({ focus, openCreate }: { focus: boolean; openCreate
         }
       >
         <Note>
-          外部 SOCKS 出口所用代理的用户名和密码。只写不读：保存后不能再查看，只能轮换；只在承载节点装机时使用。轮换后，承载它的节点在「部署」页显示有待下发的变更，重新预检并安装后才用新值。
+          外部 SOCKS 出口所用代理的用户名和密码。只写不读：保存后不能再查看，只能轮换；只在承载节点下发时使用。轮换后，承载它的节点在「部署」页显示有待下发的变更，重新预检并安装后才用新值。
         </Note>
         {socksTrackingProblem(state.data?.version_tracking) ? (
           <Alert type="warning" showIcon style={{ marginBottom: 12 }} data-testid="socks-tracking-problem" message={socksTrackingProblem(state.data?.version_tracking)} />

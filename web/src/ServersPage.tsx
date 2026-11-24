@@ -273,7 +273,8 @@ function ServerFormDrawer({
           message="改地址或端口会清除已固定的主机指纹；改地址、端口、用户、认证方式或密钥会清除连接测试结果。"
         />
       ) : null}
-      <Form form={form} layout="vertical" initialValues={initial} autoComplete="off" requiredMark="optional">
+      <Form form={form} layout="vertical" initialValues={initial} autoComplete="off" requiredMark="optional" onFinish={() => void save()}>
+        <button type="submit" hidden aria-hidden tabIndex={-1} />
         <Form.Item name="name" label="名称" rules={[{ required: true, message: "请填写名称" }]}>
           <Input placeholder="例如 主枢纽" />
         </Form.Item>

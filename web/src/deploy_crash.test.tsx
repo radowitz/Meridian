@@ -30,7 +30,7 @@ function gatewayRec(over: Partial<PreflightRecord> = {}): PreflightRecord {
     first_install: false,
     ownership: "same",
     findings: [
-      { severity: "warning", code: "previous_run_leftovers", resource: "relay", message: "上一次装机留下了没有撤掉的东西。" },
+      { severity: "warning", code: "previous_run_leftovers", resource: "relay", message: "上一次下发留下了没有撤掉的东西。" },
       { severity: "info", code: "host_summary", message: "主机：Debian 13。" },
     ],
     counts: { blocking: 0, warning: 1, info: 1 },

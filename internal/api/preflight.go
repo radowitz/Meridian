@@ -23,7 +23,7 @@ import (
 )
 
 // The install pre-check ("preflight") before a remote node is provisioned
-// and before the gateway install. See docs/architecture.md「装机前预检」.
+// and before the gateway install. See docs/architecture.md「下发前预检」.
 //
 //   - POST /api/provision/preflight {node_id} runs the fixed, read-only
 //     preflight script on the node's server (pinned host key) and stores
@@ -69,7 +69,7 @@ var notChecked = []string{
 	"不检查云厂商安全组、上游防火墙或 NAT：端口能否从外面到达要在装好后看握手",
 	"不预测别的服务以后的改动：Docker 重启时 meridian-fwcompat.service 会重新加上 DOCKER-USER 规则；WARP 重连、有人手动启动或重载 nftables.service 不在预检之内（会清空规则集的 nftables.service 已启用或在运行时直接拒绝）",
 	"不检查 SmartDNS 上游是否可用，也不建立 WSS 连接（WSS 证书和路径由面板生成，预检不验证两端能否握手）；面板下发的 wstunnel / SmartDNS 只核对架构、路径和 SHA-256，不在预检里执行它们",
-	"不在预检里执行 nft：远端规则集已避开 nft 0.9.3（Ubuntu 20.04）不确定的写法，装机时 meridian-up.sh 仍先 nft -c，失败会在激活前停止并补偿",
+	"不在预检里执行 nft：远端规则集已避开 nft 0.9.3（Ubuntu 20.04）不确定的写法，下发时 meridian-up.sh 仍先 nft -c，失败会在激活前停止并补偿",
 	"iptables-legacy 主机只看 filter 表 INPUT/FORWARD 的默认策略、DOCKER-USER 和 FORWARD 的跳转，不逐条检查 legacy 规则、nat 改写和 MARK",
 	"WARP 只读进程名和地址作为依赖线索（连到它本地监听的进程、指向它的 resolv.conf），不读它的配置和账户",
 	"不检查 sudo：只接受 root 登录",
@@ -220,7 +220,7 @@ func (s *Server) unlockNode(id string) {
 }
 
 func refuseBusy(w http.ResponseWriter, node string) {
-	writeCoded(w, http.StatusConflict, codeNodeBusy, fmt.Sprintf("节点 %s 正在预检或装机，等它结束再试", node), nil)
+	writeCoded(w, http.StatusConflict, codeNodeBusy, fmt.Sprintf("节点 %s 正在预检或下发，等它结束再试", node), nil)
 }
 
 // identityOf is the node's current target: its server's address, port,
@@ -463,7 +463,7 @@ func (s *Server) postProvisionPreflight(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !node.Managed || node.Role == model.RoleGateway {
-		writeResErr(w, &credentials.Error{Code: codeBadRequest, Field: "node_id", Msg: "该节点不经 SSH 装机（网关用「安装到网关」，IX 专线不需要装机）"})
+		writeResErr(w, &credentials.Error{Code: codeBadRequest, Field: "node_id", Msg: "该节点不经 SSH 下发（网关用「安装到网关」，IX 专线不需要下发）"})
 		return
 	}
 	if refuseLinkless(w, t, node.ID) {

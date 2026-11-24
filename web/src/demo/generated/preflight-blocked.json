@@ -1048,7 +1048,7 @@
       },
       {
        "code": "sysctl_scope",
-       "message": "内核参数：只改受管接口（eth0 m02 m02w m03 m04 mra）上的 rp_filter / ICMP 重定向，其它接口（Docker、WARP、你自己的）不碰。会改的全局参数：net.ipv4.conf.all.accept_redirects、net.ipv4.conf.all.rp_filter、net.ipv4.conf.all.send_redirects、net.ipv4.conf.default.rp_filter、net.ipv4.conf.default.send_redirects、net.ipv6.conf.all.accept_redirects、net.ipv6.conf.default.accept_redirects。内核对 rp_filter 取 max(all, 接口)：受管接口设为 2 后不论 all 是多少都是宽松模式；这台是网关，all/default 也设为 2（当前 net.ipv4.conf.all.rp_filter=—）。转发（ip_forward / all.forwarding）是全局开关，见上一项；第一次装机失败时，补偿把这些键恢复成装机前读到的值；撤回不改运行中的值（Docker 等也依赖转发），重启后不再设置。",
+       "message": "内核参数：只改受管接口（eth0 m02 m02w m03 m04 mra）上的 rp_filter / ICMP 重定向，其它接口（Docker、WARP、你自己的）不碰。会改的全局参数：net.ipv4.conf.all.accept_redirects、net.ipv4.conf.all.rp_filter、net.ipv4.conf.all.send_redirects、net.ipv4.conf.default.rp_filter、net.ipv4.conf.default.send_redirects、net.ipv6.conf.all.accept_redirects、net.ipv6.conf.default.accept_redirects。内核对 rp_filter 取 max(all, 接口)：受管接口设为 2 后不论 all 是多少都是宽松模式；这台是网关，all/default 也设为 2（当前 net.ipv4.conf.all.rp_filter=—）。转发（ip_forward / all.forwarding）是全局开关，见上一项；第一次下发失败时，补偿把这些键恢复成下发前读到的值；撤回不改运行中的值（Docker 等也依赖转发），重启后不再设置。",
        "resource": "sysctl",
        "severity": "info"
       }
@@ -2015,7 +2015,7 @@
       "不检查云厂商安全组、上游防火墙或 NAT：端口能否从外面到达要在装好后看握手",
       "不预测别的服务以后的改动：Docker 重启时 meridian-fwcompat.service 会重新加上 DOCKER-USER 规则；WARP 重连、有人手动启动或重载 nftables.service 不在预检之内（会清空规则集的 nftables.service 已启用或在运行时直接拒绝）",
       "不检查 SmartDNS 上游是否可用，也不建立 WSS 连接（WSS 证书和路径由面板生成，预检不验证两端能否握手）；面板下发的 wstunnel / SmartDNS 只核对架构、路径和 SHA-256，不在预检里执行它们",
-      "不在预检里执行 nft：远端规则集已避开 nft 0.9.3（Ubuntu 20.04）不确定的写法，装机时 meridian-up.sh 仍先 nft -c，失败会在激活前停止并补偿",
+      "不在预检里执行 nft：远端规则集已避开 nft 0.9.3（Ubuntu 20.04）不确定的写法，下发时 meridian-up.sh 仍先 nft -c，失败会在激活前停止并补偿",
       "iptables-legacy 主机只看 filter 表 INPUT/FORWARD 的默认策略、DOCKER-USER 和 FORWARD 的跳转，不逐条检查 legacy 规则、nat 改写和 MARK",
       "WARP 只读进程名和地址作为依赖线索（连到它本地监听的进程、指向它的 resolv.conf），不读它的配置和账户",
       "不检查 sudo：只接受 root 登录",

@@ -516,7 +516,7 @@ function TxnFailure({
                   );
                 })}
               </ul>
-              受管的远端节点第一次装机时生成密钥；不受管的节点（例如专线）在拓扑里填入 44 字符的公钥。网关上没有写入任何文件。
+              受管的远端节点第一次下发时生成密钥；不受管的节点（例如专线）在拓扑里填入 44 字符的公钥。网关上没有写入任何文件。
             </div>
           }
         />
@@ -877,7 +877,7 @@ type RemoteMode = "push" | "rotate";
 
 /** Preflight findings that have a panel-driven recovery (withdraw script modes). */
 const RECOVERY: Record<string, { mode: WithdrawMode; label: string }> = {
-  previous_run_incomplete: { mode: "journal", label: "恢复中断的装机" },
+  previous_run_incomplete: { mode: "journal", label: "恢复中断的下发" },
   legacy_install: { mode: "legacy", label: "旧版清理（先列清单再确认）" },
   withdraw_incomplete: { mode: "manifest", label: "继续撤回" },
 };
@@ -1004,7 +1004,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
   if (nodes.length === 0)
     return (
       <Section title="远端节点" id="remote">
-        <Typography.Text>拓扑里没有需要装机的远端节点。</Typography.Text>
+        <Typography.Text>拓扑里没有需要下发的远端节点。</Typography.Text>
       </Section>
     );
 
@@ -1025,7 +1025,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
           showIcon
           style={{ marginBottom: 12 }}
           data-testid="keyless-nodes"
-          message={`${keyless.length} 个节点还没有密钥，还没有第一次装机：${keyless
+          message={`${keyless.length} 个节点还没有密钥，还没有第一次下发：${keyless
             .slice(0, 5)
             .map((n) => n.name || n.id)
             .join("、")}${keyless.length > 5 ? ` 等 ${keyless.length} 个` : ""}`}
@@ -1087,7 +1087,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
                 </Tooltip>
               ) : (
                 <span data-testid={`keyless-${n.id}`}>
-                  <SplitStatus kind="attention" label="还没有 · 第一次装机" detail="hidden" title="还没有密钥：第一次装机时生成" />
+                  <SplitStatus kind="attention" label="还没有 · 第一次下发" detail="hidden" title="还没有密钥：第一次下发时生成" />
                 </span>
               ),
           },
@@ -1134,7 +1134,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
       />
       <Modal
         open={!!pf}
-        title={pf ? `${pf.node.name || pf.node.id} · 装机前预检` : ""}
+        title={pf ? `${pf.node.name || pf.node.id} · 下发前预检` : ""}
         width={900}
         onCancel={() => setPf(null)}
         destroyOnHidden
@@ -1259,7 +1259,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
               />
             ) : null}
             {outBody.outcome === "unknown" ? (
-              <Alert type="warning" showIcon style={{ marginBottom: 12 }} data-testid="provision-unknown" message="结果不明，不当作成功" description="重新预检会显示服务器上这次装机的 journal 状态。" />
+              <Alert type="warning" showIcon style={{ marginBottom: 12 }} data-testid="provision-unknown" message="结果不明，不当作成功" description="重新预检会显示服务器上这次下发的 journal 状态。" />
             ) : null}
             {outBody.leftovers && outBody.leftovers.length > 0 ? (
               <Alert

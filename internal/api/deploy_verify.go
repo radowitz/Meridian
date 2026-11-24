@@ -327,7 +327,7 @@ func hostRecordDiff(h *hostRecord, node string, rec *preflightRecord) string {
 	case h.Bundle != rec.Bundle:
 		return "服务器上记录的内容摘要与计划的不同"
 	case h.JournalState != "" && h.JournalState != "done":
-		return "服务器上最近一次装机的 journal 是 " + h.JournalState
+		return "服务器上最近一次下发的 journal 是 " + h.JournalState
 	}
 	return ""
 }

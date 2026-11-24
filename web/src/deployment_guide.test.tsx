@@ -72,7 +72,7 @@ describe("deployment guide", () => {
             topology_version: "v1",
             steps: [step("twnat", { reason: "挂在中继出口 dc1 后面" }), step("dc1"), step("gw", { reason: "网关最后" })],
             skipped: [
-              { node_id: "myext", node_name: "马来西亚", role: "exit", kind: "external", why: "外部 SOCKS 出口：面板不登录、不装机" },
+              { node_id: "myext", node_name: "马来西亚", role: "exit", kind: "external", why: "外部 SOCKS 出口：面板不登录、不下发" },
               { node_id: "us", node_name: "美国", role: "exit", kind: "in_sync", why: "没有变化" },
             ],
           },
@@ -87,7 +87,7 @@ describe("deployment guide", () => {
     expect(screen.queryByTestId("deploy-limits")).toBeNull();
     expect(screen.getByTestId("deploy-remote-access-note")).toHaveTextContent("远程接入");
     await userEvent.click(within(plan).getByText(/跳过的节点/));
-    expect(await screen.findByTestId("deploy-skip-myext")).toHaveTextContent("不装机");
+    expect(await screen.findByTestId("deploy-skip-myext")).toHaveTextContent("不下发");
     await userEvent.click(screen.getByTestId("deploy-start"));
     await waitFor(() => expect(api.find("POST /api/deploy/runs")).toHaveLength(1));
     expect(api.find("POST /api/deploy/runs")[0].body).toEqual({ topology_version: "v1" });
@@ -147,7 +147,7 @@ describe("deployment guide", () => {
           run([step("dc1", { phase: "failed", outcome: "compensated", current: true, can_preflight: true }), step("gw")], {
             state: "stopped",
             current: "dc1",
-            stop_reason: "dc1：装机失败，已补偿（服务器回到这次下发之前）",
+            stop_reason: "dc1：下发失败，已补偿（服务器回到这次下发之前）",
           }),
         ),
     });

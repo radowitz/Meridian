@@ -156,7 +156,7 @@ function Skipped({ items: raw }: { items: DeploySkip[] | null | undefined }) {
       items={[
         {
           key: "s",
-          label: `跳过的节点（${items.length}）：没有变化，或不需要装机`,
+          label: `跳过的节点（${items.length}）：没有变化，或不需要下发`,
           children: (
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               {items.map((s) => (
@@ -257,7 +257,7 @@ function PlanPreview({ view, onStart, starting }: { view: DeployView; onStart: (
 function HealthView({ st }: { st: DeployStep }) {
   const h = st.health;
   if (!h) return null;
-  const src = h.source === "gateway_transaction" ? "网关安装事务" : h.source === "remote_script" ? "装机脚本与服务器记录" : "服务器上的安装记录";
+  const src = h.source === "gateway_transaction" ? "网关安装事务" : h.source === "remote_script" ? "下发脚本与服务器记录" : "服务器上的安装记录";
   return (
     <div data-testid={`deploy-health-${st.node_id}`} style={{ marginTop: 4 }}>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -477,7 +477,7 @@ function CurrentStep({
       ) : null}
       {retry ? (
         <Note testId="deploy-retry-note">
-          重试前先重新核对：预检会读取这个节点实际的安装记录（远端是服务器上的清单和 journal，网关是安装清单）。内容已经装上就直接采纳，不会重做；否则审阅新的预检结果后由你再次确认。有残留或中断的装机时，到下面「远端节点」里用预检对话框提供的恢复操作处理。
+          重试前先重新核对：预检会读取这个节点实际的安装记录（远端是服务器上的清单和 journal，网关是安装清单）。内容已经装上就直接采纳，不会重做；否则审阅新的预检结果后由你再次确认。有残留或中断的下发时，到下面「远端节点」里用预检对话框提供的恢复操作处理。
         </Note>
       ) : null}
       {wait > 0 ? (
@@ -792,7 +792,7 @@ export function DeploymentGuide({ onChanged, header, onLinkChanged }: { onChange
       consequence:
         (st.kind === "gateway"
           ? "把存储的拓扑装到这台网关：经 meridian-host 写入 Meridian 的文件、激活并做健康检查；失败会补偿回安装前。"
-          : "经 SSH（固定指纹、已有凭据）在这台服务器上执行装机脚本：写入 Meridian 的文件并重启它的服务；失败会补偿。") +
+          : "经 SSH（固定指纹、已有凭据）在这台服务器上执行下发脚本：写入 Meridian 的文件并重启它的服务；失败会补偿。") +
         "执行前面板会再预检一次，结果和你审阅的不一样就不执行。只确认这一台，下一台要单独确认。",
       okText: "确认",
       danger: false,

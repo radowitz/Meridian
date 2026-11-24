@@ -4,6 +4,15 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.6
+
+- 面板打字更顺手：分流规则、连接日志、解析日志的搜索框不再卡顿；编辑拓扑时输入也更流畅。
+- 界面更清爽：标题更轻，卡片和表格改为圆角、柔和阴影；成功、警告、错误提示的底色不再发灰。
+- 连接日志的实时连接表更整齐：判断依据收进展开详情，整页只有一个暂停按钮。
+- 修复改分流规则后提示「未自动生效」的问题：开启远程接入的网关，规则保存后又能自动生效了。
+- 操作反馈更明确：清空日志、修改规则后有提示；删除 Hosts 记录和部署记录前先确认；规则、地区组、服务器编辑框按回车即可提交。
+- 出口页各地区默认展开；远端服务器的操作统一叫「下发」，网关叫「安装」，整个流程叫「部署」。
+
 ## v1.0.5
 
 - 网关新增 DNS 缓存和 Hosts 管理。

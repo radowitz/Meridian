@@ -37,8 +37,8 @@ export const PALETTE: Record<"light" | "dark", Palette> = {
     text2: "#475569",
     accent: "#4338ca",
     onAccent: "#ffffff",
-    ok: "#15803d",
-    warn: "#b45309",
+    ok: "#137a37",
+    warn: "#a94f08",
     bad: "#b91c1c",
   },
   dark: {
@@ -57,8 +57,29 @@ export const PALETTE: Record<"light" | "dark", Palette> = {
   },
 };
 
+/**
+ * Status fills and borders (the --m-ok-bg … values in styles.css). antd's
+ * generated tints of the dark status colours are a muddy grey, so they are
+ * set explicitly.
+ */
+export const STATUS_FILLS: Record<"light" | "dark", Record<"ok" | "warn" | "bad" | "info", { bg: string; border: string }>> = {
+  light: {
+    ok: { bg: "#f0fdf4", border: "#bbf7d0" },
+    warn: { bg: "#fffbeb", border: "#fde68a" },
+    bad: { bg: "#fef2f2", border: "#fecaca" },
+    info: { bg: "#f0f9ff", border: "#bae6fd" },
+  },
+  dark: {
+    ok: { bg: "#0f2318", border: "#1d4a2e" },
+    warn: { bg: "#261d0b", border: "#5a4012" },
+    bad: { bg: "#2a1215", border: "#5c2223" },
+    info: { bg: "#0c1d2e", border: "#1e3a52" },
+  },
+};
+
 export function themeConfig(dark: boolean): ThemeConfig {
   const p = PALETTE[dark ? "dark" : "light"];
+  const f = STATUS_FILLS[dark ? "dark" : "light"];
   return {
     algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
     token: {
@@ -68,6 +89,14 @@ export function themeConfig(dark: boolean): ThemeConfig {
       colorSuccess: p.ok,
       colorWarning: p.warn,
       colorError: p.bad,
+      colorSuccessBg: f.ok.bg,
+      colorSuccessBorder: f.ok.border,
+      colorWarningBg: f.warn.bg,
+      colorWarningBorder: f.warn.border,
+      colorErrorBg: f.bad.bg,
+      colorErrorBorder: f.bad.border,
+      colorInfoBg: f.info.bg,
+      colorInfoBorder: f.info.border,
       colorTextLightSolid: p.onAccent,
       colorText: p.text,
       colorTextSecondary: p.text2,
@@ -77,8 +106,9 @@ export function themeConfig(dark: boolean): ThemeConfig {
       colorBgElevated: p.surface,
       colorBorder: p.borderStrong,
       colorBorderSecondary: p.border,
-      borderRadius: 6,
-      borderRadiusLG: 8,
+      borderRadius: 8,
+      borderRadiusLG: 12,
+      borderRadiusSM: 6,
       fontSize: 14,
       fontSizeSM: 12,
       fontFamily: FONT,
@@ -96,8 +126,8 @@ export function themeConfig(dark: boolean): ThemeConfig {
         headerHeight: 56,
         headerPadding: "0 16px",
       },
-      Menu: { itemBg: "transparent", subMenuItemBg: "transparent", itemBorderRadius: 6, itemHeight: 36 },
-      Table: { cellPaddingBlock: 10, cellPaddingInline: 12, headerBg: p.surface2, borderColor: p.border },
+      Menu: { itemBg: "transparent", subMenuItemBg: "transparent", itemBorderRadius: 8, itemHeight: 36, itemMarginBlock: 2 },
+      Table: { cellPaddingBlock: 10, cellPaddingInline: 12, headerBg: p.surface, borderColor: p.border, headerSplitColor: "transparent" },
       Card: { colorBorderSecondary: p.border },
       Drawer: { footerPaddingBlock: 12 },
     },

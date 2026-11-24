@@ -274,7 +274,7 @@ export default function OverviewPage() {
       to: href("topology"),
     },
     {
-      title: "远端节点第一次装机",
+      title: "远端节点第一次下发",
       done: keyless && managed ? managed.length > 0 && keyless.length === 0 && keylessUnmanaged.length === 0 : null,
       text: keyless
         ? managed!.length === 0

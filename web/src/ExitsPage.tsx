@@ -178,7 +178,7 @@ function ActualFix({ a, hub, onRefresh, refreshing }: { a: GroupActualView; hub?
     case "state_missing":
       return (
         <Space size={4}>
-          <Link to={href("deploy")}>到部署页为枢纽装机</Link>
+          <Link to={href("deploy")}>到部署页为枢纽下发</Link>
           {refresh}
         </Space>
       );
@@ -693,11 +693,11 @@ function GroupCard({
         </div>
       ) : null}
       {effectiveDiffers && !dirtyOrder ? (
-        <Typography.Paragraph className="effective-order" data-testid="effective-order">
-          <Typography.Text type="secondary">实际顺序：</Typography.Text>
+        <div className="effective-order" data-testid="effective-order">
+          <span className="effective-order-label">实际顺序</span>{" "}
           {g.effective_order.length > 0 ? g.effective_order.map(name).join(" → ") : "没有符合条件的成员"}
-          <Typography.Text type="secondary">（和你排的顺序不同，原因见各成员）</Typography.Text>
-        </Typography.Paragraph>
+          {" "}<Note mode="popover" label="为什么不同">{"和你排的顺序不同，原因见各成员。"}</Note>
+        </div>
       ) : null}
 
       <ApiErrorAlert error={act.error} onClose={act.clear} style={{ marginTop: 8, marginBottom: 0 }} />
@@ -1138,7 +1138,8 @@ function GroupDrawer({
       }
     >
       {act.error && !fieldHandled ? <ApiErrorAlert error={act.error} /> : null}
-      <Form form={form} layout="vertical" initialValues={initial} requiredMark="optional" autoComplete="off">
+      <Form form={form} layout="vertical" initialValues={initial} requiredMark="optional" autoComplete="off" onFinish={() => void save()}>
+        <button type="submit" hidden aria-hidden tabIndex={-1} />
         <Form.Item
           name="name"
           label="名称"
@@ -1289,7 +1290,7 @@ export function DeployOrder({ node, name }: { node: Pick<Node, "via_exit" | "ext
         style={{ marginBottom: 12 }}
         data-testid="deploy-order"
         message="部署顺序"
-        description={<Note>{`安装或修改这个外部 SOCKS 出口：先在「部署」页重新下发承载出口 ${name(node.external.carrier)}，再下发两个枢纽（主、备；只有一个枢纽时就是它），最后安装网关。外部出口本身不装机。这个顺序未在真实设备上验证。`}</Note>}
+        description={<Note>{`安装或修改这个外部 SOCKS 出口：先在「部署」页重新下发承载出口 ${name(node.external.carrier)}，再下发两个枢纽（主、备；只有一个枢纽时就是它），最后安装网关。外部出口本身不下发。这个顺序未在真实设备上验证。`}</Note>}
       />
     );
   }
@@ -1533,7 +1534,7 @@ function ExitDrawer({
       {external ? (
         <>
           <Note>
-            外部 SOCKS 出口是一台已有的 SOCKS5 代理：承载出口（一台受管出口）经一条面板不管理的隧道到达它，把发往这个出口的流量转给代理。它没有服务器、没有链路，面板不为它装机。
+            外部 SOCKS 出口是一台已有的 SOCKS5 代理：承载出口（一台受管出口）经一条面板不管理的隧道到达它，把发往这个出口的流量转给代理。它没有服务器、没有链路，面板不为它下发。
           </Note>
           <ExternalLimits />
         </>
@@ -1568,7 +1569,7 @@ function ExitDrawer({
               name="carrier"
               label="承载出口"
               rules={[{ required: true, message: "请选择承载出口" }]}
-              extra={<Note>{"一台受管出口（不能是嵌套出口或外部出口）。它经下面的接口到达代理，装机时写入转发配置。"}</Note>}
+              extra={<Note>{"一台受管出口（不能是嵌套出口或外部出口）。它经下面的接口到达代理，下发时写入转发配置。"}</Note>}
             >
               <Select
                 aria-label="承载出口"
@@ -2067,7 +2068,7 @@ export default function ExitsPage() {
                 id={`region-${region || "none"}`}
                 testId={`fold-region-${region || "none"}`}
                 summary={<RegionSummary list={list} />}
-                defaultOpen={!!focus && list.some((g) => g.id === focus)}
+                defaultOpen={!focus || list.some((g) => g.id === focus)}
               >
                 <div className="group-grid">
                   {list.map((g) => (

@@ -50,7 +50,7 @@ export const SCENARIOS: DemoScenario[] = [
     summary: "服务器在 SSH 横幅之前拒绝了面板的地址：这一步在 retry_after 之前不再连接。",
     pages: ["", "deploy"],
   },
-  { id: "deploy-compensated", label: "引导部署：失败已补偿", summary: "一个出口装机失败并已补偿，运行停止。", pages: ["", "deploy"] },
+  { id: "deploy-compensated", label: "引导部署：失败已补偿", summary: "一个出口下发失败并已补偿，运行停止。", pages: ["", "deploy"] },
   { id: "deploy-unknown", label: "引导部署：结果不明", summary: "一个出口的回答无法读取：结果不明，运行停止。", pages: ["", "deploy"] },
   {
     id: "deploy-done",

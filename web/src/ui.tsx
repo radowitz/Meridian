@@ -24,6 +24,7 @@ import {
   Tooltip,
   Typography,
   type FormInstance,
+  type InputProps,
   type InputRef,
   type TableColumnType,
   type TableProps,
@@ -1113,9 +1114,16 @@ function prepareColumns<T extends object>(columns: DataColumn<T>[]): { cols: Tab
  */
 export function useScrollHint(ref: { current: HTMLElement | null }, selector?: string) {
   const [state, setState] = useState({ overflow: false, atEnd: false });
+  // The scrolled element can be replaced by a re-render (antd recreates the
+  // table body), so look it up after each commit, but bind and measure only
+  // when it is a different element: a keystroke elsewhere costs no layout.
+  const bound = useRef<{ el: HTMLElement; inner: Element | null; off: () => void } | null>(null);
   useEffect(() => {
     const root = ref.current;
-    const el = selector ? root?.querySelector<HTMLElement>(selector) : root;
+    const el = (selector ? root?.querySelector<HTMLElement>(selector) : root) ?? null;
+    if (bound.current?.el === el && bound.current?.inner === (el?.firstElementChild ?? null)) return;
+    bound.current?.off();
+    bound.current = null;
     if (!el) return;
     const measure = () => {
       const overflow = el.scrollWidth > el.clientWidth + 2;
@@ -1127,12 +1135,20 @@ export function useScrollHint(ref: { current: HTMLElement | null }, selector?: s
     window.addEventListener("resize", measure);
     const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     ro?.observe(el);
-    return () => {
-      el.removeEventListener("scroll", measure);
-      window.removeEventListener("resize", measure);
-      ro?.disconnect();
+    // Content changes inside the same element (rows added) resize its scroll width only.
+    const inner = el.firstElementChild;
+    if (inner) ro?.observe(inner);
+    bound.current = {
+      el,
+      inner,
+      off: () => {
+        el.removeEventListener("scroll", measure);
+        window.removeEventListener("resize", measure);
+        ro?.disconnect();
+      },
     };
   });
+  useEffect(() => () => bound.current?.off(), []);
   return state;
 }
 
@@ -1475,4 +1491,41 @@ export function groupLabel(g: GroupNameLike, all: readonly GroupNameLike[] | nul
 export function isDuplicateGroupName(g: GroupNameLike, all: readonly GroupNameLike[]): boolean {
   const k = groupNameKey(g.name?.trim() || g.id);
   return all.some((o) => o.id !== g.id && groupNameKey(o.name?.trim() || o.id) === k);
+}
+
+/**
+ * A search box that keeps what is typed in its own state, so a keystroke
+ * re-renders only the box, and reports the text after `delay` ms of no
+ * typing (clearing reports at once). A change of `value` from outside (a
+ * reset) replaces the box's text.
+ */
+export function SearchInput({ value, onSearch, delay = 250, ...rest }: Omit<InputProps, "value" | "onChange"> & {
+  value: string;
+  onSearch: (text: string) => void;
+  delay?: number;
+}) {
+  const [draft, setDraft] = useState(value);
+  const latest = useRef(onSearch);
+  latest.current = onSearch;
+  const sent = useRef(value);
+  useEffect(() => {
+    if (value !== sent.current) {
+      sent.current = value;
+      setDraft(value);
+    }
+  }, [value]);
+  useEffect(() => {
+    if (draft === sent.current) return;
+    const send = () => {
+      sent.current = draft;
+      latest.current(draft);
+    };
+    if (draft === "") {
+      send();
+      return;
+    }
+    const t = window.setTimeout(send, delay);
+    return () => window.clearTimeout(t);
+  }, [draft, delay]);
+  return <Input {...rest} value={draft} onChange={(e) => setDraft(e.target.value)} />;
 }

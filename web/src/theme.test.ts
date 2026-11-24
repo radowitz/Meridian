@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import styles from "./styles.css?raw";
 import layoutB from "./layout_b.css?raw";
 import layoutC from "./layout_c.css?raw";
-import { PALETTE, contrast, themeConfig, type Palette } from "./theme";
+import { PALETTE, STATUS_FILLS, contrast, themeConfig, type Palette } from "./theme";
 
 const VAR: Record<keyof Palette, string> = {
   bg: "--m-bg",
@@ -61,4 +61,19 @@ describe("theme tokens", () => {
     expect(stray).toEqual([]);
     expect((layoutB + layoutC).match(/#[0-9a-fA-F]{3,8}\b|rgba?\(/g)).toBeNull();
   });
+
+  for (const scheme of ["light", "dark"] as const) {
+    it(`${scheme}: status fills mirror styles.css and keep status text readable`, () => {
+      const f = STATUS_FILLS[scheme];
+      const p = PALETTE[scheme];
+      const css = { ok: ["--m-ok-bg", "--m-ok-border"], warn: ["--m-warn-bg", "--m-warn-border"], bad: ["--m-bad-bg", "--m-bad-border"], info: ["--m-info-bg", "--m-info-border"] } as const;
+      for (const k of ["ok", "warn", "bad", "info"] as const) {
+        expect([k, value(blocks[scheme], css[k][0])]).toEqual([k, f[k].bg]);
+        expect([k, value(blocks[scheme], css[k][1])]).toEqual([k, f[k].border]);
+      }
+      for (const [fg, k] of [[p.ok, "ok"], [p.warn, "warn"], [p.bad, "bad"], [p.text, "info"]] as const) {
+        expect([k, contrast(fg, f[k].bg) >= 4.5]).toEqual([k, true]);
+      }
+    });
+  }
 });

@@ -29,7 +29,7 @@ import { MeshLegQuality } from "./MeshLegQuality";
 // When the collector is not installed yet (after an upgrade the gateway has
 // a pending install) or not running, the page says so and how to get it.
 
-import { Button, Select, Skeleton, Space, Tag, Typography } from "antd";
+import { App as AntApp, Button, Select, Skeleton, Space, Tag, Typography } from "antd";
 import { useMemo, useState } from "react";
 import * as api from "./api";
 import { LogEmpty, LogIntro, LogPager, LogStats, LogToolbar, ScopeLists, absTime, ageText, sinceHours, spanText } from "./log_common";
@@ -423,6 +423,7 @@ function StatsLine({ s }: { s: LinkLogStats }) {
 }
 
 function Journal({ v, w }: { v: LinkLogView; w: Words }) {
+  const { message } = AntApp.useApp();
   const cur = useApi(() => api.getLinkLogCurrent(), []);
   const [object, setObject] = useState("");
   const [cls, setCls] = useState("");
@@ -470,6 +471,7 @@ function Journal({ v, w }: { v: LinkLogView; w: Words }) {
         setClearErr(null);
         try {
           await api.clearLinkLog();
+          message.success("链路日志已清空");
           reset();
           await Promise.all([cur.reload(), ev.reload()]);
         } catch (e) {

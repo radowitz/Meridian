@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Space, Typography } from "antd";
+import { App, Button, Form, Input, Popconfirm, Space, Typography } from "antd";
 import * as api from "./api";
 import { ApiErrorAlert, Fold, Link, useAction, useApi, useConfirmDanger } from "./ui";
 import { href } from "./state";
@@ -47,7 +47,9 @@ export function DNSLocal() {
             <Space wrap>
               <strong>{host.name}</strong>
               <code>{host.ip}</code>
-              <Button size="small" danger disabled={!state.data?.hosts_enabled || !!action.busy} aria-label={`删除 ${host.name} ${host.ip}`} onClick={() => void change("delete", host)}>删除</Button>
+              <Popconfirm title={`删除 ${host.name} → ${host.ip}？`} description="删除后网关立即不再返回这条记录。" okText="删除" okButtonProps={{ danger: true }} cancelText="取消" onConfirm={() => change("delete", host)}>
+                <Button size="small" danger disabled={!state.data?.hosts_enabled || !!action.busy} aria-label={`删除 ${host.name} ${host.ip}`}>删除</Button>
+              </Popconfirm>
             </Space>
           </li>)}
         </ul> : <Typography.Text type="secondary">暂无 Hosts 记录</Typography.Text>}
