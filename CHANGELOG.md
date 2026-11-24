@@ -4,6 +4,13 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.7
+
+- 出口页改成一张表：每个地区组一行，直接看到正在用哪个出口、延迟多少和备选出口；成员顺序和枢纽细节点开才显示，排查信息放在页面底部的「诊断」。
+- 左侧菜单从 15 项减到 11 项：三个日志页合成「日志」，名单和解析设置合成「解析与名单」，服务器和密钥合成「服务器与密钥」，页面顶部用标签切换。原来的地址和收藏照常能用。
+- 部署页更短：WSS 证书、当前安装和撤回网关收进一个折叠区。
+- 快速跳转可以按菜单上的组名搜索。
+
 ## v1.0.6
 
 - 面板打字更顺手：分流规则、连接日志、解析日志的搜索框不再卡顿；编辑拓扑时输入也更流畅。

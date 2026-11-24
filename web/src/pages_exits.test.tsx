@@ -40,6 +40,44 @@ import {
 // -------------------------------------------------------- region groups ---
 
 describe("region groups", () => {
+  it("keeps a row with an unsaved member order open", async () => {
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+    });
+    renderAt("#/exits");
+    const card = await screen.findByTestId("group-hk");
+    await userEvent.click(within(card).getByRole("button", { name: /^展开 / }));
+    await userEvent.click(within(card).getByRole("button", { name: "下移 香港二号" }));
+    await userEvent.click(within(card).getByRole("button", { name: /^收起 / }));
+    expect(within(card).getByRole("button", { name: btn("保存顺序") })).toBeVisible();
+  });
+
+  it("shows a failed action from a collapsed row", async () => {
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+      "PATCH /api/region-groups/:id": () => reply(500, { error: "保存地区组失败（测试）" }),
+    });
+    renderAt("#/exits");
+    const card = await screen.findByTestId("group-hk");
+    await userEvent.click(within(card).getByText("手动"));
+    expect(await within(card).findByText(/保存地区组失败（测试）/)).toBeVisible();
+  });
+
+  it("shows each group as one collapsed row with the exit in use, and opens its members on demand", async () => {
+    fakeApi({
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => ({ groups: [group()], default_group: "hk", thresholds: THRESHOLDS }),
+    });
+    renderAt("#/exits");
+    const card = await screen.findByTestId("group-hk");
+    expect(screen.getByTestId("group-table")).toContainElement(card);
+    expect(within(card).queryByRole("button", { name: "下移 香港二号" })).toBeNull();
+    await userEvent.click(within(card).getByRole("button", { name: /^展开 / }));
+    expect(within(card).getByRole("button", { name: "下移 香港二号" })).toBeVisible();
+  });
+
   it("reorders members locally and saves the whole order with one PATCH", async () => {
     let g = group();
     const api = fakeApi({
@@ -175,7 +213,7 @@ describe("region groups", () => {
     });
     renderAt("#/exits", { foldsOpen: true });
     const card = await screen.findByTestId("group-hk");
-    await userEvent.click(within(card).getByRole("button", { name: /删除/ }));
+    await menuItem(within(card).getByRole("button", { name: /的更多操作$/ }), "删除");
     await confirmModal("删除");
     const refused = await screen.findByTestId("refused-dialog");
     expect(refused).toHaveTextContent("先改掉这些引用");

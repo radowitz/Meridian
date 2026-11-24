@@ -12,14 +12,14 @@ export interface ExitLatencyRow {
 export interface ExitLatencyView { available: boolean; running: boolean; rows: ExitLatencyRow[] }
 const stateWord: Record<string,string> = { not_measured:"尚未测量",not_installed:"网关尚未安装此出口",unreachable:"未连通",unavailable:"测量不可用",busy:"宿主正忙",path_changed:"路径改变，请重测",cancelled:"测量已取消" };
 
-export function ExitLatencyValue({row}:{row?:ExitLatencyRow}) {
+export function ExitLatencyValue({row,compact}:{row?:ExitLatencyRow; /** Badge only (table rows). */ compact?:boolean}) {
  if(!row || row.state==="not_measured")return null;
  const ok=(row.state==="ok" || row.state==="partial") && row.rtt_ms!==undefined && Number.isFinite(row.rtt_ms) && row.rtt_ms>=0;
  return <span className="latency-reading">
   <LatencyBadge ms={ok ? row.rtt_ms : undefined} digits={1} stale={row.stale} partial={ok && row.state==="partial"}
     failed={row.state==="unreachable"} label={stateWord[row.state] ?? "未知"}
     title={`网关到${row.scope==="carrier_resolver"?"承载节点":"出口"}解析器的 TCP 握手，${row.received}/${row.sent} 次成功，测于 ${new Date(row.measured_at).toLocaleString()}${row.error?`，${row.error}`:""}`} />
-  {ok ? <span className="muted">网关实测</span> : null}
+  {ok && !compact ? <span className="muted">网关实测</span> : null}
  </span>;
 }
 

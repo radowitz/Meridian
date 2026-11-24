@@ -32,7 +32,8 @@ import {
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, isApiError } from "./api";
-import { useOptionalStatus, useTopologyDoc, useUnsavedGuard } from "./state";
+import { href, useOptionalRouter, useOptionalStatus, useTopologyDoc, useUnsavedGuard } from "./state";
+import { tabGroupOf } from "./page_tabs";
 import type { Issue } from "./types";
 import {
   STATUS,
@@ -157,8 +158,28 @@ export function Page({
   const slot = shellSlot ?? own;
   const add = useCallback(() => () => undefined, []);
   const ctx = useMemo(() => ({ target: slot, add }), [slot, add]);
+  const router = useOptionalRouter();
+  const group = router ? tabGroupOf(router.route.page) : undefined;
   return (
     <div className="page" data-testid="page">
+      {group && router ? (
+        <nav className="page-tabs" aria-label={`${group.title}的标签`}>
+          {group.tabs.map((t) => (
+            <a
+              key={t.key}
+              href={href(t.key)}
+              aria-current={t.key === router.route.page ? "page" : undefined}
+              onClick={(e) => {
+                e.preventDefault();
+                // The current tab keeps its address (?section= and the like).
+                if (t.key !== router.route.page) router.navigate(href(t.key));
+              }}
+            >
+              {t.label}
+            </a>
+          ))}
+        </nav>
+      ) : null}
       <PageHeader title={title} extra={extra} menu={menu} />
       {shellSlot ? null : <div ref={setOwn} hidden data-testid="page-help" />}
       <PageHelpContext.Provider value={ctx}>{children}</PageHelpContext.Provider>

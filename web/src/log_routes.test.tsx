@@ -9,6 +9,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { tabGroupOf } from "./page_tabs";
 import { NAV } from "./App";
 import { topology } from "./pages_fixtures";
 import { fakeApi, renderAt } from "./testing";
@@ -80,31 +81,33 @@ function menu() {
 }
 
 describe("navigation: resolution settings and logs", () => {
-  it("has four routes of their own (the three logs in one group), each with a readable name", () => {
+  it("has four routes of their own (the three logs as tabs of one menu entry), each with a readable name", () => {
     const dns = NAV.find((g) => g.routes.some((r) => r.key === "dns"))!;
     expect(dns.routes.find((r) => r.key === "dns")?.label).toBe("解析设置");
     const logs = NAV.find((g) => g.routes.some((r) => r.key === "dns-log"))!;
-    expect(logs.label).toBe("日志");
-    expect(logs.routes.map((r) => [r.key, r.label])).toEqual(PAGES.slice(1).map(([k, l]) => [k, l]));
+    const logKeys = new Set(PAGES.slice(1).map(([k]) => k));
+    expect(logs.routes.filter((r) => logKeys.has(r.key)).map((r) => [r.key, r.label]).sort()).toEqual(PAGES.slice(1).map(([k, l]) => [k, l]).sort());
+    expect(tabGroupOf("dns-log")?.title).toBe("日志");
+    expect(tabGroupOf("dns")?.tabs.map((t) => t.key)).toEqual(["dns", "lists"]);
     // The lists page is still there, and no key is used twice.
     const keys = NAV.flatMap((g) => g.routes).map((r) => r.key);
     expect(keys).toContain("lists");
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("each entry is in the side menu, links to its hash route and opens its page", async () => {
+  it("each page opens from its menu entry and its tab, at its own address", async () => {
     pagesApi();
     renderAt("#/");
     await screen.findByRole("heading", { level: 1, name: "概览" });
-    expect(within(menu()).getByText("日志")).toBeInTheDocument();
     for (const [key, label] of PAGES) {
-      const item = within(menu()).getByRole("link", { name: label });
-      expect(item).toHaveAttribute("href", `#/${key}`);
-      await userEvent.click(item);
+      const group = tabGroupOf(key)!;
+      await userEvent.click(within(menu()).getByRole("link", { name: group.title }));
+      const tabs = await screen.findByRole("navigation", { name: `${group.title}的标签` });
+      await userEvent.click(within(tabs).getByRole("link", { name: label }));
       expect(await screen.findByRole("heading", { level: 1, name: label })).toBeInTheDocument();
       expect(window.location.hash).toBe(`#/${key}`);
       expect(document.title).toBe(`${label} · Meridian`);
-      expect(menu().querySelector(".ant-menu-item-selected")).toHaveTextContent(label);
+      expect(menu().querySelector(".ant-menu-item-selected")).toHaveTextContent(group.title);
       expect(screen.queryByText("这个页面出错了")).toBeNull();
       expect(screen.queryByText("没有这个页面")).toBeNull();
     }
@@ -163,7 +166,7 @@ describe("old ways in", () => {
     renderAt("#dns");
     expect(await screen.findByRole("heading", { level: 1, name: "解析设置" })).toBeInTheDocument();
     expect(screen.queryByText("没有这个页面")).toBeNull();
-    expect(menu().querySelector(".ant-menu-item-selected")).toHaveTextContent("解析设置");
+    expect(menu().querySelector(".ant-menu-item-selected")).toHaveTextContent("解析与名单");
   });
 });
 

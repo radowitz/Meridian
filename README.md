@@ -58,13 +58,13 @@ flowchart LR
 
 ```sh
 git clone https://github.com/radowitz/Meridian.git && cd meridian
-sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.6
+sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.7
 sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-code
 ```
 
 浏览器打开 `http://<网关局域网 IPv4>:8787`，用终端里的一次性初始化码创建管理员，然后按向导：网关 → 模板 → 服务器（确认指纹）→ 拓扑 → 预检 → 部署。完整步骤见 [docs/user/quickstart.md](docs/user/quickstart.md)。
 
-[v1.0.6 发布说明](https://github.com/radowitz/Meridian/releases/tag/v1.0.6) · 镜像 `ghcr.io/radowitz/meridian:v1.0.6`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
+[v1.0.7 发布说明](https://github.com/radowitz/Meridian/releases/tag/v1.0.7) · 镜像 `ghcr.io/radowitz/meridian:v1.0.7`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
 
 ## 文档
 

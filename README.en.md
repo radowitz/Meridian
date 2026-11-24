@@ -58,7 +58,7 @@ On Debian 13 (amd64 / arm64) with a static address on the LAN port:
 
 ```sh
 git clone https://github.com/radowitz/Meridian.git && cd meridian
-sudo bash deploy/debian/install.sh --lan-addr <gateway LAN IPv4> --version v1.0.6
+sudo bash deploy/debian/install.sh --lan-addr <gateway LAN IPv4> --version v1.0.7
 sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-code
 ```
 

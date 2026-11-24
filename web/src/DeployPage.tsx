@@ -1468,11 +1468,13 @@ export default function DeployPage() {
   const { route } = useRouter();
   useEffect(() => {
     const sec = route.query.get("section");
-    if (sec === "remote" || sec === "deployments" || sec === "guide" || sec === "gateway-install") {
+    if (sec === "remote" || sec === "deployments" || sec === "guide" || sec === "gateway-install" || sec === "wss") {
       const t = window.setTimeout(() => document.getElementById(sec)?.scrollIntoView?.({ behavior: "smooth" }), 200);
       return () => window.clearTimeout(t);
     }
   }, [route.query]);
+  // A link to the WSS section opens the fold that holds it.
+  const wantMore = route.query.get("section") === "wss";
   const host = useApi(() => api.hostStatus(), []);
   const deployments = useApi(() => api.getDeployments(), []);
   const servers = useApi(() => api.listServers(), []);
@@ -1530,13 +1532,16 @@ export default function DeployPage() {
         <RemoteNodes nodes={remote} servers={servers.data?.servers} onWithdrawn={() => void deployments.reload()} />
       </ErrorBoundary>
       <ErrorBoundary>
-        <WSSPanel nodeName={nodeName} />
+        <DeploymentRecords state={deployments} onChanged={() => void deployments.reload()} />
       </ErrorBoundary>
+      {/* Seldom needed: WSS certificates, the shipped binaries, the installed files and withdrawing the gateway. */}
+      {/* The binaries stay in sight: they warn when a pinned binary is missing. */}
       <ErrorBoundary>
         <ArtifactsCard />
       </ErrorBoundary>
+      <Fold title="证书、当前安装与网关撤回" summary="WSS 证书 · 当前安装 · 撤回网关" testId="fold-deploy-more" defaultOpen={wantMore}>
       <ErrorBoundary>
-        <DeploymentRecords state={deployments} onChanged={() => void deployments.reload()} />
+        <WSSPanel nodeName={nodeName} />
       </ErrorBoundary>
       <Section title="当前安装">
         <ErrorBoundary>
@@ -1555,6 +1560,7 @@ export default function DeployPage() {
           hostReport={(r, failed) => <HostReportView report={r} failed={failed} />}
         />
       </ErrorBoundary>
+      </Fold>
       <Note>
         Mesh 备路的部署和撤回在 <Link to={href("cloudflare") + "?section=mesh"}>Cloudflare</Link> 页。
       </Note>

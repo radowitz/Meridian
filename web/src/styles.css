@@ -1095,7 +1095,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .section-jumps { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-bottom: 20px; }
 .section-jumps a { padding: 5px 9px; border-radius: 6px; color: var(--m-text-2); background: var(--m-surface); border: 1px solid var(--m-border); }
 .section-jumps a:hover { color: var(--m-accent); background: var(--m-accent-soft); }
-#gateway-install, #remote, #deployments, #guide { scroll-margin-top: calc(var(--m-topbar-h) + 12px); }
+#gateway-install, #remote, #deployments, #guide, #wss { scroll-margin-top: calc(var(--m-topbar-h) + 12px); }
 .exit-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 12px; margin-block: 8px 12px; }
 .exit-filter .ant-input-affix-wrapper { max-width: min(270px, 100%); }
 .ungrouped-item { border: 1px solid var(--m-border); border-radius: 8px; background: var(--m-surface); padding: 9px 11px; }
@@ -1266,3 +1266,54 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 }
 .ant-table-wrapper .ant-table-thead > tr > th.ant-table-cell-fix-left,
 .ant-table-wrapper .ant-table-thead > tr > th.ant-table-cell-fix-right { background: var(--m-surface); }
+
+/* ------------------------------------------------------- exits: group table
+   One bordered list, a group per row: summary line always, details when open. */
+.group-table {
+  background: var(--m-surface); border: 1px solid var(--m-border); border-radius: var(--m-radius);
+  box-shadow: var(--m-elev-1); overflow: hidden;
+}
+.group-table .group-card { background: none; border-radius: 0; padding: 0; border-bottom: 1px solid var(--m-border); }
+.group-table .group-card:last-child { border-bottom: 0; }
+.group-table .group-card.highlighted { box-shadow: inset 3px 0 var(--m-accent); }
+.group-table .group-card-head {
+  display: grid; align-items: center; gap: 4px 12px; margin: 0; padding: 10px 14px;
+  grid-template-columns: 24px 40px minmax(140px, 1.1fr) minmax(170px, 1.3fr) minmax(0, 1fr) auto auto;
+}
+.group-table .group-card.open .group-card-head { background: var(--m-surface-2); }
+.group-toggle { color: var(--m-text-2); }
+.group-region {
+  font: 600 11px var(--m-mono); color: var(--m-text-2); background: var(--m-surface-2);
+  border-radius: 5px; padding: 2px 0; text-align: center;
+}
+.group-table .group-card.open .group-region { background: var(--m-surface); }
+.group-name { font-size: 14px; }
+.group-default { color: var(--m-warn); font-size: 12.5px; }
+.group-inuse { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.group-inuse-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-backups { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.group-backup {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 1px solid var(--m-border); border-radius: 6px; padding: 0 7px; font-size: 12px; color: var(--m-text-2);
+}
+.group-backup.excluded { opacity: 0.6; text-decoration: line-through; }
+.group-backup-ms { font: 11px var(--m-mono); }
+.group-detail { padding: 4px 14px 14px 52px; }
+.group-detail .group-live { background: var(--m-surface-2); }
+.exits-diag-title { font-size: 16px; font-weight: 600; margin: 28px 0 0; }
+@media (max-width: 900px) {
+  .group-table .group-card-head { grid-template-columns: 24px 40px minmax(0, 1fr) auto; }
+  .group-table .group-card-head > .group-inuse, .group-table .group-card-head > .group-backups { grid-column: 3 / -1; }
+  .group-table .group-card-head > .ant-radio-group { grid-column: 3; justify-self: start; }
+  .group-detail { padding-left: 14px; }
+}
+
+/* Tabs of a merged page (page_tabs.ts): one row under the title, each tab its own address. */
+.page-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: -8px 0 18px; border-bottom: 1px solid var(--m-border); }
+.page-tabs a {
+  padding: 8px 12px; margin-bottom: -1px; color: var(--m-text-2); text-decoration: none;
+  border-bottom: 2px solid transparent; font-weight: 500;
+}
+.page-tabs a:hover { color: var(--m-text); }
+.page-tabs a[aria-current="page"] { color: var(--m-accent); border-bottom-color: var(--m-accent); font-weight: 600; }
+.page-tabs a:focus-visible { outline: 2px solid var(--m-accent); outline-offset: -2px; border-radius: 6px 6px 0 0; }

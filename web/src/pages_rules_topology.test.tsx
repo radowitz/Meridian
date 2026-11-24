@@ -601,7 +601,7 @@ describe("WSS carriers: random path and pinned self-signed certificate", () => {
         return { listener: { ...current, node_id: req.params.id }, committed: false };
       },
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy?section=wss");
     const card = await screen.findByTestId("wss-listener-hk-hub");
     expect(card).toHaveTextContent(FP);
     expect(card).toHaveTextContent("w0123456789abcdef.invalid");
@@ -640,7 +640,7 @@ describe("WSS carriers: random path and pinned self-signed certificate", () => {
         ]),
       "POST /api/wss/links/:id/regenerate-path": () => ({ listener: listener(), committed: true }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy?section=wss");
     const access = await screen.findByTestId("wss-listener-access");
     expect(access).toHaveTextContent("旧固定路径仍被接受");
     expect(access).toHaveTextContent("证书已过期");

@@ -61,6 +61,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { menuKeyOf, tabGroupOf } from "./page_tabs";
 import * as api from "./api";
 import { PanelUpdate } from "./PanelUpdate";
 import { RouteOverride, RouterProvider, StatusProvider, TopologyProvider, href, parseHash, useRouter, useStatus, type Route } from "./state";
@@ -157,22 +158,17 @@ export const NAV: RouteGroup[] = [
       route("topology", "拓扑", <ApartmentOutlined />, () => import("./TopologyPage")),
       route("exits", "出口", <GlobalOutlined />, () => import("./ExitsPage")),
       route("rules", "分流规则", <BranchesOutlined />, () => import("./RulesPage")),
-      route("lists", "名单", <UnorderedListOutlined />, () => import("./ListsPage")),
       // A bare `#dns` (the old anchor of the resolution section on the lists page) parses to the page "dns".
       route("dns", "解析设置", <CompassOutlined />, () => import("./DNSView")),
-    ],
-  },
-  {
-    label: "日志",
-    routes: [
-      route("dns-log", "解析日志", <FileSearchOutlined />, () => import("./DNSLogsPage")),
-      route("conn-log", "连接日志", <ProfileOutlined />, () => import("./ConnectionLogsPage")),
-      route("link-log", "链路日志", <HistoryOutlined />, () => import("./LinkLogsPage")),
+      route("lists", "名单", <UnorderedListOutlined />, () => import("./ListsPage")),
     ],
   },
   {
     label: "运维",
     routes: [
+      route("conn-log", "连接日志", <ProfileOutlined />, () => import("./ConnectionLogsPage")),
+      route("dns-log", "解析日志", <FileSearchOutlined />, () => import("./DNSLogsPage")),
+      route("link-log", "链路日志", <HistoryOutlined />, () => import("./LinkLogsPage")),
       route("deploy", "部署", <DeploymentUnitOutlined />, () => import("./DeployPage")),
       route("unlock", "解锁", <PlayCircleOutlined />, () => import("./UnlockPage")),
     ],
@@ -208,7 +204,7 @@ function PageSearch({ active }: { active: string }) {
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
   const results = PAGE_SHORTCUTS.filter(({ page, group }) =>
-    `${page.label} ${page.key || "overview"} ${group ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
+    `${page.label} ${page.key || "overview"} ${group ?? ""} ${tabGroupOf(page.key)?.title ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
   const show = useCallback(() => {
     setQuery("");
@@ -269,7 +265,10 @@ export const REDIRECTS: Record<string, string> = { leak: "", acceptance: "", "se
 
 function menuItems(): MenuProps["items"] {
   return NAV.map((g, i) => {
-    const children = g.routes.map((r) => ({ key: r.key || "overview", icon: r.icon, label: <a href={href(r.key)} onClick={(e) => e.preventDefault()}>{r.label}</a> }));
+    // A tab group has one entry: its first tab, named after the group.
+    const children = g.routes
+      .filter((r) => menuKeyOf(r.key) === r.key)
+      .map((r) => ({ key: r.key || "overview", icon: r.icon, label: <a href={href(r.key)} onClick={(e) => e.preventDefault()}>{tabGroupOf(r.key)?.title ?? r.label}</a> }));
     if (!g.label) return children[0];
     return { type: "group" as const, key: `g${i}`, label: g.label, children };
   });
@@ -763,7 +762,7 @@ function Shell({ themePref, setThemePref }: { themePref: ThemePref; setThemePref
   const Component = current?.component;
   const guideGroups = useMemo(() => (helpFor === "setup" ? [{ label: null, routes: [{ key: "setup", label: "首次配置" }] }, ...GUIDE_GROUPS] : GUIDE_GROUPS), [helpFor]);
   const items = useMemo(menuItems, []);
-  const selected = [route.page || "overview"];
+  const selected = [menuKeyOf(route.page) || "overview"];
   const redirect = Object.prototype.hasOwnProperty.call(REDIRECTS, route.page) ? REDIRECTS[route.page] : undefined;
   useEffect(() => {
     if (redirect !== undefined) navigate(href(redirect), { replace: true });
@@ -771,6 +770,7 @@ function Shell({ themePref, setThemePref }: { themePref: ThemePref; setThemePref
 
   useEffect(() => {
     document.title = current ? `${current.label} · Meridian` : "Meridian";
+    // (A tab keeps its own name in the document title: 解析日志 · Meridian.)
     setDrawer(false);
   }, [current, route.page]);
 

@@ -8,6 +8,7 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NAV } from "./App";
+import { tabGroupOf } from "./page_tabs";
 import { fakeApi, renderAt } from "./testing";
 
 afterEach(() => {
@@ -62,9 +63,17 @@ describe("navigation", () => {
       const main = screen.getByRole("main");
       expect(main).toContainElement(h1);
       const nav = screen.getByRole("navigation", { name: "主导航" });
-      const link = within(nav).getByRole("link", { name: label });
-      expect(link).toHaveAttribute("href", hash);
-      expect(nav.querySelector(".ant-menu-item-selected")).toHaveTextContent(label);
+      // A page of a tab group (page_tabs.ts) selects its group's one menu entry and shows the tabs.
+      const page = hash.slice(2);
+      const group = tabGroupOf(page);
+      const entry = group ? group.title : label;
+      const link = within(nav).getByRole("link", { name: entry });
+      expect(link).toHaveAttribute("href", group ? `#/${group.tabs[0].key}` : hash);
+      expect(nav.querySelector(".ant-menu-item-selected")).toHaveTextContent(entry);
+      if (group) {
+        const tabs = screen.getByRole("navigation", { name: `${group.title}的标签` });
+        expect(within(tabs).getByRole("link", { name: label })).toHaveAttribute("aria-current", "page");
+      }
       expect(document.title).toBe(`${label} · Meridian`);
       expect(screen.queryByText("这个页面出错了")).toBeNull();
       expect(screen.queryByText("没有这个页面")).toBeNull();

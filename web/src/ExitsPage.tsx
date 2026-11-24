@@ -27,6 +27,7 @@ import {
   InfoCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RightOutlined,
   StarOutlined,
 } from "@ant-design/icons";
 import {
@@ -47,7 +48,7 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { applyDeployLinkChanges, deployTopology } from "./automatic_deploy";
 import type { ApiError } from "./api";
@@ -89,7 +90,9 @@ import {
   RefList,
   RefusedDialog,
   REGION_CODES,
+  RowActions,
   Fold,
+  FoldsOpenContext,
   PROBLEM,
   SplitStatus,
   StatusTag,
@@ -296,6 +299,13 @@ function GroupCard({
   onEdit: () => void;
 }) {
   const act = useAction();
+  // A row: the summary line always, the details (members, hub lines, manual
+  // settings) when opened. Opened by a focus link and when the group needs attention.
+  const allOpen = useContext(FoldsOpenContext);
+  const [open, setOpen] = useState(allOpen || highlighted || (g.actual.state === "ok" && !!g.actual.alert));
+  useEffect(() => {
+    if (highlighted) setOpen(true);
+  }, [highlighted]);
   const confirm = useConfirmDanger();
   const [refused, setRefused] = useState<ApiError | null>(null);
   const [order, setOrder] = useState<string[] | null>(null);
@@ -345,15 +355,50 @@ function GroupCard({
   const aok = a.state === "ok";
   const tag = actualTag(a);
   const source = dual ? readFrom(a) : "";
+  const remove = () =>
+    confirm({
+      title: `删除地区组「${label}」？`,
+      consequence:
+        g.in_use_by.length > 0
+          ? "这个组还被规则、规则集或默认组设置引用，删除会被拒绝；先把引用改到别的组。"
+          : "组从拓扑里移除，出口本身不受影响；安装后网关上不再有这个组的路由表。",
+      okText: "删除",
+      onOk: () =>
+        act.run(
+          async () => {
+            await api.deleteGroup(g.id);
+            onDeleted(g.id);
+          },
+          "delete",
+          (e) => {
+            if (e.code === "in_use") {
+              setRefused(e);
+              act.clear();
+            }
+          },
+        ),
+    });
   const thresholdText = thresholds
     ? `连续 ${thresholds.fails_need} 次检测失败判定不可用；恢复后连续 ${thresholds.recovers_need} 次成功、并且距上次切换满 ${Math.round(thresholds.cooldown_sec / 60)} 分钟才切回。`
     : "";
 
   return (
-    <div ref={ref} className={`group-card${highlighted ? " highlighted" : ""}`} data-testid={`group-${g.id}`}>
+    <div ref={ref} className={`group-card${highlighted ? " highlighted" : ""}${open ? " open" : ""}`} data-testid={`group-${g.id}`}>
       <div className="group-card-head">
+        <Button
+          type="text"
+          size="small"
+          className="group-toggle"
+          icon={<RightOutlined rotate={open ? 90 : 0} />}
+          aria-expanded={open}
+          aria-label={`${open ? "收起" : "展开"} ${label}`}
+          title={open && dirtyOrder ? "顺序还没保存：先保存或撤销" : undefined}
+          // An unsaved member order keeps the row open, so its save bar stays in sight.
+          onClick={() => setOpen((o) => (o && dirtyOrder ? true : !o))}
+        />
+        <span className="group-region" title={regionLabel(g.region)}>{(g.region || "—").toUpperCase()}</span>
         <div className="group-card-title">
-          <Typography.Text strong style={{ fontSize: 15 }}>
+          <Typography.Text strong className="group-name">
             {g.name}
           </Typography.Text>
           <Typography.Text type="secondary" className="mono-small">
@@ -368,16 +413,40 @@ function GroupCard({
           ) : null}
           {g.is_default ? (
             <Tooltip title="没有命中任何规则的境外流量走这个组">
-              <span className="inline-status" tabIndex={0}>
+              <span className="inline-status group-default" tabIndex={0}>
                 <StarOutlined aria-hidden /> 默认组
               </span>
             </Tooltip>
           ) : null}
         </div>
+        <div className="group-inuse" data-testid="group-inuse">
+          {aok ? (
+            <>
+              <span className="group-inuse-name" title={hopName(name, a)}>{hopName(name, a)}</span>
+              {a.active && latencies?.get(a.active) && latencies.get(a.active)!.state !== "not_measured" ? <ExitLatencyValue compact row={latencies.get(a.active)!} /> : null}
+            </>
+          ) : (
+            <SplitStatus kind={tag.kind} label={a.state === "not_switchable" ? "不适用" : `未知 · ${tag.label}`} title={a.message} />
+          )}
+        </div>
+        <div className="group-backups">
+          {userOrder
+            .filter((id) => !(aok && a.active === id))
+            .map((id) => {
+              const m = statusById.get(id);
+              const l = latencies?.get(id);
+              return (
+                <span key={id} className={`group-backup${!m || !m.eligible ? " excluded" : ""}`} title={m?.name || id}>
+                  {m?.name || id}
+                  {l && l.state === "ok" && typeof l.rtt_ms === "number" ? <span className="group-backup-ms">{Math.round(l.rtt_ms)}</span> : null}
+                </span>
+              );
+            })}
+        </div>
         <Radio.Group
           size="small"
           optionType="button"
-          buttonStyle="solid"
+          
           value={g.mode}
           disabled={!!act.busy || (g.mode === "auto" && eligible.length === 0)}
           onChange={(e) => setMode(e.target.value)}
@@ -387,7 +456,23 @@ function GroupCard({
           ]}
           aria-label={`${label} 的模式`}
         />
+        <RowActions
+          label={label}
+          more={[
+            ...(!g.is_default
+              ? [{ key: "default", icon: <StarOutlined />, label: "设为默认组", disabled: !!act.busy, onClick: () => void act.run(async () => { const r = await api.setDefaultGroup(g.id); onChanged(r.group, `${label} 已设为默认组`); }, "default") }]
+              : []),
+            { key: "delete", icon: <DeleteOutlined />, label: "删除", danger: true, disabled: !!act.busy, onClick: remove },
+          ]}
+        >
+          <Button size="small" icon={<EditOutlined />} onClick={onEdit}>
+            编辑
+          </Button>
+        </RowActions>
       </div>
+      {/* Outside the details: a failed action from the summary row is seen while the row is collapsed. */}
+      <ApiErrorAlert error={act.error} onClose={act.clear} style={{ margin: "0 14px 10px" }} />
+      <div className="group-detail" hidden={!open}>
       <Space size={[4, 4]} wrap style={{ marginBottom: 8 }}>
         {g.require_residential ? <span className="muted">要求住宅</span> : null}
         {g.exclude_residential ? <span className="muted">排除住宅</span> : null}
@@ -700,7 +785,6 @@ function GroupCard({
         </div>
       ) : null}
 
-      <ApiErrorAlert error={act.error} onClose={act.clear} style={{ marginTop: 8, marginBottom: 0 }} />
       <div className="group-card-foot">
         <Popover
           trigger="click"
@@ -711,56 +795,7 @@ function GroupCard({
             {g.in_use_by.length > 0 ? `被 ${g.in_use_by.length} 处引用` : "未被引用"}
           </Button>
         </Popover>
-        <Space size={4} wrap>
-          {!g.is_default ? (
-            <Button
-              size="small"
-              loading={act.busy === "default"}
-              onClick={() =>
-                act.run(async () => {
-                  const r = await api.setDefaultGroup(g.id);
-                  onChanged(r.group, `${label} 已设为默认组`);
-                }, "default")
-              }
-            >
-              设为默认
-            </Button>
-          ) : null}
-          <Button size="small" icon={<EditOutlined />} onClick={onEdit}>
-            编辑
-          </Button>
-          <Button
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() =>
-              confirm({
-                title: `删除地区组「${label}」？`,
-                consequence:
-                  g.in_use_by.length > 0
-                    ? "这个组还被规则、规则集或默认组设置引用，删除会被拒绝；先把引用改到别的组。"
-                    : "组从拓扑里移除，出口本身不受影响；安装后网关上不再有这个组的路由表。",
-                okText: "删除",
-                onOk: () =>
-                  act.run(
-                    async () => {
-                      await api.deleteGroup(g.id);
-                      onDeleted(g.id);
-                    },
-                    "delete",
-                    (e) => {
-                      if (e.code === "in_use") {
-                        setRefused(e);
-                        act.clear();
-                      }
-                    },
-                  ),
-              })
-            }
-          >
-            删除
-          </Button>
-        </Space>
+      </div>
       </div>
       <RefusedDialog error={refused} title={`地区组「${label}」仍被引用，未删除`} onClose={() => setRefused(null)} />
     </div>
@@ -1840,18 +1875,6 @@ function ExitNodes({
 // ------------------------------------------------------------------ page ---
 
 /** The hub state the actual lines were judged from: the carrying hub (single: the hub). */
-/** "2 个组 · 5 个出口 · 1 个需要处理": the problem part coloured, the rest muted. */
-function RegionSummary({ list }: { list: RegionGroupView[] }) {
-  const members = new Set(list.flatMap((g) => g.members)).size;
-  const bad = list.filter((g) => PROBLEM.has(actualTag(g.actual).kind)).length;
-  return (
-    <span data-testid="region-summary">
-      {list.length} 个组 · {members} 个出口
-      {bad > 0 ? <span className="problem"> · {bad} 个需要处理</span> : null}
-    </span>
-  );
-}
-
 /** "3 台中继 · 2 台分担中 · 1 台已剔除". */
 function SharingSummary({ s }: { s: Sharing }) {
   if (!s.known) return <span className="problem">状态未知</span>;
@@ -2028,13 +2051,6 @@ export default function ExitsPage() {
       ) : (
         <HubStateBar hub={groups.data?.hub_state} onRefresh={refreshHub} refreshing={refreshing} />
       )}
-      <ExitLatencyPanel onData={setLatencyRows} />
-      <MeshLegQuality topo={doc.topo} history />
-      {groups.data?.carrying?.sharing ? (
-        <Fold title="国内中继分担" summary={<SharingSummary s={groups.data.carrying.sharing} />} testId="fold-sharing">
-          <RelaySharingView s={groups.data.carrying.sharing} />
-        </Fold>
-      ) : null}
       <DataView
         state={groups}
         rows={8}
@@ -2061,41 +2077,32 @@ export default function ExitsPage() {
                 「实际使用」只来自枢纽的报告；「面板推算」是面板按健康样本自己算的，不代表枢纽上实际在用。读不到枢纽时，原因和处理方法见上方「枢纽运行状态」。
               </Note>
             </div>
-            {byRegion.map(([region, list]) => (
-              <Fold
-                key={region || "none"}
-                title={regionLabel(region)}
-                id={`region-${region || "none"}`}
-                testId={`fold-region-${region || "none"}`}
-                summary={<RegionSummary list={list} />}
-                defaultOpen={!focus || list.some((g) => g.id === focus)}
-              >
-                <div className="group-grid">
-                  {list.map((g) => (
-                    <GroupCard
-                      key={g.id}
-                      g={g}
-                      latencies={latencies}
-                      allGroups={d.groups}
-                      names={names}
-                      nodes={nodeMap}
-                      thresholds={d.thresholds}
-                      hub={carrierState(d)}
-                      dual={dual}
-                      onRefresh={refreshHub}
-                      refreshing={refreshing}
-                      sharedReports={sharedReports}
-                      highlighted={focus === g.id}
-                      onEdit={() => setEditing(g)}
-                      onChanged={(ng, what) => afterChange(putGroup(ng), what)}
-                      onDeleted={(id) =>
-                        afterChange((t) => ({ ...t, region_groups: (t.region_groups ?? []).filter((x) => x.id !== id) }), "地区组已删除")
-                      }
-                    />
-                  ))}
-                </div>
-              </Fold>
-            ))}
+            <div className="group-table" data-testid="group-table">
+              {byRegion.flatMap(([, list]) =>
+                list.map((g) => (
+                  <GroupCard
+                    key={g.id}
+                    g={g}
+                    latencies={latencies}
+                    allGroups={d.groups}
+                    names={names}
+                    nodes={nodeMap}
+                    thresholds={d.thresholds}
+                    hub={carrierState(d)}
+                    dual={dual}
+                    onRefresh={refreshHub}
+                    refreshing={refreshing}
+                    sharedReports={sharedReports}
+                    highlighted={focus === g.id}
+                    onEdit={() => setEditing(g)}
+                    onChanged={(ng, what) => afterChange(putGroup(ng), what)}
+                    onDeleted={(id) =>
+                      afterChange((t) => ({ ...t, region_groups: (t.region_groups ?? []).filter((x) => x.id !== id) }), "地区组已删除")
+                    }
+                  />
+                )),
+              )}
+            </div>
           </>
         )}
       </DataView>
@@ -2131,6 +2138,14 @@ export default function ExitsPage() {
           onEdit={(n) => setExitEdit(n.external ? { kind: "external", node: n } : { kind: "managed", node: n })}
           onAddExternal={() => setExitEdit({ kind: "external", node: null })}
         />
+      ) : null}
+      <h2 className="exits-diag-title">诊断</h2>
+      <ExitLatencyPanel onData={setLatencyRows} />
+      <MeshLegQuality topo={doc.topo} history />
+      {groups.data?.carrying?.sharing ? (
+        <Fold title="国内中继分担" summary={<SharingSummary s={groups.data.carrying.sharing} />} testId="fold-sharing">
+          <RelaySharingView s={groups.data.carrying.sharing} />
+        </Fold>
       ) : null}
       {savedIssues.length > 0 ? (
         <div data-testid="exit-saved-issues">
