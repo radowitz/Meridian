@@ -66,7 +66,8 @@ import * as api from "./api";
 import { PanelUpdate } from "./PanelUpdate";
 import { RouteOverride, RouterProvider, StatusProvider, TopologyProvider, href, parseHash, useRouter, useStatus, type Route } from "./state";
 import { HelpGuide, HelpIcon } from "./HelpGuide";
-import { HelpSlotContext } from "./ui";
+import { HelpSlotContext, formatAbsolute } from "./ui";
+import { Logo } from "./Logo";
 import { themeConfig } from "./theme";
 import { wizardEvents } from "./wizard_events";
 // The shell imports only ui_base (not ui.tsx): the table, dialog and pagination
@@ -281,7 +282,7 @@ function GateCard({ subtitle, children }: { subtitle: string; children: ReactNod
     <div className="token-screen">
       <div className="token-card">
         <Space align="center" style={{ marginBottom: 8 }}>
-          <span className="brand-mark">M</span>
+          <Logo className="brand-mark" />
           <Typography.Title level={4} style={{ margin: 0 }}>
             Meridian 控制面板
           </Typography.Title>
@@ -392,7 +393,8 @@ function TokenScreen({ onUnlocked, error }: { onUnlocked: () => void; error: api
             api.clearToken();
             setErr(e instanceof api.ApiError ? e : new api.ApiError(0, {}));
           } finally {
-            form.resetFields();
+            // Keep the user name; the secret is typed again.
+            form.resetFields(["password", "token"]);
             setBusy(false);
           }
         }}
@@ -589,7 +591,7 @@ function GlobalStatus() {
     if (status.pending) {
       const p = status.pending;
       items.push(
-        <a key="txn" href={href("deploy")} onClick={go(href("deploy"))}>
+        <a key="txn" href={`${href("deploy")}?section=gateway-install`} onClick={go(`${href("deploy")}?section=gateway-install`)}>
           <StatusTag kind="failed" title={`事务 ${p.id}：${p.phase}${p.error ? `，${p.error}` : ""}。在部署页恢复。`}>
             安装事务未完成
           </StatusTag>
@@ -598,14 +600,14 @@ function GlobalStatus() {
     }
     items.push(
       status.install.installed_version != null ? (
-        <Tooltip key="ver" title={status.install.installed_at ? `安装于 ${status.install.installed_at}` : undefined}>
+        <Tooltip key="ver" title={status.install.installed_at ? `安装于 ${formatAbsolute(new Date(status.install.installed_at))}` : undefined}>
           <span className="topbar-fact">
             已安装 <span className="mono">v{status.install.installed_version}</span>
           </span>
         </Tooltip>
       ) : (
         <StatusTag key="ver" kind="neutral">
-          数据面未安装
+          网关配置未安装
         </StatusTag>
       ),
     );
@@ -647,18 +649,19 @@ function ThemeMenu({ pref, setPref }: { pref: ThemePref; setPref: (p: ThemePref)
 
 /** Changes the administrator's password (PUT /api/auth/admin). */
 function AccountButton() {
+  const { message } = AntApp.useApp();
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm<{ current_password: string; username: string; password: string; confirm: string }>();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<api.ApiError | null>(null);
-  const [done, setDone] = useState(false);
   const submit = async (v: { current_password: string; username: string; password: string }) => {
     setBusy(true);
     setErr(null);
     try {
       await api.putAdmin({ current_password: v.current_password, username: v.username, password: v.password });
-      setDone(true);
       form.resetFields();
+      setOpen(false);
+      message.success("管理员账户已更新");
     } catch (e) {
       setErr(e as api.ApiError);
     } finally {
@@ -668,11 +671,10 @@ function AccountButton() {
   return (
     <>
       <Tooltip title="管理员账户">
-        <Button type="text" aria-label="管理员账户" icon={<UserOutlined />} onClick={() => { setOpen(true); setDone(false); setErr(null); }} />
+        <Button type="text" aria-label="管理员账户" icon={<UserOutlined />} onClick={() => { setOpen(true); setErr(null); }} />
       </Tooltip>
       <Modal open={open} title="管理员账户" onCancel={() => setOpen(false)} footer={null} destroyOnClose>
         {err ? <ApiErrorAlert error={err} /> : null}
-        {done ? <StatusTag kind="ok">已更新</StatusTag> : null}
         <Form form={form} layout="vertical" onFinish={(v) => void submit(v)} initialValues={{ username: "admin" }}>
           <Form.Item name="username" label="用户名" rules={[{ required: true, message: "必填" }]}>
             <Input autoComplete="username" />
@@ -721,7 +723,7 @@ function useWizardActive(): [boolean | null, () => void] {
 // ==================================================================== shell ===
 
 function Shell({ themePref, setThemePref }: { themePref: ThemePref; setThemePref: (p: ThemePref) => void }) {
-  const { route: address, navigate } = useRouter();
+  const { route: address, navigate, guarded } = useRouter();
   // #/help/<page>: the usage guide over that page. The page underneath keeps
   // the address it was opened from (or its bare address on a deep link).
   const helpOpen = address.page === "help";
@@ -789,7 +791,7 @@ function Shell({ themePref, setThemePref }: { themePref: ThemePref; setThemePref
 
   const brand = (
     <a className="brand" href={href("")} aria-label="Meridian 首页" onClick={event => { event.preventDefault(); navigate(href("")); setDrawer(false); }}>
-      <span className="brand-mark" aria-hidden="true">M</span>
+      <Logo className="brand-mark" />
       {!collapsed || !wide ? <span className="brand-name">Meridian</span> : null}
     </a>
   );
@@ -834,7 +836,7 @@ function Shell({ themePref, setThemePref }: { themePref: ThemePref; setThemePref
             <ThemeMenu pref={themePref} setPref={setThemePref} />
             <AccountButton />
             <Tooltip title="锁定：清除这个标签页里的面板口令">
-              <Button type="text" aria-label="锁定" icon={<LockOutlined />} onClick={lock} />
+              <Button type="text" aria-label="锁定" icon={<LockOutlined />} onClick={() => guarded(lock, "放弃修改并锁定")} />
             </Tooltip>
           </div>
         </Layout.Header>

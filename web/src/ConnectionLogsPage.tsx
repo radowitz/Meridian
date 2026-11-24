@@ -21,11 +21,11 @@ import {
 // connections around a query when it is opened with ?device=&at=[&mac=].
 
 import { Alert, App as AntApp, Button, Input, Select, Skeleton, Space, Tag, Typography } from "antd";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { LogEmpty, LogIntro, LogPager, LogStats, LogToolbar, RelatedPanel, ageText, relatedHref, relatedOf, sinceHours } from "./log_common";
 import { JOURNAL_CLASS, NAME_ERROR, NEUTRAL_CLASSES, ResultCell, SNIFF_END, SNIFF_MARK, SNIFF_WHY, durationText, reasonText, targetText } from "./Sniff";
-import { href, useRouter } from "./state";
+import { href, useRouter, useTopologyDocIfLoaded } from "./state";
 import type {
   SniffDeviceLabel,
   SniffDeviceSummary,
@@ -120,11 +120,15 @@ function failures(d: SniffDeviceSummary): number {
     .reduce((n, [, x]) => n + x, 0);
 }
 
-function topTargets(m: Record<string, number> | null | undefined, n = 3): string {
+/** targetText with the topology's group and exit names (ids only when the topology is not loaded). */
+const TargetTextCtx = createContext<(t?: string) => string>((t) => targetText(t));
+const useTargetText = () => useContext(TargetTextCtx);
+
+function topTargets(m: Record<string, number> | null | undefined, n: number, tt: (t?: string) => string): string {
   return Object.entries(m ?? {})
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, n)
-    .map(([k, c]) => `${targetText(k)} ${c}`)
+    .map(([k, c]) => `${tt(k)} ${c}`)
     .join(" · ");
 }
 
@@ -134,6 +138,7 @@ interface DeviceRow extends SniffDeviceSummary {
 
 /** The device list: one row per LAN address with its summary and label. */
 function DeviceList({ rows, onOpen }: { rows: DeviceRow[]; onOpen: (d: string) => void }) {
+  const tt = useTargetText();
   return (
     <DataTable<DeviceRow>
       size="small"
@@ -144,7 +149,7 @@ function DeviceList({ rows, onOpen }: { rows: DeviceRow[]; onOpen: (d: string) =
         <Facts
           items={[
             ["首次 / 最近", <span key="t"><TimeText value={r.first_seen} /> / <TimeText value={r.last_seen} /></span>],
-            ["主要去向", topTargets(r.by_target, 8) || "—"],
+            ["主要去向", topTargets(r.by_target, 8, tt) || "—"],
           ]}
         />
       )}
@@ -240,7 +245,7 @@ function QueriesLink({ r }: { r: SniffRecord }) {
   );
 }
 
-function recordDetails(r: SniffRecord): FactItem[] {
+function recordDetails(r: SniffRecord, tt: (t?: string) => string): FactItem[] {
   const items: FactItem[] = [
     ["来源", <Mono key="s">{r.mac ? `${r.source}（${r.mac}）` : r.source}</Mono>],
     [r.result === "dial_failed" ? "最后尝试的地址" : "实际连接", r.upstream ? <Mono key="u">{r.upstream}</Mono> : "—"],
@@ -256,7 +261,7 @@ function recordDetails(r: SniffRecord): FactItem[] {
   if (r.name_rule)
     items.push([
       "名字的判断",
-      `${r.name_rule.rule_id ?? (r.name_rule.rule_index < 0 ? "名单 / 默认组" : "")} → ${targetText(r.name_rule.target)}（${NAME_ERROR[r.name_rule.error ?? ""] ?? r.name_rule.error ?? ""}，未采用，已按地址处理）`,
+      `${r.name_rule.rule_id ?? (r.name_rule.rule_index < 0 ? "名单 / 默认组" : "")} → ${tt(r.name_rule.target)}（${NAME_ERROR[r.name_rule.error ?? ""] ?? r.name_rule.error ?? ""}，未采用，已按地址处理）`,
     ]);
   if (r.mark_status)
     items.push([
@@ -268,26 +273,27 @@ function recordDetails(r: SniffRecord): FactItem[] {
 }
 
 /** The columns of a table of finished connections (a device's page, and the connections around a query). */
-function recordColumns(names: boolean): DataColumn<SniffJournalRecord>[] {
+function recordColumns(names: boolean, tt: (t?: string) => string): DataColumn<SniffJournalRecord>[] {
   return [
     { title: "开始", kind: "fixed", width: 90, render: (_, r) => <TimeText value={r.start} /> },
     { title: "目的地址", kind: "ellipsis", width: 140, mono: true, card: "title", dataIndex: "dest" },
     { title: "判断依据", kind: "flex", width: 190, render: (_, r) => decidedBy(r, names) },
-    { title: "去向", kind: "ellipsis", width: 120, render: (_, r) => targetText(r.target) },
+    { title: "去向", kind: "ellipsis", width: 120, render: (_, r) => tt(r.target) },
     { title: "结果", kind: "flex", width: 170, render: (_, r) => <ResultCell r={r} /> },
   ];
 }
 
 /** The connections around a query: each row shows the MAC it carries, or that it matched by address only. */
 function RelatedConnections({ records, names }: { records: SniffJournalRecord[]; names: boolean }) {
-  const [start, dest, decided, target, result] = recordColumns(names);
+  const tt = useTargetText();
+  const [start, dest, decided, target, result] = recordColumns(names, tt);
   return (
     <DataTable<SniffJournalRecord>
       size="small"
       rowKey={(r) => String(r.id)}
       dataSource={records}
       pageSize={50}
-      secondary={(r) => <Facts items={recordDetails(r)} />}
+      secondary={(r) => <Facts items={recordDetails(r, tt)} />}
       columns={[
         start,
         dest,
@@ -329,6 +335,7 @@ function DeviceDetail({
   onLabel: () => void;
   refreshKey?: number;
 }) {
+  const tt = useTargetText();
   const [target, setTarget] = useState("");
   const [result, setResult] = useState("");
   const [range, setRange] = useState("all");
@@ -392,7 +399,7 @@ function DeviceDetail({
             revision = "";
           }
           // Bound page reads when many connections change in a burst.
-          await new Promise(resolve => window.setTimeout(resolve, revision ? 350 : 2000));
+          await new Promise(resolve => window.setTimeout(resolve, revision ? 1000 : 2000));
         }
       }
       void follow();
@@ -514,7 +521,7 @@ function DeviceDetail({
                     ],
                   ] as FactItem[])
                 : []),
-              ["去向", topTargets(summary.by_target, 8) + (summary.other_targets ? ` · 其它 ${summary.other_targets}` : "")],
+              ["去向", topTargets(summary.by_target, 8, tt) + (summary.other_targets ? ` · 其它 ${summary.other_targets}` : "")],
             ]}
           />
         </details>
@@ -534,7 +541,7 @@ function DeviceDetail({
                 resetPaging();
               }}
               className="input-w200"
-              options={[{ value: "", label: "全部去向" }, ...Object.keys(summary?.by_target ?? {}).sort().map((k) => ({ value: k, label: targetText(k) }))]}
+              options={[{ value: "", label: "全部去向" }, ...Object.keys(summary?.by_target ?? {}).sort().map((k) => ({ value: k, label: tt(k) }))]}
             />
             <Select
               aria-label="结果"
@@ -592,8 +599,8 @@ function DeviceDetail({
         pageSize={50}
         pagination={false}
         locale={{ emptyText: page ? (page.matched === 0 && (!page.page_only || before === 0) ? "没有符合筛选条件的连接：放宽去向、结果或时间范围" : "这一页没有记录") : "读取中…" }}
-        secondary={(r) => <Facts items={recordDetails(r)} />}
-        columns={device ? recordColumns(names) : [sourceColumn<SniffJournalRecord>(), ...recordColumns(names)]}
+        secondary={(r) => <Facts items={recordDetails(r, tt)} />}
+        columns={device ? recordColumns(names, tt) : [sourceColumn<SniffJournalRecord>(), ...recordColumns(names, tt)]}
       />
       <LogPager
         cursors={cursors}
@@ -701,6 +708,12 @@ export default function ConnectionLogsPage() {
   }, [linked]);
   const [clearErr, setClearErr] = useState<api.ApiError | null>(null);
   const confirm = useConfirmDanger();
+  const topo = useTopologyDocIfLoaded()?.topo;
+  const tt = useMemo(() => {
+    const groups = new Map((topo?.region_groups ?? []).map((g) => [g.id, g.name]));
+    const exits = new Map((topo?.nodes ?? []).map((n) => [n.id, n.name]));
+    return (t?: string) => targetText(t, (kind, id) => (kind === "group" ? groups : exits).get(id));
+  }, [topo]);
   const v = st.data;
   const sum = v?.summary;
   const names = sum?.record_names ?? false;
@@ -748,6 +761,7 @@ export default function ConnectionLogsPage() {
     : "最近 24 小时、最多 50000 条、不超过 32 MiB，先到的上限生效，超出时删最旧的。";
   return (
     <Page title="连接日志" extra={<Button danger loading={disconnecting} onClick={disconnect}>断开所有连接</Button>}>
+      <TargetTextCtx.Provider value={tt}>
       <div data-testid="sniff-journal" className="sniff-journal">
         <Help title="记录范围与保存说明">
           <LogIntro
@@ -835,6 +849,7 @@ export default function ConnectionLogsPage() {
           </Space>
         </Section>}
       </div>
+      </TargetTextCtx.Provider>
     </Page>
   );
 }
@@ -869,6 +884,7 @@ function LiveConnections({ initial, initialMatched, device, names, showSource, s
   showSource: boolean;
   source: DataColumn<SniffRecord>;
 }) {
+  const tt = useTargetText();
   const [rows, setRows] = useState<LiveRow[]>(() => initial.map(r => ({ ...r, up_rate: 0, down_rate: 0 })));
   const [matched, setMatched] = useState(initialMatched ?? initial.length);
   const [sort, setSort] = useState<LiveSort>("down_rate");
@@ -937,11 +953,11 @@ function LiveConnections({ initial, initialMatched, device, names, showSource, s
         dataSource={sorted}
         pageSize={50}
         pagination={false}
-        secondary={(r) => <Facts items={[["判断依据", decidedBy(r, names)], ...recordDetails(r)]} />}
+        secondary={(r) => <Facts items={[["判断依据", decidedBy(r, names)], ...recordDetails(r, tt)]} />}
         columns={[
           ...(showSource ? [source as unknown as DataColumn<LiveRow>] : []),
           { title: "主机", kind: "flex", width: 220, card: "title", render: (_, r) => <EllipsisText text={(names && r.name) || r.dest} /> },
-          { title: "去向", kind: "ellipsis", width: 120, render: (_, r) => targetText(r.target) },
+          { title: "去向", kind: "ellipsis", width: 120, render: (_, r) => tt(r.target) },
           { title: "↑ 速度", kind: "fixed", width: 96, render: (_, r) => <Mono>{rate(r.up_rate)}</Mono> },
           { title: "↓ 速度", kind: "fixed", width: 96, render: (_, r) => <Mono>{rate(r.down_rate)}</Mono> },
           { title: "↑ 总量", kind: "fixed", width: 88, render: (_, r) => bytes(r.bytes_up ?? 0) },

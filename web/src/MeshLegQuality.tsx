@@ -3,7 +3,7 @@ import { Button, Tag, Typography } from "antd";
 import { useState } from "react";
 import * as api from "./api";
 import type { GroupHubState, Link, MeshLegReport, Topology } from "./types";
-import {
+import { formatAbsolute,
   ApiErrorAlert,
   Fold,
   useApi,
@@ -82,7 +82,7 @@ export function MeshLegRows({ reports, ids, history = false, hubNames = {} }: { 
       return <div key={id} style={{ padding: "8px 0" }}><div><strong>{label(leg.exit, leg.hub)}</strong></div><MeshLegChoices report={r} events={matching.filter(r => r.event)} /></div>;
     })}
     {history ? <details><summary>枢纽切换记录（每出口最近 32 条，重启后清空）</summary>
-      {events.length ? events.map((r, i) => <div key={`${r.exit}-${r.hub ?? ""}-${r.beat}-${i}`} style={{ padding: "8px 0" }}>{label(r.exit, r.hub)} · {r.result === "ok" ? LEG[r.active] : "切换失败"} · {WHY[r.reason]} · {new Date(r.beat * 1000).toLocaleString()}</div>) : <div>尚无有效切换记录</div>}
+      {events.length ? events.map((r, i) => <div key={`${r.exit}-${r.hub ?? ""}-${r.beat}-${i}`} style={{ padding: "8px 0" }}>{label(r.exit, r.hub)} · {r.result === "ok" ? LEG[r.active] : "切换失败"} · {WHY[r.reason]} · {formatAbsolute(new Date(r.beat * 1000))}</div>) : <div>尚无有效切换记录</div>}
     </details> : null}
   </div>;
 }

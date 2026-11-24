@@ -1159,7 +1159,7 @@ describe("overview: first-time order and all region groups", () => {
     const idx = (text: string) => steps.findIndex((s) => s.textContent?.includes(text));
     expect(idx("远端节点还没有密钥")).toBeLessThan(steps.length - 1);
     expect(order.length).toBeGreaterThan(6);
-    expect(await screen.findByTestId("groups-tile-more")).toHaveTextContent("还有 6 个");
+    expect(await screen.findByTestId("groups-tile-more")).toHaveTextContent("还有 2 个");
     expect(within(screen.getByTestId("groups-tile-more")).getByRole("link")).toHaveAttribute("href", "#/exits");
   });
 });

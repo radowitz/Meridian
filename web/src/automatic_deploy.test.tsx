@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { deployTopology } from "./automatic_deploy";
+import { deployPendingNodes, deployTopology } from "./automatic_deploy";
 import { fakeApi } from "./testing";
 
 it("stops on a blocked base provisioning preflight before installing the connector", async () => {
@@ -122,4 +122,33 @@ it("adopts the targeted MTU change and installs against a fresh preflight", asyn
   expect(adopted).toEqual([change]);
   expect(a.find("POST /api/mtu/adopt")[0].body).toEqual({ changes: [change] });
   expect(a.find("POST /api/deploy/runs/deploy-1/install")[0].body).toEqual({ node_id: "us", preflight_id: "fresh" });
+});
+
+it("refuses a plan that changed after the confirmation", async () => {
+  const a = fakeApi({
+    "GET /api/deploy": () => ({ plan: { steps: [{ node_id: "us", node_name: "US", phase: "pending" }, { node_id: "gw", node_name: "网关", phase: "pending" }] }, topology_version: "v2" }),
+    "POST /api/deploy/runs": () => ({ run: null }),
+  });
+  await expect(deployPendingNodes(undefined, undefined, ["gw"])).rejects.toThrow("部署计划在你确认之后变了");
+  expect(a.find("POST /api/deploy/runs")).toHaveLength(0);
+});
+
+it("never installs a node outside the confirmed list, even in a run opened elsewhere", async () => {
+  const run = { id: "r9", state: "active", current: "other", steps: [{ node_id: "other", node_name: "另一台", phase: "pending", can_preflight: true }] };
+  const a = fakeApi({
+    "GET /api/deploy": () => ({ run }),
+    "POST /api/deploy/runs/r9/preflight": () => ({ run }),
+  });
+  await expect(deployPendingNodes(undefined, undefined, ["gw"])).rejects.toThrow("你确认时没有的节点「另一台」");
+  expect(a.find("POST /api/deploy/runs/r9/preflight")).toHaveLength(0);
+});
+
+it("verifies a verify-only step the server marks can_verify", async () => {
+  const pending = { id: "r8", state: "active", steps: [{ node_id: "hk", node_name: "hk", phase: "pending", verify_only: true, can_verify: true, can_preflight: false }] };
+  const a = fakeApi({
+    "GET /api/deploy": () => ({ run: pending }),
+    "POST /api/deploy/runs/r8/verify": () => ({ run: { ...pending, state: "done", steps: [{ ...pending.steps[0], phase: "done" }] } }),
+  });
+  await deployPendingNodes(undefined, undefined, []);
+  expect(a.find("POST /api/deploy/runs/r8/verify")).toHaveLength(1);
 });

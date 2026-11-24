@@ -1,3 +1,4 @@
+import { useHubAutoRead } from "./hub_read";
 import { AutoDeployProgress, useAutoDeployProgress } from "./AutoDeployProgress";
 import { newWireGuardPort } from "./wireguard_ports";
 import { ExitLatencyPanel, ExitLatencyValue, type ExitLatencyRow } from "./ExitLatency";
@@ -52,7 +53,7 @@ import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from
 import * as api from "./api";
 import { applyDeployLinkChanges, deployTopology } from "./automatic_deploy";
 import type { ApiError } from "./api";
-import { href, useRouter, useStatus, useTopologyDoc } from "./state";
+import { href, useRouter, useStatus, useTopologyDoc, useUnsavedGuard } from "./state";
 import { RELAY_STATUS, RelaySharingView } from "./RelaySharing";
 import { ACTUAL_CODE, CarryingLine, HUB_TIER, actualTag } from "./status_words";
 import { isExternalExit, isNestedExit } from "./types";
@@ -75,7 +76,7 @@ import type {
   SOCKSCredentialView,
   Topology,
 } from "./types";
-import {
+import { formatAbsolute,
   type FactItem,
   ApiErrorAlert,
   ApplyRequiredNotice,
@@ -236,7 +237,7 @@ function memberHealth(m: GroupMemberView, observed: boolean, latency?: ExitLaten
       {h.last_at ? (
         <>
           <br />
-          上次样本 {new Date(h.last_at).toLocaleString()}
+          上次样本 {formatAbsolute(new Date(h.last_at))}
         </>
       ) : null}
     </span>
@@ -326,6 +327,7 @@ function GroupCard({
   const statusById = new Map(g.member_status.map((m) => [m.id, m]));
   const userOrder = order ?? g.members;
   const dirtyOrder = order !== null && order.join() !== g.members.join();
+  useUnsavedGuard(dirtyOrder, `地区组「${g.name}」的成员顺序还没保存，离开后会丢失。`);
   const eligible = g.member_status.filter((m) => m.eligible);
   const effectiveDiffers =
     g.effective_order.join() !== g.members.filter((id) => statusById.get(id)?.eligible).join() ||
@@ -438,7 +440,7 @@ function GroupCard({
               return (
                 <span key={id} className={`group-backup${!m || !m.eligible ? " excluded" : ""}`} title={m?.name || id}>
                   {m?.name || id}
-                  {l && l.state === "ok" && typeof l.rtt_ms === "number" ? <span className="group-backup-ms">{Math.round(l.rtt_ms)}</span> : null}
+                  {l && l.state === "ok" && typeof l.rtt_ms === "number" ? <span className="group-backup-ms">{Math.round(l.rtt_ms)} ms</span> : null}
                 </span>
               );
             })}
@@ -1038,9 +1040,6 @@ function HubStateBar({ hub, onRefresh, refreshing }: { hub: GroupHubState | unde
     </div>
   );
 }
-
-/** Reads the hub once when the page opens, if it is readable and the last read is older than a minute. */
-const AUTO_REFRESH_AFTER_MS = 60_000;
 
 // ---------------------------------------------------------------- drawer ---
 
@@ -1921,21 +1920,7 @@ export default function ExitsPage() {
         if (e.code === "hub_identity_changed") void groups.reload();
       },
     );
-  // One automatic read per visit, bounded: only when the hub can be read
-  // and nothing recent is stored. No polling.
-  const autoRead = useRef(false);
-  useEffect(() => {
-    const d = groups.data;
-    const hubs = d?.carrying?.mode === "dual" && d.hub_states?.length ? d.hub_states : d?.hub_state ? [d.hub_state] : [];
-    if (hubs.length === 0 || autoRead.current) return;
-    autoRead.current = true;
-    if (hubs.some((h) => h.refreshing)) return;
-    // A read of another hub identity says nothing about this one.
-    const last = (h: GroupHubState) => (h.last_read && h.last_read.current_hub !== false ? Date.parse(h.last_read.read_at) : 0);
-    if (!hubs.some((h) => h.readable && Date.now() - last(h) >= AUTO_REFRESH_AFTER_MS)) return;
-    refreshHub();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups.data]);
+  useHubAutoRead(groups.data, refreshHub);
 
   const dual = groups.data?.carrying?.mode === "dual" && (groups.data.hub_states?.length ?? 0) > 0;
   // Hub reports unusable for the same reason in every group: said once in the hub bar.
@@ -2159,7 +2144,7 @@ export default function ExitsPage() {
           topo={doc.topo}
           socks={socks.data?.credentials}
           socksError={socks.error}
-          blocked={deployment?.phase === "running" ? "自动部署正在运行" : doc.dirty ? "拓扑有未保存的修改（拓扑、规则或泄漏页）：先在那里保存或放弃，再在这里保存，免得把它们一起写进去。" : undefined}
+          blocked={deployment?.phase === "running" ? "自动部署正在运行" : doc.dirty ? "拓扑有未保存的修改（拓扑或规则页）：先在那里保存或放弃，再在这里保存，免得把它们一起写进去。" : undefined}
           onClose={() => setExitEdit(null)}
           onSave={(next, what, deploy) => saveExit(next, what, exitEdit.node?.id ?? next.nodes[next.nodes.length - 1]?.id ?? "", deploy)}
         />

@@ -47,11 +47,11 @@ export function pickGroups(region: UnlockMatrixRegion, s: UnlockMatrixService) {
   ];
 }
 
-/** The service's actual direction: "<组名> · <首选出口>" or "<节点>（钉死）". */
+/** The service's actual direction: "<组名> · <首选出口>" or "<节点>（固定出口）". */
 export function currentLabel(c: UnlockCurrent | null | undefined): string {
   if (!c) return "";
   if (c.mixed?.length) return c.mixed.map((m) => currentLabel(m)).join(" / ");
-  if (c.pinned) return `${c.exit_name || c.exit}（钉死）`;
+  if (c.pinned) return `${c.exit_name || c.exit}（固定出口）`;
   const g = c.group_name || c.group || "";
   return c.exit_name || c.exit ? `${g} · ${c.exit_name || c.exit}` : g;
 }

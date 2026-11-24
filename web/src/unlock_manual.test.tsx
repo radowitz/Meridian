@@ -168,11 +168,11 @@ describe("unlock: 确认 and 手动", () => {
     expect(g.map((x) => x.label)).toEqual(["出口组", "具体节点"]);
     expect(g[0].options.map((o) => o.label)).toEqual(["香港 · 香港 IX"]);
     expect(g[1].options.map((o) => o.label)).toEqual(["日本 · 解锁", "香港 IX · 不可用", "美国 · 未测"]);
-    expect(currentLabel({ exit: "hk-2", exit_name: "hk2", pinned: true })).toBe("hk2（钉死）");
+    expect(currentLabel({ exit: "hk-2", exit_name: "hk2", pinned: true })).toBe("hk2（固定出口）");
     expect(currentLabel(null)).toBe("");
     expect(
       currentLabel({ pinned: false, mixed: [{ group: "hk", group_name: "香港住宅", exit: "hk-2", exit_name: "hk2", pinned: false }, { exit: "hk-8", exit_name: "hk8", pinned: true }] }),
-    ).toBe("香港住宅 · hk2 / hk8（钉死）");
+    ).toBe("香港住宅 · hk2 / hk8（固定出口）");
     fakeApi(base(() => view([s])));
     renderAt("#/unlock");
     const t = await screen.findByTestId("unlock-table-global");
@@ -221,7 +221,7 @@ describe("unlock: 确认 and 手动", () => {
     await userEvent.click(within(box).getByRole("button", { name: "保存 Netflix → 香港 IX" }));
     await waitFor(() => expect(api.find("POST /api/unlock/adopt")).toHaveLength(4));
     expect(api.find("POST /api/unlock/adopt")[3].body).toEqual({ service: "auto-netflix", exit: "hk-ix", manual: true, identity: "v2:aa" });
-    await waitFor(() => expect(screen.getByTestId("current-global-auto-netflix")).toHaveTextContent("香港 IX（钉死）"));
+    await waitFor(() => expect(screen.getByTestId("current-global-auto-netflix")).toHaveTextContent("香港 IX（固定出口）"));
     const topoLoads = api.find("GET /api/topology").length;
     expect(topoLoads).toBeGreaterThan(1);
     window.location.hash = "#/rules";

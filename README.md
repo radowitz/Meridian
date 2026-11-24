@@ -1,12 +1,18 @@
-# Meridian
+<p align="center"><img src="docs/assets/logo.svg" width="88" alt="Meridian 图标"></p>
 
-简体中文 | [English](README.en.md)
+<h1 align="center">Meridian</h1>
 
-许可：`AGPL-3.0-only`
+<p align="center">跑在家里局域网上的分流网关：国内直连，境外按规则走你自己的线路；线路断了就停下，绝不悄悄改走本地宽带。</p>
 
-Meridian 是一台跑在家里局域网上的 WireGuard 策略路由网关，带一个网页面板。把设备的网关和 DNS 指向它之后：国内流量照常经家里的路由器直连；境外流量按规则和地区组，经你自己的服务器（可选国内中继、境外枢纽、专线）从你选的出口出去；隧道不通时失败关闭，不会悄悄改走本地宽带。
+<p align="center">简体中文 · <a href="README.en.md">English</a> · 许可 <code>AGPL-3.0-only</code></p>
 
-不用 Fake-IP，也不需要在设备上装客户端。家里路由器和已有的其他代理网关都不用改，Meridian 与它们并行，哪台设备指过来才经过它。
+## 为什么用它
+
+- **设备上什么都不用装**：把设备的网关和 DNS 指向它就生效。不用 Fake-IP，家里路由器和已有的代理网关都不用动，哪台设备指过来才经过它。
+- **出了问题宁可断，也不泄露**：隧道不通时流量直接拦下，DNS 一律劫持，已知的 DoH 也会拦截，不会悄悄改走本地宽带。
+- **多条线路自己会切**：可以经国内中继、境外枢纽或专线出去，多台中继按线路质量分担，主线路不通时备用枢纽接管，地区组按顺序自动换出口。
+- **一个网页面板管全部**：拓扑、分流规则、出口、部署、连接和解析日志、解锁探测都在面板里，能看到每条连接的实时速度。
+- **改动可以放心上线**：安装前先只读预检，按顺序下发，失败自动补偿，随时一键回滚。
 
 ```mermaid
 flowchart LR
@@ -57,14 +63,14 @@ flowchart LR
 在一台 Debian 13（amd64 / arm64）上，局域网口已有静态地址：
 
 ```sh
-git clone https://github.com/radowitz/Meridian.git && cd meridian
-sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.7
+git clone https://github.com/radowitz/Meridian.git && cd Meridian
+sudo bash deploy/debian/install.sh --lan-addr <网关局域网 IPv4> --version v1.0.8
 sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-code
 ```
 
 浏览器打开 `http://<网关局域网 IPv4>:8787`，用终端里的一次性初始化码创建管理员，然后按向导：网关 → 模板 → 服务器（确认指纹）→ 拓扑 → 预检 → 部署。完整步骤见 [docs/user/quickstart.md](docs/user/quickstart.md)。
 
-[v1.0.7 发布说明](https://github.com/radowitz/Meridian/releases/tag/v1.0.7) · 镜像 `ghcr.io/radowitz/meridian:v1.0.7`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
+[v1.0.8 发布说明](https://github.com/radowitz/Meridian/releases/tag/v1.0.8) · 镜像 `ghcr.io/radowitz/meridian:v1.0.8`（amd64 / arm64）。网关连不上 ghcr.io 时，用 `--build` 在本机构建，或用 `--image-tar` 载入在别处保存的镜像。
 
 ## 文档
 

@@ -638,7 +638,7 @@ export default function CredentialsPage() {
           message.success("已轮换");
         }}
       />
-      <EditDrawer cred={editing} onClose={() => setEditing(null)} onDone={(c) => upsert(c)} />
+      <EditDrawer cred={editing} onClose={() => setEditing(null)} onDone={(c) => { upsert(c); message.success("已保存"); }} />
       <RefusedDialog error={refused} title="不能删除这把密钥" onClose={() => setRefused(null)} />
       <SocksSection focus={route.query.get("section") === "socks"} openCreate={route.query.get("socks") === "new"} />
       {selectedId && state.data && !selected && !state.loading && reread === selectedId ? (
@@ -1032,7 +1032,7 @@ export function SocksSection({ focus, openCreate }: { focus: boolean; openCreate
           message.success(socksRotatedMessage(res));
         }}
       />
-      <SocksEditDrawer cred={editing} onClose={() => setEditing(null)} onDone={(c) => upsert(c)} />
+      <SocksEditDrawer cred={editing} onClose={() => setEditing(null)} onDone={(c) => { upsert(c); message.success("已保存"); }} />
       <RefusedDialog error={refused} title="不能删除这个 SOCKS 凭据" onClose={() => setRefused(null)} />
     </div>
   );

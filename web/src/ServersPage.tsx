@@ -498,6 +498,7 @@ function ServerFlow({
         act.run(async () => {
           const r = await api.forgetHostKey(server.id);
           onChanged(r.server);
+          message.success("已清除指纹");
         }, "forget"),
     });
 

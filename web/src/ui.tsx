@@ -29,7 +29,7 @@ import {
   type TableColumnType,
   type TableProps,
 } from "antd";
-import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes, type Key, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type HTMLAttributes, type Key, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, isApiError } from "./api";
 import { href, useOptionalRouter, useOptionalStatus, useTopologyDoc, useUnsavedGuard } from "./state";
@@ -218,6 +218,7 @@ export function Fold({
   summary,
   extra,
   defaultOpen = false,
+  openSignal,
   id,
   testId,
   children,
@@ -226,6 +227,8 @@ export function Fold({
   summary?: ReactNode;
   extra?: ReactNode;
   defaultOpen?: boolean;
+  /** Changes on every link to this fold: opens it again even if it was closed by hand. */
+  openSignal?: number;
   id?: string;
   testId?: string;
   children: ReactNode;
@@ -234,7 +237,7 @@ export function Fold({
   const [open, setOpen] = useState(defaultOpen || allOpen);
   useEffect(() => {
     if (defaultOpen) setOpen(true);
-  }, [defaultOpen]);
+  }, [defaultOpen, openSignal]);
   const headId = useId();
   const bodyId = useId();
   return (
@@ -468,8 +471,33 @@ export function formatRelative(d: Date, now = new Date()) {
   return future ? `${t}后` : `${t}前`;
 }
 
+// One shared 30-second clock for every relative time on screen, so "刚刚"
+// becomes "5 分钟前" while the page stays open. Runs only while something shows a time.
+const clockSubs = new Set<() => void>();
+let clockTimer: ReturnType<typeof setInterval> | undefined;
+let clockNow = Date.now();
+function subscribeClock(cb: () => void) {
+  clockSubs.add(cb);
+  if (!clockTimer)
+    clockTimer = setInterval(() => {
+      clockNow = Date.now();
+      clockSubs.forEach((f) => f());
+    }, 30_000);
+  return () => {
+    clockSubs.delete(cb);
+    if (clockSubs.size === 0 && clockTimer) {
+      clearInterval(clockTimer);
+      clockTimer = undefined;
+    }
+  };
+}
+function useClock() {
+  return useSyncExternalStore(subscribeClock, () => clockNow);
+}
+
 /** Relative time, absolute time on hover. Empty / zero times render "—". */
 export function TimeText({ value, empty = "—" }: { value: string | null | undefined; empty?: ReactNode }) {
+  useClock();
   if (!value || value.startsWith("0001-")) return <Typography.Text type="secondary">{empty}</Typography.Text>;
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return <span>{value}</span>;
@@ -741,60 +769,92 @@ export function IssueList({ issues }: { issues: Issue[] }) {
  * Save bar for pages that edit the whole topology document (topology,
  * rules, leak settings). Registers the unsaved-changes guard while dirty.
  */
-export function TopologyDocBar({ bottom = false, onDeploy, deploying }: {
-  bottom?: boolean; onDeploy?: () => void; deploying?: boolean;
-} = {}) {
+/**
+ * The save bar of the topology document, at the top of 分流规则 and 拓扑
+ * alike. Nothing unsaved: one quiet line (state, 校验, and on 拓扑 the
+ * deployment). Unsaved changes: the full bar with 放弃 / 草稿 / 保存.
+ */
+export function TopologyDocBar({ onDeploy, deploying }: { onDeploy?: () => void; deploying?: boolean } = {}) {
   const doc = useTopologyDoc();
   const status = useOptionalStatus();
   const pending = status?.install.kind === "changed" || status?.status?.nodes?.some(node => node.pending);
   const act = useAction();
   const { message } = AntApp.useApp();
+  const confirmDanger = useConfirmDanger();
   useUnsavedGuard(doc.dirty, "拓扑有未保存的修改，离开后会丢失。");
   const errors = doc.issues.filter((i) => i.severity === "error");
+  const quiet = !doc.dirty;
+  const validate = (
+    <Button size={quiet ? "small" : undefined} onClick={() => act.run(() => doc.validate(), "validate")} loading={act.busy === "validate"}>
+      校验
+    </Button>
+  );
   return (
-    <div className={`doc-bar sticky-bar${bottom ? " doc-bar-bottom" : ""}`}>
+    <div className={`doc-bar sticky-bar${quiet ? " doc-bar-quiet" : ""}`} data-testid="doc-bar" data-dirty={doc.dirty ? "true" : "false"}>
       <Space wrap>
         {doc.dirty ? (
           <StatusTag kind="attention">有未保存的修改</StatusTag>
-        ) : bottom && pending ? (
+        ) : onDeploy && pending ? (
           <StatusTag kind="pending">已保存，待安装</StatusTag>
         ) : doc.rulesApply ? (
           <RulesApplyLine fa={doc.rulesApply.fast_apply} applyRequired={doc.rulesApply.apply_required} />
         ) : (
           <Typography.Text type="secondary">拓扑已保存</Typography.Text>
         )}
+        {doc.dirty && errors.length > 0 ? <StatusTag kind="failed">{errors.length} 个错误，改正后才能保存</StatusTag> : null}
       </Space>
-      <Space wrap>
-        <Button onClick={() => act.run(() => doc.validate(), "validate")} loading={act.busy === "validate"}>
-          校验
-        </Button>
-        <Button disabled={!doc.dirty || deploying} onClick={() => void doc.reload()}>
-          放弃修改
-        </Button>
-        <Button
-          disabled={!doc.dirty || deploying}
-          loading={act.busy === "draft"}
-          onClick={() => act.run(async () => (await doc.save(true)) && message.success("已保存为草稿"), "draft")}
-        >
-          保存草稿
-        </Button>
-        <Button
-          type={onDeploy ? "default" : "primary"}
-          disabled={!doc.dirty || errors.length > 0 || deploying}
-          loading={act.busy === "save" || doc.saving}
-          onClick={() =>
-            act.run(async () => {
-              const res = await doc.save(false);
-              if (res) message.success(res.fast_apply ? "已保存" : "已保存；安装后在网关生效");
-            }, "save")
-          }
-        >
-          {onDeploy ? "仅保存" : "保存"}
-        </Button>
-        {onDeploy ? <Button type="primary" disabled={doc.saving || deploying || (doc.dirty && errors.length > 0)} loading={deploying} onClick={onDeploy}>
-          {doc.dirty ? "保存并部署" : "自动检测并部署"}
-        </Button> : null}
-      </Space>
+      {quiet ? (
+        <Space wrap>
+          {validate}
+          {onDeploy && pending ? (
+            <Button size="small" type="primary" disabled={doc.saving || deploying} loading={deploying} onClick={onDeploy}>
+              自动检测并部署
+            </Button>
+          ) : null}
+        </Space>
+      ) : (
+        <Space wrap>
+          <Button
+            disabled={deploying}
+            onClick={() =>
+              confirmDanger({
+                title: "放弃未保存的修改？",
+                consequence: "拓扑、规则和地区组里还没保存的改动都会丢掉，恢复成上次保存的样子。",
+                okText: "放弃修改",
+                onOk: () => doc.reload(),
+              })
+            }
+          >
+            放弃修改
+          </Button>
+          {validate}
+          <Button
+            disabled={deploying}
+            loading={act.busy === "draft"}
+            onClick={() => act.run(async () => (await doc.save(true)) && message.success("已保存为草稿"), "draft")}
+          >
+            保存草稿
+          </Button>
+          <Button
+            type={onDeploy ? "default" : "primary"}
+            disabled={errors.length > 0 || deploying}
+            loading={act.busy === "save" || doc.saving}
+            onClick={() =>
+              act.run(async () => {
+                const res = await doc.save(false);
+                if (res) message.success(res.fast_apply ? "已保存" : "已保存；安装后在网关生效");
+              }, "save")
+            }
+          >
+            {onDeploy ? "仅保存" : "保存"}
+          </Button>
+          {onDeploy ? (
+            <Button type="primary" disabled={doc.saving || deploying || errors.length > 0} loading={deploying} onClick={onDeploy}>
+              保存并部署
+            </Button>
+          ) : null}
+        </Space>
+      )}
       {act.error ? <ApiErrorAlert error={act.error} onClose={act.clear} style={{ width: "100%", marginTop: 12, marginBottom: 0 }} /> : null}
     </div>
   );

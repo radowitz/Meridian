@@ -82,7 +82,7 @@ function scenario(rec: () => unknown) {
 }
 
 async function preflightAndInstall() {
-  renderAt("#/deploy");
+  renderAt("#/deploy", { foldsOpen: true });
   await userEvent.click(await screen.findByTestId("host-preflight-run"));
   return screen.findByTestId("host-preflight");
 }
@@ -174,7 +174,7 @@ describe("region error boundary", () => {
     const api = scenario(() => gatewayRec());
     // A WSS answer with a listener missing its lists: the WSS card throws.
     api.on("GET /api/wss", () => ({ listeners: [{ node_id: "relay", server_name: "relay" }], validity_days: 365, rotate_before: 30, verification: "", interruption: "", order: "" }));
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     const line = await screen.findByTestId("region-error");
     expect(line).toHaveTextContent("这部分出错了");
     expect(screen.queryByText("这个页面出错了")).toBeNull();

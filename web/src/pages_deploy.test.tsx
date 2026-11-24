@@ -65,7 +65,7 @@ describe("deploy", () => {
           },
         }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     expect(await screen.findByTestId("applied-snapshot-diff")).toHaveTextContent("1 个文件");
     await userEvent.click(await screen.findByRole("button", { name: /安装到网关/ }));
     await confirmModal("安装");
@@ -88,7 +88,7 @@ describe("deploy", () => {
       "GET /api/host": () => host(true),
       "POST /api/apply": () => reply(503, { error: "面板没有宿主执行能力：……未写入任何宿主文件", code: "host_unavailable" }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     const install = async () => {
       await userEvent.click(await screen.findByRole("button", { name: /安装到网关/ }));
       await confirmModal("安装");
@@ -141,10 +141,10 @@ describe("deploy", () => {
       "GET /api/status": () => panelStatus({ ...changed(), previous_available: false }),
       "GET /api/host": () => host(true),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     expect(await screen.findByTestId("version-current")).toHaveTextContent("当前");
     expect(screen.queryByTestId("version-previous")).toBeNull();
-    expect(screen.queryByRole("button", { name: /回滚/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^回滚/ })).toBeNull();
   });
 
   it("offers 只写入数据目录 only without a host agent, and lists what an applied-only change would install", async () => {
@@ -159,7 +159,7 @@ describe("deploy", () => {
         installed: { files_changed: ["etc/nftables.d/meridian.nft"], files_added: ["etc/wireguard/m09.conf"], interfaces_added: ["m09"] },
       }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     const list = await screen.findByTestId("installed-diff");
     expect(list).toHaveTextContent("/etc/nftables.d/meridian.nft");
     expect(list).toHaveTextContent("/etc/wireguard/m09.conf");
@@ -176,7 +176,7 @@ describe("deploy", () => {
       "GET /api/status": () => panelStatus({ installOver: { state: "not_installed", installed_version: null, applied: false, applied_matches: false } }),
       "POST /api/apply": () => ({ dry_run: false, install: false, wrote: ["a", "b"], order: [], diff: "" }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(await screen.findByTestId("apply-only"));
     const box = await waitFor(() => {
       const el = document.querySelector<HTMLElement>(".ant-modal-confirm");
@@ -196,7 +196,7 @@ describe("deploy", () => {
       "GET /api/host": () => host(true),
       "POST /api/rollback": () => ({ status: "rolled_back", mode: "runtime", host: null }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     expect(await screen.findByTestId("version-current")).toHaveTextContent("当前");
     const rb = within(screen.getByTestId("version-previous")).getByRole("button", { name: /回滚/ });
     await waitFor(() => expect(rb).toBeEnabled());
@@ -220,7 +220,7 @@ describe("deploy", () => {
       "GET /api/host": () => host(false),
       "POST /api/rollback": () => ({ status: "rolled_back", mode: "snapshot" }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     expect(await screen.findByText("拓扑现在无法编译，不能安装")).toBeInTheDocument();
     expect(screen.getByText("网关的局域网接口不一致")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /安装到网关/ })).toBeDisabled();
@@ -242,7 +242,7 @@ describe("deploy: remote nodes", () => {
       "GET /api/topology": () => t,
       "GET /api/servers": () => ({ servers: [server(), server({ id: "srv-2", name: "美国机" })] }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     const remote = await screen.findByTestId("remote-node-us");
     expect(screen.getByTestId("page-help")).toHaveTextContent("单独处理时先「生成密钥并下发」到远端节点，再「安装到网关」");
     expect(screen.getByTestId("keyless-nodes")).toHaveTextContent("还没有密钥");
@@ -269,7 +269,7 @@ describe("deploy: install pre-check for remote nodes", () => {
   it("shows target, planned changes and findings by severity, and refuses to execute with a blocking finding", async () => {
     let next: PreflightRecord = preflightRec();
     const api = setup({ "POST /api/provision/preflight": () => ({ preflight: next }) });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     const row = await screen.findByTestId("remote-node-us");
     await userEvent.click(within(row).getByRole("button", { name: /生成密钥并下发/ }));
     const report = await screen.findByTestId("preflight-report");
@@ -356,7 +356,7 @@ describe("deploy: install pre-check for remote nodes", () => {
       counts: { blocking: 2, warning: 1, info: 4 },
     });
     const api = setup({ "POST /api/provision/preflight": () => ({ preflight: rec }) });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     await screen.findByTestId("preflight-report");
     // The host firewall rules are visible without opening the change list.
@@ -402,7 +402,7 @@ describe("deploy: install pre-check for remote nodes", () => {
           preflight: preflightRec({ id: "pf-3", findings: [{ severity: "blocking", code: "port_in_use", resource: "udp 10.66.7.2:53", message: "出口解析器要绑定 udp 10.66.7.2:53，但已被进程 dnsmasq 占用。", action: "换端口或停用占用者。" }], counts: { blocking: 1, warning: 0, info: 0 } }),
         }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     await waitFor(() => expect(screen.getByTestId("preflight-execute")).toBeEnabled());
     await userEvent.click(screen.getByTestId("preflight-execute"));
@@ -425,7 +425,7 @@ describe("deploy: install pre-check for remote nodes", () => {
           output: "MERIDIAN_COMPENSATING exit=1\nMERIDIAN_LEFTOVER interface m07\n",
         }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     await waitFor(() => expect(screen.getByTestId("preflight-execute")).toBeEnabled());
     await userEvent.click(screen.getByTestId("preflight-execute"));
@@ -455,7 +455,7 @@ describe("deploy: install pre-check for remote nodes", () => {
           },
         }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     const help = await screen.findByTestId("login-help");
     expect(help).toHaveTextContent(PUBKEY);
@@ -487,7 +487,7 @@ describe("deploy: install pre-check for remote nodes", () => {
           },
         }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     const help = await screen.findByTestId("login-help");
     expect(help).toHaveTextContent("密码凭据");
@@ -515,7 +515,7 @@ describe("deploy: install pre-check for remote nodes", () => {
         }),
       }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     const plan = await screen.findByTestId("preflight-install-plan");
     expect(within(plan).getByTestId("preflight-platform")).toHaveTextContent("Ubuntu 20.04 aarch64");
@@ -545,7 +545,7 @@ describe("deploy: install pre-check for remote nodes", () => {
         }),
       }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     expect(await screen.findByTestId("preflight-platform")).toHaveTextContent("不在支持范围");
     expect(screen.getByTestId("preflight-blocking")).toHaveTextContent("Ubuntu 20.04 aarch64");
@@ -563,7 +563,7 @@ describe("deploy: panel-delivered binaries", () => {
         ],
       }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     const missing = await screen.findByTestId("artifacts-missing");
     expect(missing).toHaveTextContent("1 个二进制没有可用的已校验副本");
     expect(missing).toHaveTextContent("wstunnel 11.1.0（x86_64）");
@@ -580,7 +580,7 @@ describe("deploy: gateway install pre-check", () => {
       "POST /api/host/preflight": () => ({ preflight: next }),
       "POST /api/apply": () => ({ dry_run: false, install: true, wrote: [], order: [], diff: "" }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     const install = await screen.findByRole("button", { name: /安装到网关/ });
     await waitFor(() => expect(install).toBeDisabled());
     expect(screen.getByTestId("install-preflight-reason")).toHaveTextContent("先点「安装前预检」");
@@ -662,7 +662,7 @@ describe("deploy: deployment records and withdraw", () => {
         leftovers: [],
       }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     const row = await screen.findByTestId("deployment-us");
     expect(row).toHaveTextContent("已安装");
     expect(row).toHaveTextContent("root@198.51.100.40:2222");
@@ -711,7 +711,7 @@ describe("deploy: deployment records and withdraw", () => {
           leftovers: ["file /etc/sysctl.d/99-meridian.conf (changed since the install: kept, check it by hand)"],
         }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("deployment-us")).getByTestId("withdraw-us"));
     await userEvent.click(await screen.findByTestId("withdraw-plan"));
     await screen.findByTestId("withdraw-plan-view");
@@ -730,7 +730,7 @@ describe("deploy: deployment records and withdraw", () => {
       "POST /api/provision/withdraw/plan": () =>
         reply(409, { code: "withdraw_refused", reason: "manifest_other", owner: "jp dep-7 srv-2", error: "服务器上的清单属于另一个节点或另一个面板部署：不撤回别人的安装" }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("deployment-us")).getByTestId("withdraw-us"));
     await userEvent.click(await screen.findByTestId("withdraw-plan"));
     const refused = await screen.findByTestId("withdraw-refused");
@@ -754,7 +754,7 @@ describe("deploy: deployment records and withdraw", () => {
       }),
       "POST /api/provision/withdraw/plan": () => ({ plan: withdrawPlanOf({ mode: "journal", items: ["remove file /etc/wireguard/m07.conf"] }) }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     const fix = await screen.findByTestId("preflight-recovery");
     await userEvent.click(within(fix).getByRole("button", { name: /恢复中断的下发/ }));
@@ -776,7 +776,7 @@ describe("deploy: deployment records and withdraw", () => {
         }),
       "POST /api/host/withdraw": () => ({ status: "withdrawn", removed: { ...EMPTY_SET, interfaces: ["m02"] }, kept: ["转发保持关闭"], host: null }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     expect(await screen.findByTestId("gateway-guard-note")).toHaveTextContent("inet meridian_guard");
     expect(screen.getByTestId("gateway-guard-note")).toHaveTextContent("局域网经这台网关的转发继续被拒绝");
     expect(screen.getByTestId("gateway-kept")).toHaveTextContent("meridian-guard.nft");
@@ -832,7 +832,7 @@ describe("deploy: managed sysctl after an install", () => {
         },
       }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(await screen.findByRole("button", { name: /安装到网关/ }));
     await confirmModal("安装");
     const rep = await screen.findByTestId("sysctl-report");
@@ -869,7 +869,7 @@ describe("deploy: managed sysctl after an install", () => {
         },
       }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(await screen.findByRole("button", { name: /安装到网关/ }));
     await confirmModal("安装");
     const rep = await screen.findByTestId("sysctl-report");
@@ -917,7 +917,7 @@ describe("ssh rate limiting", () => {
       "GET /api/servers": () => ({ servers: [server({ id: "srv-rl2", name: "美国机", address: "198.51.100.40" })] }),
       "POST /api/provision/preflight": () => reply(503, { error: limitedMsg, code: "ssh_rate_limited", retry_after: 120 }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     expect(await screen.findByText("服务器暂时拒绝面板的来源地址（限速），稍后再试")).toBeInTheDocument();
     expect(screen.getByTestId("rate-limit-note")).toHaveTextContent(/1[0-2]\d 秒内面板不会再连接/);

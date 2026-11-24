@@ -11,16 +11,16 @@ import { deployPendingNodes } from "./automatic_deploy";
 // page); it uses the shared helpers of ui.tsx as they are.
 
 import { Alert, Button, Collapse, Space, Tag, Typography } from "antd";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
 import { VerifyGroup } from "./DeployVerifyGroup";
 import { PreflightReport } from "./Preflight";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { href } from "./state";
-import type { DeployPhase, DeployRun, DeploySkip, DeployStep, DeployView, MTUChange, PreflightFinding } from "./types";
+import type { DeployPhase, DeployPlanStep, DeployRun, DeploySkip, DeployStep, DeployView, MTUChange, PreflightFinding } from "./types";
 import { roleLabel } from "./types";
-import {
+import { formatAbsolute,
   ApiErrorAlert,
   DataTable,
   DataView,
@@ -487,7 +487,7 @@ function CurrentStep({
           style={{ marginBottom: 8 }}
           data-testid="deploy-wait"
           message={`服务器暂时拒绝面板的来源地址（限速）：${wait} 秒后可以重试`}
-          description={`面板在 ${st.retry_at ? new Date(st.retry_at).toLocaleTimeString() : "那之前"} 之前不会再连接这台服务器。这不是密码、密钥或指纹的问题；连续尝试会让限速时间变长。`}
+          description={`面板在 ${st.retry_at ? formatAbsolute(new Date(st.retry_at)).slice(11) : "那之前"} 之前不会再连接这台服务器。这不是密码、密钥或指纹的问题；连续尝试会让限速时间变长。`}
         />
       ) : null}
       <Space wrap>
@@ -570,6 +570,67 @@ function RunView({
   const done = run.steps.filter((s) => s.phase === "done").length;
   const installSteps = run.steps.filter((s) => !s.verify_only);
   const verifySteps = run.steps.filter((s) => s.verify_only);
+  const stepsTable = (
+      <DataTable
+        size="small"
+        rowKey="node_id"
+        pageSize={50}
+        dataSource={installSteps}
+        onRow={(s) => ({ "data-testid": `deploy-step-${s.node_id}` }) as React.HTMLAttributes<HTMLElement>}
+        columns={[
+          { title: "#", kind: "fixed", width: 48, render: (_, s) => s.position },
+          {
+            title: "节点",
+            kind: "flex",
+            width: 200,
+            card: "title",
+            render: (_, s) => (
+              <Space size={4} wrap>
+                <Typography.Text strong={s.current}>{s.node_name || s.node_id}</Typography.Text>
+                <span className="muted">{roleText(s.role)}</span>
+              </Space>
+            ),
+          },
+          { title: "状态", kind: "flex", width: 210, render: (_, s) => <PhaseTag st={s} /> },
+          {
+            title: "说明",
+            kind: "flex",
+            width: 320,
+            render: (_, s) => (
+              <>
+                <span>{s.outcome && s.outcome !== "not_started" ? (OUTCOME[s.outcome] ?? s.outcome) : s.reason}</span>
+                {s.verify_diff ? (
+                  <div data-testid={`deploy-verify-diff-${s.node_id}`}>
+                    <StatusTag kind="attention">核对发现记录不同</StatusTag>
+                    <Note inline>{s.verify_diff}：原来只需核对，现在按顺序安装，轮到它时要你确认</Note>
+                  </div>
+                ) : null}
+                {s.skip ? (
+                  <div data-testid={`deploy-skipped-${s.node_id}`} style={{ overflowWrap: "anywhere" }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      跳过（{SKIP_KIND[s.skip.kind] ?? s.skip.kind}）：{s.skip.reason}
+                    </Typography.Text>
+                    {s.can_unskip ? (
+                      <div>
+                        <Button size="small" onClick={() => onUnskip(s)} loading={busy === `unskip:${s.node_id}`} disabled={!!busy || !!run.in_flight} data-testid={`deploy-unskip-${s.node_id}`}>
+                          回到这一台
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {s.waiting_for && s.waiting_for.length > 0 ? (
+                  <div data-testid={`deploy-waiting-${s.node_id}`}>
+                    <Note inline>等 {namesOf(run, s.waiting_for)}（已跳过）：它依赖被跳过的节点，那台装好之前不会轮到它</Note>
+                  </div>
+                ) : null}
+                {s.phase === "done" ? <HealthView st={s} /> : <Warnings items={s.current ? s.warnings : undefined} />}
+              </>
+            ),
+          },
+        ]}
+      />
+  );
   return (
     <div data-testid="deploy-run">
       <Space wrap style={{ marginBottom: 8 }}>
@@ -632,65 +693,16 @@ function RunView({
           按顺序安装（{installSteps.length}）
         </Typography.Title>
       ) : null}
-      <DataTable
-        size="small"
-        rowKey="node_id"
-        pageSize={50}
-        dataSource={installSteps}
-        onRow={(s) => ({ "data-testid": `deploy-step-${s.node_id}` }) as React.HTMLAttributes<HTMLElement>}
-        columns={[
-          { title: "#", kind: "fixed", width: 48, render: (_, s) => s.position },
-          {
-            title: "节点",
-            kind: "flex",
-            width: 200,
-            card: "title",
-            render: (_, s) => (
-              <Space size={4} wrap>
-                <Typography.Text strong={s.current}>{s.node_name || s.node_id}</Typography.Text>
-                <span className="muted">{roleText(s.role)}</span>
-              </Space>
-            ),
-          },
-          { title: "状态", kind: "flex", width: 210, render: (_, s) => <PhaseTag st={s} /> },
-          {
-            title: "说明",
-            kind: "flex",
-            width: 320,
-            render: (_, s) => (
-              <>
-                <span>{s.outcome && s.outcome !== "not_started" ? (OUTCOME[s.outcome] ?? s.outcome) : s.reason}</span>
-                {s.verify_diff ? (
-                  <div data-testid={`deploy-verify-diff-${s.node_id}`}>
-                    <StatusTag kind="attention">核对发现记录不同</StatusTag>
-                    <Note inline>{s.verify_diff}：原来只需核对，现在按顺序安装，轮到它时要你确认</Note>
-                  </div>
-                ) : null}
-                {s.skip ? (
-                  <div data-testid={`deploy-skipped-${s.node_id}`} style={{ overflowWrap: "anywhere" }}>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      跳过（{SKIP_KIND[s.skip.kind] ?? s.skip.kind}）：{s.skip.reason}
-                    </Typography.Text>
-                    {s.can_unskip ? (
-                      <div>
-                        <Button size="small" onClick={() => onUnskip(s)} loading={busy === `unskip:${s.node_id}`} disabled={!!busy || !!run.in_flight} data-testid={`deploy-unskip-${s.node_id}`}>
-                          回到这一台
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                {s.waiting_for && s.waiting_for.length > 0 ? (
-                  <div data-testid={`deploy-waiting-${s.node_id}`}>
-                    <Note inline>等 {namesOf(run, s.waiting_for)}（已跳过）：它依赖被跳过的节点，那台装好之前不会轮到它</Note>
-                  </div>
-                ) : null}
-                {s.phase === "done" ? <HealthView st={s} /> : <Warnings items={s.current ? s.warnings : undefined} />}
-              </>
-            ),
-          },
-        ]}
-      />
+      {/* A finished run is history: its conclusion above, the per-node steps folded. */}
+      {run.state === "done" ? (
+        <Collapse
+          size="small"
+          data-testid="deploy-done-steps"
+          items={[{ key: "steps", label: `各节点的安装步骤（${installSteps.length}）`, forceRender: true, children: stepsTable }]}
+        />
+      ) : (
+        stepsTable
+      )}
       {open && cur ? (
         <ErrorBoundary>
           <CurrentStep run={run} st={cur} busy={busy} onPreflight={() => onPreflight(cur)} onInstall={() => onInstall(cur)} onSkip={() => onSkip(cur)} />
@@ -751,7 +763,27 @@ export function NodeBlockers({ blockers }: { blockers?: PreflightFinding[] }) {
   );
 }
 
-export function DeploymentGuide({ onChanged, header, onLinkChanged }: { onChanged?: () => void; header?: ReactNode; onLinkChanged?: (changes: MTUChange[]) => void }) {
+/** The automatic deployment as the page's main action (部署 puts it in its header). */
+export interface AutoDeployControl {
+  ready: boolean;
+  disabled: boolean;
+  loading: boolean;
+  /** The last action of the guide failed: its error is shown inside the guide. */
+  failed: boolean;
+  /** Names of the nodes this deployment installs, and of those it only verifies. */
+  installs: string[];
+  verifies: string[];
+  start: () => void;
+  reload: () => void;
+}
+
+export function DeploymentGuide({ onChanged, header, onLinkChanged, onAuto }: {
+  onChanged?: () => void;
+  header?: ReactNode;
+  onLinkChanged?: (changes: MTUChange[]) => void;
+  /** Given: the page shows the automatic deployment button; the guide does not. */
+  onAuto?: (c: AutoDeployControl) => void;
+}) {
   const progress = useOptionalAutoDeployProgress();
   const state = useApi(() => api.getDeploy(), []);
   const act = useAction();
@@ -827,17 +859,26 @@ export function DeploymentGuide({ onChanged, header, onLinkChanged }: { onChange
 
   const open = run && (run.state === "active" || run.state === "stopped");
   const autoReady = !!(open || view?.plan?.steps.length);
-  return (
-    <Section title="按顺序部署待变更节点" id="guide">
-      <div data-testid="deploy-guide">
-        {header}
-        {progress ? <AutoDeployProgress /> : null}
-        <Note>{"可逐台确认，或启动自动检测并部署。"}{" "}
-          顺序：挂在中继出口后面的出口 → 出口 → 备用枢纽 → 主枢纽 → 中继 → 网关；管理通道经过别的节点时，被经过的节点排在后面。每一步都是下面「远端节点」和「安装到本机」里的同一套预检和下发，只是按顺序串起来。只需核对、不会安装任何东西的节点单独列出，不受这个顺序约束。一台被预检阻断或连不上时，可以跳过它继续不依赖它的节点（同层的出口、其它中继）；依赖它的节点（它后面的枢纽、中继和网关，它转发的中继出口，经它管理的节点）继续等待。结果不明或失败的一步不能跳过，要先重新核对。
-        </Note>
-        <Button disabled={!view || !autoReady || !!act.busy || inFlight || progress?.progress?.phase === "running"} loading={act.busy === "auto"} onClick={() => confirm({
+  // What the automatic deployment will touch: the open run's unfinished steps, else the plan.
+  // Skipped steps and those waiting for a skipped one are not run now.
+  const targets = (open ? run!.steps.filter((x) => x.phase !== "done" && !x.skip && !x.waiting_for?.length) : view?.plan?.steps ?? []) as DeployPlanStep[];
+  const installTargets = targets.filter((x) => !x.verify_only);
+  const installs = installTargets.map((x) => x.node_name || x.node_id);
+  const verifies = targets.filter((x) => x.verify_only).map((x) => x.node_name || x.node_id);
+  const autoDisabled = !view || !autoReady || !!run?.stale || targets.length === 0 || !!act.busy || inFlight || progress?.progress?.phase === "running";
+  const autoStart = () => {
+    const confirmedIds = installTargets.map((x) => x.node_id);
+    confirm({
           title: "自动预检并部署待变更节点？",
-          consequence: "按当前部署计划依次预检和下发，可能短暂中断相关路径。必要时会采用预检支持的较低 MTU。若预检阻断、拓扑变化或下发失败，将停在对应节点。",
+          consequence: (
+            <div data-testid="deploy-auto-confirm">
+              <p>
+                {installs.length ? `将安装：${installs.join("、")}。` : "没有要安装的节点。"}
+                {verifies.length ? `只核对、不安装：${verifies.join("、")}。` : ""}
+              </p>
+              <p>按这个顺序依次预检和下发，可能短暂中断相关路径。必要时会采用预检支持的较低 MTU。若预检阻断、拓扑变化或下发失败，将停在对应节点。名单以外的节点不会安装：计划里多出节点时会停下来，请你重新确认。</p>
+            </div>
+          ),
           okText: "开始自动部署",
           mobileFull: true,
           onOk: () => {
@@ -846,15 +887,39 @@ export function DeploymentGuide({ onChanged, header, onLinkChanged }: { onChange
                 await progress.track((onUpdate, onRepair) => deployPendingNodes(
                   next => { apply(next); onUpdate(next); },
                   onLinkChanged ? changes => { onLinkChanged(changes); onRepair(changes); } : undefined,
+                  confirmedIds,
                 ), true);
                 void state.reload();
-              } else await deployPendingNodes(apply, onLinkChanged);
+              } else await deployPendingNodes(apply, onLinkChanged, confirmedIds);
             }, "auto", () => void state.reload());
             if (progress) { void start(); return; }
             return start();
           },
-        })}>自动检测并部署</Button>
-        {view && !autoReady ? <Typography.Text type="secondary" style={{ marginInlineStart: 8 }}>当前没有待部署节点</Typography.Text> : null}
+        });
+  };
+  const startRef = useRef(autoStart);
+  startRef.current = autoStart;
+  const autoLoading = act.busy === "auto";
+  // An action that failed, or the guide that could not be read: either error shows inside the guide.
+  const failed = !!act.error || !!state.error;
+  useEffect(() => {
+    onAuto?.({ ready: autoReady, disabled: autoDisabled, loading: autoLoading, failed, installs, verifies, start: () => startRef.current(), reload: () => void state.reload() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onAuto, autoReady, autoDisabled, autoLoading, failed, installs.join("\n"), verifies.join("\n")]);
+  return (
+    <Section title="按顺序部署待变更节点" id="guide">
+      <div data-testid="deploy-guide">
+        {header}
+        {progress ? <AutoDeployProgress /> : null}
+        <Note>{"可逐台确认，或启动自动检测并部署。"}{" "}
+          顺序：挂在中继出口后面的出口 → 出口 → 备用枢纽 → 主枢纽 → 中继 → 网关；管理通道经过别的节点时，被经过的节点排在后面。每一步都是下面「远端节点」和「安装到本机」里的同一套预检和下发，只是按顺序串起来。只需核对、不会安装任何东西的节点单独列出，不受这个顺序约束。一台被预检阻断或连不上时，可以跳过它继续不依赖它的节点（同层的出口、其它中继）；依赖它的节点（它后面的枢纽、中继和网关，它转发的中继出口，经它管理的节点）继续等待。结果不明或失败的一步不能跳过，要先重新核对。
+        </Note>
+        {onAuto ? null : (
+          <Button disabled={autoDisabled} loading={act.busy === "auto"} onClick={autoStart}>
+            自动检测并部署
+          </Button>
+        )}
+        {view && !autoReady && !onAuto ? <Typography.Text type="secondary" style={{ marginInlineStart: 8 }}>当前没有待部署节点</Typography.Text> : null}
         <ApiErrorAlert error={act.error} onClose={act.clear} />
         <DataView state={state} rows={4}>
           {(v) => (

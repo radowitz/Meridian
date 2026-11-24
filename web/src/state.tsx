@@ -56,6 +56,8 @@ interface RouterCtx {
   /** Navigate to a hash (e.g. href("servers", id)); asks first when a guard is active. */
   navigate: (to: string, opts?: { replace?: boolean }) => void;
   registerGuard: (g: Guard) => () => void;
+  /** Runs `action` at once, or after the operator confirms leaving unsaved changes. */
+  guarded: (action: () => void, okText?: string) => void;
 }
 
 const RouterContext = createContext<RouterCtx | null>(null);
@@ -75,13 +77,24 @@ export function RouterProvider({ children }: { children: ReactNode }) {
     return null;
   }, []);
 
+  // Another page starts at its top, unless the link names a section to show.
+  const page = useRef(route.page);
+  const show = useCallback((hash: string) => {
+    const next = parseHash(hash);
+    // 使用说明 opens over the page it explains: keep that page where it was.
+    const helpToggle = next.page === "help" || page.current === "help";
+    if (next.page !== page.current && !helpToggle && !next.query.has("section")) window.scrollTo?.(0, 0);
+    page.current = next.page;
+    setRoute(next);
+  }, []);
+
   const go = useCallback((to: string, replace?: boolean) => {
     const target = to.startsWith("#") ? to : `#${to}`;
     current.current = target;
     if (replace) window.history.replaceState(null, "", target);
     else if (window.location.hash !== target) window.history.pushState(null, "", target);
-    setRoute(parseHash(target));
-  }, []);
+    show(target);
+  }, [show]);
 
   const navigate = useCallback(
     (to: string, opts?: { replace?: boolean }) => {
@@ -117,7 +130,7 @@ export function RouterProvider({ children }: { children: ReactNode }) {
       const msg = activeGuard();
       if (!msg) {
         current.current = next;
-        setRoute(parseHash(next));
+        show(next);
         return;
       }
       const target = next;
@@ -150,7 +163,26 @@ export function RouterProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("popstate", onChange);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
-  }, [activeGuard, go, modal]);
+  }, [activeGuard, go, modal, show]);
+
+  const guarded = useCallback(
+    (action: () => void, okText = "放弃修改并继续") => {
+      const msg = activeGuard();
+      if (!msg) return action();
+      modal.confirm({
+        title: "有未保存的修改",
+        content: msg,
+        okText,
+        okButtonProps: { danger: true },
+        cancelText: "取消",
+        onOk: () => {
+          guards.current.clear();
+          action();
+        },
+      });
+    },
+    [activeGuard, modal],
+  );
 
   const registerGuard = useCallback((g: Guard) => {
     guards.current.add(g);
@@ -159,7 +191,7 @@ export function RouterProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const value = useMemo(() => ({ route, navigate, registerGuard }), [route, navigate, registerGuard]);
+  const value = useMemo(() => ({ route, navigate, registerGuard, guarded }), [route, navigate, registerGuard, guarded]);
   return <RouterContext.Provider value={value}>{children}</RouterContext.Provider>;
 }
 
@@ -186,10 +218,11 @@ export function useRouter(): RouterCtx {
  * while `dirty` is true.
  */
 export function useUnsavedGuard(dirty: boolean, message = "有未保存的修改，离开后会丢失。") {
-  const { registerGuard } = useRouter();
+  // Outside a router (a component shown on its own) there is nothing to leave.
+  const registerGuard = useContext(RouterContext)?.registerGuard;
   const ref = useRef({ dirty, message });
   ref.current = { dirty, message };
-  useEffect(() => registerGuard(() => (ref.current.dirty ? ref.current.message : null)), [registerGuard]);
+  useEffect(() => registerGuard?.(() => (ref.current.dirty ? ref.current.message : null)), [registerGuard]);
 }
 
 // ============================================================ global status ===
@@ -471,6 +504,11 @@ export function TopologyProvider({ children }: { children: ReactNode }) {
     [topo, error, dirty, saving, issues, paths, rulesApply, save, validate, reload, applyServerChange],
   );
   return <TopologyContext.Provider value={value}>{children}</TopologyContext.Provider>;
+}
+
+/** The topology document when a provider is mounted (names for display only), else null. */
+export function useTopologyDocIfLoaded(): TopologyCtx | null {
+  return useContext(TopologyContext);
 }
 
 export function useTopologyDoc(): TopologyCtx {

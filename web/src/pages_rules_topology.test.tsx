@@ -462,7 +462,7 @@ describe("ports", () => {
       "GET /api/servers": () => ({ servers: [server({ id: "srv-2", name: "美国机", address: "198.51.100.40" })] }),
       "POST /api/provision/preflight": () => ({ preflight: rec }),
     });
-    renderAt("#/deploy");
+    renderAt("#/deploy", { foldsOpen: true });
     await userEvent.click(within(await screen.findByTestId("remote-node-us")).getByRole("button", { name: /生成密钥并下发/ }));
     const fix = await screen.findByTestId("preflight-fix");
     expect(within(fix).getByRole("link", { name: /去拓扑修改：链路 hub-us 的「WireGuard 端口」/ })).toHaveAttribute("href", "#/topology/hub-us");

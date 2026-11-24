@@ -1,3 +1,4 @@
+import { formatAbsolute } from "./ui";
 // Real-time throughput on the overview: polls GET /api/traffic every second
 // while the page is visible, turns consecutive counter samples into rates
 // (a reset sample is a new baseline, never a rate) and shows the current
@@ -76,7 +77,7 @@ export function fmtRate(bps: number | null | undefined): { n: string; unit: stri
 /** A connection count; unknown (null/absent) is "—", never 0. */
 export const fmtCount = (n: number | null | undefined) => (typeof n === "number" ? String(n) : "—");
 
-const clock = (t: number) => new Date(t).toLocaleTimeString([], { hour12: false });
+const clock = (t: number) => formatAbsolute(new Date(t)).slice(11);
 
 function Rate({ id, bps }: { id: string; bps: number | null | undefined }) {
   const r = fmtRate(bps);
@@ -242,7 +243,7 @@ function TrafficUsage({ usage, since }: { usage: TrafficView["usage_bytes"]; sin
       <dt>{region === "domestic" ? "国内已用" : "国外已用"}</dt>
       <dd className="num" data-testid={`traffic-used-${region}`}>{fmtTrafficUsage(usage?.[region])}</dd>
       {usage?.[region] !== undefined ? <small className="muted">{since?.[region] ?
-        `起始采样 ${new Date(since[region]!).toLocaleString()}` : "历史累计 · 起点未知"}</small> : null}
+        `起始采样 ${formatAbsolute(new Date(since[region]!))}` : "历史累计 · 起点未知"}</small> : null}
     </div>)}
   </dl>;
 }

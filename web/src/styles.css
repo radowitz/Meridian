@@ -93,11 +93,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 }
 
 .brand { display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 18px; }
-.brand-mark {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; border-radius: 7px;
-  background: var(--m-accent); color: var(--m-on-accent); font-weight: 700; font-size: 15px; flex: none;
-}
+.brand-mark { display: block; width: 28px; height: 28px; border-radius: 7px; flex: none; }
 .brand-name { font-weight: 650; font-size: 16px; letter-spacing: 0.02em; color: var(--m-text); }
 .nav-menu { border-inline-end: none !important; padding: 0 8px 16px; }
 .nav-menu a { color: inherit; }
@@ -214,6 +210,12 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .ant-table-wrapper .status-tag.ant-tag > .anticon, .data-cards .status-tag.ant-tag > .anticon { display: none; }
 .ant-table-wrapper .status-tag.ant-tag::before, .data-cards .status-tag.ant-tag::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-inline-end: 6px; background: var(--m-bad); vertical-align: 1px; }
 .ant-table-wrapper .status-attention.ant-tag::before, .data-cards .status-attention.ant-tag::before { background: var(--m-warn); }
+.ant-table-wrapper .status-signoff.ant-tag::before, .data-cards .status-signoff.ant-tag::before,
+.ant-table-wrapper .status-pending.ant-tag::before, .data-cards .status-pending.ant-tag::before,
+.ant-table-wrapper .status-running.ant-tag::before, .data-cards .status-running.ant-tag::before { background: var(--m-accent); }
+.ant-table-wrapper .status-ok.ant-tag::before, .data-cards .status-ok.ant-tag::before { background: var(--m-ok); }
+.ant-table-wrapper .status-unverified.ant-tag::before, .data-cards .status-unverified.ant-tag::before,
+.ant-table-wrapper .status-neutral.ant-tag::before, .data-cards .status-neutral.ant-tag::before { background: var(--m-text-2); }
 .page-help-item + .page-help-item { margin-top: 10px; }
 .page-help-title { font-weight: 600; color: var(--m-text); }
 
@@ -246,6 +248,11 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .dns-flow li + li::before { content: "→ "; color: var(--m-accent); }
 .dns-overrides { margin-top: 16px; min-width: 0; max-width: 100%; }
 .dns-overrides > summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+/* Native folds read like <Fold>: a small chevron that turns when open. */
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "›"; display: inline-block; width: 1em; margin-inline-end: 4px; color: var(--m-text-2); transition: transform 0.15s ease; }
+details[open] > summary::before { transform: rotate(90deg); }
 @media (max-width: 767px) {
   .field-help-content { padding-inline: 8px; }
   .dns-page .ant-space, .dns-page .ant-space-item { min-width: 0; max-width: 100%; }
@@ -458,7 +465,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 /* -------------------------------------------------------------- unlock */
 
 .launcher-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
-.status-line { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; color: var(--muted, inherit); }
+.status-line { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; color: var(--m-text-2); }
 .service-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; }
 .job-progress { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--m-border); }
 .cat-chip {
@@ -541,7 +548,6 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .data-table .col-flex { white-space: normal; overflow-wrap: anywhere; word-break: normal; }
 .data-table .col-ellipsis { max-width: 0; }
 .data-table td.col-actions, .data-table th.col-actions { white-space: nowrap; text-align: right; background: var(--m-surface) !important; }
-.data-table th.col-actions { background: var(--m-surface-2) !important; }
 .data-table .ant-table-cell-fix-right-first::after, .data-table .ant-table-cell-fix-right-last::after { box-shadow: inset -10px 0 8px -8px var(--m-shadow-edge); }
 .data-table .ant-table-expanded-row > td { background: var(--m-surface-2); }
 .row-secondary { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 6px 24px; font-size: 13px; min-width: 0; }
@@ -1036,11 +1042,7 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .shell > .ant-layout { min-width: 0; }
 .brand { height: 68px; text-decoration: none; }
 .brand:focus-visible, .section-jumps a:focus-visible { outline: 2px solid var(--m-accent); outline-offset: -2px; }
-.brand-mark {
-  width: 33px; height: 33px; border-radius: 9px;
-  font-family: var(--m-mono); font-size: 17px;
-  box-shadow: 0 0 0 4px var(--m-accent-soft);
-}
+.brand-mark { width: 33px; height: 33px; border-radius: 9px; box-shadow: 0 0 0 4px var(--m-accent-soft); }
 .brand-name { font-size: 17px; letter-spacing: -.025em; }
 .nav-menu .ant-menu-item-group-title { padding-block: 10px 3px; font-size: 11px; color: var(--m-text-2); }
 .nav-menu .ant-menu-item { font-weight: 540; }
@@ -1115,13 +1117,6 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
   .topbar-right { gap: 2px; }
 }
 
-.doc-bar-bottom {
-  top: auto;
-  bottom: 0;
-  margin: 16px 0 0;
-  border: 1px solid var(--m-border);
-  border-radius: 8px;
-}
 .auto-deploy-progress { margin-block-end: 12px; }
 .auto-deploy-progress .ant-alert-description { overflow-wrap: anywhere; }
 .exit-node-main { min-width: 0; flex: 1 1 17rem; }
@@ -1130,8 +1125,6 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .traffic-inspect { min-height: 1.5em; font-variant-numeric: tabular-nums; }
 
 @media (max-width: 767px) {
-  .doc-bar-bottom { padding-bottom: max(8px, env(safe-area-inset-bottom)); gap: 8px; }
-  .doc-bar-bottom .ant-space { column-gap: 4px !important; }
   .auto-deploy-progress.ant-alert { flex-wrap: wrap; }
   .auto-deploy-progress .ant-alert-action { margin-inline-start: 0; }
   .mobile-full-confirm .ant-modal { width: 100% !important; max-width: 100%; margin: 0; top: 0; padding: 0; }
@@ -1231,7 +1224,6 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
   box-shadow: var(--m-elev-1);
 }
 .overview-workspace .tile, .tile-grid .tile { padding: 16px 18px; }
-.doc-bar-bottom { border-radius: var(--m-radius); }
 .ant-card { box-shadow: var(--m-elev-1); }
 
 /* Tables: one rounded bordered box, a quiet header, a soft row hover. */
@@ -1317,3 +1309,27 @@ code { font-size: 12px; background: var(--m-code-bg); padding: 1px 5px; border-r
 .page-tabs a:hover { color: var(--m-text); }
 .page-tabs a[aria-current="page"] { color: var(--m-accent); border-bottom-color: var(--m-accent); font-weight: 600; }
 .page-tabs a:focus-visible { outline: 2px solid var(--m-accent); outline-offset: -2px; border-radius: 6px 6px 0 0; }
+
+/* ---------------------------------------------------- deploy: status cards */
+.deploy-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+.deploy-stat {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  padding: 12px 14px; border: 1px solid var(--m-border); border-radius: var(--m-radius);
+  background: var(--m-surface); box-shadow: var(--m-elev-1); color: var(--m-text);
+}
+.deploy-stat:has(a:hover) { border-color: var(--m-accent); }
+.deploy-stat-label { font-size: 12.5px; color: var(--m-text-2); }
+.deploy-stat-label:hover { color: var(--m-accent); }
+/* The whole card opens its part: the label's link covers it. */
+.deploy-stat { position: relative; }
+.deploy-stat-label::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+.deploy-stat-value { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.deploy-stat-ok { color: var(--m-ok); }
+.deploy-stat-pending { color: var(--m-warn); }
+.deploy-stat-bad { color: var(--m-bad); }
+@media (max-width: 767px) { /* BREAKPOINT tablet */
+  .deploy-stats { grid-template-columns: 1fr; }
+}
+
+/* Save bar with nothing unsaved: one quiet line, no card. */
+.doc-bar.doc-bar-quiet { padding: 4px 0; background: none; border-color: transparent; box-shadow: none; margin-bottom: 12px; position: static; }

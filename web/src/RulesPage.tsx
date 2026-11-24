@@ -630,6 +630,7 @@ export default function RulesPage() {
     try {
       await api.retargetRules(mgroup, target);
       await doc.reload();
+      message.success("已改好这组规则的去向");
     } catch (e) {
       setRetargetErr(e instanceof api.ApiError ? e : new api.ApiError(0, {}));
     }
@@ -948,7 +949,6 @@ export default function RulesPage() {
   return (
     <Page
       title="分流规则"
-
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditing("new")}>
           添加规则

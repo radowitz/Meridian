@@ -243,12 +243,12 @@ export const JOURNAL_CLASS: Record<string, string> = {
 export const NEUTRAL_CLASSES = new Set(["rejected", "client_closed", "ended_unknown"]);
 
 /** A target name in plain words: direct / group / exit / reject. */
-export function targetText(t?: string): string {
+export function targetText(t?: string, nameOf?: (kind: "group" | "exit", id: string) => string | undefined): string {
   if (!t) return "—";
   if (t === "direct") return "直连";
   if (t === "reject") return "拒绝";
-  if (t.startsWith("group:")) return `地区组 ${t.slice(6)}`;
-  if (t.startsWith("exit:")) return `出口 ${t.slice(5)}`;
+  if (t.startsWith("group:")) return `地区组 ${nameOf?.("group", t.slice(6)) || t.slice(6)}`;
+  if (t.startsWith("exit:")) return `出口 ${nameOf?.("exit", t.slice(5)) || t.slice(5)}`;
   return t;
 }
 

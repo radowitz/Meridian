@@ -19,7 +19,7 @@ import { Alert, App as AntApp, Button, Input, InputNumber, Radio, Select, Space,
 import { useEffect, useRef, useState, type HTMLAttributes } from "react";
 import * as api from "./api";
 import type { ApiError } from "./api";
-import { href } from "./state";
+import { href, useUnsavedGuard } from "./state";
 import type { DNSAccountView, DNSCheckResult, DNSConfigState, DNSExitRow, DNSPathRow, DNSResolverStatus, DNSView, ExitDNSUpstream } from "./types";
 import {
   ApiErrorAlert,
@@ -41,6 +41,7 @@ import {
   type FactItem,
   type StatusKind,
   Note,
+  useConfirmDanger,
 } from "./ui";
 
 export const TRANSPORT: Record<string, string> = { plain: "明文", dot: "DoT", doh: "DoH", tunnel: "隧道内明文" };
@@ -273,6 +274,7 @@ function UpstreamFields({
       <Help title="上游填写方法"><UpstreamHelp proto={proto} masked={masked} /></Help>
       <Input
         aria-label="上游地址"
+        addonBefore="地址"
         placeholder="上游 IP 地址，最多两个，用逗号分隔（出口直接连接，不先解析名字）"
         value={addrText}
         onChange={(e) => {
@@ -282,14 +284,15 @@ function UpstreamFields({
       />
       <Input
         aria-label="TLS 主机名"
+        addonBefore="主机名"
         placeholder="证书上的主机名，账户标签写成 {account}，例如 {account}.dns.example.net"
         value={u.tls_host_name ?? ""}
         onChange={(e) => setU({ ...u, tls_host_name: e.target.value.trim() })}
       />
       {proto === "doh" ? (
-        <Input aria-label="DoH 路径" placeholder="URL 路径，例如 /dns-query 或 /{account}" value={u.path ?? ""} onChange={(e) => setU({ ...u, path: e.target.value.trim() })} />
+        <Input aria-label="DoH 路径" addonBefore="路径" placeholder="URL 路径，例如 /dns-query 或 /{account}" value={u.path ?? ""} onChange={(e) => setU({ ...u, path: e.target.value.trim() })} />
       ) : null}
-      <InputNumber aria-label="端口" placeholder={proto === "doh" ? "443" : "853"} min={1} max={65535} value={u.port || null} onChange={(v) => setU({ ...u, port: v ?? undefined })} />
+      <InputNumber aria-label="端口" addonBefore="端口" placeholder={proto === "doh" ? "443" : "853"} min={1} max={65535} value={u.port || null} onChange={(v) => setU({ ...u, port: v ?? undefined })} />
       <Space wrap style={{ maxWidth: "100%" }}>
         <Select
           aria-label="账户标识"
@@ -413,6 +416,9 @@ function UpstreamForm({
   const g = view.global_upstream;
   const [mode, setMode] = useState<"builtin" | Proto>(g ? (g.protocol as Proto) : "builtin");
   const [u, setU] = useState<ExitDNSUpstream>(g ?? EMPTY);
+  // Edited but not saved: leaving the page or locking the panel asks first.
+  const [touched, setTouched] = useState(false);
+  useUnsavedGuard(touched, "解析上游有未保存的修改，离开后会丢失。");
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!setup) return;
@@ -428,6 +434,7 @@ function UpstreamForm({
     act.run(async () => {
       const r = await api.putDNSUpstream({ global });
       message.success(r.note);
+      setTouched(false);
       onSaved({ changed: r.changed_exits ?? [], note: r.note });
     }, "save");
   return (
@@ -438,14 +445,29 @@ function UpstreamForm({
           aria-label="出口解析上游"
           value={mode}
           style={{ width: 280, maxWidth: "100%" }}
-          onChange={(m) => setMode(m)}
+          onChange={(m) => {
+            setMode(m);
+            setTouched(true);
+          }}
           options={[
             { value: "builtin", label: "内置公共解析器（明文，默认）" },
             { value: "dot", label: "DoT（加密，证书主机名校验）" },
             { value: "doh", label: "DoH（加密，证书主机名校验）" },
           ]}
         />
-        {mode !== "builtin" ? <UpstreamFields proto={mode} u={u} setU={setU} accounts={accounts} reloadAccounts={reloadAccounts} masked={view.masked} /> : null}
+        {mode !== "builtin" ? (
+          <UpstreamFields
+            proto={mode}
+            u={u}
+            setU={(x) => {
+              setU(x);
+              setTouched(true);
+            }}
+            accounts={accounts}
+            reloadAccounts={reloadAccounts}
+            masked={view.masked}
+          />
+        ) : null}
         <Space wrap>
           <Button type="primary" loading={act.busy === "save"} onClick={() => void save(mode === "builtin" ? null : upstreamBody(mode, u))}>
             保存到拓扑
@@ -498,7 +520,7 @@ function ExitEditor({
   const name = exit.name || exit.id;
   const body = (): ExitDNSUpstream | null => (mode === "inherit" ? null : mode === "builtin" ? { protocol: "builtin" } : upstreamBody(proto, u));
   return (
-    <div className="dns-exit-editor" data-testid={`dns-exit-editor-${exit.id}`} style={{ border: "1px solid var(--ant-color-border, #d9d9d9)", borderRadius: 8, padding: 12, marginTop: 12, maxWidth: "100%" }}>
+    <div className="dns-exit-editor" data-testid={`dns-exit-editor-${exit.id}`} style={{ border: "1px solid var(--m-border)", borderRadius: 8, padding: 12, marginTop: 12, maxWidth: "100%" }}>
       <Space direction="vertical" style={{ width: "100%" }}>
         <Typography.Text strong>{`出口 ${name} 的解析上游`}</Typography.Text>
         <Radio.Group aria-label={`出口 ${name} 的解析上游来源`} value={mode} onChange={(e) => setMode(e.target.value as ExitMode)}>
@@ -721,6 +743,7 @@ function PendingNote({ saved, v, onClose }: { saved: SavedUpstream; v: DNSView; 
 
 function Accounts({ accounts, reload }: { accounts: DNSAccountView[]; reload: () => void }) {
   const act = useAction();
+  const confirm = useConfirmDanger();
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   return (
@@ -731,7 +754,14 @@ function Accounts({ accounts, reload }: { accounts: DNSAccountView[]; reload: ()
             <Typography.Text strong>{a.name}</Typography.Text>
             <span className="status-text">值已保存，不再显示</span>
             {a.used_by.length ? <Typography.Text type="secondary">用于：{a.used_by.map((r) => r.name || r.id).join("、")}</Typography.Text> : null}
-            <Button size="small" danger disabled={a.used_by.length > 0} loading={act.busy === `del:${a.id}`} onClick={() => act.run(async () => (await api.deleteDNSAccount(a.id), reload()), `del:${a.id}`)}>
+            <Button size="small" danger disabled={a.used_by.length > 0} loading={act.busy === `del:${a.id}`} onClick={() =>
+                confirm({
+                  title: `删除账户标识「${a.name}」？`,
+                  consequence: "保存的值会被删除，不能恢复；之后要用时需要重新填写。",
+                  okText: "删除",
+                  onOk: () => act.run(async () => (await api.deleteDNSAccount(a.id), reload()), `del:${a.id}`),
+                })
+              }>
               删除
             </Button>
           </Space>

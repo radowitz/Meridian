@@ -1,3 +1,4 @@
+import { inactiveObjects, isCurrent } from "./link_scope";
 import {
   Help,
   Note,
@@ -117,8 +118,7 @@ function Current({ summary, w, gapAfterS, unobserved = [] }: { summary: LinkLogS
   // A target removed from the active rules keeps its history in the ledger,
   // but is no longer a current measurement. Do not present that old reading
   // as an unknown current fault; the scope section explains the exclusion.
-  const ignored = new Set(unobserved);
-  const include = (o: LinkLogObjectState) => !ignored.has(`${o.kind}|${o.id}`);
+  const include = (o: LinkLogObjectState) => isCurrent(o, unobserved);
   const abnormal = summary.abnormal.filter(include);
   const unknown = summary.unknown.filter(include);
   const flapping = summary.flapping.filter(include);
@@ -495,7 +495,7 @@ function Journal({ v, w }: { v: LinkLogView; w: Words }) {
             <Skeleton active paragraph={{ rows: 3 }} />
           )
         ) : cur.data.available && cur.data.summary ? (
-          <Current summary={cur.data.summary} w={w} gapAfterS={v.timing.gap_after_s} unobserved={v.scope.unobserved.filter(o => o.class === "sniff_target" || o.class === "external_exit").map(o => `${o.kind}|${o.id}`)} />
+          <Current summary={cur.data.summary} w={w} gapAfterS={v.timing.gap_after_s} unobserved={inactiveObjects(v.scope)} />
         ) : (
           <LogEmpty id="link-log-current" state={cur.data.code ?? "unavailable"} title="读不到当前状态">
             {cur.data.message || "采集服务没有回答。"}

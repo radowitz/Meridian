@@ -14,6 +14,15 @@ import (
 	"time"
 )
 
+// Where device names come from, outside the panel's own data: reverse DNS
+// through the system resolver and the usual dnsmasq / OpenWrt lease files.
+// Tests replace both (device_names_hermetic_test.go) so an answer never
+// depends on the machine or network the tests run on.
+var (
+	lookupDeviceAddr = net.DefaultResolver.LookupAddr
+	dhcpLeasePaths   = []string{"/var/lib/misc/dnsmasq.leases", "/tmp/dhcp.leases"}
+)
+
 type cachedDeviceName struct {
 	name    string
 	expires time.Time
@@ -99,7 +108,7 @@ func (c *deviceNameCache) lookup(ctx context.Context, addresses []string) map[st
 		}
 		go func(address string) {
 			defer func() { <-c.slots }()
-			ptr, _ := net.DefaultResolver.LookupAddr(ctx, address)
+			ptr, _ := lookupDeviceAddr(ctx, address)
 			name := ""
 			for _, candidate := range ptr {
 				if name = deviceHostname(candidate); name != "" {
@@ -162,7 +171,7 @@ func deviceHostname(name string) string {
 }
 
 func readDHCPNames(wanted map[string]struct{}, names map[string]string, now time.Time) {
-	paths := []string{"/var/lib/misc/dnsmasq.leases", "/tmp/dhcp.leases"}
+	paths := dhcpLeasePaths
 	if path := os.Getenv("MERIDIAN_DHCP_LEASES_FILE"); path != "" {
 		paths = []string{path}
 	}

@@ -103,6 +103,8 @@ describe("overview", () => {
         hub_state: hubState({ mesh_legs: [{ plan: "p", exit: "hk-2", beat: 1, active: "direct", reason: "stable", switched: 0, direct_loss: 0, direct_rtt: 38, mesh_loss: 0, mesh_rtt: 0, result: "ok" }] }),
       }),
       "GET /api/link-log/current": () => ({ available: true, summary: { at: "2026-11-17T01:00:00Z", abnormal: [], unknown: [], flapping: [], objects: 6 } }),
+      // The exits card shows the gateway's measured latency of the exit in use, like 出口.
+      "GET /api/exits/latency": () => ({ available: true, running: false, rows: [{ exit_id: "hk-2", name: "香港二号", scope: "exit_resolver", state: "ok", rtt_ms: 38, sent: 3, received: 3, measured_at: new Date().toISOString(), stale: false }] }),
       "GET /api/remote-access": () => ({ settings: { enabled: false }, devices: [] }),
       "GET /api/leakcheck": () => ({ items: [] }),
     });
@@ -117,7 +119,7 @@ describe("overview", () => {
     expect(Array.from(leak.children).map((c) => c.className.split(" ")[0])).toEqual(["ov-label", "status-text"]);
     for (const f of Array.from(status.children)) expect(f).toHaveClass("ov-fact");
     expect(await screen.findByTestId("groups-tile-actual-g0")).toHaveTextContent("香港二号");
-    expect(screen.getByTestId("groups-tile-row-g0")).toHaveTextContent("38 ms");
+    expect(await within(screen.getByTestId("groups-tile-row-g0")).findByText(/38\.0 ms/)).toBeInTheDocument();
     expect(await screen.findByTestId("ov-tunnels")).toHaveTextContent("全部正常 · 6 条");
     expect(screen.queryByTestId("ov-remote")).toBeNull();
     // Second sample gives the first rate: the chart is live with current values.
@@ -250,5 +252,24 @@ describe("traffic chart freshness", () => {
     expect(screen.getByTestId("traffic-chart")).toHaveAttribute("data-state", "stale");
     expect(screen.getByTestId("traffic-freshness")).toHaveTextContent("过期");
     expect(down()).toHaveTextContent("—");
+  });
+
+  it("reads an old hub state once and ignores a self-check target that left the rules", async () => {
+    const stale = { groups: [group({ id: "g0", name: "组0", actual: { state: "stale", code: "read_old", active: "", alert: false } as never })], default_group: "g0", thresholds: THRESHOLDS, hub_state: hubState() };
+    const fresh = { ...stale, groups: [group({ id: "g0", name: "组0", actual: actualOK("hk-2") })], hub_state: hubState({ last_read: { read_at: new Date().toISOString(), ok: true, clock_skew_sec: 0, ignored: [] } }) };
+    const api = fakeApi({
+      "GET /api/status": () => panelStatus({ installOver: { installed_version: 7 } }),
+      "GET /api/topology": () => topology(),
+      "GET /api/region-groups": () => stale,
+      "POST /api/region-groups/runtime/refresh": () => fresh,
+      "GET /api/link-log/current": () => ({ available: true, summary: { at: "2026-11-17T01:00:00Z", abnormal: [], flapping: [], objects: 6,
+        unknown: [{ class: "sniff_target", kind: "sniff_target", id: "group:old", label: "自检目标：地区组 old", state: "check_ok", stale: true, level: "ok" }] } }),
+      "GET /api/link-log": () => ({ scope: { unobserved: [{ class: "sniff_target", kind: "sniff_target", id: "group:old" }] } }),
+    });
+    renderAt("#/");
+    expect(await screen.findByTestId("groups-tile-actual-g0")).toHaveTextContent("香港二号");
+    expect(api.find("POST /api/region-groups/runtime/refresh")).toHaveLength(1);
+    // The old target is history (链路日志 says so), not an unknown tunnel, and not counted.
+    expect(await screen.findByTestId("ov-tunnels")).toHaveTextContent("全部正常 · 5 条");
   });
 });

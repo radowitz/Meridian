@@ -94,7 +94,7 @@ export function AutoDeployProgress({ onResume }: { onResume?: () => void }) {
     action={value.phase === "stopped" ? <Space wrap>
       {needsServer && server ? <Link to={`${href("servers", server)}?from=deploy`}>打开服务器</Link> : null}
       {value.saved && onResume && !run?.stale ? <Button size="small" onClick={onResume}>继续自动部署</Button> : null}
-      <Link to={href("deploy")}>查看部署并继续</Link>
+      <Link to={`${href("deploy")}?section=guide`}>查看部署并继续</Link>
     </Space> : undefined}
   />;
 }

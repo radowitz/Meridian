@@ -321,7 +321,8 @@ describe("setup wizard", () => {
     fireEvent.change(within(dialog).getByLabelText("新密码"), { target: { value: "new synthetic pass" } });
     fireEvent.change(within(dialog).getByLabelText("再输一次"), { target: { value: "new synthetic pass" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
-    await within(dialog).findByText("已更新");
+    // Saved: the dialog closes and says so.
+    expect(await screen.findByText("管理员账户已更新")).toBeInTheDocument();
     expect(api.find("PUT /api/auth/admin")[0].body).toEqual({ current_password: "old synthetic pass", username: "admin", password: "new synthetic pass" });
   });
 });

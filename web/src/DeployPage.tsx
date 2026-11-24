@@ -14,7 +14,6 @@ import {
   ReloadOutlined,
   RollbackOutlined,
   SendOutlined,
-  ToolOutlined,
 } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Collapse, Dropdown, Empty, Modal, Space, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -26,6 +25,7 @@ import { endpointAccessText, endpointAccessTitle } from "./leak_status";
 import { LoginHelpView, PreflightReport, loginHelpOf, normalizePreflight, preflightBlockedReason, preflightOf } from "./Preflight";
 import { ErrorBoundary } from "./ErrorBoundary";
 import type {
+  ArtifactView,
   ApplyResult,
   HostReport,
   HostStatus,
@@ -41,10 +41,11 @@ import type {
   WithdrawMode,
 } from "./types";
 import { DeploymentRecords, GatewayWithdraw, WithdrawDialog } from "./Withdraw";
-import { DeploymentGuide } from "./DeploymentGuide";
+import { DeploymentGuide, type AutoDeployControl } from "./DeploymentGuide";
+import { useOptionalAutoDeployProgress } from "./AutoDeployProgress";
 import { roleLabel } from "./types";
 import { WSSPanel } from "./WSS";
-import {
+import { type ApiState, formatAbsolute,
   DataTable,
   EllipsisLink,
   SplitStatus,
@@ -160,7 +161,7 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
     const issues: Issue[] = status?.install.issues ?? [];
     const lan = issues.find((i) => i.code === "lan_interface_mismatch");
     return (
-      <Section title="待安装的改动">
+      <div data-testid="pending-changes">
         <Alert
           type="error"
           showIcon
@@ -186,7 +187,7 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
           />
         ) : null}
         <IssueList issues={issues.filter((i) => i !== lan)} />
-      </Section>
+      </div>
     );
   }
 
@@ -194,7 +195,7 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
   const gatewayPending = install.kind === "changed" || install.kind === "not_installed";
   return (
     <>
-      <Section title="待安装的改动">
+      <div data-testid="pending-changes">
         {pending.length ? (
           <ul className="plain-list" data-testid="pending-deploy-nodes">
             {pending.map(node => <li key={node.node_id}>
@@ -213,7 +214,7 @@ function PendingChanges({ nodeName }: { nodeName: (id: string) => string }) {
             <InstalledChanges diff={diff.data.installed} version={install.version} />
           </Fold>
         ) : null}
-      </Section>
+      </div>
       <Fold title="与上次应用快照比较" summary={diff.data ? `${files.length} 个文件` : undefined}
         extra={<Button size="small" icon={<ReloadOutlined />} loading={diff.loading} onClick={() => void diff.reload()}>重新比较</Button>}>
         <Typography.Text type="secondary">当前编译文件与上次应用快照的差异。各节点的待安装状态见上方。</Typography.Text>
@@ -899,7 +900,7 @@ export function NodeInstallTag({ st }: { st: NodeInstallState | undefined }) {
   const v = NODE_STATE[st.state] ?? { kind: "neutral" as StatusKind, label: st.state };
   const lines = [
     st.reason,
-    st.installed_at ? `上次成功安装：${new Date(st.installed_at).toLocaleString()}` : "",
+    st.installed_at ? `上次成功安装：${formatAbsolute(new Date(st.installed_at))}` : "",
     st.installed_target ? `装到：${st.installed_target.address}:${st.installed_target.port}（${st.installed_target.fingerprint}）` : "",
     st.verify
       ? `核对服务器上的记录（${st.verify.source === "post_install" ? "装完后" : "预检时"}）：${st.verify.state === "verified" ? "一致" : st.verify.state === "mismatch" ? "不一致" : "没读到"}${st.verify.detail ? "，" + st.verify.detail : ""}`
@@ -931,7 +932,7 @@ const OUTCOME_TEXT: Record<string, string> = {
   unknown: "结果不明",
 };
 
-function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: ServerView[] | undefined; onWithdrawn: () => void }) {
+function RemoteNodes({ nodes, servers, onWithdrawn, summary, open, openSignal }: { nodes: Node[]; servers: ServerView[] | undefined; onWithdrawn: () => void; summary?: ReactNode; open?: boolean; openSignal?: number }) {
   const doc = useTopologyDoc();
   const [wd, setWd] = useState<{ node: Node; mode: WithdrawMode } | null>(null);
   const { markApplyRequired, status, refresh } = useStatus();
@@ -1003,9 +1004,9 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
 
   if (nodes.length === 0)
     return (
-      <Section title="远端节点" id="remote">
+      <Fold title="远端节点" id="remote" summary="没有" defaultOpen={open} openSignal={openSignal}>
         <Typography.Text>拓扑里没有需要下发的远端节点。</Typography.Text>
-      </Section>
+      </Fold>
     );
 
   const pfReason = pf && !pf.running ? preflightBlockedReason(pf.rec) : null;
@@ -1015,9 +1016,9 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
   const outBody = (out?.error?.body ?? {}) as { output?: string; leftovers?: string[]; kept?: string[]; outcome?: string; evidence?: string };
 
   return (
-    <Section title="远端节点" id="remote">
+    <Fold title="远端节点" id="remote" summary={summary} defaultOpen={open} openSignal={openSignal}>
       <Note>
-        批量处理用上面的「按顺序部署待变更节点」。单独处理时先「生成密钥并下发」到远端节点，再「安装到网关」：网关配置要用各对端公钥；改了拓扑也先下发再安装，否则可切换地区组的名字在出口更新前解析不了。
+        批量处理用页面右上角的「按顺序部署」。单独处理时先「生成密钥并下发」到远端节点，再「安装到网关」：网关配置要用各对端公钥；改了拓扑也先下发再安装，否则可切换地区组的名字在出口更新前解析不了。
       </Note>
       {keyless.length > 0 ? (
         <Alert
@@ -1324,7 +1325,7 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
           </>
         ) : null}
       </Modal>
-    </Section>
+    </Fold>
   );
 }
 
@@ -1332,14 +1333,11 @@ function RemoteNodes({ nodes, servers, onWithdrawn }: { nodes: Node[]; servers: 
 
 /** The binaries the panel delivers itself: pinned version and digest per
  * architecture, and whether the panel holds a verified copy. */
-function ArtifactsCard() {
-  const arts = useApi(() => api.listArtifacts(), []);
-  const list = arts.data?.artifacts ?? [];
-  const missing = list.filter((a) => !a.available);
-  const versions = [...new Map(list.map((a) => [a.name, `${a.name} ${a.version}`])).values()].join("、");
+/** A pinned binary without a verified copy blocks preflights: said at the top of 部署, not inside a fold. */
+function ArtifactsMissing({ arts }: { arts: ApiState<{ artifacts: ArtifactView[] }> }) {
+  const missing = (arts.data?.artifacts ?? []).filter((a) => !a.available);
+  if (missing.length === 0) return null;
   return (
-    <Section title="面板下发的二进制">
-      {missing.length > 0 ? (
         <Alert
           type="error"
           showIcon
@@ -1348,7 +1346,14 @@ function ArtifactsCard() {
           message={`${missing.length} 个二进制没有可用的已校验副本：需要它们的节点会在预检里被阻断`}
           description={missing.map((a) => `${a.name} ${a.version}（${a.arch}）：${a.error ?? "不可用"}`).join("；")}
         />
-      ) : null}
+  );
+}
+
+function ArtifactsCard({ arts }: { arts: ApiState<{ artifacts: ArtifactView[] }> }) {
+  const list = arts.data?.artifacts ?? [];
+  const versions = [...new Map(list.map((a) => [a.name, `${a.name} ${a.version}`])).values()].join("、");
+  return (
+    <Section title="面板下发的二进制">
       <DataView state={arts} rows={2}>
         {() => (
           <Collapse
@@ -1463,42 +1468,104 @@ function CurrentInstall({ host }: { host: HostStatus }) {
 
 // ------------------------------------------------------------------ page ---
 
+/** One status card at the top of 部署; a click opens the part it sums up. */
+function StatCard({ label, children, to, testId }: { label: string; children: ReactNode; to: string; testId: string }) {
+  return (
+    <div className="deploy-stat" data-testid={testId}>
+      <Link to={to} className="deploy-stat-label">{label}</Link>
+      <span className="deploy-stat-value">{children}</span>
+    </div>
+  );
+}
+
+function GatewayStat() {
+  const { install } = useStatus();
+  switch (install.kind) {
+    case "in_sync":
+      return <span className="deploy-stat-ok">v{install.version} 已同步</span>;
+    case "changed":
+      return <span className="deploy-stat-pending">{install.version != null ? `v${install.version} → ` : ""}{install.appliedOnly ? "已应用，未安装" : "有改动待安装"}</span>;
+    case "not_installed":
+      return <span className="deploy-stat-pending">还没有安装</span>;
+    case "error":
+      return <span className="deploy-stat-bad">拓扑无法编译</span>;
+    case "loading":
+      return <Typography.Text type="secondary">读取中</Typography.Text>;
+    default:
+      return <Typography.Text type="secondary">无法判断</Typography.Text>;
+  }
+}
+
 export default function DeployPage() {
   const doc = useTopologyDoc();
   const { route } = useRouter();
+  const section = route.query.get("section");
+  // Every link to a part (a card, a deep link, the same one again) opens its fold, then scrolls to it.
+  const [signal, setSignal] = useState(0);
   useEffect(() => {
-    const sec = route.query.get("section");
-    if (sec === "remote" || sec === "deployments" || sec === "guide" || sec === "gateway-install" || sec === "wss") {
-      const t = window.setTimeout(() => document.getElementById(sec)?.scrollIntoView?.({ behavior: "smooth" }), 200);
+    setSignal((n) => n + 1);
+    if (section === "remote" || section === "deployments" || section === "guide" || section === "gateway-install" || section === "wss" || section === "pending") {
+      const t = window.setTimeout(() => document.getElementById(section)?.scrollIntoView?.({ behavior: "smooth" }), 200);
       return () => window.clearTimeout(t);
     }
-  }, [route.query]);
-  // A link to the WSS section opens the fold that holds it.
-  const wantMore = route.query.get("section") === "wss";
+  }, [route.query]); // a new object on every navigation, the same address included
   const host = useApi(() => api.hostStatus(), []);
   const deployments = useApi(() => api.getDeployments(), []);
   const servers = useApi(() => api.listServers(), []);
+  const arts = useApi(() => api.listArtifacts(), []);
   const nodeName = (id: string) => doc.topo?.nodes.find((n) => n.id === id)?.name ?? id;
   const remote = (doc.topo?.nodes ?? []).filter((n) => n.managed && n.role !== "gateway");
-  const { refresh } = useStatus();
+  const { refresh, status, install } = useStatus();
+  const progress = useOptionalAutoDeployProgress();
+  const [auto, setAuto] = useState<AutoDeployControl | null>(null);
+
+  // What the cards and the header button say, from the panel's status.
+  const nodes = status?.nodes ?? [];
+  const pendingNodes = nodes.filter((n) => n.pending);
+  const remoteStates = nodes.filter((n) => n.role !== "gateway");
+  const remoteFresh = remoteStates.filter((n) => !n.pending).length;
+  const run = status?.deploy_run;
+  const lastInstalled = nodes.map((n) => n.installed_at).filter((t): t is string => !!t).sort().at(-1);
+  // The guide lives in the 待安装的改动 fold: it opens while a deployment runs or one just failed.
+  const deploying = !!run || progress?.progress?.phase === "running" || progress?.progress?.phase === "stopped" || !!auto?.loading || !!auto?.failed;
+  // The count is what the deployment will install (its plan or open run), not the panel's pending flags.
+  const installCount = auto?.installs.length ?? 0;
+  const verifyCount = auto?.verifies.length ?? 0;
+  const deployLabel = installCount > 0 ? `按顺序部署 ${installCount} 个节点` : verifyCount > 0 ? `核对 ${verifyCount} 个节点` : "按顺序部署";
+  // An interrupted host transaction is recovered in the gateway part: keep it open.
+  const hostTxn = !!status?.pending || !!host.data?.pending;
+  // A deployment that starts, stops or fails, and a host transaction that appears, open their part again
+  // even if it was closed by hand (the same as a link to it).
+  const failedNow = !!auto?.failed;
+  useEffect(() => {
+    if (deploying || hostTxn || failedNow) setSignal((n) => n + 1);
+  }, [deploying, hostTxn, failedNow, progress?.progress?.phase, run?.state]);
+  const pendingSummary =
+    install.kind === "error" ? "拓扑无法编译" : pendingNodes.length > 0 ? pendingNodes.map((n) => n.node_name || n.node_id).join("、") : install.kind === "changed" || install.kind === "not_installed" ? "网关等待安装" : "没有";
 
   return (
     <Page
       title="部署"
-
       extra={
-        <Button icon={<ToolOutlined />} onClick={() => void host.reload()} loading={host.loading}>
-          刷新状态
-        </Button>
+        <Space wrap>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => {
+              auto?.reload();
+              void Promise.all([host.reload(), deployments.reload(), servers.reload(), arts.reload(), refresh()]);
+            }}
+            loading={host.loading || deployments.loading || servers.loading}
+          >
+            刷新状态
+          </Button>
+          {auto?.ready ? (
+            <Button type="primary" data-testid="deploy-auto" disabled={auto.disabled} loading={auto.loading} onClick={auto.start}>
+              {deployLabel}
+            </Button>
+          ) : null}
+        </Space>
       }
     >
-      <nav className="section-jumps" aria-label="部署章节">
-        <Link to={href("deploy") + "?section=guide"}>部署向导</Link>
-        <Link to={href("deploy") + "?section=gateway-install"}>网关</Link>
-        <Link to={href("deploy") + "?section=remote"}>远端节点</Link>
-        <Link to={href("deploy") + "?section=deployments"}>部署记录</Link>
-        <Link to={href("cloudflare") + "?section=mesh"}>Mesh</Link>
-      </nav>
       {doc.dirty ? (
         <Alert
           type="warning"
@@ -1512,54 +1579,112 @@ export default function DeployPage() {
           }
         />
       ) : null}
-      <ErrorBoundary>
-        <PendingChanges nodeName={nodeName} />
-      </ErrorBoundary>
-      <ErrorBoundary>
-        <DeploymentGuide
-          onLinkChanged={doc.dirty ? undefined : changes => doc.applyServerChange(t => applyDeployLinkChanges(t, changes))}
-          onChanged={() => {
-            refresh();
-            void host.reload();
-            void deployments.reload();
-          }}
-        />
-      </ErrorBoundary>
-      <ErrorBoundary>
-        <div id="gateway-install"><InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} /></div>
-      </ErrorBoundary>
-      <ErrorBoundary>
-        <RemoteNodes nodes={remote} servers={servers.data?.servers} onWithdrawn={() => void deployments.reload()} />
-      </ErrorBoundary>
-      <ErrorBoundary>
-        <DeploymentRecords state={deployments} onChanged={() => void deployments.reload()} />
-      </ErrorBoundary>
-      {/* Seldom needed: WSS certificates, the shipped binaries, the installed files and withdrawing the gateway. */}
-      {/* The binaries stay in sight: they warn when a pinned binary is missing. */}
-      <ErrorBoundary>
-        <ArtifactsCard />
-      </ErrorBoundary>
-      <Fold title="证书、当前安装与网关撤回" summary="WSS 证书 · 当前安装 · 撤回网关" testId="fold-deploy-more" defaultOpen={wantMore}>
-      <ErrorBoundary>
-        <WSSPanel nodeName={nodeName} />
-      </ErrorBoundary>
-      <Section title="当前安装">
+      <ArtifactsMissing arts={arts} />
+      <div className="deploy-stats" data-testid="deploy-stats">
+        <StatCard label="网关" to={`${href("deploy")}?section=gateway-install`} testId="deploy-stat-gateway">
+          <GatewayStat />
+        </StatCard>
+        <StatCard label="远端节点" to={`${href("deploy")}?section=remote`} testId="deploy-stat-remote">
+          {remoteStates.length === 0 ? (
+            <Typography.Text type="secondary">{status?.nodes ? "没有" : "读取中"}</Typography.Text>
+          ) : (
+            <span className={remoteFresh === remoteStates.length ? undefined : "deploy-stat-pending"}>
+              {remoteFresh} / {remoteStates.length} 已是最新
+            </span>
+          )}
+        </StatCard>
+        <StatCard label="上次部署" to={`${href("deploy")}?section=deployments`} testId="deploy-stat-last">
+          {run ? (
+            <span className={run.state === "stopped" ? "deploy-stat-bad" : "deploy-stat-pending"}>
+              {run.state === "stopped" ? "已停下" : "进行中"} · {run.done} / {run.total}
+            </span>
+          ) : lastInstalled ? (
+            <TimeText value={lastInstalled} />
+          ) : (
+            <Typography.Text type="secondary">还没有</Typography.Text>
+          )}
+        </StatCard>
+      </div>
+      <Fold
+        title="待安装的改动"
+        id="pending"
+        summary={pendingSummary}
+        defaultOpen={deploying || section === "guide" || section === "pending"}
+        openSignal={signal}
+        testId="fold-deploy-pending"
+      >
         <ErrorBoundary>
-          <DataView state={host} rows={4}>
-            {(h) => <CurrentInstall host={h} />}
-          </DataView>
+          <PendingChanges nodeName={nodeName} />
         </ErrorBoundary>
-      </Section>
+        <ErrorBoundary>
+          <DeploymentGuide
+            onAuto={setAuto}
+            onLinkChanged={doc.dirty ? undefined : (changes) => doc.applyServerChange((t) => applyDeployLinkChanges(t, changes))}
+            onChanged={() => {
+              refresh();
+              void host.reload();
+              void deployments.reload();
+            }}
+          />
+        </ErrorBoundary>
+      </Fold>
+      <Fold
+        title="网关安装与回滚"
+        id="gateway-install"
+        summary={install.kind === "in_sync" ? `已安装 v${install.version}` : undefined}
+        defaultOpen={hostTxn || section === "gateway-install"}
+        openSignal={signal}
+        testId="fold-deploy-gateway"
+      >
+        <ErrorBoundary>
+          <InstallSection host={host.data} reloadHost={() => void host.reload()} nodes={doc.topo?.nodes ?? []} />
+        </ErrorBoundary>
+      </Fold>
       <ErrorBoundary>
-        <GatewayWithdraw
-          gw={deployments.data?.gateway}
-          onChanged={() => {
-            void deployments.reload();
-            void host.reload();
-          }}
-          hostReport={(r, failed) => <HostReportView report={r} failed={failed} />}
+        <RemoteNodes
+          nodes={remote}
+          servers={servers.data?.servers}
+          onWithdrawn={() => void deployments.reload()}
+          summary={remoteStates.length ? `${remoteStates.length} 台${remoteStates.length > remoteFresh ? ` · ${remoteStates.length - remoteFresh} 台待下发` : ""}` : undefined}
+          open={section === "remote"}
+          openSignal={signal}
         />
       </ErrorBoundary>
+      {/* Seldom needed: records and withdrawing nodes, WSS certificates, the shipped binaries, the installed files, withdrawing the gateway. */}
+      <Fold
+        title="记录、证书与撤回"
+        id="records"
+        summary="部署记录 · WSS 证书 · 二进制 · 当前安装 · 撤回"
+        defaultOpen={section === "deployments" || section === "wss"}
+        openSignal={signal}
+        testId="fold-deploy-more"
+      >
+        <ErrorBoundary>
+          <DeploymentRecords state={deployments} onChanged={() => void deployments.reload()} />
+        </ErrorBoundary>
+        <ErrorBoundary>
+          <WSSPanel nodeName={nodeName} />
+        </ErrorBoundary>
+        <ErrorBoundary>
+          <ArtifactsCard arts={arts} />
+        </ErrorBoundary>
+        <Section title="当前安装">
+          <ErrorBoundary>
+            <DataView state={host} rows={4}>
+              {(h) => <CurrentInstall host={h} />}
+            </DataView>
+          </ErrorBoundary>
+        </Section>
+        <ErrorBoundary>
+          <GatewayWithdraw
+            gw={deployments.data?.gateway}
+            onChanged={() => {
+              void deployments.reload();
+              void host.reload();
+            }}
+            hostReport={(r, failed) => <HostReportView report={r} failed={failed} />}
+          />
+        </ErrorBoundary>
       </Fold>
       <Note>
         Mesh 备路的部署和撤回在 <Link to={href("cloudflare") + "?section=mesh"}>Cloudflare</Link> 页。

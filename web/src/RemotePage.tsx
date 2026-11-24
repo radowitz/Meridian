@@ -149,7 +149,7 @@ export function ConfigOnceDialog({ result, title, onClose }: { result: RemoteDev
             <div className="config-qr">
               {level ? (
                 <>
-                  <QRCode value={text} type="svg" errorLevel={level} size={big ? 360 : 248} bordered={false} color="#000000" bgColor="#ffffff" />
+                  <QRCode value={text} type="svg" errorLevel={level} size={big ? 360 : 248} style={{ maxWidth: "100%", height: "auto" }} bordered={false} color="#000000" bgColor="#ffffff" />
                   <Note inline>在手机 WireGuard App 里选「扫描二维码」。二维码在浏览器里生成，没有发到任何地方。</Note>
                   <Button size="small" type="link" onClick={() => setBig((b) => !b)}>
                     {big ? "缩小" : "放大二维码"}

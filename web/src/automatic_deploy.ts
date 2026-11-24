@@ -28,6 +28,13 @@ function withDeployPhase(view: DeployView, nodeId: string, phase: DeployPhase): 
 export async function deployPendingNodes(
   onUpdate: (view: DeployView) => void = () => {},
   onLinkChanged?: (changes: MTUChange[]) => void,
+  /**
+   * The nodes the operator confirmed installing. A new plan that installs
+   * others is refused, and no step outside this list is ever installed:
+   * a replan or another tab's run that adds a node stops here for a new
+   * confirmation (every install goes through this loop, one node at a time).
+   */
+  confirmed?: string[],
 ) {
   const repaired = new Set<string>();
   const replacedPorts = new Set<string>();
@@ -38,6 +45,9 @@ export async function deployPendingNodes(
   const open = view.run?.state === "active" || view.run?.state === "stopped";
   if (!open) {
     if (!view.plan?.steps.length) return;
+    if (confirmed && !sameNodes(view.plan.steps.filter((s) => !s.verify_only).map((s) => s.node_id), confirmed)) {
+      throw new api.ApiError(409, { error: "部署计划在你确认之后变了：请看过新的计划再部署。" });
+    }
     view = await api.startDeploy(view.topology_version);
   }
   onUpdate(view);
@@ -50,13 +60,17 @@ export async function deployPendingNodes(
     if (run.state === "done") return;
     const step = run.steps.find(s => s.node_id === run.current);
     if (!step) {
-      const verification = run.steps.find(s => s.verify_only && s.can_preflight);
+      const verification = run.steps.find(s => s.verify_only && (s.can_verify || s.can_preflight));
       if (verification) {
         view = await api.deployVerify(run.id, { nodeId: verification.node_id });
         onUpdate(view);
         if (view.run?.steps.some(s => s.node_id === verification.node_id && s.phase === "done")) continue;
       }
       throw new api.ApiError(409, { error: run.stop_reason || "部署已暂停，请查看部署页。" });
+    }
+
+    if (confirmed && !confirmed.includes(step.node_id)) {
+      throw new api.ApiError(409, { error: `部署计划里出现了你确认时没有的节点「${step.node_name || step.node_id}」：已停下，请看过后重新确认。` });
     }
 
     if (step.wait_seconds) {
@@ -200,4 +214,8 @@ export async function deployTopology(
     await deployPendingNodes(onUpdate);
   }
   await api.meshDeploy();
+}
+
+function sameNodes(a: string[], b: string[]) {
+  return a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 }

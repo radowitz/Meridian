@@ -14,7 +14,7 @@ import { Alert, App as AntApp, Button, Space, Typography } from "antd";
 import type { ReactNode } from "react";
 import * as api from "./api";
 import type { WSSListenerView, WSSPartyView, WSSView } from "./types";
-import { ApiErrorAlert, DataTable, DataView, Facts, Mono, Section, StatusTag, TimeText, useAction, useApi, useConfirmDanger, type ApiState } from "./ui";
+import { ApiErrorAlert, DataTable, DataView, Facts, formatAbsolute, Mono, Section, StatusTag, TimeText, useAction, useApi, useConfirmDanger, type ApiState } from "./ui";
 
 export function stageLabel(n: number, uncertain?: boolean): string {
   if (uncertain) return "不确定";
@@ -142,11 +142,11 @@ function ListenerCard({ l, nodeName, onChanged }: { l: WSSListenerView; nodeName
           ["校验名称（SNI）", <Mono key="n">{l.server_name}</Mono>],
           ["证书指纹 SHA-256", <Mono key="f" copy>{l.cert.fingerprint_sha256}</Mono>],
           ["生成时间", <TimeText key="g" value={l.cert.created_at} />],
-          ["到期时间", <span key="e">{new Date(l.cert.not_after).toLocaleString()}（剩 {l.cert.days_left} 天）</span>],
+          ["到期时间", <span key="e">{formatAbsolute(new Date(l.cert.not_after))}（剩 {l.cert.days_left} 天）</span>],
           ...(l.pending_cert
             ? ([
                 ["新证书指纹", <Mono key="pf" copy>{l.pending_cert.fingerprint_sha256}</Mono>],
-                ["新证书到期", <span key="pe">{new Date(l.pending_cert.not_after).toLocaleString()}</span>],
+                ["新证书到期", <span key="pe">{formatAbsolute(new Date(l.pending_cert.not_after))}</span>],
               ] as [ReactNode, ReactNode][])
             : []),
           ...(l.rotating ? ([["轮换开始", <TimeText key="rs" value={l.rotation_started} />]] as [ReactNode, ReactNode][]) : []),

@@ -1,4 +1,3 @@
-import { LatencyBadge } from "./LatencyBadge";
 // 概览, one screen: a status line (gateway version, carrying path, leak
 // check), the real-time throughput chart, then four compact cards — exits,
 // domestic relays, tunnels (only abnormal ones), remote access. Every fact
@@ -6,7 +5,10 @@ import { LatencyBadge } from "./LatencyBadge";
 
 import { Typography } from "antd";
 import type { ReactNode } from "react";
-import type { Carrying, LinkLogAnswer, MeshLegReport, RegionGroupView, Sharing, SharingRelay } from "./types";
+import type { Carrying, LinkLogAnswer, RegionGroupView, RegionGroupsView, Sharing, SharingRelay } from "./types";
+import { ExitLatencyValue, useExitLatency } from "./ExitLatency";
+import { useHubAutoRead } from "./hub_read";
+import { inactiveObjects, isCurrent } from "./link_scope";
 import * as api from "./api";
 import { ACTUAL_CODE, CarryingLine, actualTag } from "./status_words";
 import { RELAY_STATUS, SpeedLine } from "./RelaySharing";
@@ -112,16 +114,15 @@ function PathFact({ c }: { c?: Carrying }) {
   return <span data-testid="sharing-path">主链路</span>;
 }
 
-/** Latency of an exit from the hub's same-exit leg report (the leg in use), if any. */
-function latencyOf(exit: string | undefined, legs: MeshLegReport[]): number | null {
-  if (!exit) return null;
-  const r = legs.find((x) => x.exit === exit && !x.event && x.result === "ok");
-  if (!r) return null;
-  const ms = r.active === "mesh" ? r.mesh_rtt : r.active === "direct" ? r.direct_rtt : 0;
-  return ms > 0 ? ms : null;
-}
+/** Every group fits next to the chart; more than this links to 出口. */
+const EXIT_ROWS = 8;
+const TUNNEL_ROWS = 4;
 
-const EXIT_ROWS = 4;
+/** Groups that need attention first (alert, switch failed), the rest in their order. */
+function attentionFirst(groups: RegionGroupView[]): RegionGroupView[] {
+  const bad = (g: RegionGroupView) => (g.actual.state === "switch_failed" || (g.actual.state === "ok" && g.actual.alert) ? 0 : 1);
+  return groups.map((g, i) => ({ g, i })).sort((a, b) => bad(a.g) - bad(b.g) || a.i - b.i).map((x) => x.g);
+}
 
 function RelayCard({ s }: { s: Sharing }) {
   if (!s.known) return <StatusTag kind="unverified">中继状态未知</StatusTag>;
@@ -175,7 +176,7 @@ function RelayCard({ s }: { s: Sharing }) {
 
 const LINK_LOG_DOWN: Record<string, string> = { agent_unavailable: "宿主通道不可用", agent_old: "宿主代理版本过旧", not_running: "链路日志未运行" };
 
-function TunnelCard({ d }: { d: LinkLogAnswer }) {
+function TunnelCard({ d, inactive }: { d: LinkLogAnswer; inactive: string[] }) {
   const sum = d.summary;
   if (!d.available || !sum) {
     return (
@@ -184,20 +185,24 @@ function TunnelCard({ d }: { d: LinkLogAnswer }) {
       </Typography.Text>
     );
   }
-  const bad = [...sum.abnormal, ...sum.unknown.filter((u) => !sum.abnormal.some((a) => a.id === u.id))];
+  // A self-check target removed from the rules keeps its last reading in the
+  // journal: history, not a current unknown (same as 链路日志).
+  const abnormal = sum.abnormal.filter((o) => isCurrent(o, inactive));
+  const bad = [...abnormal, ...sum.unknown.filter((u) => isCurrent(u, inactive) && !abnormal.some((a) => a.id === u.id))];
+  const history = new Set([...sum.abnormal, ...sum.unknown].filter((o) => !isCurrent(o, inactive)).map((o) => `${o.kind}|${o.id}`)).size;
   if (bad.length === 0) {
     return (
       <span data-testid="ov-tunnels" data-state="ok">
-        全部正常 · {sum.objects} 条
+        全部正常 · {sum.objects - history} 条
       </span>
     );
   }
   return (
     <ul className="ov-list" data-testid="ov-tunnels" data-state="abnormal">
-      {bad.slice(0, EXIT_ROWS).map((o) => (
+      {bad.slice(0, TUNNEL_ROWS).map((o) => (
         <li key={`${o.class}-${o.id}`}>
           <EllipsisText text={o.label || o.id} />
-          {o.stale || !sum.abnormal.includes(o) ? (
+          {o.stale || !abnormal.includes(o) ? (
             <StatusTag kind="unverified">未知</StatusTag>
           ) : (
             <StatusTag kind="failed" title={o.evidence}>
@@ -206,9 +211,9 @@ function TunnelCard({ d }: { d: LinkLogAnswer }) {
           )}
         </li>
       ))}
-      {bad.length > EXIT_ROWS ? (
+      {bad.length > TUNNEL_ROWS ? (
         <li>
-          <Link to={href("link-log")}>还有 {bad.length - EXIT_ROWS} 条</Link>
+          <Link to={href("link-log")}>还有 {bad.length - TUNNEL_ROWS} 条</Link>
         </li>
       ) : null}
     </ul>
@@ -225,6 +230,16 @@ export default function OverviewPage() {
   const unlock = useApi(() => api.getUnlockJobs(), []);
   const upstream = useApi(() => api.getUpstream(), []);
   const tunnels = useApi(() => api.getLinkLogCurrent(), []);
+  const linkView = useApi(() => api.getLinkLog(), []);
+  const latency = useExitLatency();
+  const latencies = new Map((latency.view.data?.rows ?? []).map((r) => [r.exit_id, r]));
+  // The exits card shows what the hub reports: read it once if the last read is old.
+  useHubAutoRead(groups.data, () => {
+    api.refreshGroupRuntime().then(
+      (d: RegionGroupsView) => groups.setData(d),
+      () => void groups.reload(),
+    );
+  });
 
   const nodeName = (id: string) => doc.topo?.nodes.find((n) => n.id === id)?.name ?? id;
 
@@ -349,7 +364,6 @@ export default function OverviewPage() {
   );
 
   const inst = installText(install);
-  const legs = (groups.data?.hub_states ?? (groups.data?.hub_state ? [groups.data.hub_state] : [])).flatMap((h) => h.mesh_legs ?? []);
 
   return (
     <Page title="概览">
@@ -375,12 +389,12 @@ export default function OverviewPage() {
               ) : (
                 <>
                   <ul className="group-rows" aria-label="地区组">
-                    {d.groups.slice(0, EXIT_ROWS).map((g) => {
-                      const lat = g.actual.state === "ok" ? latencyOf(g.actual.active, legs) : null;
+                    {attentionFirst(d.groups).slice(0, EXIT_ROWS).map((g) => {
+                      const lat = g.actual.state === "ok" && g.actual.active ? latencies.get(g.actual.active) : undefined;
                       return (
                         <li key={g.id} className="group-row" data-testid={`groups-tile-row-${g.id}`}>
                           <EllipsisLink className="group-row-name" to={href("exits", g.id)} text={groupLabel(g, d.groups)} />
-                          <span className="group-row-mode muted">{lat !== null ? <LatencyBadge ms={lat} title="枢纽到当前出口的探测延迟" /> : null}</span>
+                          <span className="group-row-mode muted"><ExitLatencyValue row={lat} compact /></span>
                           <span className="group-row-state">
                             <GroupActualCell g={g} nodeName={nodeName} />
                           </span>
@@ -407,7 +421,7 @@ export default function OverviewPage() {
         ) : null}
 
         <Tile title="隧道" to={href("link-log")}>
-          <TileData state={tunnels}>{(d) => <TunnelCard d={d} />}</TileData>
+          <TileData state={tunnels}>{(d) => (linkView.data || linkView.error ? <TunnelCard d={d} inactive={inactiveObjects(linkView.data?.scope)} /> : <Typography.Text type="secondary">读取中…</Typography.Text>)}</TileData>
         </Tile>
 
         {remote.data?.settings.enabled ? (

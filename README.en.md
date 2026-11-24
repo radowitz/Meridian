@@ -1,12 +1,18 @@
-# Meridian
+<p align="center"><img src="docs/assets/logo.svg" width="88" alt="Meridian logo"></p>
 
-[简体中文](README.md) | English
+<h1 align="center">Meridian</h1>
 
-License: `AGPL-3.0-only`
+<p align="center">A split-routing gateway for your home LAN: domestic traffic goes direct, foreign traffic follows your rules over your own servers, and when a tunnel fails it stops instead of silently leaking onto the home uplink.</p>
 
-Meridian is a WireGuard policy-routing gateway with a web panel that runs on your home LAN. Point a device's gateway and DNS at it: domestic traffic goes direct through your home router as before; foreign traffic follows your rules and region groups through your own servers (optional domestic relay, overseas hub or dedicated line) and leaves from the exit you choose. When the tunnel is down it fails closed and never silently falls back to the home uplink.
+<p align="center"><a href="README.md">简体中文</a> · English · License <code>AGPL-3.0-only</code></p>
 
-No Fake-IP and no client apps on devices. Your home router and any existing proxy gateway stay untouched: Meridian runs alongside them, and only devices pointed at it go through it.
+## Why Meridian
+
+- **Nothing to install on devices**: point a device's gateway and DNS at it and you are done. No Fake-IP; your home router and any existing proxy gateway stay untouched, and only devices pointed at Meridian go through it.
+- **Fails closed, never leaks**: when a tunnel is down the traffic is blocked; DNS is always intercepted and known DoH endpoints are blocked, so nothing falls back to the home uplink.
+- **Paths that switch by themselves**: exit through a domestic relay, an overseas hub or a dedicated line; several relays share load by path quality, a standby hub takes over when the main path fails, and region groups move to the next exit in order.
+- **One web panel for everything**: topology, rules, exits, deployment, connection and DNS logs, and unlock probes, with live per-connection speeds.
+- **Changes you can roll out safely**: read-only preflight, ordered rollout, automatic compensation on failure and one-click rollback.
 
 ```mermaid
 flowchart LR
@@ -57,14 +63,14 @@ Details: [architecture](docs/architecture.md).
 On Debian 13 (amd64 / arm64) with a static address on the LAN port:
 
 ```sh
-git clone https://github.com/radowitz/Meridian.git && cd meridian
-sudo bash deploy/debian/install.sh --lan-addr <gateway LAN IPv4> --version v1.0.7
+git clone https://github.com/radowitz/Meridian.git && cd Meridian
+sudo bash deploy/debian/install.sh --lan-addr <gateway LAN IPv4> --version v1.0.8
 sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-code
 ```
 
 Open `http://<gateway LAN IPv4>:8787`, create the admin with the one-time setup code from the terminal, then follow the wizard: gateway → template → servers (confirm fingerprints) → topology → preflight → deploy. Full steps: [docs/user/quickstart.md](docs/user/quickstart.md).
 
-[Releases](https://github.com/radowitz/Meridian/releases) · image `ghcr.io/radowitz/meridian` (amd64 / arm64). If the gateway cannot reach ghcr.io, build locally with `--build` or load a saved image with `--image-tar`.
+[v1.0.8 release notes](https://github.com/radowitz/Meridian/releases/tag/v1.0.8) · image `ghcr.io/radowitz/meridian:v1.0.8` (amd64 / arm64). If the gateway cannot reach ghcr.io, build locally with `--build` or load a saved image with `--image-tar`.
 
 ## Documentation
 

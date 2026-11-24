@@ -1720,6 +1720,7 @@ export default function TopologyPage() {
         </Space>
       }
     >
+      <TopologyDocBar onDeploy={confirmDeployment} deploying={autoDeploying} />
       <MeshLegQuality topo={topo} />
       <AutoDeployProgress onResume={!doc.dirty ? () => void runDeployment() : undefined} />
 
@@ -1860,7 +1861,7 @@ export default function TopologyPage() {
           select({ kind: "link", id: l.id });
         }}
       />
-      <TopologyDocBar bottom onDeploy={confirmDeployment} deploying={autoDeploying} />
+
       <SettingsDrawer open={settingsOpen} topo={topo} onClose={() => setSettingsOpen(false)} onChange={doc.setTopo} />
       <NodeDeleteDialog
         node={deleting}

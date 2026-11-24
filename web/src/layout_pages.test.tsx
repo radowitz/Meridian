@@ -242,9 +242,9 @@ describe("overview tiles", () => {
     const st = within(row).getByTestId("groups-tile-status-g-jp");
     expect(st.querySelector(".status-text")).toHaveTextContent(/^实际未知$/);
     expect(st.querySelector(".sr-only")).toHaveTextContent("· 未验证 · 读不到");
-    // The exits card lists at most 4 groups and links to the rest.
-    expect(document.querySelectorAll(".group-row")).toHaveLength(4);
-    expect(screen.getByTestId("groups-tile-more")).toHaveTextContent("还有 3 个");
+    // The exits card lists every group up to 8 next to the chart.
+    expect(document.querySelectorAll(".group-row")).toHaveLength(7);
+    expect(screen.queryByTestId("groups-tile-more")).toBeNull();
   });
 });
 
