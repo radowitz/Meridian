@@ -245,6 +245,41 @@ func TestRemoteGuardIngress(t *testing.T) {
 	}
 }
 
+// With allow_peers on, devices reach each other on mra (the device pools
+// only); everything else the guard decides is unchanged.
+func TestRemoteGuardAllowPeers(t *testing.T) {
+	topo, _ := raExample(t)
+	topo.RemoteAccess.AllowPeers = true
+	b := mustCompile(t, topo)
+	rules := parseGuard(t, nftBlock(t, b.File("nodes/gw/etc/nftables.d/meridian.nft"), "meridian_guard"))
+	tunnels, err := buildTunnels(topo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tun := gatewayTunnelIfaces(tunnels)[0]
+	const dom, exit = markDomestic, markExitBase
+	for _, c := range []struct {
+		p    pkt
+		want string
+		why  string
+	}{
+		{pkt{"mra", "mra", dom, "10.67.0.3", false}, "accept", "device to device"},
+		{pkt{"mra", "mra", dom, "fd67::3", false}, "accept", "device to device over v6"},
+		{pkt{"mra", "mra", dom, "198.18.0.1", false}, "drop", "device to a non-device address on mra"},
+		{pkt{"mra", "mra", exit, "198.18.0.1", false}, "drop", "exit mark out of mra"},
+		{pkt{"mra", "mra", dom, "10.67.0.3", true}, "drop", "DNS between devices"},
+		{pkt{"mra", "mra", 0, "10.67.0.3", false}, "drop", "unclassified device to device (main table missing)"},
+		{pkt{"mra", "mra", 0, "fd67::3", false}, "drop", "unclassified device to device over v6"},
+		{pkt{"mra", "mra", exit, "10.67.0.3", false}, "drop", "exit-marked packet to a device address"},
+		{pkt{"mra", tun, exit, "198.18.0.1", false}, "accept", "device foreign traffic (unchanged)"},
+		{pkt{"eth0", "mra", dom, "10.67.0.2", false}, "accept", "LAN to a device (unchanged)"},
+	} {
+		if got := verdict(rules, c.p); got != c.want {
+			t.Errorf("%s: %+v got %s want %s", c.why, c.p, got, c.want)
+		}
+	}
+}
+
 func TestRemoteClassifyDNSInputNAT(t *testing.T) {
 	topo, _ := raExample(t)
 	b := mustCompile(t, topo)

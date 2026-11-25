@@ -4,6 +4,11 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.9
+
+- 远程接入新增「允许接入设备互相访问」开关，默认关闭。打开并安装到网关后，连回家的设备之间可以互相访问，比如在外面用笔记本访问另一台也连着回家的电脑。
+- 「只连家里」模式的设备在开关打开后要重新生成配置，面板会把需要的设备标出来；「全部流量」模式的设备不受影响。
+
 ## v1.0.8
 
 - 新图标：一个带经线的地球，浏览器标签页、面板左上角和项目主页统一使用。

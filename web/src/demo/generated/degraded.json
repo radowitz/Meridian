@@ -14492,6 +14492,7 @@
      "state": "ok"
     },
     "settings": {
+     "allow_peers": false,
      "defaults": {
       "ipv4_prefix": "10.67.0.0/24",
       "ipv6_prefix": "fd67::/64",

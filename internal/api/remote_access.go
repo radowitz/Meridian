@@ -51,6 +51,7 @@ type remoteSettingsView struct {
 	IPv6Prefix  string   `json:"ipv6_prefix"`
 	MTU         int      `json:"mtu"`
 	Keepalive   int      `json:"keepalive"`
+	AllowPeers  bool     `json:"allow_peers"`
 	Interface   string   `json:"interface"`
 	GatewayIPv4 string   `json:"gateway_ipv4"`
 	GatewayIPv6 string   `json:"gateway_ipv6"`
@@ -207,7 +208,7 @@ func viewRemoteSettings(t model.Topology) remoteSettingsView {
 	v := remoteSettingsView{
 		Enabled: ra.Enabled, Endpoint: ra.Endpoint, ListenPort: ra.ListenPort,
 		IPv4Prefix: ra.V4Prefix(), IPv6Prefix: ra.V6Prefix(), MTU: ra.EffectiveMTU(), Keepalive: ra.EffectiveKeepalive(),
-		Interface: model.RemoteAccessIface, PublicKey: ra.PublicKey,
+		AllowPeers: ra.AllowPeers, Interface: model.RemoteAccessIface, PublicKey: ra.PublicKey,
 		MaxDevices: model.MaxRemoteDevices, DeviceCount: len(ra.Devices),
 		Modes: map[string]string{
 			model.RemoteModeFull: remoteaccess.ModeExplanation(model.RemoteModeFull),
@@ -362,6 +363,7 @@ type remoteSettingsInput struct {
 	IPv6Prefix *string `json:"ipv6_prefix"`
 	MTU        *int    `json:"mtu"`
 	Keepalive  *int    `json:"keepalive"`
+	AllowPeers *bool   `json:"allow_peers"`
 }
 
 func (s *Server) putRemoteAccess(w http.ResponseWriter, r *http.Request) {
@@ -393,6 +395,9 @@ func (s *Server) putRemoteAccess(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.Keepalive != nil {
 			ra.Keepalive = *in.Keepalive
+		}
+		if in.AllowPeers != nil {
+			ra.AllowPeers = *in.AllowPeers
 		}
 		for _, p := range []struct {
 			in   *string

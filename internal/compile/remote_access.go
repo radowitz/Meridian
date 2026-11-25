@@ -19,6 +19,8 @@ type remotePlan struct {
 	Port     int
 	MTU      int
 	KeyID    string
+	// AllowPeers: the guard also forwards device → device on the interface.
+	AllowPeers bool
 	// Devices are the enabled devices, sorted by ID. Disabled and deleted
 	// devices are absent, so wg syncconf removes their peers.
 	Devices []model.RemoteDevice
@@ -35,7 +37,7 @@ func planRemote(t model.Topology) *remotePlan {
 		return nil
 	}
 	rp := &remotePlan{Iface: model.RemoteAccessIface, V4: p4, V6: p6, GW4: gw4, GW6: gw6,
-		Port: ra.ListenPort, MTU: ra.EffectiveMTU(), KeyID: ra.KeyID}
+		Port: ra.ListenPort, MTU: ra.EffectiveMTU(), KeyID: ra.KeyID, AllowPeers: ra.AllowPeers}
 	for _, d := range ra.Devices {
 		if d.Enabled {
 			rp.Devices = append(rp.Devices, d)

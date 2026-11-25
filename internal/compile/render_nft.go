@@ -840,8 +840,10 @@ func gatewayTunnelIfaces(tunnels []Tunnel) []string {
 // with the same rules; mra is never in tunnelIfaces, so an exit mark can
 // never leave through it. Two narrow accepts let LAN hosts (and direct
 // replies from ROS) reach the device pools on mra; nothing else may leave on
-// mra from an ingress, so devices cannot reach each other. iifname matches
-// by name, so the early-boot copy loads before mra exists.
+// mra from an ingress, so devices cannot reach each other unless the
+// operator allows it (remote_access.allow_peers: two more accepts, mra to
+// mra, the device pools only). iifname matches by name, so the early-boot
+// copy loads before mra exists.
 func writeGuardTable(sb *strings.Builder, lan string, tunnelIfaces []string, lastExitMark uint32, rp *remotePlan, reject bool) {
 	sb.WriteString("# LAN fail-closed guard. Independent of table inet meridian: it reads only\n")
 	sb.WriteString("# the fwmark and the output interface, so if classification is missing\n")
@@ -857,6 +859,13 @@ func writeGuardTable(sb *strings.Builder, lan string, tunnelIfaces []string, las
 	if rp != nil {
 		fmt.Fprintf(sb, "    iifname \"%s\" oifname \"%s\" ip daddr %s return comment \"LAN and direct replies to remote-access devices\"\n", lan, rp.Iface, rp.V4)
 		fmt.Fprintf(sb, "    iifname \"%s\" oifname \"%s\" ip6 daddr %s return\n", lan, rp.Iface, rp.V6)
+		if rp.AllowPeers {
+			// From mra the source is always a device: WireGuard accepts only each peer's own addresses.
+			// Classified packets only (the pools get the domestic mark): without the main table the
+			// guard still drops device-to-device traffic, like everything else unmarked.
+			fmt.Fprintf(sb, "    iifname \"%s\" oifname \"%s\" meta mark %#x ip daddr %s return comment \"remote-access devices reach each other (allow_peers)\"\n", rp.Iface, rp.Iface, markDomestic, rp.V4)
+			fmt.Fprintf(sb, "    iifname \"%s\" oifname \"%s\" meta mark %#x ip6 daddr %s return\n", rp.Iface, rp.Iface, markDomestic, rp.V6)
+		}
 	}
 	fmt.Fprintf(sb, "    iifname %s meta mark %#x oifname \"%s\" return comment \"domestic: direct via ROS or LAN only\"\n", in, markDomestic, lan)
 	if len(tunnelIfaces) > 0 {

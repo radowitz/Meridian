@@ -293,6 +293,7 @@ export function remoteView(devices: RemoteDeviceView[], runtime: RemoteAccessVie
       ipv6_prefix: "fd66:0:0:fa::/64",
       mtu: 1380,
       keepalive: 25,
+      allow_peers: false,
       interface: "mra",
       gateway_ipv4: "10.66.250.1",
       gateway_ipv6: "fd66:0:0:fa::1",

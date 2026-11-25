@@ -51,6 +51,10 @@ type RemoteAccess struct {
 	// Zero means the default.
 	MTU       int `json:"mtu,omitempty"`
 	Keepalive int `json:"keepalive,omitempty"`
+	// AllowPeers lets the devices reach each other through the gateway
+	// (off by default: a leaked device configuration then reaches only home).
+	// On, home-mode devices also route the device pools into the tunnel.
+	AllowPeers bool `json:"allow_peers,omitempty"`
 	// PublicKey is the gateway's remote-access public key; KeyID names its
 	// private key in the credential store.
 	PublicKey string         `json:"public_key,omitempty"`

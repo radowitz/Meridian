@@ -91,6 +91,22 @@ func TestClientConfig(t *testing.T) {
 	if !strings.Contains(c.Explanation, "不经过 Meridian") || !strings.Contains(c.Explanation, "DNS") {
 		t.Fatal("home mode must explain what it does not cover")
 	}
+	// Devices allowed to reach each other: a home-mode device routes the pools, not only the gateway.
+	topo.RemoteAccess.AllowPeers = true
+	if got := strings.Join(AllowedIPs(topo, model.RemoteModeHome), ", "); got != "192.0.2.0/24, 2001:db8:100::/64, 10.67.0.0/24, fd67::/64" {
+		t.Fatalf("home AllowedIPs with peers: %s", got)
+	}
+	if strings.Join(AllowedIPs(topo, model.RemoteModeFull), ", ") != "0.0.0.0/0, ::/0" {
+		t.Fatal("full mode changed with allow_peers")
+	}
+	// The switch makes a delivered home-mode configuration outdated; a full-mode one stays valid.
+	home, full := d, d
+	home.Mode, full.Mode = model.RemoteModeHome, model.RemoteModeFull
+	onHome, onFull := Fingerprint(topo, home), Fingerprint(topo, full)
+	topo.RemoteAccess.AllowPeers = false
+	if Fingerprint(topo, home) == onHome || Fingerprint(topo, full) != onFull {
+		t.Fatal("allow_peers must outdate home-mode configurations only")
+	}
 	topo.RemoteAccess.Endpoint = "2001:db8::1"
 	if !strings.Contains(RenderClient(topo, d, "p", "").Text, "Endpoint = [2001:db8::1]:51999") {
 		t.Fatal("IPv6 endpoint not bracketed")

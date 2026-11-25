@@ -29,6 +29,24 @@ import {
 } from "./pages_fixtures";
 
 describe("remote access", () => {
+  it("lets devices reach each other only when switched on, and says it takes an install", async () => {
+    let sent: unknown;
+    fakeApi({
+      "GET /api/remote-access": () => remoteView([]),
+      "PUT /api/remote-access": (req) => {
+        sent = req.body;
+        const v = remoteView([]);
+        return { ...v, settings: { ...v.settings, allow_peers: true }, apply_required: true };
+      },
+    });
+    renderAt("#/remote");
+    const toggle = await screen.findByRole("switch", { name: "允许接入设备互相访问" });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+    await waitFor(() => expect(sent).toEqual({ allow_peers: true }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "允许接入设备互相访问" })).toBeChecked());
+  });
+
   it("shows the one-time configuration once (text, copy, download, QR), requires an acknowledgement and forgets it on close", async () => {
     let devices: RemoteDeviceView[] = [];
     const created = vi.fn();

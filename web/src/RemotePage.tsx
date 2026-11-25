@@ -275,7 +275,8 @@ function SettingsSection({ view, onSaved }: { view: RemoteAccessView; onSaved: (
     mtu: s.mtu,
     keepalive: s.keepalive,
   };
-  useEffect(() => form.setFieldsValue(initial), [view]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Refill the form only when these fields change on the server: switching allow_peers keeps what is typed.
+  useEffect(() => form.setFieldsValue(initial), [JSON.stringify(initial)]); // eslint-disable-line react-hooks/exhaustive-deps
   const fields = ["endpoint", "listen_port", "ipv4_prefix", "ipv6_prefix", "mtu", "keepalive"];
   const onError = (e: ApiError) => {
     if (e.code === "in_use") {
@@ -312,6 +313,16 @@ function SettingsSection({ view, onSaved }: { view: RemoteAccessView; onSaved: (
         onSaved(r, enabled ? "远程接入已启用" : "远程接入已停用");
       },
       "enable",
+      onError,
+    );
+
+  const setPeers = (allow_peers: boolean) =>
+    act.run(
+      async () => {
+        const r = await api.putRemoteAccess({ allow_peers });
+        onSaved(r, allow_peers ? "已允许设备互相访问，安装到网关后生效" : "已禁止设备互相访问，安装到网关后生效");
+      },
+      "peers",
       onError,
     );
 
@@ -352,6 +363,15 @@ function SettingsSection({ view, onSaved }: { view: RemoteAccessView; onSaved: (
           <Form.Item name="keepalive" label="Keepalive（秒）" extra={<Note>{`默认 ${s.defaults.keepalive}；手机在 NAT 后需要。`}</Note>}>
             <InputNumber min={0} max={600} style={{ width: "100%" }} />
           </Form.Item>
+        </div>
+        <div className="remote-peers" data-testid="remote-allow-peers">
+          <Space wrap align="center">
+            <Switch checked={s.allow_peers} loading={act.busy === "peers"} onChange={(v) => void setPeers(v)} aria-label="允许接入设备互相访问" />
+            <Typography.Text>允许接入设备互相访问</Typography.Text>
+            <Note>
+              {`打开后，连回家的设备之间可以互相访问，比如在外面用笔记本访问另一台也连着回家的电脑。默认关闭：万一某台设备的配置泄露，别人只能连到家里，碰不到你其他在外面的设备。改动要安装到网关后才生效。「只连家里」模式的设备要重新生成配置才能用上，需要的设备会在列表里标出来。`}
+            </Note>
+          </Space>
         </div>
         <Space wrap>
           <Button type="primary" loading={act.busy === "save"} onClick={() => void save()}>

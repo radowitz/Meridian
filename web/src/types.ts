@@ -2103,6 +2103,8 @@ export interface RemoteSettingsView {
   ipv6_prefix: string;
   mtu: number;
   keepalive: number;
+  /** Devices may reach each other through the gateway (off by default). */
+  allow_peers: boolean;
   interface: string;
   gateway_ipv4: string;
   gateway_ipv6: string;
@@ -2123,6 +2125,7 @@ export interface RemoteSettingsPatch {
   ipv6_prefix?: string;
   mtu?: number;
   keepalive?: number;
+  allow_peers?: boolean;
 }
 
 export interface RemoteDeviceRuntime {

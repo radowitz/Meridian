@@ -1333,3 +1333,4 @@ details[open] > summary::before { transform: rotate(90deg); }
 
 /* Save bar with nothing unsaved: one quiet line, no card. */
 .doc-bar.doc-bar-quiet { padding: 4px 0; background: none; border-color: transparent; box-shadow: none; margin-bottom: 12px; position: static; }
+.remote-peers { margin: 4px 0 16px; }

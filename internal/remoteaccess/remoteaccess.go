@@ -157,8 +157,12 @@ func AllowedIPs(t model.Topology, mode string) []string {
 	if t.Settings.LANIPv6Prefix != "" {
 		out = append(out, t.Settings.LANIPv6Prefix)
 	}
-	gw4, _, _ := ra.GatewayV4()
-	gw6, _, _ := ra.GatewayV6()
+	gw4, p4, _ := ra.GatewayV4()
+	gw6, p6, _ := ra.GatewayV6()
+	if ra.AllowPeers {
+		// The other devices too (the pools hold the gateway's addresses).
+		return append(out, p4.String(), p6.String())
+	}
 	return append(out, gw4.String()+"/32", gw6.String()+"/128")
 }
 
