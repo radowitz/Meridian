@@ -626,7 +626,14 @@ func safeBundlePath(path string) (string, error) {
 	return "", fmt.Errorf("拒绝写入路径 %s", path)
 }
 
+// openRCScripts are the only files Meridian writes under /etc/init.d (an
+// Alpine exit's services, compile/openrc.go): never another init script.
+var openRCScripts = map[string]bool{"etc/init.d/meridian-node": true, "etc/init.d/meridian-smartdns": true}
+
 func allowed(rel string) bool {
+	if openRCScripts[rel] {
+		return true
+	}
 	for _, p := range allowedPrefixes {
 		if strings.HasPrefix(rel, p) {
 			return true

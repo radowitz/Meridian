@@ -433,13 +433,10 @@ fi
 	}
 	// No silent skip: without systemd the WSS and failover services would
 	// not run while the install still looked successful.
-	sb.WriteString("enable_unit() {\n")
-	sb.WriteString("  if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then\n")
-	sb.WriteString("    echo \"meridian-systemd-missing: cannot start $1 here; activate through meridian-host on the host\" >&2\n")
-	sb.WriteString("    exit 1\n")
-	sb.WriteString("  fi\n")
-	sb.WriteString("  systemctl enable --now \"$1\"\n")
-	sb.WriteString("}\n")
+	// (An Alpine exit starts no unit through it: validate.checkNodeOS.)
+	if n.OS != model.OSAlpine {
+		sb.WriteString(enableUnitFunc)
+	}
 	seen := map[string]bool{}
 	for _, tun := range tunnels {
 		if tun.Mode != "wss" {
@@ -482,7 +479,10 @@ fi
 		// hub's Mesh address following the host Mesh interface.
 		sb.WriteString("enable_unit meridian-mesh-underlay.timer\n")
 	}
-	if n.Role == model.RoleExit {
+	if n.Role == model.RoleExit && n.OS == model.OSAlpine {
+		// Alpine (OpenRC): the same restart as below, through rc-service.
+		sb.WriteString(smartDNSRestartOpenRC)
+	} else if n.Role == model.RoleExit {
 		sb.WriteString("enable_unit meridian-unlock.timer\n")
 		// The exit resolver binds to tunnel addresses, which only exist once
 		// the WireGuard interfaces above are up. A boot-time start before
@@ -514,6 +514,15 @@ fi
 	sb.WriteString("echo meridian-up-complete\n")
 	return sb.String()
 }
+
+const enableUnitFunc = `enable_unit() {
+  if [ ! -d /run/systemd/system ] || ! command -v systemctl >/dev/null 2>&1; then
+    echo "meridian-systemd-missing: cannot start $1 here; activate through meridian-host on the host" >&2
+    exit 1
+  fi
+  systemctl enable --now "$1"
+}
+`
 
 // NetworkdDropIn is the systemd-networkd drop-in meridian-up.sh writes on
 // hosts that have networkd. It is not a bundle file: the gateway panel's

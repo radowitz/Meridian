@@ -388,10 +388,15 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 		return nil, &credentials.Error{Code: codePreflightFailed, Msg: "节点的文件路径不能交给预检：" + err.Error()}
 	}
 	res, err := s.connector(cs).RunPreflight(ctx, ident.target(), args)
+	rep := preflight.Parse(res.Output)
+	if !rep.Complete && noBash(res.Output) {
+		// Every remote script runs under bash; Alpine images do not ship it
+		// (the login shell answers 127, which is also an error here).
+		return nil, &credentials.Error{Code: codePreflightFailed, Msg: "这台服务器上没有 bash，Meridian 的预检和下发脚本都要用它。Alpine 上先执行 apk add bash，然后重新预检。"}
+	}
 	if err != nil {
 		return nil, err
 	}
-	rep := preflight.Parse(res.Output)
 	rep.Source = "ssh"
 	var cmp *preflight.FileComparison
 	if rep.Complete {
@@ -401,7 +406,7 @@ func (s *Server) runRemotePreflight(ctx context.Context, cs *credentials.Store, 
 	// against (pinned identity) before what it records counts as already
 	// deployed here (an unreachable external proxy of an external exit that
 	// is already deployed is a warning, preflight.externalDeployed).
-	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep, Server: ident.ServerID, Ports: s.portSources(n.ID), Artifacts: s.artifactContext(), Files: cmp, Uplinks: carriers})
+	ev := preflight.Evaluate(rep, fp, preflight.Context{NodeID: n.ID, Deployment: dep, Server: ident.ServerID, OS: n.OS, Ports: s.portSources(n.ID), Artifacts: s.artifactContext(), Files: cmp, Uplinks: carriers})
 	if c, ok := s.exitDNSChange(n, files, cmp); ok {
 		ev.Changes = append(ev.Changes, c)
 	}
@@ -1210,4 +1215,14 @@ func (s *Server) registerPreflight(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/host/preflight", s.postHostPreflight)
 	mux.HandleFunc("GET /api/mtu/uplinks", s.getUplinkMTU)
 	mux.HandleFunc("POST /api/mtu/adopt", s.postUplinkMTUAdopt)
+}
+
+// noBash: the login shell could not start bash (BusyBox ash and dash say
+// "bash: not found", bash-less shells "command not found").
+func noBash(out string) bool {
+	head := out
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	return !strings.Contains(head, preflight.Header) && (strings.Contains(head, "bash: not found") || strings.Contains(head, "bash: command not found"))
 }

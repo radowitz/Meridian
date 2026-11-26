@@ -234,7 +234,12 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			nftExits, nftGroups = hubExits, hubGroups
 		}
 		add(prefix+"etc/nftables.d/meridian.nft", renderNFT(t, n, tunnels, nftExits, nftGroups, mss4, mss6, decisions, clamps))
-		if n.Role != model.RoleGateway {
+		alpine := n.OS == model.OSAlpine
+		if alpine {
+			// Alpine exits (OpenRC): the boot service only. No Docker on
+			// them, so no FORWARD DROP coexistence (validate.checkNodeOS).
+			add(prefix+OpenRCPath(NodeUnit), renderNodeOpenRC())
+		} else if n.Role != model.RoleGateway {
 			// Remote nodes: the boot unit (the gateway has
 			// deploy/debian/meridian.service) and the Docker FORWARD DROP
 			// coexistence rules with their re-assert unit.
@@ -259,7 +264,9 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			}
 		}
 		relaySpeedFiles(t, n, tunnels, func(path, content string) { add(prefix+path, content) })
-		if n.Role == model.RoleExit {
+		if n.Role == model.RoleExit && !alpine {
+			// The exit's own unlock probe runs a container (Docker): not on
+			// Alpine exits; the gateway's probe through the tunnel covers them.
 			add(prefix+"usr/local/sbin/meridian-unlock-probe.sh", renderUnlockProbe(t, n))
 			add(prefix+"etc/meridian/unlock-report.env.example", renderUnlockReportEnv())
 			add(prefix+"etc/systemd/system/meridian-unlock.service", renderUnlockService())
@@ -325,7 +332,11 @@ func compile(t model.Topology, decisions map[string]string) (*Bundle, error) {
 			add(prefix+"usr/local/sbin/meridian-update-geosite.sh", renderGeositeScript(t))
 		case model.RoleExit:
 			add(prefix+"etc/smartdns/smartdns.conf", renderExitDNS(t, n, tunnels, exits))
-			add(prefix+"etc/systemd/system/"+SmartDNSUnit, renderSmartDNSUnit())
+			if alpine {
+				add(prefix+OpenRCPath(SmartDNSUnit), renderSmartDNSOpenRC())
+			} else {
+				add(prefix+"etc/systemd/system/"+SmartDNSUnit, renderSmartDNSUnit())
+			}
 		}
 		if n.Role == model.RoleExit && len(externalPlans(exits, n.ID)) > 0 {
 			// Carrier of external SOCKS exits (render_nested.go).

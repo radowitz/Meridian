@@ -120,6 +120,7 @@ func Run(t model.Topology) Result {
 	out.Issues = append(out.Issues, checkGroupResolver(t)...)
 	out.Issues = append(out.Issues, checkLinks(t, nodes)...)
 	out.Issues = append(out.Issues, checkNestedExternal(t, nodes)...)
+	out.Issues = append(out.Issues, checkNodeOS(t)...)
 
 	exits := exitsOf(t)
 	if len(exits) == 0 {

@@ -74,7 +74,7 @@ describe("servers: management channel", () => {
     });
     expect(drawer).toHaveTextContent("不会自动改走直连");
     expect(drawer).toHaveTextContent("还没有在真实主机上验证过");
-    await userEvent.click(within(drawer).getByText("经中继跳转"));
+    await userEvent.click(within(drawer).getByText("经中继或枢纽跳转"));
     const sel = await within(drawer).findByRole("combobox", { name: "中继服务器" });
     fireEvent.mouseDown(sel);
     const opt = await waitFor(() => {
@@ -88,7 +88,7 @@ describe("servers: management channel", () => {
     await userEvent.click(within(drawer).getByRole("button", { name: /保\s*存/ }));
     await waitFor(() => expect(api.find("PATCH /api/servers/srv-hub")).toHaveLength(1));
     expect(api.find("PATCH /api/servers/srv-hub")[0].body).toEqual({ channel: { mode: "jump", via_server_id: "srv-relay" } });
-    await waitFor(() => expect(document.body).toHaveTextContent("经中继 国内中继机 跳转到 198.51.100.20:22"));
+    await waitFor(() => expect(document.body).toHaveTextContent("经 国内中继机 跳转到 198.51.100.20:22"));
     expect(document.body).toHaveTextContent("未经实机验证");
   });
 

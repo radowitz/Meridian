@@ -15,6 +15,8 @@ export interface Node {
   /** This exit's resolver upstream override (PUT /api/dns/upstream only). */
   exit_dns?: ExitDNSUpstream | null;
   region?: string;
+  /** "alpine" for an Alpine exit (OpenRC); absent: Debian / Ubuntu. */
+  os?: string;
   managed: boolean;
   x?: number;
   y?: number;

@@ -19,7 +19,7 @@
 
 | 发现 | 处理 |
 |---|---|
-| `os_unsupported` / `arch_unsupported` / `no_systemd` / `not_root` | 换成支持的系统（Debian 12 / 13 x86_64、Ubuntu 20.04 aarch64），用 root 登录 |
+| `os_unsupported` / `arch_unsupported` / `no_systemd` / `not_root` | 换成支持的系统（Debian 12 / 13 x86_64、Ubuntu 20.04 aarch64；出口还可以是 Alpine 3.19 及更新，拓扑里要把「服务器系统」选成 Alpine），用 root 登录 |
 | `port_in_use` | WireGuard / WSS / wstunnel 本地端口被占：按结论里的「去拓扑修改」换端口；端口在 NAT 后面时同时更新转发范围（[FAQ](faq.md#nat-后面的中继要怎么转发端口)） |
 | `wan_interface_missing` / `wan_no_default_route` | 节点的 WAN 接口填错，结论里写了默认路由实际所在的网卡 |
 | `forward_policy_drop` | Docker 把 FORWARD 设成了 DROP。可共存时只是警告；不能共存（ufw、firewalld、别的 nft drop 链）时阻断 |

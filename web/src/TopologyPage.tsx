@@ -714,6 +714,19 @@ function NodeDetail({
               })}
             />
           </Row>
+          {node.role === "exit" && !node.external ? (
+            <Row label="服务器系统" help="Alpine 只能用作直连枢纽的出口：不支持 Mesh、WSS 和外部 SOCKS 承载。预检会核对和实际系统是否一致。">
+              <Select
+                aria-label="服务器系统"
+                value={node.os || ""}
+                onChange={(v: string) => patch({ os: v || undefined })}
+                options={[
+                  { value: "", label: "Debian / Ubuntu" },
+                  { value: "alpine", label: "Alpine 3.19 及更新" },
+                ]}
+              />
+            </Row>
+          ) : null}
           {node.server_id && !server && servers ? (
             <Alert type="error" showIcon style={{ marginBottom: 12 }} message={`引用的服务器 ${node.server_id} 不存在`} />
           ) : null}

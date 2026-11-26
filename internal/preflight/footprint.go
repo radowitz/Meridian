@@ -172,13 +172,15 @@ var (
 	reExtID        = regexp.MustCompile(`^[a-z0-9-]{1,64}$`)
 	reGostAddr     = regexp.MustCompile(`(?m)^  addr: "([0-9.]+):([0-9]+)"$`)
 	reArtifact     = regexp.MustCompile(`(?m)^\s*ExecStart=/usr/local/sbin/meridian-(wstunnel|smartdns|gost)(\s|$)`)
-	reHarden       = regexp.MustCompile(`(?m)^harden_sysctl((?: [A-Za-z0-9_.@-]{1,15})*)\s*$`)
-	reFWTag        = regexp.MustCompile(`(?m)^FW_TAG=(meridian-fw-[0-9a-f]{8})$`)
-	reFWChain      = regexp.MustCompile(`(?m)^FW_CHAIN=([A-Za-z0-9_-]{1,28})$`)
-	reFWRule       = regexp.MustCompile(`(?m)^  "(-i [A-Za-z0-9_.@-]{1,15} -o [A-Za-z0-9_.@-]{1,15}(?: -m conntrack --ctstate RELATED,ESTABLISHED)?)"$`)
-	reIXHub        = regexp.MustCompile(`(?m)^# meridian-ix-hub: ingress=([0-9.]{7,15}) iface=([A-Za-z0-9_.@-]{1,15}|-) egress=([0-9.]{7,15}|-)$`)
-	reWAN          = regexp.MustCompile(`(?m)^# meridian-wan: ([A-Za-z0-9_.@-]{1,15}) (set|default) need=((?:4|6|any)(?:,(?:4|6))?)$`)
-	reSysctlLine   = regexp.MustCompile(`(?m)^\s*-?\s*(net\.[a-z0-9_.@-]+)\s*=`)
+	// An OpenRC script's supervised binary (Alpine exits, compile/openrc.go).
+	reOpenRCArtifact = regexp.MustCompile(`(?m)^command=/usr/local/sbin/meridian-(wstunnel|smartdns|gost)\s*$`)
+	reHarden         = regexp.MustCompile(`(?m)^harden_sysctl((?: [A-Za-z0-9_.@-]{1,15})*)\s*$`)
+	reFWTag          = regexp.MustCompile(`(?m)^FW_TAG=(meridian-fw-[0-9a-f]{8})$`)
+	reFWChain        = regexp.MustCompile(`(?m)^FW_CHAIN=([A-Za-z0-9_-]{1,28})$`)
+	reFWRule         = regexp.MustCompile(`(?m)^  "(-i [A-Za-z0-9_.@-]{1,15} -o [A-Za-z0-9_.@-]{1,15}(?: -m conntrack --ctstate RELATED,ESTABLISHED)?)"$`)
+	reIXHub          = regexp.MustCompile(`(?m)^# meridian-ix-hub: ingress=([0-9.]{7,15}) iface=([A-Za-z0-9_.@-]{1,15}|-) egress=([0-9.]{7,15}|-)$`)
+	reWAN            = regexp.MustCompile(`(?m)^# meridian-wan: ([A-Za-z0-9_.@-]{1,15}) (set|default) need=((?:4|6|any)(?:,(?:4|6))?)$`)
+	reSysctlLine     = regexp.MustCompile(`(?m)^\s*-?\s*(net\.[a-z0-9_.@-]+)\s*=`)
 )
 
 // SecretFile reports whether a host path is installed 0600 because it
@@ -314,6 +316,13 @@ func FootprintOf(files map[string]string) Footprint {
 				if l, ok := listenOf("tcp", m[1], m[2], base); ok {
 					fp.Listens = append(fp.Listens, l)
 				}
+			}
+		case dir == "/etc/init.d" && strings.HasPrefix(base, "meridian-"):
+			// An OpenRC service (Alpine exits): owned under its systemd
+			// unit name, which the scripts' service shim maps back.
+			fp.Units = append(fp.Units, base+".service")
+			for _, m := range reOpenRCArtifact.FindAllStringSubmatch(body, -1) {
+				binaries[m[1]] = true
 			}
 		case dir == "/etc/systemd/system" && strings.HasSuffix(base, "@.service"):
 		case dir == "/etc/systemd/system" && (strings.HasSuffix(base, ".service") || strings.HasSuffix(base, ".timer")):

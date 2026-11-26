@@ -104,7 +104,7 @@ export function channelText(s: ServerView, servers: ServerView[] = []): string {
   const port = ch.port || s.port;
   if (ch.mode === "tunnel") return `经隧道地址 ${ch.address}:${port}`;
   const via = servers.find((x) => x.id === ch.via_server_id);
-  return `经中继 ${via?.name ?? ch.via_server_id} 跳转到 ${ch.address || s.address}:${port}`;
+  return `经 ${via?.name ?? ch.via_server_id} 跳转到 ${ch.address || s.address}:${port}`;
 }
 
 function channelOf(v: FormValues): ManagementChannel {
@@ -321,14 +321,14 @@ function ServerFormDrawer({
         <Form.Item
           name="channel_mode"
           label="管理通道"
-          extra={<Note>{"面板怎样连到这台服务器的 SSH。只走你选的这一条：它不通时面板如实报告，不会自动改走直连或别的通道。每一跳都用面板保存的凭据和已固定的主机指纹，不转发密钥或 agent。经隧道地址和经中继跳转还没有在真实主机上验证过。"}</Note>}
+          extra={<Note>{"面板怎样连到这台服务器的 SSH。只走你选的这一条：它不通时面板如实报告，不会自动改走直连或别的通道。每一跳都用面板保存的凭据和已固定的主机指纹，不转发密钥或 agent。经隧道地址还没有在真实主机上验证过。"}</Note>}
         >
           <Radio.Group
             optionType="button"
             options={[
               { value: "direct", label: "直连" },
               { value: "tunnel", label: "经隧道地址" },
-              { value: "jump", label: "经中继跳转" },
+              { value: "jump", label: "经中继或枢纽跳转" },
             ]}
           />
         </Form.Item>
@@ -363,11 +363,11 @@ function ServerFormDrawer({
           <>
             <Form.Item
               name="channel_via"
-              label="经哪台中继"
-              extra={<Note>{"只能是拓扑里受管中继节点的服务器，而且它本身是直连的。中继只转发加密的字节，不在它上面执行任何东西。"}</Note>}
-              rules={[{ required: true, message: "请选择中继服务器" }]}
+              label="经哪台中继或枢纽"
+              extra={<Note>{"只能是拓扑里受管中继或枢纽节点的服务器，而且它本身是直连的。国内中继连不上的境外服务器可以经香港枢纽跳转。跳板只转发加密的字节，不在它上面执行任何东西。"}</Note>}
+              rules={[{ required: true, message: "请选择跳板服务器" }]}
             >
-              <Select placeholder="选择中继服务器" options={viaOptions} aria-label="中继服务器" />
+              <Select placeholder="选择中继或枢纽的服务器" options={viaOptions} aria-label="中继服务器" />
             </Form.Item>
             <Space.Compact block>
               <Form.Item name="channel_address" label="中继看到的地址（可选）" style={{ flex: 1 }} extra={<Note>{"空着就用上面的地址"}</Note>}>
@@ -717,7 +717,7 @@ function ServerFlow({
                         { key: "arch", label: "架构", children: lt.arch || "—" },
                         { key: "auth", label: "登录方式", children: lt.auth_method ? authLabel(lt.auth_method) : "—" },
                         { key: "ms", label: "耗时", children: `${lt.duration_ms} ms` },
-                        ...(lt.channel ? [{ key: "ch", label: "管理通道", children: lt.channel === "tunnel" ? "经隧道地址" : "经中继跳转" }] : []),
+                        ...(lt.channel ? [{ key: "ch", label: "管理通道", children: lt.channel === "tunnel" ? "经隧道地址" : "经中继或枢纽跳转" }] : []),
                       ]}
                     />
                   ) : (
@@ -1007,7 +1007,7 @@ export default function ServersPage() {
                     <Space size={4} className="cell-nowrap-flex">
                       <Mono ellipsis>{`${s.user}@${s.address}:${s.port}`}</Mono>
                       {s.channel && s.channel.mode !== "direct" ? (
-                        <span className="muted" title={channelText(s, list)}>{s.channel.mode === "tunnel" ? "经隧道" : "经中继"}</span>
+                        <span className="muted" title={channelText(s, list)}>{s.channel.mode === "tunnel" ? "经隧道" : "经跳转"}</span>
                       ) : null}
                     </Space>
                   ),

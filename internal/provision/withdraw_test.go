@@ -451,3 +451,17 @@ func TestWithdrawLegacyCleanup(t *testing.T) {
 		t.Fatalf("second legacy plan: %d\n%s", code, out)
 	}
 }
+
+// A Debian / Ubuntu host's own SysV script at /etc/init.d/meridian-* is not
+// Meridian's (Meridian writes OpenRC scripts on Alpine only): legacy
+// cleanup never plans it, even with a Meridian mention in it.
+func TestWithdrawLegacyKeepsSysVScripts(t *testing.T) {
+	sb := newSandbox(t)
+	withdrawStubs(t, sb)
+	sb.write("/usr/local/sbin/meridian-up.sh", "#!/bin/bash\n# Meridian up\n")
+	sb.write("/etc/init.d/meridian-node", "#!/sbin/openrc-run\n# Meridian node data plane at boot (meridian-up.sh), OpenRC.\n")
+	p := plan(t, sb, wopts("tw", WithdrawLegacy, WithdrawPlan, ""))
+	if strings.Contains(strings.Join(p.Plan, "\n"), "init.d") {
+		t.Fatalf("legacy plan reaches a script on a systemd host:\n%s", strings.Join(p.Plan, "\n"))
+	}
+}

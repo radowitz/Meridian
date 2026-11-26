@@ -65,12 +65,19 @@ const (
 	ModeAuto RuleMode = "auto"
 )
 
+// OSAlpine marks a node installed on Alpine Linux (OpenRC, apk).
+const OSAlpine = "alpine"
+
 // Node is one box or a logical hop (the IX dedicated line has no SSH target).
 type Node struct {
-	ID      string  `json:"id"`
-	Name    string  `json:"name"`
-	Role    Role    `json:"role"`
-	Region  string  `json:"region,omitempty"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Role   Role   `json:"role"`
+	Region string `json:"region,omitempty"`
+	// OS is the server's system family when it is not Debian / Ubuntu:
+	// "alpine" (OpenRC, apk; managed exits only). Empty is Debian / Ubuntu
+	// with systemd. The preflight checks it against the host.
+	OS      string  `json:"os,omitempty"`
 	Managed bool    `json:"managed"`
 	X       float64 `json:"x,omitempty"`
 	Y       float64 `json:"y,omitempty"`

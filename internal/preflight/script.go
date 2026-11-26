@@ -42,6 +42,10 @@ func ValidPath(p string) bool {
 			return false
 		}
 	}
+	// The only two files Meridian writes under /etc/init.d (Alpine exits).
+	if p == "/etc/init.d/meridian-node" || p == "/etc/init.d/meridian-smartdns" {
+		return true
+	}
 	for _, pre := range pathPrefixes {
 		if strings.HasPrefix(p, pre) && len(p) > len(pre) {
 			return true
@@ -219,6 +223,14 @@ ustate() {
   a=$(q systemctl is-active "$1" | first); e=$(q systemctl is-enabled "$1" | first); m=$(q systemctl show -p MainPID --value "$1" | first)
   echo "unit $1 ${a:--} ${e:--} ${m:-0}"
 }
+# ostate: an OpenRC service reported under its systemd unit name.
+ostate() {
+  s=${1%.service}; a=inactive; e=disabled
+  [ -x "/etc/init.d/$s" ] || e=not-found
+  if q rc-service "$s" status >/dev/null; then a=active; fi
+  if [ -n "$(ls /etc/runlevels/*/"$s" 2>/dev/null)" ]; then e=enabled; fi
+  echo "unit $1 $a $e 0"
+}
 
 meridian_preflight() {
   echo 'meridian-preflight 1'
@@ -232,12 +244,16 @@ meridian_preflight() {
     echo "os-pretty $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | first)"
   fi
   if [ -d /run/systemd/system ] && have systemctl; then echo 'systemd yes'; else echo 'systemd no'; fi
+  if have rc-service && have rc-update; then echo 'openrc yes'; else echo 'openrc no'; fi
   echo "mem-total-kb $(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)"
   echo "mem-avail-kb $(awk '/^MemAvailable:/ {print $2}' /proc/meminfo 2>/dev/null)"
   echo "disk-avail-kb $(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}')"
-  for c in wg wg-quick nft ip ss iptables ip6tables apt-get dpkg-query systemctl smartdns wstunnel docker curl python3 sha256sum timeout flock warp-cli; do
+  for c in wg wg-quick nft ip ss iptables ip6tables apt-get dpkg-query systemctl smartdns wstunnel docker curl python3 sha256sum timeout flock warp-cli apk rc-service; do
     echo "cmd $c $(yn have "$c")"
   done
+  # iproute2's ip, not BusyBox's (no policy routing; Alpine ships BusyBox's).
+  if have ip && q ip -V | grep -q iproute2; then echo 'cmd ip-full yes'; else echo 'cmd ip-full no'; fi
+  if [ -s /etc/ssl/certs/ca-certificates.crt ]; then echo 'cmd ca-bundle yes'; else echo 'cmd ca-bundle no'; fi
   if have iptables; then
     echo "iptables-version $(q iptables -V | first)"
     for ch in INPUT FORWARD; do
@@ -345,6 +361,17 @@ meridian_preflight() {
   else
     echo 'nftables-conf absent'
   fi
+  # OpenRC (Alpine): the services that would matter, reported like units.
+  # An nftables service there loads /etc/nftables.nft, which usually starts
+  # by flushing the whole ruleset.
+  if [ -f /etc/alpine-release ] && have rc-service; then
+    for s in nftables docker smartdns; do ostate "$s.service"; done
+    # Alpine's nftables service flushes the whole ruleset when it stops.
+    [ -x /etc/init.d/nftables ] && echo 'nftables-stop flush' 
+    if [ -f /etc/nftables.nft ]; then
+      if grep -qE '^[[:space:]]*flush[[:space:]]+ruleset' /etc/nftables.nft 2>/dev/null; then echo 'nftables-conf flush'; else echo 'nftables-conf noflush'; fi
+    fi
+  fi
   for p in warp-svc dockerd smartdns wstunnel; do
     echo "proc $p $(yn q pgrep -x "$p")"
   done
@@ -353,7 +380,16 @@ meridian_preflight() {
   if have wg; then echo "version wg $(q wg --version | first)"; fi
   # Distribution packages a provision may need: present version and the
   # apt candidate ("-" when none). Read-only (dpkg-query, apt-cache policy).
+  # Alpine: installed versions from apk (read-only, no index refresh); the
+  # candidate is not known without one ("apk" stands for "apk add decides").
+  if have apk && ! have dpkg-query; then
+    for p in wireguard-tools nftables iproute2; do
+      i=$(q apk info -e "$p" >/dev/null && q apk list -I "$p" | sed -n "s/^$p-\([0-9][^ ]*\) .*/\1/p" | first)
+      echo "pkg $p ${i:--} apk"
+    done
+  fi
   for p in wireguard-tools nftables iproute2 smartdns; do
+    have dpkg-query || have apt-cache || continue
     i=-; c=-
     if have dpkg-query; then i=$(q dpkg-query -W -f='${Status} ${Version}\n' "$p" | awk '$3=="installed" {print $4}' | first); fi
     if have apt-cache; then c=$(q apt-cache policy "$p" | sed -n 's/^ *Candidate: *//p' | first); fi
@@ -393,7 +429,7 @@ meridian_preflight() {
         continue ;;
     esac
     case "$p" in
-      /etc/wireguard/?*|/etc/nftables.d/?*|/etc/sysctl.d/?*|/etc/smartdns/?*|/etc/meridian/?*|/etc/systemd/system/?*|/etc/iproute2/rt_tables.d/?*|/usr/local/sbin/?*|/var/lib/meridian/?*) ;;
+      /etc/wireguard/?*|/etc/nftables.d/?*|/etc/sysctl.d/?*|/etc/smartdns/?*|/etc/meridian/?*|/etc/systemd/system/?*|/etc/init.d/meridian-node|/etc/init.d/meridian-smartdns|/etc/iproute2/rt_tables.d/?*|/usr/local/sbin/?*|/var/lib/meridian/?*) ;;
       *) echo 'note path argument refused'; continue ;;
     esac
     case "$p" in
@@ -430,6 +466,8 @@ meridian_preflight() {
         if have systemctl; then
           ustate "${p##*/}"
         fi ;;
+      /etc/init.d/meridian-node|/etc/init.d/meridian-smartdns)
+        if [ -f /etc/alpine-release ] && have rc-service; then ostate "${p##*/}.service"; fi ;;
     esac
   done
   if [ -f /var/lib/meridian/node/manifest ]; then

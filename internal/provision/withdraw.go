@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/radowitz/meridian/internal/compile"
 	"github.com/radowitz/meridian/internal/preflight"
 )
 
@@ -141,13 +142,14 @@ const withdrawBody = `set -o pipefail
 umask 077
 export LC_ALL=C
 M_ROOT=''
-M_STATE=$M_ROOT/var/lib/meridian/node
+` + compile.ServiceShim + `M_STATE=$M_ROOT/var/lib/meridian/node
 M_MANIFEST=$M_STATE/manifest
 M_JOURNAL=$M_STATE/journal
 M_LEFT=0
 W_LEFTSET=' '
 w_refuse() { echo "MERIDIAN_REFUSED $1"; echo "meridian: $2; nothing was changed" >&2; exit 3; }
 [ "$(id -u)" = 0 ] || w_refuse not_root 'withdraw needs root'
+m_why=$(m_init_refuse); [ -z "$m_why" ] || w_refuse no_service_manager "$m_why"
 w_sum() { sha256sum | cut -c1-64; }
 w_jget() { sed -n "s/^$1 //p" "$M_JOURNAL" 2>/dev/null | head -n 1; }
 w_mget() { sed -n "s/^$1 //p" "$M_MANIFEST" 2>/dev/null | head -n 1; }
@@ -160,7 +162,7 @@ W_RE_PRIO='^[0-9]{1,5}$'
 W_RE_DST='^[0-9a-fA-F.:]{2,45}/[0-9]{1,3}$'
 W_RE_PKG='^[a-z0-9][a-z0-9.+-]{0,40}$'
 W_RE_HASH='^[0-9a-f]{64}$'
-W_RE_PATH='^/(etc/wireguard|etc/nftables[.]d|etc/sysctl[.]d|etc/smartdns|etc/meridian|etc/systemd/system|etc/iproute2/rt_tables[.]d|usr/local/sbin)/[A-Za-z0-9._@+-][A-Za-z0-9._/@+-]{0,190}$'
+W_RE_PATH='^/(etc/wireguard|etc/nftables[.]d|etc/sysctl[.]d|etc/smartdns|etc/meridian|etc/systemd/system|etc/iproute2/rt_tables[.]d|usr/local/sbin)/[A-Za-z0-9._@+-][A-Za-z0-9._/@+-]{0,190}$|^/etc/init[.]d/meridian-(node|smartdns)$'
 W_RE_RUN='^[A-Za-z0-9._-]{1,64}$'
 w_iface() { [[ $1 =~ $W_RE_IFACE ]]; }
 w_unit() { [[ $1 =~ $W_RE_UNIT ]]; }
@@ -174,6 +176,8 @@ w_pkg() { [[ $1 =~ $W_RE_PKG ]]; }
 w_hash() { [[ $1 =~ $W_RE_HASH ]]; }
 w_path() { [[ $1 =~ $W_RE_PATH ]] && [[ $1 != *..* ]] && [[ $1 != */ ]]; }
 w_marked() { [ -f "$1" ] && [ ! -L "$1" ] && head -n 12 -- "$1" 2>/dev/null | grep -qi meridian; }
+# w_openrc_marked: an OpenRC script Meridian generated (its first two lines).
+w_openrc_marked() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(head -n 1 -- "$1")" = '#!/sbin/openrc-run' ] && head -n 2 -- "$1" | tail -n 1 | grep -q '^# Meridian '; }
 w_runid() { [[ $1 =~ $W_RE_RUN ]]; }
 w_removed() { echo "MERIDIAN_REMOVED $*"; }
 w_kept() { echo "MERIDIAN_KEPT $*"; }
@@ -245,6 +249,15 @@ w_legacy_scan() {
       n=${f##*/}
       if w_unit "$n" && w_marked "$f"; then echo "file /etc/systemd/system/$n"; echo "unit $n"; fi
     done
+    # OpenRC services (Alpine exits only) are owned under their systemd unit
+    # name; only scripts Meridian generated (their second line).
+    if [ "$M_OPENRC" = 1 ]; then
+      for f in "$M_ROOT"/etc/init.d/meridian-node "$M_ROOT"/etc/init.d/meridian-smartdns; do
+        n=${f##*/}
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        if w_unit "$n.service" && w_openrc_marked "$f"; then echo "file /etc/init.d/$n"; echo "unit $n.service"; fi
+      done
+    fi
     for f in "$M_ROOT"/usr/local/sbin/meridian-*; do
       n=${f##*/}
       if w_path "/usr/local/sbin/$n" && w_marked "$f"; then echo "file /usr/local/sbin/$n"; fi
@@ -296,7 +309,7 @@ w_legacy_load() {
 w_plan_items() {
   local i p f st
   for p in "${W_UNITS[@]}"; do
-    st=absent; if w_unit_live "$p" || [ -e "$M_ROOT/etc/systemd/system/$p" ]; then st=present; fi
+    st=absent; if w_unit_live "$p" || [ -e "$M_ROOT/etc/systemd/system/$p" ] || [ -e "$M_ROOT/etc/init.d/${p%.service}" ]; then st=present; fi
     echo "MERIDIAN_PLAN unit $p $st"
   done
   for p in "${W_IFACES[@]}"; do st=absent; w_has_link "$p" && st=present; echo "MERIDIAN_PLAN iface $p $st"; done
@@ -387,8 +400,14 @@ w_remove_all() {
   for i in "${!W_FILES[@]}"; do
     p=${W_FILES[$i]}; f=$M_ROOT$p
     [ -e "$f" ] || [ -L "$f" ] || continue
+    # OpenRC: a service still linked in a runlevel keeps its script (without
+    # it the link could not be removed on a retry).
+    case "$p" in /etc/init.d/meridian-*)
+      if m_unit_linked "${p##*/}.service"; then w_left file "$p (its service is still in a runlevel: kept for a retry)"; continue; fi ;;
+    esac
     if [ "${W_HASHES[$i]}" = legacy ]; then
-      if ! w_marked "$f"; then w_left file "$p (no longer carries the Meridian marker: kept)"; continue; fi
+      case "$p" in /etc/init.d/*) m_ok=w_openrc_marked ;; *) m_ok=w_marked ;; esac
+      if ! "$m_ok" "$f"; then w_left file "$p (no longer carries the Meridian marker: kept)"; continue; fi
     elif [ "${W_HASHES[$i]}" = legacy-dir ]; then
       if [ ! -f "$f" ] || [ -L "$f" ]; then w_left file "$p (not a regular file: kept)"; continue; fi
     elif [ ! -f "$f" ] || [ -L "$f" ] || [ "$(sha256sum -- "$f" | cut -c1-64)" != "${W_HASHES[$i]}" ]; then
@@ -430,6 +449,8 @@ w_remove_all() {
   # Verify: nothing named above may still be there.
   for u in "${W_UNITS[@]}"; do
     if systemctl is-active --quiet "$u" 2>/dev/null; then w_left unit "$u (still active)"; fi
+    if systemctl is-enabled --quiet "$u" 2>/dev/null; then w_left unit "$u (still enabled)"; fi
+    if m_unit_linked "$u"; then w_left unit "$u (still in an OpenRC runlevel)"; fi
   done
   for p in "${W_IFACES[@]}"; do if w_has_link "$p"; then w_left iface "$p"; fi; done
   for t in "${W_NFTS[@]}"; do if w_has_nft "$t"; then w_left nft "inet $t"; fi; done

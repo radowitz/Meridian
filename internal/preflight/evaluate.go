@@ -343,7 +343,10 @@ type Context struct {
 	// ownership is the install manifest (Owned), legacy Meridian files are
 	// adopted or refused by the install transaction itself.
 	Gateway bool
-	Owned   *Owned
+	// OS is the node's declared system family (model.Node.OS): "" for
+	// Debian / Ubuntu, "alpine" for an Alpine exit.
+	OS    string
+	Owned *Owned
 	// Ports are the topology sources of the ports the bundle binds; a
 	// port_in_use finding names the field to change.
 	Ports []PortSource
@@ -668,10 +671,20 @@ func (e *eval) system() {
 	if maj, min, ok := kernelVersion(r.Kernel); ok && (maj < 5 || maj == 5 && min < 6) {
 		e.add(Blocking, CodeKernelTooOld, "kernel", fmt.Sprintf("内核 %s 早于 5.6，没有内置 WireGuard。", r.Kernel), "升级到发行版的较新内核（Debian 12/13 自带的即可）。")
 	}
-	if r.Systemd != "yes" {
+	alpine := r.OSID == "alpine" && e.ctx.OS == "alpine"
+	if alpine && r.OpenRC != "yes" {
+		e.add(Blocking, CodeNoSystemd, "openrc", "这台 Alpine 主机没有 OpenRC（rc-service / rc-update）：Meridian 的出口服务靠它开机启动和看护。", "用带 OpenRC 的 Alpine（官方镜像和常见 LXC 模板都带）。")
+	} else if !alpine && r.Systemd != "yes" {
 		e.add(Blocking, CodeNoSystemd, "systemd", "这台主机没有以 systemd 运行（或读不到）：Meridian 的服务和定时器靠 systemd 启动。", "在用 systemd 的系统上部署（容器或 OpenVZ 之类的环境不支持）。")
 	}
 	need := []string{}
+	if alpine && !r.Commands["ip-full"] {
+		// BusyBox's ip reads routing tables and rules unreliably (table
+		// names only from rt_tables): the report cannot be trusted to say
+		// which tables are free, so iproute2 must be there before it runs.
+		e.add(Blocking, CodeOSUnsupported, "iproute2", "这台 Alpine 主机只有 BusyBox 自带的 ip，读路由表和策略路由不可靠，预检没法确认哪些路由表空闲。",
+			"在服务器上执行 apk add iproute2，然后重新预检。")
+	}
 	for _, p := range e.fp.Packages {
 		if !r.Commands[p.Command] {
 			need = append(need, p.Package)
@@ -706,7 +719,11 @@ func (e *eval) system() {
 		}
 		need = nil
 	}
-	if len(need) > 0 && !r.Commands["apt-get"] {
+	if alpine {
+		if len(need) > 0 && !r.Commands["apk"] {
+			e.add(Blocking, CodeNoApt, "apk", "需要安装 "+strings.Join(need, "、")+"，但这台 Alpine 主机上没有 apk。", "先手动装好这些软件包，然后重新预检。")
+		}
+	} else if len(need) > 0 && !r.Commands["apt-get"] {
 		e.add(Blocking, CodeNoApt, "apt-get", "需要安装 "+strings.Join(need, "、")+"，但主机上没有 apt-get。", "在支持的系统（"+supportedList()+"）上部署，或先手动装好这些软件包。")
 	}
 	if !e.ctx.Gateway {
@@ -732,7 +749,9 @@ func (e *eval) system() {
 	}
 	if r.MemAvailKB >= 0 || r.MemTotalKB >= 0 {
 		msg := fmt.Sprintf("内存：共 %s，可用 %s。", kb(r.MemTotalKB), kb(r.MemAvailKB))
-		if (r.MemAvailKB >= 0 && r.MemAvailKB < 256*1024) || (r.MemTotalKB >= 0 && r.MemTotalKB < 512*1024) {
+		// An Alpine exit runs no container (validate.checkNodeOS): only the
+		// memory budget below applies to it.
+		if !alpine && ((r.MemAvailKB >= 0 && r.MemAvailKB < 256*1024) || (r.MemTotalKB >= 0 && r.MemTotalKB < 512*1024)) {
 			e.add(Warning, CodeLowMemory, "memory", msg+"内存很紧：SmartDNS、wstunnel 能跑，但解锁探测容器（Docker）可能因内存不足失败或挤占已有服务。",
 				"确认已有服务的内存余量；必要时不要在这台机器上跑解锁探测。")
 		}
@@ -752,6 +771,27 @@ func (e *eval) platform() {
 	if r.OSID == "" {
 		e.add(Blocking, CodeOSUnsupported, "os", "读不到发行版信息（/etc/os-release），不能确认软件包和配置兼容。",
 			"在支持的系统上部署："+supportedList()+"。")
+		return
+	}
+	if e.ctx.OS == "alpine" && r.OSID != "alpine" {
+		e.add(Blocking, CodeOSUnsupported, "os", fmt.Sprintf("拓扑里这个节点标成了 Alpine，主机实际是 %s。", name), "在拓扑里把这个节点的系统改回 Debian / Ubuntu，或换成 Alpine 主机。")
+		return
+	}
+	if r.OSID == "alpine" && !e.ctx.Gateway {
+		if e.ctx.OS != "alpine" {
+			e.add(Blocking, CodeOSUnsupported, "os", fmt.Sprintf("主机是 %s，拓扑里这个节点没有标成 Alpine。", name), "在拓扑里把这个节点的系统改成 Alpine（只支持直连枢纽的出口），然后重新预检。")
+			return
+		}
+		if !alpineVersionOK(r.OSVersion) {
+			e.add(Blocking, CodeOSUnsupported, "os", fmt.Sprintf("系统是 %s。Alpine 只支持 3.19 及更新的版本。", name), "升级到 Alpine 3.19 或更新的版本。")
+			return
+		}
+		switch r.Arch {
+		case "x86_64", "aarch64":
+			e.out.Platform = fmt.Sprintf("Alpine %s %s（出口，OpenRC）", r.OSVersion, r.Arch)
+		default:
+			e.add(Blocking, CodeArchUnsupported, "arch", fmt.Sprintf("CPU 架构 %s 不支持（只支持 x86_64 和 aarch64）。", orDash(r.Arch)), "换用 x86_64 或 aarch64 的服务器。")
+		}
 		return
 	}
 	if e.ctx.Gateway {
@@ -2020,6 +2060,12 @@ func (e *eval) nftFlush() {
 		if st.Active == "active" {
 			state = append(state, "正在运行")
 		}
+		if r.OSID == "alpine" {
+			e.add(Blocking, CodeNFTFlush, "nftables",
+				"OpenRC 的 nftables 服务"+strings.Join(state, "、")+"。它停止或重启时会清空整个规则集，Meridian 出口的表（包括出口的 NAT）会一起被清掉，所以在改动任何东西之前拒绝。",
+				"主机不靠它加载自己的规则时：rc-update del nftables，然后在合适的时候重启主机（不要直接 rc-service nftables stop，它停止时会清空规则集）。改好后重新预检。")
+			return
+		}
 		e.add(Blocking, CodeNFTFlush, "nftables.service",
 			"nftables.service "+strings.Join(state, "、")+"，而且"+strings.Join(how, "；")+"。任何人或任何软件执行 systemctl reload / restart / stop nftables 都会清掉"+what+"，直到下次下发或重新执行 meridian-up.sh。这在主机自己的配置之外无法做到失败关闭，所以在改动任何东西之前拒绝。",
 			"面板不改这台主机自己的 nftables 配置。任选其一后重新预检：① 主机不靠 nftables.service 加载自己的规则：systemctl disable nftables.service，然后在合适的时候重启主机（不要执行 systemctl stop nftables：它停止时会清空整个规则集，连 Docker 的规则一起清掉）；"+
@@ -2151,7 +2197,15 @@ func (e *eval) warp() {
 
 func (e *eval) plan() {
 	r := e.r
+	alpine := r.OSID == "alpine" && e.ctx.OS == "alpine"
+	if alpine && !e.ctx.Gateway && !r.Commands["ca-bundle"] {
+		e.change("package", "install", "ca-certificates-bundle", "apk add --no-cache（出口解析器的 DoT / DoH 上游要用；失败补偿时不卸载）")
+	}
 	for _, p := range e.fp.Packages {
+		if alpine && !e.ctx.Gateway && !r.Commands[p.Command] {
+			e.change("package", "install", p.Package, "apk add --no-cache（失败补偿时不卸载）")
+			continue
+		}
 		if !e.ctx.Gateway && !r.Commands[p.Command] {
 			detail := "apt-get install --no-install-recommends（失败补偿时不卸载）"
 			if st, ok := r.Packages[p.Package]; ok && st.Candidate != "" {
@@ -2687,4 +2741,19 @@ func (e *eval) uplinkTooSmall(f UplinkFact, leg string) {
 	}
 	e.addFix(sev, CodeUplinkMTUTooSmall, c.Iface, msg, action,
 		&Fix{Kind: "link", ID: c.LinkID, Field: c.Field, Label: "链路 " + c.LinkID + " 的「" + strings.ToUpper(strings.ReplaceAll(c.Field, "_", " ")) + "」"})
+}
+
+// alpineVersionOK: Alpine 3.19 or newer (VERSION_ID carries the patch
+// release, "3.19.1").
+func alpineVersionOK(v string) bool {
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	maj, err1 := strconv.Atoi(parts[0])
+	min, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return maj > 3 || maj == 3 && min >= 19
 }

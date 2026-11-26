@@ -204,6 +204,7 @@ type Report struct {
 	OSCodename  string          `json:"os_codename,omitempty"`
 	OSPretty    string          `json:"os_pretty,omitempty"`
 	Systemd     string          `json:"systemd,omitempty"` // yes | no
+	OpenRC      string          `json:"openrc,omitempty"`  // yes | no (Alpine)
 	MemTotalKB  int64           `json:"mem_total_kb"`
 	MemAvailKB  int64           `json:"mem_avail_kb"`
 	DiskAvailKB int64           `json:"disk_avail_kb"`
@@ -400,6 +401,8 @@ func Parse(text string) Report {
 			r.OSPretty = strings.Trim(rest, `"'`)
 		case "systemd":
 			r.Systemd = word(rest)
+		case "openrc":
+			r.OpenRC = word(rest)
 		case "mem-total-kb":
 			r.MemTotalKB = atoi64(rest, -1)
 		case "mem-avail-kb":

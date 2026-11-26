@@ -4,6 +4,12 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.10
+
+- 出口可以装在 Alpine Linux 上了（3.19 及更新，包括只有 200MB 内存的 LXC 小鸡）。在拓扑里把出口的「服务器系统」选成 Alpine 即可；它只能直连枢纽，不支持 Mesh、WSS 和外部 SOCKS 承载。服务器上要先装好 bash 和 iproute2（apk add bash iproute2），预检会核对。
+- 国内中继连不上的境外服务器，面板现在可以经香港等地的受管枢纽跳转去管理它。
+- 撤回 Alpine 出口时，没能完全撤掉的服务会如实列为残留，不会报成功。
+
 ## v1.0.9
 
 - 远程接入新增「允许接入设备互相访问」开关，默认关闭。打开并安装到网关后，连回家的设备之间可以互相访问，比如在外面用笔记本访问另一台也连着回家的电脑。

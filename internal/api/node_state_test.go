@@ -351,3 +351,31 @@ func TestNodeReadBackTunnelMTU(t *testing.T) {
 		t.Fatalf("a drift found by the preflight left the node in sync: %+v %+v", st, st.Verify)
 	}
 }
+
+// A managed hub's server may carry a jump (a hub abroad reaches exits the
+// domestic relays cannot); an exit's server, or one no node uses, may not.
+func TestJumpPolicyRelayOrHub(t *testing.T) {
+	f := newGateFix(t)
+	s := f.s
+	topo, _, _ := s.Store.Load()
+	for i := range topo.Nodes {
+		switch topo.Nodes[i].ID {
+		case "hk-hub":
+			topo.Nodes[i].ServerID = "srv-hub"
+		case "jp":
+			topo.Nodes[i].ServerID = "srv-exit"
+		}
+	}
+	if err := s.Store.Save(topo); err != nil {
+		t.Fatal(err)
+	}
+	target := model.Server{ID: "srv-target", Name: "目标"}
+	if err := s.jumpPolicy(model.Server{ID: "srv-hub", Name: "枢纽"}, target); err != nil {
+		t.Fatalf("hub refused: %v", err)
+	}
+	for _, id := range []string{"srv-exit", "srv-none"} {
+		if err := s.jumpPolicy(model.Server{ID: id, Name: id}, target); err == nil {
+			t.Fatalf("%s allowed as a jump", id)
+		}
+	}
+}

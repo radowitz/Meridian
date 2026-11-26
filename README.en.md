@@ -64,13 +64,13 @@ On Debian 13 (amd64 / arm64) with a static address on the LAN port:
 
 ```sh
 git clone https://github.com/radowitz/Meridian.git && cd Meridian
-sudo bash deploy/debian/install.sh --lan-addr <gateway LAN IPv4> --version v1.0.9
+sudo bash deploy/debian/install.sh --lan-addr <gateway LAN IPv4> --version v1.0.10
 sudo docker compose -f deploy/docker-compose.yml exec meridian meridian setup-code
 ```
 
 Open `http://<gateway LAN IPv4>:8787`, create the admin with the one-time setup code from the terminal, then follow the wizard: gateway → template → servers (confirm fingerprints) → topology → preflight → deploy. Full steps: [docs/user/quickstart.md](docs/user/quickstart.md).
 
-[v1.0.9 release notes](https://github.com/radowitz/Meridian/releases/tag/v1.0.9) · image `ghcr.io/radowitz/meridian:v1.0.9` (amd64 / arm64). If the gateway cannot reach ghcr.io, build locally with `--build` or load a saved image with `--image-tar`.
+[v1.0.10 release notes](https://github.com/radowitz/Meridian/releases/tag/v1.0.10) · image `ghcr.io/radowitz/meridian:v1.0.10` (amd64 / arm64). If the gateway cannot reach ghcr.io, build locally with `--build` or load a saved image with `--image-tar`.
 
 ## Documentation
 

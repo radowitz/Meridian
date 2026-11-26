@@ -49,20 +49,21 @@ func (s *Server) connector(cs *credentials.Store) *sshexec.Connector {
 }
 
 // jumpPolicy: a jump channel may only go through the server of a managed
-// relay node of the topology (the panel installs and pins that host). Any
-// other server, even one that would forward, is refused before anything is
+// relay or hub node of the topology (the panel installs and pins those
+// hosts; a hub abroad reaches exits a domestic relay cannot). Any other
+// server, even one that would forward, is refused before anything is
 // dialed.
 func (s *Server) jumpPolicy(via, target model.Server) error {
 	t, err := s.topology()
 	if err != nil {
-		return fmt.Errorf("读不到拓扑，不能确认跳转用的服务器 %s 是受管中继：%v", via.Name, err)
+		return fmt.Errorf("读不到拓扑，不能确认跳转用的服务器 %s 是受管中继或枢纽：%v", via.Name, err)
 	}
 	for _, n := range t.Nodes {
-		if n.ServerID == via.ID && n.Managed && n.Role == model.RoleRelay {
+		if n.ServerID == via.ID && n.Managed && (n.Role == model.RoleRelay || n.Role == model.RoleHub) {
 			return nil
 		}
 	}
-	return fmt.Errorf("服务器 %s 不是拓扑里受管中继节点的服务器：管理通道只能经受管中继跳转（%s 的管理通道没有使用，也没有改走直连）", via.Name, target.Name)
+	return fmt.Errorf("服务器 %s 不是拓扑里受管中继或枢纽节点的服务器：管理通道只能经受管中继或枢纽跳转（%s 的管理通道没有使用，也没有改走直连）", via.Name, target.Name)
 }
 
 // sshPool returns the server's SSH connection pool.

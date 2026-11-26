@@ -251,7 +251,9 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 	}
 	var bootUnits []string
 	for _, u := range []string{compile.NodeUnit, compile.FWCompatUnit} {
-		if _, ok := files["/etc/systemd/system/"+u]; ok {
+		_, systemd := files["/etc/systemd/system/"+u]
+		_, openrc := files["/"+compile.OpenRCPath(u)]
+		if systemd || openrc {
 			bootUnits = append(bootUnits, u)
 		}
 	}
@@ -306,7 +308,13 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 		fmt.Fprintf(&sb, "m_art_check %s %s %s %s\n", shellQuote(a.Name), shellQuote(artifacts.HostPath(a.Name)), shellQuote(a.SHA256), mode)
 	}
 	sb.WriteString("{\n")
+	// Alpine: iproute2's ip before m_begin records the host's rules and
+	// routes (BusyBox's cannot read them, and compensation removes only
+	// what is not in that record). Packages are never removed, so this
+	// changes nothing a failed run would have to undo.
+	sb.WriteString(alpineIPPrelude)
 	sb.WriteString("m_begin\n")
+	sb.WriteString("for m_p in $M_PREPKG; do m_note \"pkg $m_p\"; done\n")
 	sb.WriteString("export DEBIAN_FRONTEND=noninteractive\n")
 	sb.WriteString(packageInstall)
 	// Installing nftables must not leave a service that flushes the
@@ -356,7 +364,7 @@ func ScriptWith(nodeName string, files map[string]string, o Options) string {
 			// identifier injected: readable by root only (SmartDNS runs
 			// as root).
 			mode = "600"
-		case strings.HasSuffix(clean, ".sh") || strings.Contains(clean, "/usr/local/sbin/"):
+		case strings.HasSuffix(clean, ".sh") || strings.Contains(clean, "/usr/local/sbin/") || strings.HasPrefix(clean, "/etc/init.d/"):
 			mode = "755"
 		}
 		dir := dirOf(clean)
@@ -396,7 +404,7 @@ fi
 	// meridian-up.sh just ran, and meridian-node.service runs it again at
 	// boot (it must never be started from meridian-up.sh itself).
 	if len(bootUnits) > 0 {
-		sb.WriteString("if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then\n")
+		sb.WriteString("if m_has_init; then\n")
 		sb.WriteString("  systemctl daemon-reload\n")
 		for _, u := range bootUnits {
 			if u == compile.FWCompatUnit {
@@ -415,7 +423,7 @@ fi
 			fmt.Fprintf(&sb, "  systemctl enable %s\n", shellQuote(u))
 		}
 		sb.WriteString("else\n")
-		sb.WriteString("  echo 'meridian: no systemd; the boot unit cannot be enabled' >&2\n")
+		sb.WriteString("  echo 'meridian: neither systemd nor OpenRC; the boot unit cannot be enabled' >&2\n")
 		sb.WriteString("  exit 1\n")
 		sb.WriteString("fi\n")
 	}
@@ -473,7 +481,7 @@ const provisionPrelude = provisionGuard + compensateLib + provisionTxn + artifac
 
 // provisionGuard re-validates the target before anything changes.
 const provisionGuard = `M_ROOT=''
-M_STATE=$M_ROOT/var/lib/meridian/node
+` + compile.ServiceShim + `M_STATE=$M_ROOT/var/lib/meridian/node
 M_MANIFEST=$M_STATE/manifest
 M_JOURNAL=$M_STATE/journal
 M_WORK=$M_STATE/run-$M_RUN
@@ -489,6 +497,8 @@ m_refuse() {
 # starts with a whole-ruleset flush) or on stop/restart (its ExecStop flushes).
 m_nft_flush_risk() {
   local stop
+  if m_openrc_nft_flush; then return 0; fi
+  [ "$M_OPENRC" = 0 ] || return 1
   command -v systemctl >/dev/null 2>&1 || return 1
   systemctl is-enabled --quiet nftables.service 2>/dev/null || systemctl is-active --quiet nftables.service 2>/dev/null || return 1
   if [ -f /etc/nftables.conf ] && grep -qE '^[[:space:]]*flush[[:space:]]+ruleset' /etc/nftables.conf 2>/dev/null; then return 0; fi
@@ -498,6 +508,7 @@ m_nft_flush_risk() {
 }
 # Re-validate, immediately before changing anything, what the preflight saw.
 [ "$(id -u)" = 0 ] || m_refuse not_root 'provisioning needs root'
+m_why=$(m_init_refuse); [ -z "$m_why" ] || m_refuse no_service_manager "$m_why"
 if m_nft_flush_risk; then
   m_refuse nftables_flush_on_reload 'nftables.service is enabled or running and flushes the whole ruleset on reload/stop; fix that first (see the preflight)'
 fi
@@ -577,7 +588,11 @@ m_compensate() {
   echo "MERIDIAN_COMPENSATING exit=$rc"
   m_jot "failed exit $rc"
   for u in $M_UNITS; do
-    if [ "$(m_pre_unit "$u" 2)" != enabled ]; then systemctl disable "$u" >/dev/null 2>&1; fi
+    if [ "$(m_pre_unit "$u" 2)" != enabled ]; then
+      # OpenRC: a runlevel link that stays is a leftover (the shim's disable
+      # fails then); systemd keeps its behaviour.
+      if ! systemctl disable "$u" >/dev/null 2>&1 && [ "$M_OPENRC" = 1 ]; then m_left unit "$u still enabled"; fi
+    fi
     if [ "$(m_pre_unit "$u" 3)" != active ] && systemctl is-active --quiet "$u" 2>/dev/null; then
       systemctl stop "$u" >/dev/null 2>&1 || m_left unit "$u still running"
     fi
@@ -809,12 +824,34 @@ m_commit() {
 const packageInstall = `m_need=""
 command -v wg >/dev/null 2>&1 || m_need="$m_need wireguard-tools"
 command -v nft >/dev/null 2>&1 || m_need="$m_need nftables"
-command -v ip >/dev/null 2>&1 || m_need="$m_need iproute2"
-if [ -n "$m_need" ]; then
-  apt-get update -y
-  # shellcheck disable=SC2086
-  apt-get install -y --no-install-recommends $m_need
-  for m_p in $m_need; do m_note "pkg $m_p"; done
+if [ -f /etc/alpine-release ] && command -v apk >/dev/null 2>&1; then
+  # (iproute2 is installed before m_begin: alpineIPPrelude.) The exit
+  # resolver's DoT/DoH upstreams need the CA bundle.
+  [ -s /etc/ssl/certs/ca-certificates.crt ] || m_need="$m_need ca-certificates-bundle"
+  if [ -n "$m_need" ]; then
+    # shellcheck disable=SC2086
+    apk add --no-cache $m_need
+    for m_p in $m_need; do m_note "pkg $m_p"; done
+  fi
+else
+  command -v ip >/dev/null 2>&1 || m_need="$m_need iproute2"
+  if [ -n "$m_need" ]; then
+    apt-get update -y
+    # shellcheck disable=SC2086
+    apt-get install -y --no-install-recommends $m_need
+    for m_p in $m_need; do m_note "pkg $m_p"; done
+  fi
+fi
+`
+
+// alpineIPPrelude installs iproute2 on Alpine before the run records the
+// host's state (M_PREPKG: what it installed, noted once the journal is
+// open). A host without it cannot be recorded reliably: the run stops.
+const alpineIPPrelude = `M_PREPKG=""
+if [ -f /etc/alpine-release ] && command -v apk >/dev/null 2>&1 && ! ip -V 2>&1 | grep -q iproute2; then
+  apk add --no-cache iproute2
+  M_PREPKG=iproute2
+  ip -V 2>&1 | grep -q iproute2 || { echo 'meridian: iproute2 could not be installed; nothing was changed' >&2; exit 1; }
 fi
 `
 
@@ -895,7 +932,7 @@ fi
 // resolver binds to exist. meridian-up.sh on exits restarts it already; this
 // proves the unit is active. A resolver that does not come up fails the run
 // (compensated): the node is never reported as working without it.
-const smartDNSStart = `if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+const smartDNSStart = `if m_has_init; then
   systemctl enable ` + compile.SmartDNSUnit + ` >/dev/null 2>&1 || true
   if ! systemctl is-active --quiet ` + compile.SmartDNSUnit + `; then
     systemctl restart ` + compile.SmartDNSUnit + `
@@ -907,7 +944,7 @@ const smartDNSStart = `if [ -d /run/systemd/system ] && command -v systemctl >/d
   fi
   echo MERIDIAN_SMARTDNS_ACTIVE
 else
-  echo 'no systemd: the exit resolver cannot run' >&2
+  echo 'neither systemd nor OpenRC: the exit resolver cannot run' >&2
   exit 1
 fi
 `
@@ -947,6 +984,10 @@ func artifactUnits(files map[string]string, name string) []string {
 	for p, body := range files {
 		if strings.HasPrefix(p, "/etc/systemd/system/") && strings.Contains(body, needle) {
 			out = append(out, strings.TrimPrefix(p, "/etc/systemd/system/"))
+		}
+		// OpenRC (Alpine exits): the same unit name the service shim maps.
+		if strings.HasPrefix(p, "/etc/init.d/") && strings.Contains(body, "\ncommand="+artifacts.HostPath(name)+"\n") {
+			out = append(out, strings.TrimPrefix(p, "/etc/init.d/")+".service")
 		}
 	}
 	sort.Strings(out)
