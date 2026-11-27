@@ -414,6 +414,36 @@ details[open] > summary::before { transform: rotate(90deg); }
 .legend-dot.external::before { background: transparent; border: 1px dashed var(--m-role-exit); }
 .legend-line::before { content: ""; display: inline-block; width: 22px; height: 0; border-top: 2px dashed var(--m-role-ix); margin-right: 5px; vertical-align: middle; }
 .legend-line.error::before { border-top: 2px solid var(--m-bad); }
+/* Hubs drawn as one group: a frame, one line per exit, a dot per hub on the exit's card. */
+.react-flow__node-hubgroup { pointer-events: none; }
+.hub-group { width: 100%; height: 100%; border: 1px dashed var(--m-role-hub); border-radius: 14px; background: color-mix(in srgb, var(--m-role-hub) 6%, transparent); position: relative; }
+.hub-group-title { position: absolute; top: 5px; left: 12px; font-size: 11.5px; color: var(--m-role-hub); }
+.hub-group-handle { opacity: 0; pointer-events: none; }
+.node-card.has-dots strong { padding-right: 34px; }
+.hub-dots { position: absolute; top: 10px; right: 10px; display: inline-flex; gap: 6px; }
+.hub-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 0; padding: 0; background: var(--m-text-2); cursor: pointer; }
+button.hub-dot { box-shadow: 0 0 0 3px transparent; position: relative; }
+/* A bigger tap target than the dot itself. */
+button.hub-dot::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; }
+button.hub-dot:hover, button.hub-dot:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--m-accent) 35%, transparent); outline: none; }
+.hub-dot.ok { background: var(--m-role-hub); }
+.hub-dot.mesh { background: var(--m-warn); }
+.hub-dot.idle { background: transparent; border: 1.5px solid var(--m-text-2); }
+.hub-dot.bad { background: var(--m-bad); }
+.legend-hub-dots { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.legend-hub-dots .hub-dot { cursor: default; margin-left: 6px; }
+.node-links { display: flex; flex-direction: column; align-items: flex-start; }
+.node-links .node-link { padding: 0; height: auto; white-space: normal; text-align: left; }
+.react-flow__edge.topo-edge.mesh-active .react-flow__edge-path { stroke: var(--m-warn); }
+.react-flow__edge.topo-edge.bundle.dim { opacity: 0.25; }
+.react-flow__edge.topo-edge.focus .react-flow__edge-path { stroke: var(--m-accent); stroke-width: 1.8; }
+/* Link labels only where they matter: on hover, selection, the exit in focus, errors and Mesh in use. */
+.react-flow__edge.topo-edge .react-flow__edge-textwrapper { opacity: 0; transition: opacity 0.12s; }
+.react-flow__edge.topo-edge:hover .react-flow__edge-textwrapper,
+.react-flow__edge.topo-edge.selected .react-flow__edge-textwrapper,
+.react-flow__edge.topo-edge.focus .react-flow__edge-textwrapper,
+.react-flow__edge.topo-edge.has-error .react-flow__edge-textwrapper,
+.react-flow__edge.topo-edge.mesh-active .react-flow__edge-textwrapper { opacity: 1; }
 .flag-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px dashed var(--m-border); }
 .server-summary { background: var(--m-surface-2); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
 .issue-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }

@@ -4,6 +4,13 @@ Each release has a `## vX.Y.Z` section; the release workflow
 (`.github/workflows/release-images.yml`) uses that section as the release
 notes and refuses a version without one.
 
+## v1.0.11
+
+- 拓扑图更清爽：有两个以上枢纽时，枢纽框成一组，每个出口只画一条线连过去；出口卡片右上角的小圆点分别表示到各枢纽的链路是已启用、走 Mesh、待命/停用还是异常，点圆点打开那条链路。
+- 鼠标指到出口（或点选它）才亮出它的全部链路和说明文字；平时没在用的 Mesh 备用收起，右上角「显示待命」可以展开。
+- 出口详情里新增「关联链路」，一点就进对应链路；「自动排列」让出口按地区排成一列、主枢纽在上。
+- 枢纽更新路由失败时，画布和圆点会显示为异常，不再显示为正常。
+
 ## v1.0.10
 
 - 出口可以装在 Alpine Linux 上了（3.19 及更新，包括只有 200MB 内存的 LXC 小鸡）。在拓扑里把出口的「服务器系统」选成 Alpine 即可；它只能直连枢纽，不支持 Mesh、WSS 和外部 SOCKS 承载。服务器上要先装好 bash 和 iproute2（apk add bash iproute2），预检会核对。

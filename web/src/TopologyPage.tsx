@@ -20,6 +20,7 @@ import {
   Background,
   BaseEdge,
   Controls,
+  Handle,
   MiniMap,
   Position,
   ReactFlow,
@@ -32,6 +33,8 @@ import {
   type Connection,
   type Edge,
   type EdgeProps,
+  type NodeChange,
+  type NodeProps,
   type Node as RFNode,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -156,7 +159,7 @@ type Selection = { kind: "node" | "link"; id: string } | null;
 
 // ----------------------------------------------------------------- canvas ---
 
-function nodeLabel(n: Node, server: ServerView | undefined) {
+function nodeLabel(n: Node, server: ServerView | undefined, dots?: HubDot[], onDot?: (link: string) => void) {
   const flags = [
     n.role === "hub" && n.hub_tier === "backup" ? "备用" : null,
     n.role === "hub" && n.ix_line && n.hub_tier !== "backup" ? "IX 即主枢纽" : null,
@@ -173,7 +176,24 @@ function nodeLabel(n: Node, server: ServerView | undefined) {
   const serverText = needsServer ? (server ? `${server.name}${server.ready ? "" : " · 未就绪"}` : "未选服务器") : "";
   // One line each, cut with "…"; the whole text is the card's title (hover).
   return (
-    <div className="node-card" title={[n.name || n.id, meta, serverText].filter(Boolean).join("\n")}>
+    <div className={`node-card${dots?.length ? " has-dots" : ""}`} title={[n.name || n.id, meta, serverText].filter(Boolean).join("\n")}>
+      {dots?.length ? (
+        <span className="hub-dots nodrag">
+          {dots.map((d) => (
+            <Tooltip key={d.link} title={d.text}>
+              <button
+                type="button"
+                className={`hub-dot ${d.state}`}
+                aria-label={d.text}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDot?.(d.link);
+                }}
+              />
+            </Tooltip>
+          ))}
+        </span>
+      ) : null}
       <strong>{n.name || n.id}</strong>
       <em>{meta}</em>
       {needsServer ? <span className={`node-server ${server ? (server.ready ? "ok" : "warn") : "missing"}`}>{serverText}</span> : null}
@@ -206,22 +226,29 @@ export function autoLayout(nodes: Node[], groups?: readonly { members: string[] 
   for (const role of roles) {
     let layer = nodes.filter((n) => n.role === role && !isNested(n));
     if (role === "exit") layer = [...layer].sort((a, b) => groupOf(a.id) - groupOf(b.id));
+    // The primary hub above the backup (the order of the dots on the exits).
+    if (role === "hub") layer = [...layer].sort((a, b) => (a.hub_tier === "backup" ? 1 : 0) - (b.hub_tier === "backup" ? 1 : 0));
     layers.push(layer);
     if (role === "exit") {
       const order = new Map(layer.map((n, i) => [n.id, i]));
       layers.push(nodes.filter(isNested).sort((a, b) => (order.get(a.via_exit!) ?? 99) - (order.get(b.via_exit!) ?? 99)));
     }
   }
+  const bundledExits = nodes.filter((n) => n.role === "hub").length > 1;
+  const tallest = Math.max(LAYOUT.rowsPerColumn, bundledExits ? nodes.filter((n) => n.role === "exit" && !n.via_exit).length : 0);
   let col = 0;
   for (const layer of layers) {
     if (layer.length === 0) continue;
-    const cols = Math.ceil(layer.length / LAYOUT.rowsPerColumn);
-    const rows = Math.min(layer.length, LAYOUT.rowsPerColumn);
+    // With two or more hubs the exits' hub links are one line each (hubBundle):
+    // the exits stay in one column, in region order.
+    const perColumn = bundledExits && layer[0]?.role === "exit" && !layer[0].via_exit ? Math.max(layer.length, LAYOUT.rowsPerColumn) : LAYOUT.rowsPerColumn;
+    const cols = Math.ceil(layer.length / perColumn);
+    const rows = Math.min(layer.length, perColumn);
     layer.forEach((n, i) => {
-      const c = Math.floor(i / LAYOUT.rowsPerColumn);
-      const r = i % LAYOUT.rowsPerColumn;
-      // Centre short layers against the tallest possible layer.
-      const offset = ((LAYOUT.rowsPerColumn - rows) * LAYOUT.rowHeight) / 2;
+      const c = Math.floor(i / perColumn);
+      const r = i % perColumn;
+      // Centre short layers against the tallest layer.
+      const offset = ((tallest - rows) * LAYOUT.rowHeight) / 2;
       // A wrapped layer's later columns are shifted down by a fraction of a
       // row (brick pattern): a link to a card in column c then crosses the
       // columns before it at the height of a gap between their cards, not
@@ -251,12 +278,23 @@ export function edgeRoute(sx: number, sy: number, tx: number, ty: number): { rou
   return routed ? { routed, centerX: sx + gap / 2, labelX: tx - gap / 2, labelY: ty } : { routed, centerX: (sx + tx) / 2, labelX: (sx + tx) / 2, labelY: (sy + ty) / 2 };
 }
 
+/** A curve bowed downwards by n steps: a second line between the same two cards, not on top of the first. Exported for tests. */
+export function bentPath(sx: number, sy: number, tx: number, ty: number, n: number): [string, number, number] {
+  const dx = Math.max(40, Math.abs(tx - sx) / 2);
+  const off = 28 * n;
+  return [`M${sx},${sy} C${sx + dx},${sy + off} ${tx - dx},${ty + off} ${tx},${ty}`, (sx + tx) / 2, (sy + ty) / 2 + off * 0.75];
+}
+
 /** The canvas's only edge type: a curve between neighbouring columns, right angles around the cards otherwise. */
 function RoutedEdge(p: EdgeProps) {
   const r = edgeRoute(p.sourceX, p.sourceY, p.targetX, p.targetY);
-  const [path, lx, ly] = r.routed
-    ? getSmoothStepPath({ ...p, borderRadius: 10, centerX: r.centerX })
-    : getBezierPath({ sourceX: p.sourceX, sourceY: p.sourceY, sourcePosition: p.sourcePosition, targetX: p.targetX, targetY: p.targetY, targetPosition: p.targetPosition });
+  // A second link between the same two cards bends further out.
+  const alt = Number((p.data as { alt?: number } | undefined)?.alt ?? 0);
+  const [path, lx, ly] = alt
+    ? bentPath(p.sourceX, p.sourceY, p.targetX, p.targetY, alt)
+    : r.routed
+      ? getSmoothStepPath({ ...p, borderRadius: 10, centerX: r.centerX })
+      : getBezierPath({ sourceX: p.sourceX, sourceY: p.sourceY, sourcePosition: p.sourcePosition, targetX: p.targetX, targetY: p.targetY, targetPosition: p.targetPosition });
   return (
     <BaseEdge
       id={p.id}
@@ -283,33 +321,208 @@ export function edgeLabel(l: TLink, topo: Topology, legs: HubLegReport[] | null)
   return c.label + (l.standby && c.state === "plain" ? " · 待命" : "") + (l.enabled ? "" : " · 停用");
 }
 
-function toFlow(topo: Topology, servers: Map<string, ServerView>, issues: Issue[], legs: HubLegReport[] | null): { nodes: RFNode[]; edges: Edge[] } {
+/** Id of the drawn hub group: a frame around the hubs, not a topology node. */
+export const HUB_GROUP_ID = "__hub_group";
+
+/** One hub's link to an exit, as a dot on the exit's card. */
+export type HubDot = { hub: string; link: string; state: "ok" | "mesh" | "idle" | "bad"; text: string };
+
+/** A standby link not carrying traffic now: drawn only when 「显示 Mesh 备用」 is on (or its exit is in focus). */
+export function quietStandby(l: TLink, topo: Topology, legs: HubLegReport[] | null): boolean {
+  // Only the standby half of a direct + Mesh pair whose direct leg carries (or
+  // is assumed to): a lone standby link may be the one that carries.
+  if (!l.standby) return false;
+  const st = linkCarrier(l, topo, legs).state;
+  return st === "direct" || st === "unknown";
+}
+
+/**
+ * With two or more hubs, every hub ↔ exit link is drawn once per exit, from
+ * a frame around the hubs; the exit's card carries one dot per hub with that
+ * hub's link state. Null with fewer hubs (links drawn as they are).
+ */
+export function hubBundle(topo: Topology, legs: HubLegReport[] | null, bad: Set<string>): { links: Set<string>; dots: Map<string, HubDot[]> } | null {
+  const hubs = orderedHubs(topo);
+  if (hubs.length < 2) return null;
+  const role = new Map(topo.nodes.map((n) => [n.id, n.role]));
+  const links = new Set<string>();
+  const per = new Map<string, Map<string, TLink[]>>();
+  for (const l of topo.links) {
+    const hub = role.get(l.from) === "hub" ? l.from : role.get(l.to) === "hub" ? l.to : undefined;
+    const exit = hub === l.from ? l.to : l.from;
+    if (!hub || role.get(exit) !== "exit") continue;
+    links.add(l.id);
+    const m = per.get(exit) ?? new Map<string, TLink[]>();
+    m.set(hub, [...(m.get(hub) ?? []), l]);
+    per.set(exit, m);
+  }
+  const dots = new Map<string, HubDot[]>();
+  for (const [exit, m] of per) {
+    const row: HubDot[] = [];
+    for (const h of hubs) {
+      const ls = m.get(h.id);
+      if (!ls) continue;
+      // The dot speaks for the hub's main link (the direct one when both legs exist).
+      // An enabled link before a disabled one; the direct one before Mesh.
+      const pick = (en: boolean) => ls.find((l) => l.enabled === en && l.transport !== "cf_mesh") ?? ls.find((l) => l.enabled === en);
+      const main = pick(true) ?? pick(false) ?? ls[0];
+      const c = linkCarrier(main, topo, legs);
+      const state: HubDot["state"] =
+        ls.some((l) => bad.has(l.id)) || c.state === "blackhole" ? "bad" : c.state === "mesh" ? "mesh" : !main.enabled || main.standby ? "idle" : "ok";
+      const word = { ok: "已启用", mesh: "走 Mesh", idle: main.enabled ? "待命" : "停用", bad: "异常" }[state];
+      row.push({ hub: h.id, link: main.id, state, text: `${h.name || h.id}：${word}（${edgeLabel(main, topo, legs)}）${ls.some((l) => bad.has(l.id)) ? " · 有错误" : ""}` });
+    }
+    dots.set(exit, row);
+  }
+  return { links, dots };
+}
+
+/** Hubs, the primary ones first (the order of the dots on an exit's card). */
+export function orderedHubs(topo: Topology): Node[] {
+  const rank = (n: Node) => (hubTierOf(n, topo) === "backup" ? 1 : 0);
+  return topo.nodes.filter((n) => n.role === "hub").sort((a, b) => rank(a) - rank(b));
+}
+
+export type FlowView = { showStandby: boolean; focus: string | null; selectedLink?: string | null; onDot?: (link: string) => void };
+
+export function toFlow(topo: Topology, servers: Map<string, ServerView>, issues: Issue[], legs: HubLegReport[] | null, view: FlowView = { showStandby: true, focus: null }): { nodes: RFNode[]; edges: Edge[] } {
   const bad = new Set(issues.filter((i) => i.severity === "error").flatMap((i) => [i.node_id, i.link_id]).filter(Boolean) as string[]);
+  const bundle = hubBundle(topo, legs, bad);
+  // Drawn left to right whichever end dials: the end nearer the gateway (or
+  // an exit's carrier) on the left, so a line never loops back over the cards.
+  const rank = new Map(topo.nodes.map((n) => [n.id, ROLE_ORDER.indexOf(n.role) + (n.role === "exit" && n.via_exit ? 1 : 0)]));
+  const flip = (l: TLink) => (rank.get(l.from) ?? 0) > (rank.get(l.to) ?? 0);
+  const carrying = (l: TLink) => {
+    if (!l.enabled) return false;
+    const st = linkCarrier(l, topo, legs).state;
+    if (st === "blackhole") return false;
+    if (st === "mesh") return l.transport === "cf_mesh";
+    return !l.standby;
+  };
+  const linkEdge = (l: TLink, extra = ""): Edge => ({
+    id: l.id,
+    source: flip(l) ? l.to : l.from,
+    target: flip(l) ? l.from : l.to,
+    type: "routed",
+    label: edgeLabel(l, topo, legs),
+    labelBgPadding: [6, 3] as [number, number],
+    labelBgBorderRadius: 4,
+    // Flows when it carries: the Mesh leg after a switch, not the direct one it replaced.
+    animated: carrying(l),
+    selected: view.selectedLink === l.id,
+    className: `topo-edge${l.standby ? " standby" : ""}${l.enabled ? "" : " disabled"}${bad.has(l.id) || linkCarrier(l, topo, legs).state === "blackhole" ? " has-error" : ""}${linkCarrier(l, topo, legs).state === "mesh" ? " mesh-active" : ""}${extra}`,
+  });
+  const edges: Edge[] = [];
+  // The open link is always drawn, folded or not.
+  const keep = (l: TLink) => view.selectedLink === l.id;
+  for (const l of topo.links) {
+    if (bundle?.links.has(l.id)) continue;
+    if (!view.showStandby && quietStandby(l, topo, legs) && !keep(l)) continue;
+    edges.push(linkEdge(l));
+  }
+  if (bundle) {
+    for (const [exit, dots] of bundle.dots) {
+      const cls = dots.some((d) => d.state === "bad") ? " has-error" : dots.some((d) => d.state === "mesh") ? " mesh-active" : dots.every((d) => d.state === "idle") ? " standby" : "";
+      const note = dots.some((d) => d.state === "bad") ? "异常" : dots.some((d) => d.state === "mesh") ? "走 Mesh" : undefined;
+      edges.push({
+        ...(note ? { label: note, labelBgPadding: [6, 3] as [number, number], labelBgBorderRadius: 4 } : {}),
+        id: `${HUB_GROUP_ID}>${exit}`,
+        source: HUB_GROUP_ID,
+        target: exit,
+        type: "routed",
+        animated: dots.some((d) => d.state === "ok" || d.state === "mesh"),
+        className: `topo-edge bundle${cls}${view.focus === exit ? " dim" : ""}`,
+      });
+    }
+    // Real hub links drawn besides the bundled lines: all of the exit in focus
+    // (pointer on it, or selected), and with 「显示待命」 the quiet standby ones.
+    // A second link between the same two nodes bends further out (not drawn on top).
+    for (const l of topo.links) {
+      if (!bundle.links.has(l.id)) continue;
+      const inFocus = !!view.focus && (l.from === view.focus || l.to === view.focus);
+      if (!inFocus && !keep(l) && !(view.showStandby && quietStandby(l, topo, legs))) continue;
+      edges.push(linkEdge(l, inFocus ? " focus" : ""));
+    }
+  }
+  // A second (third…) link drawn between the same two nodes bends further out, never on top.
+  const pairs = new Map<string, number>();
+  for (const e of edges) {
+    if (e.source === HUB_GROUP_ID) continue;
+    const key = [e.source, e.target].sort().join(">");
+    const n = pairs.get(key) ?? 0;
+    pairs.set(key, n + 1);
+    e.data = { ...e.data, alt: n };
+  }
   // Nodes that were never placed get a layered position instead of all sitting at 0,0.
   const auto = topo.nodes.some((n) => n.x === undefined && n.y === undefined) ? autoLayout(topo.nodes, topo.region_groups) : null;
   return {
     nodes: topo.nodes.map((n) => ({
       id: n.id,
       position: n.x === undefined && n.y === undefined && auto ? auto.get(n.id)! : { x: n.x ?? 0, y: n.y ?? 0 },
-      data: { label: nodeLabel(n, n.server_id ? servers.get(n.server_id) : undefined) },
+      data: { label: nodeLabel(n, n.server_id ? servers.get(n.server_id) : undefined, bundle?.dots.get(n.id), view.onDot) },
       // The layout runs left to right, so links leave a card on its right and enter on its left.
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       className: `topo-node role-${n.role}${n.residential ? " residential" : ""}${n.role === "exit" && n.external ? " external" : ""}${n.role === "exit" && n.via_exit ? " nested" : ""}${bad.has(n.id) ? " has-error" : ""}`,
     })),
-    edges: topo.links.map((l) => ({
-      id: l.id,
-      source: l.from,
-      target: l.to,
-      type: "routed",
-      label: edgeLabel(l, topo, legs),
-      labelBgPadding: [6, 3] as [number, number],
-      labelBgBorderRadius: 4,
-      animated: !l.standby && l.enabled,
-      className: `topo-edge${l.standby ? " standby" : ""}${l.enabled ? "" : " disabled"}${bad.has(l.id) ? " has-error" : ""}`,
-    })),
+    edges,
   };
 }
+
+/** The frame around the hubs; links of the bundled exits leave from its right side. */
+function HubGroupNode({ data }: NodeProps) {
+  return (
+    <div className="hub-group">
+      <span className="hub-group-title">{String(data.title)}</span>
+      <Handle type="source" position={Position.Right} isConnectable={false} className="hub-group-handle" />
+    </div>
+  );
+}
+const NODE_TYPES = { hubgroup: HubGroupNode };
+
+/**
+ * Splits React Flow's node changes: the hub frame's measured size (kept by the
+ * canvas) and the changes of the topology's cards. An empty card batch must
+ * not reach the nodes state (it would rebuild the frame unmeasured, again).
+ */
+export function splitFrameChanges(ch: NodeChange[]): { nodes: NodeChange[]; frame: { width: number; height: number } | null } {
+  let frame: { width: number; height: number } | null = null;
+  const nodes: NodeChange[] = [];
+  for (const c of ch) {
+    if ("id" in c && c.id === HUB_GROUP_ID) {
+      if (c.type === "dimensions" && c.dimensions) frame = { width: c.dimensions.width, height: c.dimensions.height };
+    } else nodes.push(c);
+  }
+  return { nodes, frame };
+}
+
+/** Bounds of the hub frame around the drawn hub cards (null without two hubs). */
+export function hubGroupNode(nodes: RFNode[], hubs: Node[]): RFNode | null {
+  const ids = new Set(hubs.map((h) => h.id));
+  const cards = nodes.filter((n) => ids.has(n.id));
+  if (cards.length < 2) return null;
+  const pad = 14;
+  const top = 26;
+  const x0 = Math.min(...cards.map((n) => n.position.x)) - pad;
+  const y0 = Math.min(...cards.map((n) => n.position.y)) - top;
+  const x1 = Math.max(...cards.map((n) => n.position.x + (n.measured?.width ?? NODE_WIDTH))) + pad;
+  const y1 = Math.max(...cards.map((n) => n.position.y + (n.measured?.height ?? 74))) + pad;
+  const regions = [...new Set(hubs.map((h) => h.region).filter(Boolean))];
+  return {
+    id: HUB_GROUP_ID,
+    type: "hubgroup",
+    position: { x: x0, y: y0 },
+    data: { title: regions.length === 1 ? `${regionLabel(regions[0]!).split(" · ")[0]}枢纽组` : "枢纽组" },
+    // Clicks inside the frame reach the canvas (and the cards on top of it).
+    style: { width: x1 - x0, height: y1 - y0, pointerEvents: "none" },
+    draggable: false,
+    selectable: false,
+    connectable: false,
+    focusable: false,
+    zIndex: -1,
+  };
+}
+
 
 const Canvas = memo(function Canvas({
   topo,
@@ -317,6 +530,7 @@ const Canvas = memo(function Canvas({
   servers,
   issues,
   legs,
+  selected,
   onSelect,
   onChange,
 }: {
@@ -327,13 +541,60 @@ const Canvas = memo(function Canvas({
   servers: Map<string, ServerView>;
   issues: Issue[];
   legs: HubLegReport[] | null;
+  /** The open drawer's node or link: its exit stays in focus. */
+  selected: Selection;
   onSelect: (s: Selection) => void;
   onChange: (t: Topology) => void;
 }) {
-  const initial = useMemo(() => toFlow(topo, servers, issues, legs), [topo, servers, issues, legs]);
+  const [showStandby, setShowStandby] = useState(false);
+  const [hovered, setHoveredNow] = useState<string | null>(null);
+  // Leaving a card clears the focus a moment later: the pointer can reach the lines it showed.
+  const leave = useRef<number | undefined>(undefined);
+  const setHovered = useCallback((id: string | null) => {
+    window.clearTimeout(leave.current);
+    if (id) setHoveredNow(id);
+    else leave.current = window.setTimeout(() => setHoveredNow(null), 200);
+  }, []);
+  useEffect(() => () => window.clearTimeout(leave.current), []);
+  const picked = useMemo(() => {
+    if (!selected) return null;
+    const role = (id: string) => topo.nodes.find((n) => n.id === id)?.role;
+    if (selected.kind === "node") return role(selected.id) === "exit" ? selected.id : null;
+    const l = topo.links.find((x) => x.id === selected.id);
+    if (!l) return null;
+    const hubEnd = role(l.from) === "hub" || role(l.to) === "hub";
+    return hubEnd ? (role(l.from) === "exit" ? l.from : role(l.to) === "exit" ? l.to : null) : null;
+  }, [selected, topo]);
+  const focus = hovered ?? picked;
+  const onDot = useCallback((link: string) => onSelect({ kind: "link", id: link }), [onSelect]);
+  const selectedLink = selected?.kind === "link" ? selected.id : null;
+  const initial = useMemo(
+    () => toFlow(topo, servers, issues, legs, { showStandby, focus, selectedLink, onDot }),
+    [topo, servers, issues, legs, showStandby, focus, selectedLink, onDot],
+  );
+  const quietCount = useMemo(() => topo.links.filter((l) => quietStandby(l, topo, legs)).length, [topo, legs]);
   const [nodes, setNodes, onNodesChange] = useNodesState(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initial.edges);
   const flow = useReactFlow();
+  const exitIds = useMemo(() => new Set(topo.nodes.filter((n) => n.role === "exit").map((n) => n.id)), [topo]);
+  const bundled = useMemo(() => hubBundle(topo, legs, new Set()) !== null, [topo, legs]);
+  // The frame is rebuilt only when its bounds change, and keeps its measured
+  // size (kept here, not in the nodes state): otherwise every node update
+  // would hand React Flow an unmeasured frame to observe again.
+  const [groupSize, setGroupSize] = useState<{ width: number; height: number } | null>(null);
+  const groupBase = bundled ? hubGroupNode(nodes, topo.nodes.filter((n) => n.role === "hub")) : null;
+  const groupKey = groupBase ? JSON.stringify([groupBase.position, groupBase.style, groupBase.data]) : "";
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilt by its bounds (groupKey)
+  const group = useMemo(() => (groupBase ? { ...groupBase, ...(groupSize ? { measured: groupSize } : {}) } : null), [groupKey, groupSize]);
+  const shownNodes = useMemo(() => (group ? [group, ...nodes] : nodes), [group, nodes]);
+  const onNodesChangeTopo = useCallback(
+    (ch: NodeChange[]) => {
+      const { nodes: mine, frame } = splitFrameChanges(ch);
+      if (frame) setGroupSize((cur) => (cur && cur.width === frame.width && cur.height === frame.height ? cur : frame));
+      if (mine.length > 0) onNodesChange(mine);
+    },
+    [onNodesChange],
+  );
 
   useEffect(() => {
     // Keep positions the user is dragging; take everything else from the document.
@@ -358,9 +619,10 @@ const Canvas = memo(function Canvas({
   return (
     <div className="canvas-wrap" data-testid="topology-canvas">
       <ReactFlow
-        nodes={nodes}
+        nodes={shownNodes}
         edges={edges}
-        onNodesChange={onNodesChange}
+        nodeTypes={NODE_TYPES}
+        onNodesChange={onNodesChangeTopo}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         edgeTypes={EDGE_TYPES}
@@ -368,8 +630,19 @@ const Canvas = memo(function Canvas({
         onNodeDragStop={(_, node) =>
           onChange({ ...live.current, nodes: live.current.nodes.map((n) => (n.id === node.id ? { ...n, x: Math.round(node.position.x), y: Math.round(node.position.y) } : n)) })
         }
-        onNodeClick={(_, n) => onSelect({ kind: "node", id: n.id })}
-        onEdgeClick={(_, e) => onSelect({ kind: "link", id: e.id })}
+        onNodeClick={(_, n) => {
+          if (n.id !== HUB_GROUP_ID) onSelect({ kind: "node", id: n.id });
+        }}
+        onNodeMouseEnter={(_, n) => setHovered(exitIds.has(n.id) ? n.id : null)}
+        onNodeMouseLeave={() => setHovered(null)}
+        onEdgeMouseEnter={(_, e) => {
+          if (focus && (e.source === focus || e.target === focus)) setHovered(focus);
+        }}
+        onEdgeMouseLeave={() => setHovered(null)}
+        onEdgeClick={(_, e) =>
+          // A bundled line stands for the exit's hub links: it opens the exit (its links are listed there).
+          onSelect(e.source === HUB_GROUP_ID ? { kind: "node", id: e.target } : { kind: "link", id: e.id })
+        }
         onPaneClick={() => onSelect(null)}
         fitView
         fitViewOptions={{ padding: 0.12, maxZoom: 1.1 }}
@@ -381,6 +654,17 @@ const Canvas = memo(function Canvas({
         <Controls showInteractive={false} />
       </ReactFlow>
       <Space size={4} className="canvas-fit">
+        {quietCount > 0 ? (
+          <Tooltip title="平时隐藏未走流量的备用链路（如 Mesh 备用）；正在使用时照常显示。">
+            <Button
+              size="small"
+              type={showStandby ? "primary" : "default"}
+              onClick={() => setShowStandby((v) => !v)}
+            >
+              {showStandby ? `隐藏待命 ${quietCount}` : `显示待命 ${quietCount}`}
+            </Button>
+          </Tooltip>
+        ) : null}
         <Tooltip title={`按 网关 → 中继 → ${hasIX(topo) ? "IX → " : ""}枢纽 → 出口 重新排列全部节点；改的只是画布位置，保存后记住`}>
           <Button
             size="small"
@@ -615,6 +899,7 @@ function NodeDetail({
   onChange,
   onDelete,
   onConnect,
+  onOpenLink,
 }: {
   node: Node;
   topo: Topology;
@@ -623,6 +908,7 @@ function NodeDetail({
   onChange: (t: Topology) => void;
   onDelete: () => void;
   onConnect?: () => void;
+  onOpenLink?: (id: string) => void;
 }) {
   const patch = (p: Partial<Node>) => onChange({ ...topo, nodes: topo.nodes.map((n) => (n.id === node.id ? { ...n, ...p } : n)) });
   const server = servers?.find((s) => s.id === node.server_id);
@@ -918,6 +1204,24 @@ function NodeDetail({
           ],
         ]}
       />
+      {onOpenLink && topo.links.some((l) => l.from === node.id || l.to === node.id) ? (
+        <Row label="关联链路">
+          <div className="node-links">
+            {topo.links
+              .filter((l) => l.from === node.id || l.to === node.id)
+              .map((l) => {
+                const peer = topo.nodes.find((n) => n.id === (l.from === node.id ? l.to : l.from));
+                const state = [l.standby ? "待命" : null, l.enabled ? null : "停用"].filter(Boolean).join(" · ");
+                return (
+                  <Button key={l.id} type="link" size="small" className="node-link" onClick={() => onOpenLink(l.id)}>
+                    {peer?.name || peer?.id || "?"} · {transportLabel[l.transport] ?? l.transport}
+                    {state ? `（${state}）` : ""}
+                  </Button>
+                );
+              })}
+          </div>
+        </Row>
+      ) : null}
       <Space style={{ marginTop: 16 }}>
         {onConnect && !(node.role === "exit" && node.external) ? (
           <Button icon={<PlusOutlined />} onClick={onConnect}>
@@ -1789,10 +2093,15 @@ export default function TopologyPage() {
         <span className="legend-dot residential">住宅出口</span>
         {topo.nodes.some((n) => n.role === "exit" && n.external) ? <span className="legend-dot external">外部 SOCKS 出口（无链路）</span> : null}
         <span className="legend-line standby">待命链路</span>
+        {orderedHubs(topo).length > 1 ? (
+          <span className="legend-hub-dots">
+            出口圆点（{orderedHubs(topo).length === 2 ? orderedHubs(topo).map((h, i) => `${i ? "右" : "左"} ${(h.name || h.id).split("（")[0]}`).join(" · ") : "从左到右：主枢纽在前"}）：<i className="hub-dot ok" />已启用 <i className="hub-dot mesh" />走 Mesh <i className="hub-dot idle" />待命/停用 <i className="hub-dot bad" />异常
+          </span>
+        ) : null}
         <span className="legend-line error">有错误</span>
       </div>
       <ReactFlowProvider>
-        <Canvas topo={canvasTopo ?? topo} live={liveTopo} servers={serverMap} issues={doc.issues} legs={legs} onSelect={select} onChange={doc.setTopo} />
+        <Canvas topo={canvasTopo ?? topo} live={liveTopo} servers={serverMap} issues={doc.issues} legs={legs} selected={selected} onSelect={select} onChange={doc.setTopo} />
       </ReactFlowProvider>
       <ClickableIssues issues={doc.issues} />
       {doc.paths.length > 0 ? (
@@ -1840,6 +2149,7 @@ export default function TopologyPage() {
             onChange={doc.setTopo}
             onDelete={() => setDeleting(node)}
             onConnect={() => setAdding({ from: node.id })}
+            onOpenLink={(id) => select({ kind: "link", id })}
           />
         ) : link ? (
           <LinkDetail

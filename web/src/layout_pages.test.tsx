@@ -259,14 +259,16 @@ describe("topology automatic layout", () => {
     for (const a of list)
       for (const b of list)
         if (a.id !== b.id) expect(Math.abs(a.x - b.x) >= 200 + 40 || Math.abs(a.y - b.y) >= 110).toBe(true);
-    // Left to right: gateway, relays, IX, hubs, exits; 9 exits wrap into two columns of at most 5.
+    // Left to right: gateway, relays, IX, hubs, exits; with two hubs the 9 exits stay in one
+    // column (their hub links are one line each, see hubBundle).
     const x = (id: string) => pos.get(id)!.x;
     expect(x("gw")).toBeLessThan(x("relay1"));
     expect(x("relay1")).toBeLessThan(x("ix1"));
     expect(x("ix1")).toBeLessThan(x("hub1"));
     expect(x("hub1")).toBeLessThan(x("ex1"));
-    expect(new Set(list.filter((n) => n.role === "exit").map((n) => n.x)).size).toBe(2);
-    expect(Math.max(...list.map((n) => n.y))).toBeLessThan(LAYOUT.rowsPerColumn * LAYOUT.rowHeight);
+    const exits = list.filter((n) => n.role === "exit");
+    expect(new Set(exits.map((n) => n.x)).size).toBe(1);
+    expect(Math.max(...list.map((n) => n.y))).toBeLessThan(exits.length * LAYOUT.rowHeight);
   });
 
   it("puts exits of one region group next to each other and a nested exit to the right of its carrier", () => {

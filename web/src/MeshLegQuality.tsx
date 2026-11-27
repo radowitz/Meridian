@@ -163,6 +163,10 @@ export function linkCarrier(l: Link, topo: Topology, reports: HubLegReport[] | n
   const base = transportKind(l.transport);
   const { hub, exit } = ends(l, topo);
   if (!hub || !exit || !l.enabled) return { label: base, state: "plain" };
+  // A hub that could not update its routes reports the pair as down even with
+  // a failed result, also for an exit's only (Mesh) leg.
+  const failed = (reports ?? []).find((x) => x.exit === exit && !x.event && (!x.hub || x.hub === hub) && x.active === "blackhole" && x.reason === "route_failed");
+  if (failed) return { label: "路由更新失败", state: "blackhole" };
   const twin = topo.links.find((o) => o.id !== l.id && o.enabled && (o.transport === "cf_mesh") !== (l.transport === "cf_mesh") && ends(o, topo).hub === hub && ends(o, topo).exit === exit);
   if (!twin) return { label: base, state: "plain" };
   const meshLink = l.transport === "cf_mesh";
